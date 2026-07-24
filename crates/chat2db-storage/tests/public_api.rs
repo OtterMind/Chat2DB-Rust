@@ -41,7 +41,6 @@ fn provider_and_agent_contracts_are_nameable_outside_the_crate() {
         datasource_id: Some("datasource-id".to_owned()),
     };
     let message = AppendAgentMessage {
-        run_id: None,
         role: AgentMessageRole::User,
         summary_through_ordinal: None,
         content_json: "[{\"type\":\"text\",\"text\":\"hello\"}]".to_owned(),

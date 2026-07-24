@@ -83,6 +83,26 @@ impl AppError {
             },
         )
     }
+
+    fn revision_conflict(
+        code: &'static str,
+        message: &'static str,
+        expected: u64,
+        actual: Option<u64>,
+    ) -> Self {
+        Self::new(
+            AppErrorKind::Conflict,
+            ApiError {
+                code: code.to_owned(),
+                message: message.to_owned(),
+                retryable: false,
+                details: Some(ApiErrorDetails::RevisionConflict {
+                    expected_revision: expected.to_string(),
+                    actual_revision: actual.map(|revision| revision.to_string()),
+                }),
+            },
+        )
+    }
 }
 
 impl Display for AppError {
@@ -94,6 +114,7 @@ impl Display for AppError {
 impl std::error::Error for AppError {}
 
 impl From<StorageError> for AppError {
+    #[allow(clippy::too_many_lines)]
     fn from(error: StorageError) -> Self {
         match error {
             StorageError::DatasourceNotFound(id) => Self::not_found(
@@ -106,21 +127,96 @@ impl From<StorageError> for AppError {
             ),
             StorageError::RevisionConflict {
                 expected, actual, ..
-            } => Self::new(
-                AppErrorKind::Conflict,
-                ApiError {
-                    code: "revision_conflict".to_owned(),
-                    message: "The datasource changed before the update was applied".to_owned(),
-                    retryable: false,
-                    details: Some(ApiErrorDetails::RevisionConflict {
-                        expected_revision: expected.to_string(),
-                        actual_revision: actual.map(|revision| revision.to_string()),
-                    }),
-                },
+            } => Self::revision_conflict(
+                "revision_conflict",
+                "The datasource changed before the update was applied",
+                expected,
+                actual,
             ),
             StorageError::InvalidDatasource(message) => {
                 Self::invalid("invalid_datasource", message)
             }
+            StorageError::ProviderNotFound(id) => Self::not_found(
+                "provider_not_found",
+                format!("Provider profile {id} does not exist"),
+            ),
+            StorageError::ProviderRevisionConflict {
+                expected, actual, ..
+            } => Self::revision_conflict(
+                "provider_revision_conflict",
+                "The provider profile changed before the update was applied",
+                expected,
+                actual,
+            ),
+            StorageError::InvalidProvider(message) => Self::invalid("invalid_provider", message),
+            StorageError::AgentSessionNotFound(id) => Self::not_found(
+                "agent_session_not_found",
+                format!("Agent session {id} does not exist"),
+            ),
+            StorageError::AgentSessionRevisionConflict {
+                expected, actual, ..
+            } => Self::revision_conflict(
+                "agent_session_revision_conflict",
+                "The agent session changed before the update was applied",
+                expected,
+                actual,
+            ),
+            StorageError::AgentSessionBusy(_) => Self::new(
+                AppErrorKind::Conflict,
+                ApiError::new(
+                    "agent_session_busy",
+                    "The agent session already has an active run",
+                ),
+            ),
+            StorageError::AgentDependencyBusy { .. } => Self::new(
+                AppErrorKind::Conflict,
+                ApiError::new(
+                    "agent_dependency_busy",
+                    "The provider profile or datasource is bound to an active agent run",
+                ),
+            ),
+            StorageError::AgentRunNotFound(id) => Self::not_found(
+                "agent_run_not_found",
+                format!("Agent run {id} does not exist"),
+            ),
+            StorageError::AgentStateConflict { .. } => Self::new(
+                AppErrorKind::Conflict,
+                ApiError::new(
+                    "agent_state_conflict",
+                    "The agent run changed before the operation was applied",
+                ),
+            ),
+            StorageError::InvalidAgent(message) => Self::invalid("invalid_agent_request", message),
+            StorageError::AgentQuotaExceeded { .. } => Self::new(
+                AppErrorKind::ResourceExhausted,
+                ApiError::new(
+                    "agent_quota_exceeded",
+                    "The agent session reached a configured resource limit",
+                ),
+            ),
+            StorageError::PermissionNotFound(id) => Self::not_found(
+                "tool_permission_not_found",
+                format!("Tool permission {id} does not exist"),
+            ),
+            StorageError::PermissionRevisionConflict {
+                expected, actual, ..
+            } => Self::revision_conflict(
+                "tool_permission_revision_conflict",
+                "The tool permission changed before the decision was applied",
+                expected,
+                actual,
+            ),
+            StorageError::PermissionNotExecutable { .. } => Self::new(
+                AppErrorKind::Conflict,
+                ApiError::new(
+                    "tool_permission_not_executable",
+                    "The tool permission cannot authorize this execution",
+                ),
+            ),
+            StorageError::ResultHandleNotFound(id) => Self::not_found(
+                "agent_result_handle_not_found",
+                format!("Agent result handle {id} does not exist or expired"),
+            ),
             StorageError::InvalidResult(message) => {
                 Self::invalid("invalid_result_request", message)
             }
@@ -134,7 +230,7 @@ impl From<StorageError> for AppError {
             StorageError::SecretVault { .. } | StorageError::SecretCompensation { .. } => {
                 Self::unavailable(
                     "secret_vault_unavailable",
-                    "The datasource secret vault is unavailable",
+                    "The credential vault is unavailable",
                 )
             }
             StorageError::OutcomeUnknown { .. } => Self::new(
@@ -257,6 +353,146 @@ impl From<BridgeError> for AppError {
             | BridgeError::UnexpectedResponse(_)
             | BridgeError::SupervisorTask(_)
             | BridgeError::Frame(_) => Self::internal(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chat2db_contract::ApiErrorDetails;
+    use chat2db_storage::StorageError;
+
+    use super::{AppError, AppErrorKind};
+
+    fn assert_mapping(error: StorageError, expected_kind: AppErrorKind, expected_code: &str) {
+        let mapped = AppError::from(error);
+        assert_eq!(mapped.kind(), expected_kind);
+        assert_eq!(mapped.api_error().code, expected_code);
+    }
+
+    #[test]
+    fn agent_storage_errors_have_stable_external_categories() {
+        for (error, kind, code) in [
+            (
+                StorageError::ProviderNotFound("provider-1".to_owned()),
+                AppErrorKind::NotFound,
+                "provider_not_found",
+            ),
+            (
+                StorageError::AgentSessionNotFound("session-1".to_owned()),
+                AppErrorKind::NotFound,
+                "agent_session_not_found",
+            ),
+            (
+                StorageError::AgentRunNotFound("run-1".to_owned()),
+                AppErrorKind::NotFound,
+                "agent_run_not_found",
+            ),
+            (
+                StorageError::PermissionNotFound("permission-1".to_owned()),
+                AppErrorKind::NotFound,
+                "tool_permission_not_found",
+            ),
+            (
+                StorageError::ResultHandleNotFound("handle-1".to_owned()),
+                AppErrorKind::NotFound,
+                "agent_result_handle_not_found",
+            ),
+            (
+                StorageError::InvalidProvider("invalid provider"),
+                AppErrorKind::InvalidRequest,
+                "invalid_provider",
+            ),
+            (
+                StorageError::InvalidAgent("invalid agent"),
+                AppErrorKind::InvalidRequest,
+                "invalid_agent_request",
+            ),
+            (
+                StorageError::AgentSessionBusy("session-1".to_owned()),
+                AppErrorKind::Conflict,
+                "agent_session_busy",
+            ),
+            (
+                StorageError::AgentStateConflict {
+                    id: "run-1".to_owned(),
+                    expected: "running",
+                    actual: "failed",
+                },
+                AppErrorKind::Conflict,
+                "agent_state_conflict",
+            ),
+            (
+                StorageError::PermissionNotExecutable {
+                    id: "permission-1".to_owned(),
+                    reason: "permission expired",
+                },
+                AppErrorKind::Conflict,
+                "tool_permission_not_executable",
+            ),
+            (
+                StorageError::AgentQuotaExceeded {
+                    resource: "session message count",
+                    limit: 1,
+                },
+                AppErrorKind::ResourceExhausted,
+                "agent_quota_exceeded",
+            ),
+        ] {
+            assert_mapping(error, kind, code);
+        }
+    }
+
+    #[test]
+    fn agent_dependency_busy_is_a_conflict_without_exposing_storage_details() {
+        let mapped = AppError::from(StorageError::AgentDependencyBusy {
+            resource: "provider profile",
+            id: "provider-1".to_owned(),
+        });
+
+        assert_eq!(mapped.kind(), AppErrorKind::Conflict);
+        let api = mapped.api_error();
+        assert_eq!(api.code, "agent_dependency_busy");
+        assert!(!api.message.contains("provider-1"));
+        assert!(api.details.is_none());
+    }
+
+    #[test]
+    fn agent_revision_conflicts_keep_portable_revision_details() {
+        for (error, code) in [
+            (
+                StorageError::ProviderRevisionConflict {
+                    id: "provider-1".to_owned(),
+                    expected: 9_007_199_254_740_993,
+                    actual: Some(9_007_199_254_740_994),
+                },
+                "provider_revision_conflict",
+            ),
+            (
+                StorageError::AgentSessionRevisionConflict {
+                    id: "session-1".to_owned(),
+                    expected: 41,
+                    actual: None,
+                },
+                "agent_session_revision_conflict",
+            ),
+            (
+                StorageError::PermissionRevisionConflict {
+                    id: "permission-1".to_owned(),
+                    expected: 7,
+                    actual: Some(8),
+                },
+                "tool_permission_revision_conflict",
+            ),
+        ] {
+            let mapped = AppError::from(error);
+            assert_eq!(mapped.kind(), AppErrorKind::Conflict);
+            let api = mapped.api_error();
+            assert_eq!(api.code, code);
+            assert!(matches!(
+                api.details,
+                Some(ApiErrorDetails::RevisionConflict { .. })
+            ));
         }
     }
 }

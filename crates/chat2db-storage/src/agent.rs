@@ -125,11 +125,12 @@ impl AgentMessageRole {
     }
 }
 
-/// One canonical message append request.
+/// One session-owned canonical message append request.
+///
+/// Run-owned messages are accepted only by the dedicated atomic run lifecycle
+/// APIs so transcript writes cannot outlive or interleave with their run.
 #[derive(Clone, PartialEq, Eq)]
 pub struct AppendAgentMessage {
-    /// Run that produced or consumed the message, when applicable.
-    pub run_id: Option<String>,
     /// Visible message role.
     pub role: AgentMessageRole,
     /// Last original message represented by a summary message.
@@ -610,7 +611,6 @@ impl Debug for AppendAgentMessage {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("AppendAgentMessage")
-            .field("run_id", &self.run_id)
             .field("role", &self.role)
             .field("summary_through_ordinal", &self.summary_through_ordinal)
             .field("content_json_bytes", &self.content_json.len())
@@ -939,7 +939,11 @@ impl Storage {
         })
     }
 
-    /// Appends one strict, normalized JSON message with a contiguous ordinal.
+    /// Appends one strict, normalized session message with a contiguous ordinal.
+    ///
+    /// A session with an active run rejects the append. Run-owned messages use
+    /// the dedicated atomic start, complete, fail, cancellation, or unknown
+    /// write-outcome APIs instead.
     ///
     /// # Errors
     ///
@@ -950,7 +954,6 @@ impl Storage {
         input: AppendAgentMessage,
     ) -> Result<AgentMessageRecord, StorageError> {
         let AppendAgentMessage {
-            run_id,
             role,
             summary_through_ordinal,
             content_json,
@@ -958,11 +961,21 @@ impl Storage {
         let mut connection = self.connection()?;
         let (canonical, canonical_bytes) = normalize_message_json(&connection, &content_json)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if row_exists(
+            &transaction,
+            "SELECT EXISTS(
+                SELECT 1 FROM agent_runs
+                WHERE session_id = ?1 AND status IN ('running', 'waiting_permission')
+             )",
+            session_id,
+        )? {
+            return Err(StorageError::AgentSessionBusy(session_id.to_owned()));
+        }
         let timestamp = now_millis()?;
         let record = append_message_in_transaction(
             &transaction,
             session_id,
-            run_id.as_deref(),
+            None,
             role,
             summary_through_ordinal,
             &canonical,
@@ -1701,6 +1714,12 @@ impl Storage {
                 reason: "permission binding does not match",
             });
         }
+        if current.status != ToolPermissionStatus::Pending {
+            return Err(StorageError::PermissionNotExecutable {
+                id: id.to_owned(),
+                reason: "permission is no longer pending",
+            });
+        }
         let run = load_run(&transaction, run_id)?
             .ok_or_else(|| StorageError::AgentRunNotFound(run_id.to_owned()))?;
         if run.cancel_requested
@@ -1729,12 +1748,6 @@ impl Storage {
             return Err(StorageError::PermissionNotExecutable {
                 id: id.to_owned(),
                 reason: "permission expired",
-            });
-        }
-        if current.status != ToolPermissionStatus::Pending {
-            return Err(StorageError::PermissionNotExecutable {
-                id: id.to_owned(),
-                reason: "permission is no longer pending",
             });
         }
         let status = match decision {
@@ -1856,6 +1869,12 @@ impl Storage {
                 reason: "permission binding does not match",
             });
         }
+        if current.status != ToolPermissionStatus::Approved {
+            return Err(StorageError::PermissionNotExecutable {
+                id: id.to_owned(),
+                reason: "permission is not approved",
+            });
+        }
         if current.expires_at_ms <= timestamp {
             expire_permission(&transaction, &current, timestamp)?;
             transaction.execute(
@@ -1867,12 +1886,6 @@ impl Storage {
             return Err(StorageError::PermissionNotExecutable {
                 id: id.to_owned(),
                 reason: "permission expired",
-            });
-        }
-        if current.status != ToolPermissionStatus::Approved {
-            return Err(StorageError::PermissionNotExecutable {
-                id: id.to_owned(),
-                reason: "permission is not approved",
             });
         }
         let run = load_run(&transaction, run_id)?
@@ -1978,7 +1991,7 @@ impl Storage {
             });
         }
         let timestamp = now_millis()?;
-        transaction.execute(
+        let changed = transaction.execute(
             "UPDATE agent_runs
              SET write_in_flight_tool_call_id = NULL,
                  write_in_flight_arguments_sha256 = NULL, updated_at_ms = ?1
@@ -1986,6 +1999,12 @@ impl Storage {
                AND write_in_flight_arguments_sha256 = ?4",
             params![timestamp, run_id, tool_call_id, arguments_sha256.as_slice(),],
         )?;
+        if changed != 1 {
+            return Err(StorageError::PermissionNotExecutable {
+                id: run_id.to_owned(),
+                reason: "database write dispatch fence settlement CAS failed",
+            });
+        }
         transaction.commit()?;
         load_run(&connection, run_id)?.ok_or_else(|| StorageError::OutcomeUnknown {
             operation: "settle agent write",
@@ -3016,8 +3035,28 @@ fn normalize_message_json(
             "message must be a strict visible JSON array without hidden reasoning or raw deltas",
         ));
     }
-    let canonical: String =
-        connection.query_row("SELECT json(?1)", [content_json], |row| row.get(0))?;
+    let parsed: Value = serde_json::from_str(content_json).map_err(|_| {
+        StorageError::InvalidAgent("message content does not match the canonical contract")
+    })?;
+    let blocks: Vec<ContractMessageContent> =
+        serde_json::from_value(parsed.clone()).map_err(|_| {
+            StorageError::InvalidAgent("message content does not match the canonical contract")
+        })?;
+    let normalized = serde_json::to_value(&blocks).map_err(|error| {
+        StorageError::Integrity(format!(
+            "canonical agent message serialization failed: {error}"
+        ))
+    })?;
+    if normalized != parsed {
+        return Err(StorageError::InvalidAgent(
+            "message contains fields outside the canonical contract",
+        ));
+    }
+    let canonical = serde_json::to_string(&blocks).map_err(|error| {
+        StorageError::Integrity(format!(
+            "canonical agent message serialization failed: {error}"
+        ))
+    })?;
     let canonical_bytes = to_u64(canonical.len(), "agent message bytes")?;
     if canonical_bytes == 0 || canonical_bytes > MAX_AGENT_MESSAGE_BYTES {
         return Err(StorageError::AgentQuotaExceeded {
@@ -3304,7 +3343,6 @@ mod tests {
             .append_agent_message(
                 &session.id,
                 AppendAgentMessage {
-                    run_id: None,
                     role: AgentMessageRole::User,
                     summary_through_ordinal: None,
                     content_json: " [ { \"type\" : \"text\", \"text\" : \"hello\" } ] ".to_owned(),
@@ -3344,6 +3382,63 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn session_message_append_cannot_interleave_with_an_active_run() {
+        let directory = TempDir::new().expect("temp dir");
+        let (storage, provider_id) = setup(&directory);
+        let session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("session creates");
+        let run = create_running_run(&storage, &session.id);
+
+        assert!(matches!(
+            storage.append_agent_message(
+                &session.id,
+                AppendAgentMessage {
+                    role: AgentMessageRole::Assistant,
+                    summary_through_ordinal: None,
+                    content_json: message_json("must not interleave"),
+                },
+            ),
+            Err(StorageError::AgentSessionBusy(_))
+        ));
+
+        storage
+            .complete_agent_run(
+                &run.id,
+                AgentRunStatus::Running,
+                CompleteAgentRun {
+                    last_sequence: 2,
+                    model_rounds: 1,
+                    tool_calls: 0,
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    total_tokens: 2,
+                    messages: vec![AgentRunMessage {
+                        role: AgentMessageRole::Assistant,
+                        summary_through_ordinal: None,
+                        content_json: message_json("done"),
+                    }],
+                    compaction_count: 0,
+                    compacted_through_ordinal: None,
+                },
+            )
+            .expect("run completes atomically");
+
+        let appended = storage
+            .append_agent_message(
+                &session.id,
+                AppendAgentMessage {
+                    role: AgentMessageRole::User,
+                    summary_through_ordinal: None,
+                    content_json: message_json("after the run"),
+                },
+            )
+            .expect("session append resumes after the run");
+        assert!(appended.run_id.is_none());
+        assert_eq!(appended.ordinal, 2);
     }
 
     #[test]
@@ -3523,7 +3618,6 @@ mod tests {
                 .append_agent_message(
                     &session.id,
                     AppendAgentMessage {
-                        run_id: None,
                         role,
                         summary_through_ordinal: None,
                         content_json: content_json.to_owned(),
@@ -3569,16 +3663,11 @@ mod tests {
         debug_values.push(format!("{started:?}"));
 
         let append = AppendAgentMessage {
-            run_id: Some(started.run.id.clone()),
             role: AgentMessageRole::Assistant,
             summary_through_ordinal: None,
             content_json: message_json(SENTINEL),
         };
         debug_values.push(format!("{append:?}"));
-        let appended = storage
-            .append_agent_message(&session.id, append)
-            .expect("message appends");
-        debug_values.push(format!("{appended:?}"));
 
         let permission_request = RequestToolPermission {
             summary: SENTINEL.to_owned(),
@@ -3781,7 +3870,6 @@ mod tests {
             .append_agent_message(
                 &session.id,
                 AppendAgentMessage {
-                    run_id: None,
                     role: AgentMessageRole::User,
                     summary_through_ordinal: None,
                     content_json: message_json("original"),
@@ -3792,7 +3880,6 @@ mod tests {
             .append_agent_message(
                 &session.id,
                 AppendAgentMessage {
-                    run_id: None,
                     role: AgentMessageRole::Summary,
                     summary_through_ordinal: Some(0),
                     content_json: message_json("summary"),
@@ -3802,13 +3889,11 @@ mod tests {
         assert_eq!(summary.summary_through_ordinal, Some(0));
         for input in [
             AppendAgentMessage {
-                run_id: None,
                 role: AgentMessageRole::Summary,
                 summary_through_ordinal: None,
                 content_json: message_json("missing coverage"),
             },
             AppendAgentMessage {
-                run_id: None,
                 role: AgentMessageRole::User,
                 summary_through_ordinal: Some(0),
                 content_json: message_json("invalid coverage"),
@@ -3838,7 +3923,6 @@ mod tests {
             .append_agent_message(
                 &session.id,
                 AppendAgentMessage {
-                    run_id: None,
                     role: AgentMessageRole::User,
                     summary_through_ordinal: None,
                     content_json: oversized,
@@ -3850,7 +3934,6 @@ mod tests {
             .append_agent_message(
                 &session.id,
                 AppendAgentMessage {
-                    run_id: None,
                     role: AgentMessageRole::Assistant,
                     summary_through_ordinal: None,
                     content_json: "[{\"type\":\"text\",\"hidden_reasoning\":\"never persist\"}]"
@@ -3859,6 +3942,30 @@ mod tests {
             )
             .expect_err("hidden reasoning fails");
         assert!(matches!(hidden, StorageError::InvalidAgent(_)));
+        for content_json in [
+            r#"[{"type":"text","text":"ok","hiddenReasoning":"SECRET"}]"#,
+            r#"[{"type":"text","text":"ok","rawProviderDelta":"SECRET"}]"#,
+            r#"[{"type":"text","text":"ok","apiKey":"SECRET"}]"#,
+            r#"[{"type":"text","text":"ok","unexpected":"SECRET"}]"#,
+        ] {
+            let unknown = storage
+                .append_agent_message(
+                    &session.id,
+                    AppendAgentMessage {
+                        role: AgentMessageRole::Assistant,
+                        summary_through_ordinal: None,
+                        content_json: content_json.to_owned(),
+                    },
+                )
+                .expect_err("unknown canonical fields fail closed");
+            assert!(matches!(unknown, StorageError::InvalidAgent(_)));
+        }
+        assert!(
+            storage
+                .list_agent_messages(&session.id, 0, 10)
+                .expect("messages list")
+                .is_empty()
+        );
 
         storage
             .connection()
@@ -3881,7 +3988,6 @@ mod tests {
             .append_agent_message(
                 &session.id,
                 AppendAgentMessage {
-                    run_id: None,
                     role: AgentMessageRole::User,
                     summary_through_ordinal: None,
                     content_json: message_json("x"),
@@ -3924,7 +4030,6 @@ mod tests {
             .append_agent_message(
                 &byte_session.id,
                 AppendAgentMessage {
-                    run_id: None,
                     role: AgentMessageRole::User,
                     summary_through_ordinal: None,
                     content_json: message_json("x"),
@@ -4050,6 +4155,160 @@ mod tests {
                 .expect("run exists")
                 .write_in_flight_tool_call_id
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn expired_denied_permission_cannot_resume_a_new_permission_wait() {
+        let directory = TempDir::new().expect("temp dir");
+        let (storage, provider_id) = setup(&directory);
+
+        let denied_session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("denied session creates");
+        let denied_run = create_running_run(&storage, &denied_session.id);
+        let denied_digest = [21_u8; 32];
+        let denied = storage
+            .create_tool_permission(
+                &denied_run.id,
+                permission_input("old-denied", denied_digest, 2),
+            )
+            .expect("old denied permission creates");
+        let denied = storage
+            .decide_tool_permission(
+                &denied.id,
+                denied.revision,
+                &denied_run.id,
+                "old-denied",
+                denied_digest,
+                3,
+                ToolPermissionDecision::Deny,
+            )
+            .expect("old permission denies");
+        let new_denied_wait = storage
+            .create_tool_permission(
+                &denied_run.id,
+                permission_input("new-after-denied", [22_u8; 32], 4),
+            )
+            .expect("new pending permission creates");
+        storage
+            .connection()
+            .expect("connection opens")
+            .execute(
+                "UPDATE tool_permissions SET expires_at_ms = 0 WHERE id = ?1",
+                [&denied.id],
+            )
+            .expect("old denied permission expires");
+        assert!(matches!(
+            storage.decide_tool_permission(
+                &denied.id,
+                denied.revision,
+                &denied_run.id,
+                "old-denied",
+                denied_digest,
+                5,
+                ToolPermissionDecision::Deny,
+            ),
+            Err(StorageError::PermissionNotExecutable { .. })
+        ));
+        assert_eq!(
+            storage
+                .get_active_tool_permission_for_run(&denied_run.id)
+                .expect("active permission reads")
+                .expect("new permission remains active")
+                .id,
+            new_denied_wait.id
+        );
+        assert_eq!(
+            storage
+                .get_agent_run(&denied_run.id)
+                .expect("run reads")
+                .expect("run exists")
+                .status,
+            AgentRunStatus::WaitingPermission
+        );
+    }
+
+    #[test]
+    fn expired_consumed_permission_cannot_resume_a_new_permission_wait() {
+        let directory = TempDir::new().expect("temp dir");
+        let (storage, provider_id) = setup(&directory);
+        let consumed_session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("consumed session creates");
+        let consumed_run = create_running_run(&storage, &consumed_session.id);
+        let consumed_digest = [23_u8; 32];
+        let consumed = storage
+            .create_tool_permission(
+                &consumed_run.id,
+                permission_input("old-consumed", consumed_digest, 2),
+            )
+            .expect("old consumed permission creates");
+        let consumed = storage
+            .decide_tool_permission(
+                &consumed.id,
+                consumed.revision,
+                &consumed_run.id,
+                "old-consumed",
+                consumed_digest,
+                3,
+                ToolPermissionDecision::Approve,
+            )
+            .expect("old consumed permission approves");
+        let consumed = storage
+            .consume_tool_permission(
+                &consumed.id,
+                consumed.revision,
+                &consumed_run.id,
+                "old-consumed",
+                consumed_digest,
+                4,
+            )
+            .expect("old approval consumes");
+        storage
+            .settle_agent_write(&consumed_run.id, "old-consumed", consumed_digest)
+            .expect("old write settles");
+        let new_consumed_wait = storage
+            .create_tool_permission(
+                &consumed_run.id,
+                permission_input("new-after-consumed", [24_u8; 32], 5),
+            )
+            .expect("new pending permission creates");
+        storage
+            .connection()
+            .expect("connection opens")
+            .execute(
+                "UPDATE tool_permissions SET expires_at_ms = 0 WHERE id = ?1",
+                [&consumed.id],
+            )
+            .expect("old consumed permission expires");
+        assert!(matches!(
+            storage.consume_tool_permission_at(
+                &consumed.id,
+                consumed.revision,
+                &consumed_run.id,
+                "old-consumed",
+                consumed_digest,
+                6,
+                1,
+            ),
+            Err(StorageError::PermissionNotExecutable { .. })
+        ));
+        assert_eq!(
+            storage
+                .get_active_tool_permission_for_run(&consumed_run.id)
+                .expect("active permission reads")
+                .expect("new permission remains active")
+                .id,
+            new_consumed_wait.id
+        );
+        assert_eq!(
+            storage
+                .get_agent_run(&consumed_run.id)
+                .expect("run reads")
+                .expect("run exists")
+                .status,
+            AgentRunStatus::WaitingPermission
         );
     }
 
