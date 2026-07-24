@@ -9,11 +9,28 @@ license-file.workspace = true
 repository.workspace = true
 
 [dependencies]
+base64.workspace = true
 chat2db-contract = { path = "../chat2db-contract" }
+chat2db-engine-protocol = { path = "../chat2db-engine-protocol" }
+chat2db-java-bridge = { path = "../chat2db-java-bridge" }
 chat2db-storage = { path = "../chat2db-storage" }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+
+[[test]]
+name = "java_h2_product"
+path = "tests/java_h2_product.rs"
+required-features = ["java-integration"]
+
+[features]
+default = []
+java-integration = []
 
 [lints]
 workspace = true

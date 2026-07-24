@@ -4,25 +4,28 @@ use thiserror::Error;
 use uuid::Uuid;
 use zeroize::Zeroize;
 
+const SECRET_REF_PREFIX: &str = "chat2db:datasource:";
+
 /// Opaque reference persisted by `SQLite` in place of secret material.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct SecretRef(String);
 
 impl SecretRef {
     pub(crate) fn generate() -> Self {
-        Self(format!("chat2db:datasource:{}", Uuid::new_v4()))
+        Self(format!("{SECRET_REF_PREFIX}{}", Uuid::new_v4()))
     }
 
     pub(crate) fn from_persisted(value: String) -> Result<Self, crate::StorageError> {
-        let Some(uuid) = value.strip_prefix("chat2db:datasource:") else {
+        if parse_canonical_uuid(&value).is_none() {
             return Err(crate::StorageError::InvalidDatasource(
                 "persisted secret reference is invalid",
             ));
-        };
-        Uuid::parse_str(uuid).map_err(|_| {
-            crate::StorageError::InvalidDatasource("persisted secret reference is invalid")
-        })?;
+        }
         Ok(Self(value))
+    }
+
+    pub(crate) fn validated_uuid(&self) -> Option<Uuid> {
+        parse_canonical_uuid(&self.0)
     }
 
     /// Returns the non-secret vault lookup key.
@@ -30,6 +33,12 @@ impl SecretRef {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+fn parse_canonical_uuid(value: &str) -> Option<Uuid> {
+    let encoded = value.strip_prefix(SECRET_REF_PREFIX)?;
+    let uuid = Uuid::parse_str(encoded).ok()?;
+    (uuid.hyphenated().to_string() == encoded).then_some(uuid)
 }
 
 impl Debug for SecretRef {
@@ -70,6 +79,9 @@ impl Drop for SecretValue {
 /// Safe, non-secret error classifications returned by a credential vault.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum SecretVaultError {
+    /// A configured master key or vault identifier is malformed.
+    #[error("vault configuration is invalid")]
+    InvalidConfiguration,
     /// The platform credential store is not available.
     #[error("vault unavailable")]
     Unavailable,
@@ -116,7 +128,7 @@ pub trait SecretVault: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::SecretValue;
+    use super::{SecretRef, SecretValue};
 
     #[test]
     fn debug_output_never_exposes_secret_bytes() {
@@ -125,5 +137,21 @@ mod tests {
 
         assert_eq!(debug, "SecretValue([REDACTED])");
         assert!(!debug.contains("sentinel-password"));
+    }
+
+    #[test]
+    fn persisted_references_require_a_canonical_uuid() {
+        let uuid = uuid::Uuid::new_v4();
+        let canonical = format!("chat2db:datasource:{uuid}");
+        assert!(SecretRef::from_persisted(canonical).is_ok());
+
+        for invalid in [
+            "chat2db:datasource:../../master-key".to_owned(),
+            "chat2db:datasource:not-a-uuid".to_owned(),
+            format!("chat2db:datasource:{}", uuid.simple()),
+            format!("chat2db:datasource:{{{uuid}}}"),
+        ] {
+            assert!(SecretRef::from_persisted(invalid).is_err());
+        }
     }
 }

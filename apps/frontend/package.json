@@ -7,12 +7,19 @@
   "engines": {
     "node": ">=22.12.0 <23"
   },
+  "overrides": {
+    "js-yaml": "4.3.0"
+  },
   "scripts": {
     "build": "tsc --noEmit && vite build",
     "dev": "vite --host 127.0.0.1 --port 4210",
+    "generate-contract": "openapi-typescript ../../contracts/openapi/chat2db-v1.json -o src/generated/contract.ts",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "eventsource-parser": "3.1.0",
     "lucide-react": "1.26.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
@@ -21,7 +28,9 @@
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.4",
-    "typescript": "7.0.2",
-    "vite": "8.1.5"
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3",
+    "vite": "8.1.5",
+    "vitest": "4.1.10"
   }
 }

@@ -101,6 +101,8 @@ pub struct ResultMetadata {
     pub id: String,
     /// Number of retained rows.
     pub row_count: u64,
+    /// Exact durable file length, including schema and batch frame prefixes.
+    pub byte_count: u64,
     /// Whether the JDBC engine observed another row beyond `max_rows`.
     pub truncated_by_max_rows: bool,
     /// Whether the JDBC engine omitted a row beyond its result-byte budget.
@@ -187,6 +189,12 @@ impl ResultWriter {
         &self.id
     }
 
+    /// Returns the exact file length durably committed by this writer.
+    #[must_use]
+    pub const fn persisted_bytes(&self) -> u64 {
+        self.committed_length
+    }
+
     /// Persists one contiguous row batch using file-sync-before-index ordering.
     ///
     /// # Errors
@@ -221,8 +229,8 @@ impl ResultWriter {
             .ok_or(StorageError::NumericRange("result row count"))?;
 
         let storage = self.storage.clone();
-        let _gate = storage.lock_results()?;
-        storage.check_result_quota(frame_length)?;
+        let result_guard = storage.lock_results()?;
+        storage.check_result_quota(frame_length, &result_guard)?;
 
         let path = storage.result_path(&self.id)?;
         let file = self
@@ -304,6 +312,7 @@ impl ResultWriter {
             Ok(()) => ResultMetadata {
                 id: self.id.clone(),
                 row_count: completed.row_count,
+                byte_count: self.committed_length,
                 truncated_by_max_rows: completed.truncated_by_max_rows,
                 truncated_by_max_result_bytes: completed.truncated_by_max_result_bytes,
                 created_at_ms: self.created_at_ms,
@@ -431,7 +440,7 @@ impl Storage {
         let path = self.result_path(&id)?;
         let storage = self.clone();
         let mut result_guard = storage.lock_results()?;
-        storage.check_result_quota(frame_length)?;
+        storage.check_result_quota(frame_length, &result_guard)?;
 
         let file = OpenOptions::new()
             .create_new(true)
@@ -616,6 +625,15 @@ impl Storage {
     fn purge_expired_at(&self, timestamp_ms: i64) -> Result<PurgeReport, StorageError> {
         let storage = self.clone();
         let result_guard = storage.lock_results()?;
+        storage.purge_expired_at_locked(timestamp_ms, &result_guard)
+    }
+
+    fn purge_expired_at_locked(
+        &self,
+        timestamp_ms: i64,
+        active_results: &HashSet<String>,
+    ) -> Result<PurgeReport, StorageError> {
+        let storage = self.clone();
         let connection = storage.connection()?;
         let mut statement = connection.prepare(
             "SELECT id, committed_length, state FROM retained_results
@@ -635,7 +653,7 @@ impl Storage {
 
         let mut report = PurgeReport::default();
         for (id, bytes, state) in expired {
-            if state == "writing" && result_guard.contains(&id) {
+            if state == "writing" && active_results.contains(&id) {
                 continue;
             }
             storage.delete_result_with_connection(&connection, &id)?;
@@ -817,7 +835,28 @@ impl Storage {
         Ok(self.inner.results_dir.join(result_file_name(id)?))
     }
 
-    fn check_result_quota(&self, requested: u64) -> Result<(), StorageError> {
+    fn check_result_quota(
+        &self,
+        requested: u64,
+        active_results: &HashSet<String>,
+    ) -> Result<(), StorageError> {
+        let mut retained = self.retained_result_bytes()?;
+        let mut available = self.inner.max_retained_bytes.saturating_sub(retained);
+        if requested > available {
+            self.purge_expired_at_locked(now_millis()?, active_results)?;
+            retained = self.retained_result_bytes()?;
+            available = self.inner.max_retained_bytes.saturating_sub(retained);
+        }
+        if requested > available {
+            return Err(StorageError::QuotaExceeded {
+                requested,
+                available,
+            });
+        }
+        Ok(())
+    }
+
+    fn retained_result_bytes(&self) -> Result<u64, StorageError> {
         let connection = self.connection()?;
         let mut statement =
             connection.prepare("SELECT id, committed_length FROM retained_results")?;
@@ -866,14 +905,7 @@ impl Storage {
                 .ok_or(StorageError::NumericRange("retained result bytes"))?;
         }
 
-        let available = self.inner.max_retained_bytes.saturating_sub(retained);
-        if requested > available {
-            return Err(StorageError::QuotaExceeded {
-                requested,
-                available,
-            });
-        }
-        Ok(())
+        Ok(retained)
     }
 
     fn insert_writing_result(
@@ -1116,6 +1148,7 @@ impl StoredResult {
         Ok(ResultMetadata {
             id: self.id.clone(),
             row_count: self.row_count,
+            byte_count: self.committed_length,
             truncated_by_max_rows: self.truncated_by_max_rows,
             truncated_by_max_result_bytes: self.truncated_by_max_result_bytes,
             created_at_ms: self.created_at_ms,
@@ -1607,10 +1640,13 @@ mod tests {
     use prost::Message;
     use tempfile::TempDir;
 
-    use super::{MIN_RESULT_PAGE_BYTES, PageRequest, RESULT_FILE_EXTENSION, RecoveryReport};
+    use super::{
+        MAX_FRAME_BYTES, MIN_RESULT_PAGE_BYTES, PageRequest, RESULT_FILE_EXTENSION, RecoveryReport,
+        encode_frame,
+    };
     use crate::{
         SecretRef, SecretValue, SecretVault, SecretVaultError, Storage, StorageError,
-        StorageOptions,
+        StorageOptions, now_millis,
     };
 
     #[derive(Debug, Default)]
@@ -1686,13 +1722,18 @@ mod tests {
         let mut writer = storage
             .begin_result(&schema(), Duration::from_secs(60))
             .expect("result begins");
+        let schema_bytes = writer.persisted_bytes();
+        assert!(schema_bytes > 0);
         writer
             .append_batch(&rows(0, &["zero", "one", "two"]))
             .expect("first batch appends");
+        assert!(writer.persisted_bytes() > schema_bytes);
         writer
             .append_batch(&rows(3, &["three", "four", "five"]))
             .expect("second batch appends");
+        let completed_bytes = writer.persisted_bytes();
         let metadata = writer.finish(&completed(6)).expect("result completes");
+        assert_eq!(metadata.byte_count, completed_bytes);
 
         let page = storage
             .read_result_page(
@@ -1707,6 +1748,7 @@ mod tests {
         assert_eq!(page.rows.len(), 3);
         assert_eq!(page.rows[0], rows(0, &["two"]).rows[0]);
         assert_eq!(page.rows[2], rows(0, &["four"]).rows[0]);
+        assert_eq!(page.metadata.byte_count, completed_bytes);
         assert!(page.has_more);
     }
 
@@ -1968,7 +2010,7 @@ mod tests {
     }
 
     #[test]
-    fn physical_orphan_bytes_count_toward_the_global_quota() {
+    fn physical_orphan_bytes_are_reclaimed_before_quota_rejection() {
         let directory = TempDir::new().expect("temp dir");
         let storage = Storage::open_with_options(
             directory.path(),
@@ -1985,17 +2027,51 @@ mod tests {
         ));
         fs::write(&orphan, vec![0_u8; 256]).expect("orphan writes");
 
-        let error = storage
-            .begin_result(&schema(), Duration::from_secs(60))
-            .expect_err("physical bytes must exhaust quota");
-        assert!(matches!(error, StorageError::QuotaExceeded { .. }));
-
-        let report = storage.purge_expired().expect("runtime purge succeeds");
-        assert_eq!(report.orphan_files_removed, 1);
         drop(
             storage
                 .begin_result(&schema(), Duration::from_secs(60))
-                .expect("quota is available after orphan cleanup"),
+                .expect("quota check must reclaim an orphan before rejection"),
+        );
+        assert!(!orphan.exists());
+    }
+
+    #[test]
+    fn expired_result_is_reclaimed_before_quota_rejection() {
+        let directory = TempDir::new().expect("temp dir");
+        let schema = schema();
+        let schema_bytes = u64::try_from(
+            encode_frame(&schema, MAX_FRAME_BYTES)
+                .expect("schema encodes")
+                .len(),
+        )
+        .expect("schema length fits u64");
+        let storage = Storage::open_with_options(
+            directory.path(),
+            StorageOptions {
+                max_retained_bytes: schema_bytes,
+            },
+            Arc::new(EmptyVault),
+        )
+        .expect("storage opens");
+        let now = now_millis().expect("current time");
+        let expired = storage
+            .begin_result_at(&schema, now - 2, now - 1)
+            .expect("expired fixture begins");
+        let expired_id = expired.id().to_owned();
+        expired
+            .finish(&completed(0))
+            .expect("empty expired fixture completes");
+
+        drop(
+            storage
+                .begin_result(&schema, Duration::from_secs(60))
+                .expect("quota check must reclaim the expired result"),
+        );
+        assert!(
+            storage
+                .load_stored_result(&expired_id)
+                .expect("result index reads")
+                .is_none()
         );
     }
 

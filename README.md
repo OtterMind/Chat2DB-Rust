@@ -4,7 +4,7 @@ Private implementation of the Chat2DB Community hybrid runtime.
 
 ## Current state
 
-The repository currently provides the first four buildable stages:
+The repository currently provides the first five buildable stages:
 
 - canonical Rust API contracts;
 - a transport-neutral Rust application service root;
@@ -25,15 +25,23 @@ The repository currently provides the first four buildable stages:
 - revisioned datasource metadata whose complete connection descriptor lives
   behind an injected, readiness-checked secret-vault boundary; and
 - disk-backed Protobuf result frames with SHA-256 indexes, row/byte-bounded
-  paging, a physical-byte quota, expiry, writer cleanup, and crash recovery.
+  paging, a physical-byte quota, expiry, writer cleanup, and crash recovery;
+- an AES-256-GCM encrypted file vault rooted in either an OS-keyring master key
+  or an explicit headless master key;
+- one production `RuntimeHost` that opens the vault and storage, supervises the
+  Java engine, and shuts down active work deterministically;
+- secret-safe datasource CRUD, asynchronous query operations, bounded replay,
+  explicit cancellation, and retained-result paging through Axum JSON/SSE and
+  Tauri 2 commands/channels;
+- a checked-in OpenAPI contract with generated TypeScript types and drift
+  verification; and
+- one shared React SQL workbench with HTTP and Tauri backend adapters.
 
-Tauri, AI, MCP, signed driver packs, and the existing Chat2DB plugin/ANTLR
-estate are tracked as explicit staged work in [`docs/stages.md`](docs/stages.md).
-Stage 4 exposes storage through `Application::with_storage`, but the bootstrap
-Web and CLI adapters intentionally use `Application::new`: no production OS
-secret-vault adapter or Stage 5 datasource/result transport is composed yet.
-Their runtime health therefore keeps local storage disabled. The bootstrap also
-does not start the Java supervisor, so the database engine remains disabled.
+AI, MCP, signed driver packs, and the existing Chat2DB plugin/ANTLR estate are
+tracked as explicit staged work in [`docs/stages.md`](docs/stages.md). Web and
+desktop compose the complete Stage 5 runtime; the current CLI remains a
+status-only adapter. Driver loading is proven through the internal H2 product
+fixture, while user-facing driver-pack provisioning remains Stage 7.
 
 ## Architecture
 
@@ -71,12 +79,23 @@ Java verification downloads H2 `2.3.232` into
 `java/compat-runtime/target/test-drivers/` as an external Stage 3 test fixture.
 H2 is not a runtime dependency of the compatibility engine, and the packaged
 JAR integration test rejects any build that embeds `org/h2/Driver.class`.
-The real H2 gate covers the implemented Stage 3 JDBC vertical slice; H2 is a
-test fixture rather than a bundled product driver.
+The H2 gates cover both the Stage 3 bridge and the Stage 5 product path from a
+vault-backed datasource through Java streaming into retained-result paging and
+cancellation. H2 is a test fixture rather than a bundled product driver.
 
-Run the Web API:
+Generate or verify the external contracts:
 
 ```bash
+make generate-contracts
+make check-contracts
+```
+
+Build the Java engine and shared frontend, then run the Web product host:
+
+```bash
+make java frontend
+CHAT2DB_JAVA_ENGINE_JAR="$PWD/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar" \
+CHAT2DB_VAULT_MASTER_KEY="$(openssl rand -base64 32)" \
 cargo run -p chat2db-web
 ```
 
@@ -89,14 +108,19 @@ npm run dev
 
 The Web API listens on `127.0.0.1:4200` by default. The Vite development server
 listens on `127.0.0.1:4210` and proxies `/api` to the Rust runtime.
+`CHAT2DB_DATA_DIR` selects a profile directory. Omitting
+`CHAT2DB_VAULT_MASTER_KEY` selects the OS credential store. Any non-loopback
+`CHAT2DB_BIND` also requires `CHAT2DB_ACCESS_TOKEN` with at least 32 bytes.
 
 ## Repository layout
 
 ```text
 apps/
   chat2db-cli/       Rust command-line adapter
+  chat2db-desktop/   Tauri 2 desktop adapter
   chat2db-web/       Axum Web adapter
   frontend/          shared React application
+contracts/openapi/   generated external HTTP contract
 crates/
   chat2db-contract/  canonical DTOs and errors
   chat2db-core/      transport-neutral product services
@@ -107,4 +131,5 @@ proto/               canonical Rust-Java process schema
 java/
   compat-runtime/    private Java compatibility process
 docs/                architecture and staged delivery contract
+scripts/             contract generation and drift checks
 ```

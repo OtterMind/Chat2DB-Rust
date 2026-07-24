@@ -9,15 +9,27 @@ license-file.workspace = true
 repository.workspace = true
 
 [dependencies]
+aes-gcm.workspace = true
+base64.workspace = true
 chat2db-engine-protocol = { path = "../chat2db-engine-protocol" }
 directories.workspace = true
 fs2.workspace = true
 prost.workspace = true
+rand.workspace = true
 rusqlite.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { workspace = true, features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { workspace = true, features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { workspace = true, features = ["sync-secret-service", "crypto-rust"] }
 
 [dev-dependencies]
 tempfile = "3"

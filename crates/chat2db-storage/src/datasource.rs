@@ -382,26 +382,45 @@ impl Storage {
     /// Returns datasource, `SQLite`, or vault failures. A referenced but missing
     /// vault entry is treated as a backend failure rather than an empty secret.
     pub fn resolve_datasource_secret(&self, id: &str) -> Result<Option<SecretValue>, StorageError> {
+        self.get_datasource_with_secret(id)
+            .map(|(_, secret)| secret)
+    }
+
+    /// Atomically loads datasource metadata and its matching secret version.
+    ///
+    /// The datasource secret gate remains held from the `SQLite` read through
+    /// the vault read, so an update cannot pair one revision's driver metadata
+    /// with another revision's connection descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, `SQLite`, persisted-data, or vault failures. A
+    /// referenced but missing vault entry is treated as a backend failure.
+    pub fn get_datasource_with_secret(
+        &self,
+        id: &str,
+    ) -> Result<(DatasourceRecord, Option<SecretValue>), StorageError> {
         let storage = self.clone();
         let _secret_guard = storage.lock_secrets()?;
         let record = self
             .get_datasource(id)?
             .ok_or_else(|| StorageError::DatasourceNotFound(id.to_owned()))?;
-        let Some(reference) = record.secret_ref else {
-            return Ok(None);
+        let Some(reference) = record.secret_ref.as_ref() else {
+            return Ok((record, None));
         };
-        self.inner
+        let secret = self
+            .inner
             .vault
-            .get(&reference)
+            .get(reference)
             .map_err(|source| StorageError::SecretVault {
                 operation: "get",
                 source,
             })?
-            .map(Some)
             .ok_or(StorageError::SecretVault {
                 operation: "get",
                 source: crate::SecretVaultError::Backend,
-            })
+            })?;
+        Ok((record, Some(secret)))
     }
 
     /// Retries idempotent deletion of superseded or failed staged secrets.
@@ -635,6 +654,7 @@ mod tests {
         values: Mutex<HashMap<String, Vec<u8>>>,
         fail_create_after_store: Mutex<bool>,
         fail_delete: Mutex<bool>,
+        get_barriers: Mutex<Option<(Arc<Barrier>, Arc<Barrier>)>>,
         storage: OnceLock<Weak<crate::StorageInner>>,
     }
 
@@ -647,6 +667,10 @@ mod tests {
                 storage.secret_gate.try_lock().is_err(),
                 "vault operations must run under the datasource secret gate"
             );
+        }
+
+        fn block_next_get(&self, started: Arc<Barrier>, release: Arc<Barrier>) {
+            *self.get_barriers.lock().expect("get barriers lock") = Some((started, release));
         }
     }
 
@@ -677,13 +701,20 @@ mod tests {
 
         fn get(&self, reference: &SecretRef) -> Result<Option<SecretValue>, SecretVaultError> {
             self.assert_secret_gate_held();
-            Ok(self
+            let value = self
                 .values
                 .lock()
                 .expect("vault lock")
                 .get(reference.as_str())
                 .cloned()
-                .map(SecretValue::new))
+                .map(SecretValue::new);
+            if let Some((started, release)) =
+                self.get_barriers.lock().expect("get barriers lock").take()
+            {
+                started.wait();
+                release.wait();
+            }
+            Ok(value)
         }
 
         fn delete(&self, reference: &SecretRef) -> Result<(), SecretVaultError> {
@@ -835,6 +866,74 @@ mod tests {
         let report = storage.reconcile_secrets().expect("orphan reconciles");
         assert_eq!(report.deleted, 1);
         assert!(vault.values.lock().expect("vault lock").is_empty());
+    }
+
+    #[test]
+    fn metadata_and_secret_resolution_are_one_revision_snapshot() {
+        let directory = TempDir::new().expect("temp dir");
+        let vault = Arc::new(MemoryVault::default());
+        let storage = Storage::open(directory.path(), vault.clone()).expect("storage opens");
+        vault
+            .storage
+            .set(Arc::downgrade(&storage.inner))
+            .expect("storage weak reference sets once");
+        let created = storage
+            .create_datasource(
+                input("before"),
+                Some(SecretValue::new(b"before-secret".to_vec())),
+            )
+            .expect("datasource creates");
+
+        let get_started = Arc::new(Barrier::new(2));
+        let release_get = Arc::new(Barrier::new(2));
+        vault.block_next_get(get_started.clone(), release_get.clone());
+        let read_storage = storage.clone();
+        let datasource_id = created.id.clone();
+        let read = thread::spawn(move || read_storage.get_datasource_with_secret(&datasource_id));
+        get_started.wait();
+
+        let update_storage = storage.clone();
+        let update_id = created.id.clone();
+        let expected_revision = created.revision;
+        let update_started = Arc::new(Barrier::new(2));
+        let update_thread_started = update_started.clone();
+        let (update_sender, update_receiver) = mpsc::sync_channel(1);
+        let update = thread::spawn(move || {
+            update_thread_started.wait();
+            let result = update_storage.update_datasource(
+                &update_id,
+                expected_revision,
+                UpdateDatasource {
+                    name: "after".to_owned(),
+                    driver_id: "sha256:after-driver".to_owned(),
+                },
+                SecretChange::Replace(SecretValue::new(b"after-secret".to_vec())),
+            );
+            let _ = update_sender.send(());
+            result
+        });
+        update_started.wait();
+        assert!(matches!(
+            update_receiver.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        release_get.wait();
+        let (read_record, read_secret) = read
+            .join()
+            .expect("read thread joins")
+            .expect("atomic read succeeds");
+        assert_eq!(read_record, created);
+        assert_eq!(
+            read_secret.expect("secret exists").expose_secret(),
+            b"before-secret"
+        );
+        let updated = update
+            .join()
+            .expect("update thread joins")
+            .expect("update succeeds after read releases gate");
+        assert_eq!(updated.revision, created.revision + 1);
+        assert_eq!(updated.driver_id, "sha256:after-driver");
     }
 
     #[test]

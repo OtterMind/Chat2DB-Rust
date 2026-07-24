@@ -1,0 +1,2240 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Chat2DB API",
+    "description": "Transport contract for the Chat2DB Rust Community runtime",
+    "contact": {
+      "name": "OtterMind"
+    },
+    "license": {
+      "name": ""
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/datasources": {
+      "get": {
+        "tags": [
+          "datasources"
+        ],
+        "operationId": "list_datasources",
+        "responses": {
+          "200": {
+            "description": "Secret-free datasource list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasourceList"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected datasource failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Datasource storage is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "datasources"
+        ],
+        "operationId": "create_datasource",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDatasourceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Datasource created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Datasource"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid datasource request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Datasource conflicts with existing state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected datasource failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Datasource storage is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/datasources/{datasource_id}": {
+      "get": {
+        "tags": [
+          "datasources"
+        ],
+        "operationId": "get_datasource",
+        "parameters": [
+          {
+            "name": "datasource_id",
+            "in": "path",
+            "description": "Opaque datasource id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Secret-free datasource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Datasource"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Datasource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected datasource failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Datasource storage is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "datasources"
+        ],
+        "operationId": "update_datasource",
+        "parameters": [
+          {
+            "name": "datasource_id",
+            "in": "path",
+            "description": "Opaque datasource id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDatasourceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Datasource updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Datasource"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid datasource request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Datasource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Datasource revision conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected datasource failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Datasource storage is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "datasources"
+        ],
+        "operationId": "delete_datasource",
+        "parameters": [
+          {
+            "name": "datasource_id",
+            "in": "path",
+            "description": "Opaque datasource id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expectedRevision",
+            "in": "query",
+            "description": "Expected monotonic revision",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Datasource deleted"
+          },
+          "400": {
+            "description": "Invalid expected revision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Datasource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Datasource revision conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected datasource failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Datasource storage is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/openapi.json": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "openapi_document",
+        "responses": {
+          "200": {
+            "description": "OpenAPI document for the registered HTTP handlers"
+          }
+        }
+      }
+    },
+    "/api/v1/operations/{operation_id}": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "operationId": "operation_snapshot",
+        "parameters": [
+          {
+            "name": "operation_id",
+            "in": "path",
+            "description": "Opaque operation id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current operation snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationSnapshot"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Operation does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected operation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/operations/{operation_id}/cancel": {
+      "post": {
+        "tags": [
+          "operations"
+        ],
+        "operationId": "cancel_operation",
+        "parameters": [
+          {
+            "name": "operation_id",
+            "in": "path",
+            "description": "Opaque operation id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Idempotent cancellation disposition",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelOperationResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/operations/{operation_id}/events": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "operationId": "operation_events",
+        "parameters": [
+          {
+            "name": "operation_id",
+            "in": "path",
+            "description": "Opaque operation id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "description": "Last consumed numeric event sequence",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Replay followed by live operation events",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Last-Event-ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Operation does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Requested event fell outside the replay window",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected subscription failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/queries": {
+      "post": {
+        "tags": [
+          "queries"
+        ],
+        "operationId": "start_query",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Query operation accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Datasource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected query failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Query engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "507": {
+            "description": "Query resource limits are exhausted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/results/{result_id}": {
+      "get": {
+        "tags": [
+          "results"
+        ],
+        "operationId": "result_page",
+        "parameters": [
+          {
+            "name": "result_id",
+            "in": "path",
+            "description": "Opaque retained-result id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Zero-based row offset",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "maxRows",
+            "in": "query",
+            "description": "Maximum returned rows",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "maxBytes",
+            "in": "query",
+            "description": "Maximum returned encoded bytes",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded retained-result page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid page bounds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Retained result does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected result failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "507": {
+            "description": "Page resource limits are exhausted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/health": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "Runtime is available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Runtime is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/info": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "info",
+        "responses": {
+          "200": {
+            "description": "Product identity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApiError": {
+        "type": "object",
+        "description": "Stable error envelope used at every external transport boundary.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable machine-readable code."
+          },
+          "details": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ApiErrorDetails",
+                "description": "Optional, bounded diagnostic context."
+              }
+            ]
+          },
+          "message": {
+            "type": "string",
+            "description": "Safe user-facing message."
+          },
+          "retryable": {
+            "type": "boolean",
+            "description": "Whether the caller may retry this operation under the same policy."
+          }
+        }
+      },
+      "ApiErrorDetails": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Optimistic concurrency rejected a stale datasource revision.",
+            "required": [
+              "expectedRevision",
+              "type"
+            ],
+            "properties": {
+              "actualRevision": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Current revision, or absent when the record no longer exists."
+              },
+              "expectedRevision": {
+                "type": "string",
+                "description": "Revision supplied by the caller, encoded as a decimal integer."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "revision_conflict"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Safe database diagnostics without SQL text, parameters, or credentials.",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "constraintName": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Constraint name when it is safe and available."
+              },
+              "sqlState": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Vendor-neutral SQLSTATE when one was supplied by the driver."
+              },
+              "statementPosition": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "description": "One-based statement position when the driver supplies it.",
+                "minimum": 0
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "database"
+                ]
+              },
+              "vendorCode": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "description": "Vendor-specific integer error code."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A requested operation-event sequence has fallen outside replay retention.",
+            "required": [
+              "requestedSequence",
+              "oldestAvailableSequence",
+              "latestSequence",
+              "type"
+            ],
+            "properties": {
+              "latestSequence": {
+                "type": "string",
+                "description": "Latest retained sequence encoded as a decimal integer."
+              },
+              "oldestAvailableSequence": {
+                "type": "string",
+                "description": "Oldest retained sequence encoded as a decimal integer."
+              },
+              "requestedSequence": {
+                "type": "string",
+                "description": "Requested sequence encoded as a decimal integer."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "replay_window"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Bounded structured details for externally visible API failures."
+      },
+      "CancelDisposition": {
+        "type": "string",
+        "description": "Result of an idempotent cancellation request.",
+        "enum": [
+          "accepted",
+          "already_terminal",
+          "unknown_operation"
+        ]
+      },
+      "CancelOperationResponse": {
+        "type": "object",
+        "description": "Cancellation response shared by Web and desktop transports.",
+        "required": [
+          "operationId",
+          "disposition"
+        ],
+        "properties": {
+          "disposition": {
+            "$ref": "#/components/schemas/CancelDisposition",
+            "description": "Idempotent cancellation disposition."
+          },
+          "operationId": {
+            "type": "string",
+            "description": "Opaque operation id supplied by the caller."
+          }
+        }
+      },
+      "ColumnNullability": {
+        "type": "string",
+        "description": "JDBC nullability reported for a result column.",
+        "enum": [
+          "unknown",
+          "no_nulls",
+          "nullable"
+        ]
+      },
+      "ComponentHealth": {
+        "type": "object",
+        "description": "Health information for one owned component.",
+        "required": [
+          "id",
+          "label",
+          "state",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "Short operational detail without secrets."
+          },
+          "id": {
+            "type": "string",
+            "description": "Stable machine-readable component id."
+          },
+          "label": {
+            "type": "string",
+            "description": "Human-readable component label."
+          },
+          "state": {
+            "$ref": "#/components/schemas/ComponentState",
+            "description": "Current readiness state."
+          }
+        }
+      },
+      "ComponentState": {
+        "type": "string",
+        "description": "Readiness of one runtime component.",
+        "enum": [
+          "ready",
+          "disabled",
+          "unavailable"
+        ]
+      },
+      "CreateDatasourceRequest": {
+        "type": "object",
+        "description": "Request to create one datasource and optionally install its connection secret.",
+        "required": [
+          "name",
+          "driverId"
+        ],
+        "properties": {
+          "connection": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DatasourceConnection",
+                "description": "Complete connection descriptor, omitted when credentials are installed later."
+              }
+            ]
+          },
+          "driverId": {
+            "type": "string",
+            "description": "Compatibility-engine driver id."
+          },
+          "name": {
+            "type": "string",
+            "description": "User-visible datasource name."
+          }
+        }
+      },
+      "Datasource": {
+        "type": "object",
+        "description": "Secret-free datasource representation returned to external callers.",
+        "required": [
+          "id",
+          "name",
+          "driverId",
+          "hasSecret",
+          "revision",
+          "createdAtMs",
+          "updatedAtMs"
+        ],
+        "properties": {
+          "createdAtMs": {
+            "type": "string",
+            "description": "Unix epoch milliseconds encoded as a decimal integer."
+          },
+          "driverId": {
+            "type": "string",
+            "description": "Compatibility-engine driver id."
+          },
+          "hasSecret": {
+            "type": "boolean",
+            "description": "Whether the datasource has a connection descriptor in the vault."
+          },
+          "id": {
+            "type": "string",
+            "description": "Opaque datasource id."
+          },
+          "name": {
+            "type": "string",
+            "description": "User-visible datasource name."
+          },
+          "revision": {
+            "type": "string",
+            "description": "Monotonic revision encoded as a decimal integer."
+          },
+          "updatedAtMs": {
+            "type": "string",
+            "description": "Unix epoch milliseconds encoded as a decimal integer."
+          }
+        }
+      },
+      "DatasourceConnection": {
+        "type": "object",
+        "description": "Complete connection descriptor accepted only at a secret-handling boundary.",
+        "required": [
+          "jdbcUrl",
+          "properties",
+          "readOnly"
+        ],
+        "properties": {
+          "jdbcUrl": {
+            "type": "string",
+            "description": "JDBC connection URL."
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DatasourceConnectionProperty"
+            },
+            "description": "Ordered driver properties, including their sensitivity classification."
+          },
+          "readOnly": {
+            "type": "boolean",
+            "description": "Whether sessions opened from this descriptor must be read-only."
+          }
+        }
+      },
+      "DatasourceConnectionProperty": {
+        "type": "object",
+        "description": "One JDBC connection property supplied by the user.",
+        "required": [
+          "key",
+          "value",
+          "sensitive"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Driver property name."
+          },
+          "sensitive": {
+            "type": "boolean",
+            "description": "Whether the value is credential or secret material."
+          },
+          "value": {
+            "type": "string",
+            "description": "Driver property value. Sensitive values must never be echoed."
+          }
+        }
+      },
+      "DatasourceList": {
+        "type": "object",
+        "description": "Stable datasource collection returned by list APIs.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Datasource"
+            },
+            "description": "Datasources in stable creation order."
+          }
+        }
+      },
+      "DatasourceSecretChange": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Retain the current immutable vault value.",
+            "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "keep"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Remove the current connection descriptor.",
+            "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "clear"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Replace the current descriptor with a newly staged immutable value.",
+            "required": [
+              "connection",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "replace"
+                ]
+              },
+              "connection": {
+                "$ref": "#/components/schemas/DatasourceConnection",
+                "description": "Complete replacement descriptor."
+              }
+            }
+          }
+        ],
+        "description": "Explicit connection-secret mutation for a datasource update."
+      },
+      "HealthResponse": {
+        "type": "object",
+        "description": "Health response shared by Web, desktop, CLI, and local control adapters.",
+        "required": [
+          "product",
+          "status",
+          "uptimeSeconds",
+          "components"
+        ],
+        "properties": {
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ComponentHealth"
+            },
+            "description": "Owned component states."
+          },
+          "product": {
+            "$ref": "#/components/schemas/ProductInfo",
+            "description": "Product identity."
+          },
+          "status": {
+            "$ref": "#/components/schemas/RuntimeStatus",
+            "description": "Overall runtime state."
+          },
+          "uptimeSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Process uptime in seconds.\n\nThis remains a JSON number for compatibility with the Stage 1 contract.",
+            "minimum": 0
+          }
+        }
+      },
+      "JdbcValue": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "SQL `NULL`.",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "null"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Boolean value.",
+            "required": [
+              "value",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "boolean"
+                ]
+              },
+              "value": {
+                "type": "boolean",
+                "description": "Scalar value."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Signed integer encoded as a base-10 string.",
+            "required": [
+              "value",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "signed_integer"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "description": "Base-10 signed integer."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Unsigned integer encoded as a base-10 string.",
+            "required": [
+              "value",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "unsigned_integer"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "description": "Base-10 unsigned integer."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "IEEE-754 single-precision value encoded losslessly as a string.",
+            "required": [
+              "value",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "float32"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "description": "Finite decimal, `NaN`, `Infinity`, or `-Infinity`."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "IEEE-754 double-precision value encoded losslessly as a string.",
+            "required": [
+              "value",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "float64"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "description": "Finite decimal, `NaN`, `Infinity`, or `-Infinity`."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Arbitrary-precision decimal encoded as a plain base-10 string.",
+            "required": [
+              "value",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "decimal"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "description": "Plain decimal string without exponent normalization requirements."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "UTF-8 text.",
+            "required": [
+              "value",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "text"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "description": "Text value."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Binary data encoded as standard padded base64.",
+            "required": [
+              "value",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "binary"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "format": "byte",
+                "description": "Standard padded base64 string."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "ISO-8601 date.",
+            "required": [
+              "value",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "date"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "description": "Date text."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "ISO-8601 time.",
+            "required": [
+              "value",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "time"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "description": "Time text."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "ISO-8601 timestamp without a required offset.",
+            "required": [
+              "value",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "timestamp"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "description": "Timestamp text."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "ISO-8601 timestamp with an explicit UTC offset.",
+            "required": [
+              "value",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "timestamp_with_time_zone"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "description": "Offset timestamp text."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "JSON text preserved exactly as returned by JDBC.",
+            "required": [
+              "value",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "json"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "description": "JSON document text."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "UUID text.",
+            "required": [
+              "value",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "uuid"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "description": "Canonical UUID string."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Output-only vendor value without a portable JDBC representation.",
+            "required": [
+              "typeName",
+              "displayValue",
+              "type"
+            ],
+            "properties": {
+              "displayValue": {
+                "type": "string",
+                "description": "Safe display value."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "opaque"
+                ]
+              },
+              "typeName": {
+                "type": "string",
+                "description": "Vendor type name."
+              }
+            }
+          }
+        ],
+        "description": "Lossless JSON representation of one JDBC scalar value.\n\nNumeric values that could lose precision in JavaScript are decimal strings.\nFloating-point strings preserve finite values as well as `NaN`, `Infinity`,\nand `-Infinity`. Binary values are standard padded base64 strings."
+      },
+      "JdbcValueType": {
+        "type": "string",
+        "description": "Portable value representation selected for a result column.",
+        "enum": [
+          "boolean",
+          "signed_integer",
+          "unsigned_integer",
+          "float32",
+          "float64",
+          "decimal",
+          "text",
+          "binary",
+          "date",
+          "time",
+          "timestamp",
+          "timestamp_with_time_zone",
+          "json",
+          "uuid",
+          "opaque"
+        ]
+      },
+      "OperationEvent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Execution has started.",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "started"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Bounded progress counters have advanced.",
+            "required": [
+              "rowCount",
+              "byteCount",
+              "type"
+            ],
+            "properties": {
+              "byteCount": {
+                "type": "string",
+                "description": "Persisted encoded byte count encoded as a decimal integer."
+              },
+              "rowCount": {
+                "type": "string",
+                "description": "Observed row count encoded as a decimal integer."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "progress"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Execution completed and the retained result is immutable.",
+            "required": [
+              "result",
+              "type"
+            ],
+            "properties": {
+              "result": {
+                "$ref": "#/components/schemas/ResultMetadata",
+                "description": "Durable result metadata."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "completed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Execution failed with a safe external error.",
+            "required": [
+              "error",
+              "type"
+            ],
+            "properties": {
+              "error": {
+                "$ref": "#/components/schemas/ApiError",
+                "description": "Terminal failure."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "failed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Execution was cancelled.",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Optional safe cancellation reason."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "cancelled"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Replayable asynchronous query lifecycle event."
+      },
+      "OperationEventEnvelope": {
+        "type": "object",
+        "description": "One replayable operation event with a monotonically increasing sequence.",
+        "required": [
+          "operationId",
+          "sequence",
+          "occurredAtMs",
+          "event"
+        ],
+        "properties": {
+          "event": {
+            "$ref": "#/components/schemas/OperationEvent",
+            "description": "Typed lifecycle event."
+          },
+          "occurredAtMs": {
+            "type": "string",
+            "description": "Event creation time as Unix epoch milliseconds encoded as a decimal integer."
+          },
+          "operationId": {
+            "type": "string",
+            "description": "Opaque operation id."
+          },
+          "sequence": {
+            "type": "string",
+            "description": "Monotonic per-operation sequence encoded as a decimal integer."
+          }
+        }
+      },
+      "OperationSnapshot": {
+        "type": "object",
+        "description": "Materialized operation state for reconnect and polling clients.",
+        "required": [
+          "operationId",
+          "status",
+          "lastSequence",
+          "startedAtMs",
+          "updatedAtMs",
+          "rowCount",
+          "byteCount"
+        ],
+        "properties": {
+          "byteCount": {
+            "type": "string",
+            "description": "Latest persisted encoded byte count encoded as a decimal integer."
+          },
+          "error": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ApiError",
+                "description": "Terminal error after failure."
+              }
+            ]
+          },
+          "lastSequence": {
+            "type": "string",
+            "description": "Latest emitted sequence encoded as a decimal integer."
+          },
+          "operationId": {
+            "type": "string",
+            "description": "Opaque operation id."
+          },
+          "result": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ResultMetadata",
+                "description": "Immutable result metadata after successful completion."
+              }
+            ]
+          },
+          "rowCount": {
+            "type": "string",
+            "description": "Latest observed row count encoded as a decimal integer."
+          },
+          "startedAtMs": {
+            "type": "string",
+            "description": "Operation start time as Unix epoch milliseconds encoded as a decimal integer."
+          },
+          "status": {
+            "$ref": "#/components/schemas/OperationStatus",
+            "description": "Current lifecycle state."
+          },
+          "updatedAtMs": {
+            "type": "string",
+            "description": "Latest state-change time as Unix epoch milliseconds encoded as a decimal integer."
+          }
+        }
+      },
+      "OperationStatus": {
+        "type": "string",
+        "description": "Current operation state returned by snapshot APIs.",
+        "enum": [
+          "running",
+          "completed",
+          "failed",
+          "cancelled"
+        ]
+      },
+      "OperationStreamMessage": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "One replayable lifecycle event.",
+            "required": [
+              "event",
+              "type"
+            ],
+            "properties": {
+              "event": {
+                "$ref": "#/components/schemas/OperationEventEnvelope",
+                "description": "Event delivered by the operation journal."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "event"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The subscription failed and cannot produce more events.",
+            "required": [
+              "error",
+              "type"
+            ],
+            "properties": {
+              "error": {
+                "$ref": "#/components/schemas/ApiError",
+                "description": "Safe external subscription failure."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "error"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The subscription reached a clean end.",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "end"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "One desktop operation-channel message.\n\nUnlike an SSE connection, a Tauri channel has no implicit EOF signal. This\ntagged envelope therefore makes events, failures, and clean completion\nexplicit while preserving the same canonical event and error contracts."
+      },
+      "OperationSubscriptionAccepted": {
+        "type": "object",
+        "description": "Immediate acknowledgement for an established desktop observer.",
+        "required": [
+          "subscriptionId"
+        ],
+        "properties": {
+          "subscriptionId": {
+            "type": "string",
+            "description": "Opaque observer id used only to release this subscription."
+          }
+        }
+      },
+      "ProductInfo": {
+        "type": "object",
+        "description": "Product identity returned by every runtime surface.",
+        "required": [
+          "name",
+          "version",
+          "edition"
+        ],
+        "properties": {
+          "edition": {
+            "type": "string",
+            "description": "Community edition identifier."
+          },
+          "name": {
+            "type": "string",
+            "description": "Stable product name."
+          },
+          "version": {
+            "type": "string",
+            "description": "Semantic version of the Rust product runtime."
+          }
+        }
+      },
+      "QueryAccepted": {
+        "type": "object",
+        "description": "Immediate acknowledgement for an accepted asynchronous query.",
+        "required": [
+          "operationId"
+        ],
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "description": "Opaque operation id used for events, snapshots, and cancellation."
+          }
+        }
+      },
+      "QueryLimits": {
+        "type": "object",
+        "description": "Explicit execution and retained-result limits for one query.",
+        "required": [
+          "maxRows",
+          "maxResultBytes",
+          "batchRows",
+          "batchBytes",
+          "resultTtlSeconds"
+        ],
+        "properties": {
+          "batchBytes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Target encoded bytes per streamed batch.",
+            "minimum": 0
+          },
+          "batchRows": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Target rows per streamed batch.",
+            "minimum": 0
+          },
+          "maxResultBytes": {
+            "type": "string",
+            "description": "Maximum encoded result bytes as a decimal integer; `0` means engine default."
+          },
+          "maxRows": {
+            "type": "string",
+            "description": "Maximum emitted rows encoded as a decimal integer; `0` means engine default."
+          },
+          "resultTtlSeconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Retained-result lifetime in seconds.",
+            "minimum": 0
+          }
+        }
+      },
+      "QueryParameter": {
+        "type": "object",
+        "description": "One one-based JDBC statement parameter.",
+        "required": [
+          "position",
+          "value"
+        ],
+        "properties": {
+          "position": {
+            "type": "integer",
+            "format": "int32",
+            "description": "One-based parameter position.",
+            "minimum": 0
+          },
+          "value": {
+            "$ref": "#/components/schemas/JdbcValue",
+            "description": "Typed parameter value."
+          }
+        }
+      },
+      "ResultColumn": {
+        "type": "object",
+        "description": "Portable result-column metadata.",
+        "required": [
+          "ordinal",
+          "label",
+          "name",
+          "jdbcType",
+          "jdbcTypeName",
+          "valueType",
+          "nullability"
+        ],
+        "properties": {
+          "catalogName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Source catalog name."
+          },
+          "displaySize": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Suggested display width.",
+            "minimum": 0
+          },
+          "jdbcType": {
+            "type": "integer",
+            "format": "int32",
+            "description": "`java.sql.Types` integer."
+          },
+          "jdbcTypeName": {
+            "type": "string",
+            "description": "Vendor JDBC type name."
+          },
+          "label": {
+            "type": "string",
+            "description": "Display label."
+          },
+          "name": {
+            "type": "string",
+            "description": "Source column name."
+          },
+          "nullability": {
+            "$ref": "#/components/schemas/ColumnNullability",
+            "description": "Driver-reported nullability."
+          },
+          "ordinal": {
+            "type": "integer",
+            "format": "int32",
+            "description": "One-based column ordinal.",
+            "minimum": 0
+          },
+          "precision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Driver-reported precision.",
+            "minimum": 0
+          },
+          "scale": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Driver-reported scale."
+          },
+          "schemaName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Source schema name."
+          },
+          "signed": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the numeric column is signed."
+          },
+          "tableName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Source table name."
+          },
+          "valueType": {
+            "$ref": "#/components/schemas/JdbcValueType",
+            "description": "Portable scalar representation."
+          }
+        }
+      },
+      "ResultMetadata": {
+        "type": "object",
+        "description": "Durable retained-result metadata.",
+        "required": [
+          "id",
+          "rowCount",
+          "byteCount",
+          "truncatedByMaxRows",
+          "truncatedByMaxResultBytes",
+          "createdAtMs",
+          "expiresAtMs"
+        ],
+        "properties": {
+          "byteCount": {
+            "type": "string",
+            "description": "Retained encoded byte count encoded as a decimal integer."
+          },
+          "createdAtMs": {
+            "type": "string",
+            "description": "Unix epoch milliseconds encoded as a decimal integer."
+          },
+          "expiresAtMs": {
+            "type": "string",
+            "description": "Unix epoch milliseconds encoded as a decimal integer."
+          },
+          "id": {
+            "type": "string",
+            "description": "Opaque retained-result id."
+          },
+          "rowCount": {
+            "type": "string",
+            "description": "Retained row count encoded as a decimal integer."
+          },
+          "truncatedByMaxResultBytes": {
+            "type": "boolean",
+            "description": "Whether another row exceeded the configured result-byte limit."
+          },
+          "truncatedByMaxRows": {
+            "type": "boolean",
+            "description": "Whether another row existed beyond the configured row limit."
+          }
+        }
+      },
+      "ResultPage": {
+        "type": "object",
+        "description": "One bounded retained-result page.",
+        "required": [
+          "metadata",
+          "columns",
+          "offset",
+          "rows",
+          "hasMore"
+        ],
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResultColumn"
+            },
+            "description": "Column schema required to interpret rows."
+          },
+          "hasMore": {
+            "type": "boolean",
+            "description": "Whether another retained row exists after this page."
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/ResultMetadata",
+            "description": "Durable result metadata."
+          },
+          "offset": {
+            "type": "string",
+            "description": "Actual zero-based first-row offset encoded as a decimal integer."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResultRow"
+            },
+            "description": "Bounded rows."
+          }
+        }
+      },
+      "ResultPageRequest": {
+        "type": "object",
+        "description": "Bounded retained-result page request.",
+        "required": [
+          "offset",
+          "maxRows",
+          "maxBytes"
+        ],
+        "properties": {
+          "maxBytes": {
+            "type": "string",
+            "description": "Maximum cumulative encoded row bytes encoded as a decimal integer."
+          },
+          "maxRows": {
+            "type": "string",
+            "description": "Maximum returned rows encoded as a decimal integer."
+          },
+          "offset": {
+            "type": "string",
+            "description": "Zero-based row offset encoded as a decimal integer."
+          }
+        }
+      },
+      "ResultRow": {
+        "type": "object",
+        "description": "One result row whose values follow the response column order.",
+        "required": [
+          "values"
+        ],
+        "properties": {
+          "values": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JdbcValue"
+            },
+            "description": "Typed values in column order."
+          }
+        }
+      },
+      "RuntimeStatus": {
+        "type": "string",
+        "description": "Overall readiness of the product runtime.",
+        "enum": [
+          "ready",
+          "degraded",
+          "unavailable"
+        ]
+      },
+      "StartQueryRequest": {
+        "type": "object",
+        "description": "Request to begin one asynchronous query operation.",
+        "required": [
+          "datasourceId",
+          "sql",
+          "parameters",
+          "limits"
+        ],
+        "properties": {
+          "datasourceId": {
+            "type": "string",
+            "description": "Opaque datasource id."
+          },
+          "limits": {
+            "$ref": "#/components/schemas/QueryLimits",
+            "description": "Query, streaming, and result-retention limits."
+          },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueryParameter"
+            },
+            "description": "One-based typed parameters."
+          },
+          "sql": {
+            "type": "string",
+            "description": "SQL text executed by the compatibility engine."
+          }
+        }
+      },
+      "UpdateDatasourceRequest": {
+        "type": "object",
+        "description": "Optimistic datasource replacement request.",
+        "required": [
+          "expectedRevision",
+          "name",
+          "driverId",
+          "secretChange"
+        ],
+        "properties": {
+          "driverId": {
+            "type": "string",
+            "description": "Compatibility-engine driver id."
+          },
+          "expectedRevision": {
+            "type": "string",
+            "description": "Expected revision encoded as a decimal integer."
+          },
+          "name": {
+            "type": "string",
+            "description": "User-visible datasource name."
+          },
+          "secretChange": {
+            "$ref": "#/components/schemas/DatasourceSecretChange",
+            "description": "Explicit keep, clear, or replace action for the secret descriptor."
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "system",
+      "description": "Runtime identity and readiness"
+    },
+    {
+      "name": "datasources",
+      "description": "Secret-safe datasource lifecycle"
+    },
+    {
+      "name": "queries",
+      "description": "Asynchronous query submission"
+    },
+    {
+      "name": "operations",
+      "description": "Query progress, replay, and cancellation"
+    },
+    {
+      "name": "results",
+      "description": "Bounded retained-result paging"
+    }
+  ]
+}

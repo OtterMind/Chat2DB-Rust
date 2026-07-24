@@ -10,7 +10,7 @@ in runtime health until then.
 | 2 | Complete | Rust-Java process protocol | Generated Protobuf in both languages, handshake, ping, version negotiation, stderr capture, process shutdown and crash tests |
 | 3 | Complete | JDBC vertical slice | Dynamic H2 driver load, session lifecycle, typed query batches, backpressure, cancellation, transaction semantics, Rust integration tests |
 | 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
-| 5 | Planned | Product transports | Shared generated frontend contract, Axum APIs/streams, Tauri 2 IPC/events, desktop/Web parity tests |
+| 5 | Complete | Product transports | Generated OpenAPI/TypeScript contract, Axum JSON/SSE, Tauri 2 commands/channels, shared SQL workbench, product H2 tests |
 | 6 | Planned | Agent, MCP, and CLI | Provider adapters, bounded tool loop, result handles, compaction, SQL permissions, `rmcp`, local IPC attachment |
 | 7 | Planned | Chat2DB compatibility estate | Existing database SPI/plugins, JDBC packs, Java ANTLR parsers, metadata/builders, per-dialect conformance |
 | 8 | Planned | Packaging and release | jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
@@ -18,20 +18,31 @@ in runtime health until then.
 Stage 3 completion means the versioned Rust-Java bridge can load an external
 JDBC driver, own sessions and local transactions, execute updates, and stream
 typed query batches under explicit limits, credits, deadlines, and
-cancellation. It does not mean the bootstrap product runtime composes that
-bridge: `chat2db-core` and the Web adapter do not yet start the Java supervisor,
-so `database-engine` remains `disabled` until product integration is delivered.
+cancellation. Stage 5 now composes that bridge into the Web and desktop product
+hosts; the CLI remains a status-only adapter and does not own a product runtime.
 
 Stage 4 completion means `chat2db-storage` owns a process-locked SQLite schema,
 datasource revisions and secret references, persistent secret-cleanup intents,
 and immutable completed result files indexed by full-frame hashes. Result pages
 have row and encoded-byte limits, quota accounting includes indexed and physical
 files, active writers hold leases, and startup rejects unknown result formats
-before mutation. `chat2db-core` can accept an opened `Storage`, but the bootstrap
-Web and CLI adapters do not compose it: a production OS-vault adapter and public
-datasource/result transports remain later-stage work. Consequently their
-`local-storage` health remains `disabled`, and `database-engine` remains
-`disabled` independently.
+before mutation. Stage 5 adds the production vault adapters and composes storage
+into Web and desktop; the status-only CLI still reports optional components as
+disabled.
+
+Stage 5 completion means Rust DTOs generate a checked-in OpenAPI document and
+TypeScript types, one React SQL workbench selects either an HTTP/SSE or Tauri
+command/channel adapter, and both transports expose the same datasource, query,
+operation, cancellation, and retained-result services. Query submission is
+asynchronous, event replay is cursor-based and bounded, disconnecting a stream
+does not cancel work, and Web API fallbacks remain JSON rather than SPA HTML.
+The Web and desktop bootstrap paths fail closed unless durable storage, a
+production secret vault, and the Java engine start successfully. Real H2 product
+tests cover secret-backed datasource execution, retained paging, explicit
+cancellation, and Java session release. Managed driver-pack installation and
+the existing Chat2DB plugin/ANTLR compatibility estate remain Stage 7, so the
+production hosts currently require drivers to be provisioned by a future driver
+manager; H2 is loaded only by the product integration fixture.
 
 ## Commit policy
 

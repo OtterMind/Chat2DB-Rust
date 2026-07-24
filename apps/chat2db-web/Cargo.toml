@@ -1,6 +1,7 @@
 [package]
 name = "chat2db-web"
 description = "Axum Web delivery surface for Chat2DB Rust"
+default-run = "chat2db-web"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,16 +13,24 @@ repository.workspace = true
 axum.workspace = true
 chat2db-contract = { path = "../../crates/chat2db-contract" }
 chat2db-core = { path = "../../crates/chat2db-core" }
+chat2db-java-bridge = { path = "../../crates/chat2db-java-bridge" }
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 subtle.workspace = true
 tokio.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+utoipa.workspace = true
+utoipa-axum.workspace = true
 
 [dev-dependencies]
+chat2db-storage = { path = "../../crates/chat2db-storage" }
 http-body-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile = "3"
 tower.workspace = true
 
 [lints]

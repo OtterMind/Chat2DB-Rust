@@ -4,6 +4,7 @@ mod datasource;
 mod error;
 mod result_store;
 mod secret;
+mod vault;
 
 use std::{
     collections::HashSet,
@@ -26,6 +27,9 @@ pub use result_store::{
     RecoveryReport, ResultMetadata, ResultPage, ResultWriter,
 };
 pub use secret::{SecretRef, SecretValue, SecretVault, SecretVaultError};
+pub use vault::EncryptedFileVault;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub use vault::OsSecretVault;
 
 const DATABASE_FILE: &str = "chat2db.sqlite3";
 const LOCK_FILE: &str = ".chat2db.lock";
@@ -131,6 +135,21 @@ impl std::fmt::Debug for Storage {
 }
 
 impl Storage {
+    /// Returns the operating system's standard per-user `Chat2DB` data directory.
+    ///
+    /// Hosts use this path to construct the production secret vault before
+    /// opening storage over the same directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the platform does not expose an application data
+    /// directory.
+    pub fn default_data_dir() -> Result<PathBuf, StorageError> {
+        let project_dirs = ProjectDirs::from("ai", "Chat2DB", "Chat2DB")
+            .ok_or(StorageError::DataDirectoryUnavailable)?;
+        Ok(project_dirs.data_local_dir().to_path_buf())
+    }
+
     /// Opens the operating system's standard per-user `Chat2DB` data directory.
     ///
     /// # Errors
@@ -138,9 +157,7 @@ impl Storage {
     /// Returns an error when the platform has no data directory, another
     /// process owns it, `SQLite` is damaged or incompatible, or recovery fails.
     pub fn open_default(vault: Arc<dyn SecretVault>) -> Result<Self, StorageError> {
-        let project_dirs = ProjectDirs::from("ai", "Chat2DB", "Chat2DB")
-            .ok_or(StorageError::DataDirectoryUnavailable)?;
-        Self::open(project_dirs.data_local_dir(), vault)
+        Self::open(Self::default_data_dir()?, vault)
     }
 
     /// Opens and exclusively owns a `Chat2DB` data directory.

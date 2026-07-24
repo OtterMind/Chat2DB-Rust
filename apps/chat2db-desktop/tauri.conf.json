@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Chat2DB Rust",
+  "version": "0.1.0",
+  "identifier": "ai.chat2db.desktop",
+  "build": {
+    "beforeDevCommand": "npm --prefix ../frontend run dev",
+    "devUrl": "http://127.0.0.1:4210",
+    "beforeBuildCommand": "npm --prefix ../frontend run build",
+    "frontendDist": "../frontend/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Chat2DB",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:",
+      "devCsp": "default-src 'self' http://127.0.0.1:4210; connect-src ipc: http://ipc.localhost http://127.0.0.1:4210 ws://127.0.0.1:4210; img-src 'self' asset: http://asset.localhost data: http://127.0.0.1:4210; style-src 'self' 'unsafe-inline' http://127.0.0.1:4210; script-src 'self' 'unsafe-eval' http://127.0.0.1:4210; font-src 'self' data: http://127.0.0.1:4210"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["icons/icon.png"]
+  }
+}

@@ -1,9 +1,14 @@
 //! Axum transport adapter for `Chat2DB` product services.
 
+mod api;
+mod error;
+mod extract;
+
 use std::{
     error::Error,
     fmt::{Display, Formatter},
     net::SocketAddr,
+    path::Path,
     sync::Arc,
 };
 
@@ -13,12 +18,15 @@ use axum::{
     http::{StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::any,
 };
-use chat2db_contract::{ApiError, ProductInfo, RuntimeStatus};
+use chat2db_contract::ApiError;
 use chat2db_core::Application;
 use subtle::ConstantTimeEq;
-use tower_http::trace::TraceLayer;
+use tower_http::{
+    services::{ServeDir, ServeFile},
+    trace::TraceLayer,
+};
 
 const MINIMUM_ACCESS_TOKEN_BYTES: usize = 32;
 
@@ -94,30 +102,44 @@ pub fn router(application: Application) -> Router {
     router_with_policy(application, AccessPolicy::default())
 }
 
+/// Returns the deterministic `OpenAPI` document generated from registered handlers.
+#[must_use]
+pub fn openapi() -> utoipa::openapi::OpenApi {
+    api::openapi()
+}
+
 /// Builds the complete Web router with its listener-derived access policy.
 pub fn router_with_policy(application: Application, access_policy: AccessPolicy) -> Router {
-    Router::new()
-        .route("/api/v1/system/health", get(health))
-        .route("/api/v1/system/info", get(info))
-        .fallback(not_found)
-        .method_not_allowed_fallback(method_not_allowed)
+    let router = api::router(application)
+        .fallback(api::not_found)
+        .method_not_allowed_fallback(api::method_not_allowed);
+    with_common_layers(router, access_policy)
+}
+
+/// Builds the Web router with API isolation and a Vite single-page application.
+///
+/// Missing frontend paths fall back to `index.html`, while every unknown
+/// `/api` path remains a JSON [`ApiError`] response.
+pub fn router_with_policy_and_assets(
+    application: Application,
+    access_policy: AccessPolicy,
+    assets_dir: impl AsRef<Path>,
+) -> Router {
+    let assets_dir = assets_dir.as_ref();
+    let spa = ServeDir::new(assets_dir).fallback(ServeFile::new(assets_dir.join("index.html")));
+    let router = api::router(application)
+        .route("/api", any(api::not_found))
+        .route("/api/", any(api::not_found))
+        .route("/api/{*path}", any(api::not_found))
+        .fallback_service(spa)
+        .method_not_allowed_fallback(api::method_not_allowed);
+    with_common_layers(router, access_policy)
+}
+
+fn with_common_layers(router: Router, access_policy: AccessPolicy) -> Router {
+    router
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn_with_state(access_policy, authorize))
-        .with_state(application)
-}
-
-async fn health(State(application): State<Application>) -> Response {
-    let health = application.health();
-    let status = if health.status == RuntimeStatus::Unavailable {
-        StatusCode::SERVICE_UNAVAILABLE
-    } else {
-        StatusCode::OK
-    };
-    (status, Json(health)).into_response()
-}
-
-async fn info(State(application): State<Application>) -> Json<ProductInfo> {
-    Json(application.health().product)
 }
 
 async fn authorize(State(policy): State<AccessPolicy>, request: Request, next: Next) -> Response {
@@ -147,29 +169,13 @@ async fn authorize(State(policy): State<AccessPolicy>, request: Request, next: N
         .into_response()
 }
 
-async fn not_found() -> Response {
-    api_error(
-        StatusCode::NOT_FOUND,
-        "route_not_found",
-        "The requested route does not exist",
-    )
-}
-
-async fn method_not_allowed() -> Response {
-    api_error(
-        StatusCode::METHOD_NOT_ALLOWED,
-        "method_not_allowed",
-        "The requested method is not allowed for this route",
-    )
-}
-
-fn api_error(status: StatusCode, code: &'static str, message: &'static str) -> Response {
-    (status, Json(ApiError::new(code, message))).into_response()
-}
-
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::{
+        fs,
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        sync::Arc,
+    };
 
     use axum::{
         body::Body,
@@ -178,9 +184,14 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    use super::{AccessPolicy, AccessPolicyError, router, router_with_policy};
-    use chat2db_contract::{ApiError, HealthResponse, RuntimeStatus};
+    use super::{
+        AccessPolicy, AccessPolicyError, openapi, router, router_with_policy,
+        router_with_policy_and_assets,
+    };
+    use chat2db_contract::{ApiError, Datasource, DatasourceList, HealthResponse, RuntimeStatus};
     use chat2db_core::Application;
+    use chat2db_storage::{SecretRef, SecretValue, SecretVault, SecretVaultError, Storage};
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn health_route_uses_the_shared_contract() {
@@ -230,6 +241,269 @@ mod tests {
         assert_eq!(error.code, "method_not_allowed");
     }
 
+    #[tokio::test]
+    async fn malformed_json_uses_the_error_contract() {
+        let response = router(Application::new())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/datasources")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"name":"unfinished"#))
+                    .expect("request must build"),
+            )
+            .await
+            .expect("router must respond");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let error: ApiError = response_json(response).await;
+        assert_eq!(error.code, "invalid_json");
+    }
+
+    #[tokio::test]
+    async fn missing_required_query_parameter_uses_the_error_contract() {
+        let response = router(Application::new())
+            .oneshot(request(Method::DELETE, "/api/v1/datasources/source-1"))
+            .await
+            .expect("router must respond");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let error: ApiError = response_json(response).await;
+        assert_eq!(error.code, "invalid_query");
+    }
+
+    #[tokio::test]
+    async fn malformed_last_event_id_is_rejected_before_subscribing() {
+        let response = router(Application::new())
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/v1/operations/operation-1/events")
+                    .header("last-event-id", "not-a-sequence")
+                    .body(Body::empty())
+                    .expect("request must build"),
+            )
+            .await
+            .expect("router must respond");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let error: ApiError = response_json(response).await;
+        assert_eq!(error.code, "invalid_last_event_id");
+    }
+
+    #[tokio::test]
+    async fn openapi_document_is_generated_from_registered_handlers() {
+        let response = router(Application::new())
+            .oneshot(request(Method::GET, "/api/v1/openapi.json"))
+            .await
+            .expect("router must respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let document: serde_json::Value = response_json(response).await;
+        assert_eq!(
+            document,
+            serde_json::to_value(openapi()).expect("direct OpenAPI document must serialize")
+        );
+        let paths = document["paths"]
+            .as_object()
+            .expect("OpenAPI document must contain paths");
+
+        for path in [
+            "/api/v1/system/health",
+            "/api/v1/datasources",
+            "/api/v1/datasources/{datasource_id}",
+            "/api/v1/queries",
+            "/api/v1/operations/{operation_id}",
+            "/api/v1/operations/{operation_id}/cancel",
+            "/api/v1/operations/{operation_id}/events",
+            "/api/v1/results/{result_id}",
+            "/api/v1/openapi.json",
+        ] {
+            assert!(paths.contains_key(path), "missing OpenAPI path {path}");
+        }
+
+        assert!(paths["/api/v1/datasources"].get("get").is_some());
+        assert!(paths["/api/v1/datasources"].get("post").is_some());
+        assert!(
+            paths["/api/v1/datasources/{datasource_id}"]
+                .get("delete")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn datasource_routes_cover_the_storage_lifecycle_without_echoing_secrets() {
+        let directory = TempDir::new().expect("temp directory");
+        let storage =
+            Storage::open(directory.path(), Arc::new(TestVault)).expect("test storage must open");
+        let application = router(Application::with_storage(storage));
+
+        let create_response = application
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/v1/datasources",
+                &serde_json::json!({
+                    "name": "Local H2",
+                    "driverId": "h2",
+                    "connection": {
+                        "jdbcUrl": "jdbc:h2:mem:sentinel-url",
+                        "properties": [{
+                            "key": "password",
+                            "value": "sentinel-password",
+                            "sensitive": true
+                        }],
+                        "readOnly": true
+                    }
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        assert_eq!(create_response.status(), StatusCode::CREATED);
+        let create_body = create_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body must collect")
+            .to_bytes();
+        let create_json = std::str::from_utf8(&create_body).expect("response must be UTF-8");
+        assert!(!create_json.contains("sentinel-url"));
+        assert!(!create_json.contains("sentinel-password"));
+        assert!(!create_json.contains("jdbcUrl"));
+        let created: Datasource =
+            serde_json::from_slice(&create_body).expect("create response must match contract");
+        assert!(created.has_secret);
+
+        let list_response = application
+            .clone()
+            .oneshot(request(Method::GET, "/api/v1/datasources"))
+            .await
+            .expect("router must respond");
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let listed: DatasourceList = response_json(list_response).await;
+        assert_eq!(listed.items, vec![created.clone()]);
+
+        let datasource_path = format!("/api/v1/datasources/{}", created.id);
+        let get_response = application
+            .clone()
+            .oneshot(dynamic_request(Method::GET, &datasource_path))
+            .await
+            .expect("router must respond");
+        assert_eq!(get_response.status(), StatusCode::OK);
+        let fetched: Datasource = response_json(get_response).await;
+        assert_eq!(fetched, created);
+
+        let update_response = application
+            .clone()
+            .oneshot(json_request(
+                Method::PUT,
+                &datasource_path,
+                &serde_json::json!({
+                    "expectedRevision": fetched.revision,
+                    "name": "Renamed H2",
+                    "driverId": "h2",
+                    "secretChange": { "action": "keep" }
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        assert_eq!(update_response.status(), StatusCode::OK);
+        let updated: Datasource = response_json(update_response).await;
+        assert_eq!(updated.name, "Renamed H2");
+        assert_ne!(updated.revision, created.revision);
+
+        let delete_path = format!(
+            "/api/v1/datasources/{}?expectedRevision={}",
+            updated.id, updated.revision
+        );
+        let delete_response = application
+            .clone()
+            .oneshot(dynamic_request(Method::DELETE, &delete_path))
+            .await
+            .expect("router must respond");
+        assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
+
+        let missing_response = application
+            .oneshot(dynamic_request(Method::GET, &datasource_path))
+            .await
+            .expect("router must respond");
+        assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
+        let error: ApiError = response_json(missing_response).await;
+        assert_eq!(error.code, "datasource_not_found");
+    }
+
+    #[tokio::test]
+    async fn assets_router_serves_vite_files_and_history_without_masking_api_errors() {
+        let directory = TempDir::new().expect("temp directory");
+        fs::create_dir(directory.path().join("assets")).expect("assets directory must be created");
+        fs::write(
+            directory.path().join("index.html"),
+            "<!doctype html><title>Chat2DB SPA</title>",
+        )
+        .expect("index fixture must be written");
+        fs::write(
+            directory.path().join("assets/application.js"),
+            "globalThis.chat2dbLoaded = true;",
+        )
+        .expect("asset fixture must be written");
+
+        let application = router_with_policy_and_assets(
+            Application::new(),
+            AccessPolicy::default(),
+            directory.path(),
+        );
+
+        let asset_response = application
+            .clone()
+            .oneshot(request(Method::GET, "/assets/application.js"))
+            .await
+            .expect("router must respond");
+        assert_eq!(asset_response.status(), StatusCode::OK);
+        assert_eq!(
+            response_text(asset_response).await,
+            "globalThis.chat2dbLoaded = true;"
+        );
+
+        for history_path in ["/", "/workspace/query/result-1"] {
+            let history_response = application
+                .clone()
+                .oneshot(request(Method::GET, history_path))
+                .await
+                .expect("router must respond");
+            assert_eq!(history_response.status(), StatusCode::OK);
+            assert!(
+                response_text(history_response)
+                    .await
+                    .contains("Chat2DB SPA")
+            );
+        }
+
+        for api_path in ["/api", "/api/", "/api/v1/missing", "/api/future/route"] {
+            let api_response = application
+                .clone()
+                .oneshot(request(Method::GET, api_path))
+                .await
+                .expect("router must respond");
+            assert_eq!(api_response.status(), StatusCode::NOT_FOUND);
+            assert!(
+                api_response.headers()[header::CONTENT_TYPE]
+                    .to_str()
+                    .expect("content type must be ASCII")
+                    .starts_with("application/json")
+            );
+            let error: ApiError = response_json(api_response).await;
+            assert_eq!(error.code, "route_not_found");
+        }
+
+        let method_response = application
+            .oneshot(request(Method::POST, "/api/v1/system/health"))
+            .await
+            .expect("router must respond");
+        assert_eq!(method_response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let error: ApiError = response_json(method_response).await;
+        assert_eq!(error.code, "method_not_allowed");
+    }
+
     #[test]
     fn non_loopback_policy_fails_without_a_strong_token() {
         let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 4200);
@@ -275,11 +549,64 @@ mod tests {
         assert_eq!(authorized.status(), StatusCode::OK);
     }
 
+    #[tokio::test]
+    async fn assets_router_preserves_the_configured_bearer_policy() {
+        let directory = TempDir::new().expect("temp directory");
+        fs::write(directory.path().join("index.html"), "secured SPA")
+            .expect("index fixture must be written");
+        let token = "0123456789abcdef0123456789abcdef";
+        let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 4200);
+        let policy = AccessPolicy::for_bind(address, Some(token.to_owned()))
+            .expect("strong token must build policy");
+        let application =
+            router_with_policy_and_assets(Application::new(), policy, directory.path());
+
+        let unauthorized = application
+            .clone()
+            .oneshot(request(Method::GET, "/"))
+            .await
+            .expect("router must respond");
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let authorized = application
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .expect("request must build"),
+            )
+            .await
+            .expect("router must respond");
+        assert_eq!(authorized.status(), StatusCode::OK);
+        assert_eq!(response_text(authorized).await, "secured SPA");
+    }
+
     fn request(method: Method, uri: &'static str) -> Request<Body> {
         Request::builder()
             .method(method)
             .uri(uri)
             .body(Body::empty())
+            .expect("request must build")
+    }
+
+    fn dynamic_request(method: Method, uri: &str) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .expect("request must build")
+    }
+
+    fn json_request(method: Method, uri: &str, body: &serde_json::Value) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&body).expect("request JSON must serialize"),
+            ))
             .expect("request must build")
     }
 
@@ -294,5 +621,40 @@ mod tests {
             .expect("body must collect")
             .to_bytes();
         serde_json::from_slice(&body).expect("response body must match contract")
+    }
+
+    async fn response_text(response: axum::response::Response) -> String {
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body must collect")
+            .to_bytes();
+        String::from_utf8(body.to_vec()).expect("response body must be UTF-8")
+    }
+
+    #[derive(Debug)]
+    struct TestVault;
+
+    impl SecretVault for TestVault {
+        fn probe(&self) -> Result<(), SecretVaultError> {
+            Ok(())
+        }
+
+        fn create(
+            &self,
+            _reference: &SecretRef,
+            _value: &SecretValue,
+        ) -> Result<(), SecretVaultError> {
+            Ok(())
+        }
+
+        fn get(&self, _reference: &SecretRef) -> Result<Option<SecretValue>, SecretVaultError> {
+            Ok(None)
+        }
+
+        fn delete(&self, _reference: &SecretRef) -> Result<(), SecretVaultError> {
+            Ok(())
+        }
     }
 }

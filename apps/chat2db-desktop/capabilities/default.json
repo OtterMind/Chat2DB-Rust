@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "Core Tauri capabilities for the Chat2DB main window.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
