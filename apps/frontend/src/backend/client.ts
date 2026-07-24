@@ -2,9 +2,14 @@ import type { components } from '../generated/contract';
 
 type Schema<Name extends keyof components['schemas']> = components['schemas'][Name];
 
+export type AgentMessageList = Schema<'AgentMessageList'>;
+export type AgentSession = Schema<'AgentSession'>;
+export type AgentSessionList = Schema<'AgentSessionList'>;
 export type ApiError = Schema<'ApiError'>;
 export type CancelOperationResponse = Schema<'CancelOperationResponse'>;
+export type CreateAgentSessionRequest = Schema<'CreateAgentSessionRequest'>;
 export type CreateDatasourceRequest = Schema<'CreateDatasourceRequest'>;
+export type CreateProviderProfileRequest = Schema<'CreateProviderProfileRequest'>;
 export type Datasource = Schema<'Datasource'>;
 export type DatasourceConnection = Schema<'DatasourceConnection'>;
 export type DatasourceConnectionProperty = Schema<'DatasourceConnectionProperty'>;
@@ -16,11 +21,15 @@ export type OperationEventEnvelope = Schema<'OperationEventEnvelope'>;
 export type OperationSnapshot = Schema<'OperationSnapshot'>;
 export type OperationStreamMessage = Schema<'OperationStreamMessage'>;
 export type OperationSubscriptionAccepted = Schema<'OperationSubscriptionAccepted'>;
+export type ProviderProfile = Schema<'ProviderProfile'>;
+export type ProviderProfileList = Schema<'ProviderProfileList'>;
 export type QueryAccepted = Schema<'QueryAccepted'>;
 export type ResultPage = Schema<'ResultPage'>;
 export type ResultPageRequest = Schema<'ResultPageRequest'>;
 export type StartQueryRequest = Schema<'StartQueryRequest'>;
+export type UpdateAgentSessionRequest = Schema<'UpdateAgentSessionRequest'>;
 export type UpdateDatasourceRequest = Schema<'UpdateDatasourceRequest'>;
+export type UpdateProviderProfileRequest = Schema<'UpdateProviderProfileRequest'>;
 
 export interface OperationSubscriptionOptions {
   afterSequence?: string;
@@ -53,6 +62,44 @@ export interface BackendClient {
     expectedRevision: string,
     signal?: AbortSignal,
   ): Promise<void>;
+  listProviderProfiles(signal?: AbortSignal): Promise<ProviderProfileList>;
+  createProviderProfile(
+    request: CreateProviderProfileRequest,
+    signal?: AbortSignal,
+  ): Promise<ProviderProfile>;
+  getProviderProfile(providerId: string, signal?: AbortSignal): Promise<ProviderProfile>;
+  updateProviderProfile(
+    providerId: string,
+    request: UpdateProviderProfileRequest,
+    signal?: AbortSignal,
+  ): Promise<ProviderProfile>;
+  deleteProviderProfile(
+    providerId: string,
+    expectedRevision: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
+  listAgentSessions(signal?: AbortSignal): Promise<AgentSessionList>;
+  createAgentSession(
+    request: CreateAgentSessionRequest,
+    signal?: AbortSignal,
+  ): Promise<AgentSession>;
+  getAgentSession(sessionId: string, signal?: AbortSignal): Promise<AgentSession>;
+  updateAgentSession(
+    sessionId: string,
+    request: UpdateAgentSessionRequest,
+    signal?: AbortSignal,
+  ): Promise<AgentSession>;
+  deleteAgentSession(
+    sessionId: string,
+    expectedRevision: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
+  listAgentMessages(
+    sessionId: string,
+    startOrdinal: string,
+    limit: string,
+    signal?: AbortSignal,
+  ): Promise<AgentMessageList>;
   startQuery(request: StartQueryRequest, signal?: AbortSignal): Promise<QueryAccepted>;
   operationSnapshot(operationId: string, signal?: AbortSignal): Promise<OperationSnapshot>;
   cancelOperation(operationId: string, signal?: AbortSignal): Promise<CancelOperationResponse>;

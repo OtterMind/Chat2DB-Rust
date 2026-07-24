@@ -188,9 +188,16 @@ mod tests {
         AccessPolicy, AccessPolicyError, openapi, router, router_with_policy,
         router_with_policy_and_assets,
     };
-    use chat2db_contract::{ApiError, Datasource, DatasourceList, HealthResponse, RuntimeStatus};
+    use chat2db_contract::{
+        AgentMessageContent, AgentMessageList, AgentSession, AgentSessionList, ApiError,
+        ApiErrorDetails, Datasource, DatasourceList, HealthResponse, ProviderProfile,
+        ProviderProfileList, RuntimeStatus,
+    };
     use chat2db_core::Application;
-    use chat2db_storage::{SecretRef, SecretValue, SecretVault, SecretVaultError, Storage};
+    use chat2db_storage::{
+        AgentMessageRole, AppendAgentMessage, MAX_AGENT_MESSAGE_BYTES, SecretRef, SecretValue,
+        SecretVault, SecretVaultError, Storage,
+    };
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -312,6 +319,11 @@ mod tests {
             "/api/v1/system/health",
             "/api/v1/datasources",
             "/api/v1/datasources/{datasource_id}",
+            "/api/v1/agent/providers",
+            "/api/v1/agent/providers/{provider_id}",
+            "/api/v1/agent/sessions",
+            "/api/v1/agent/sessions/{session_id}",
+            "/api/v1/agent/sessions/{session_id}/messages",
             "/api/v1/queries",
             "/api/v1/operations/{operation_id}",
             "/api/v1/operations/{operation_id}/cancel",
@@ -329,6 +341,379 @@ mod tests {
                 .get("delete")
                 .is_some()
         );
+        assert!(paths["/api/v1/agent/providers"].get("get").is_some());
+        assert!(paths["/api/v1/agent/providers"].get("post").is_some());
+        assert!(
+            paths["/api/v1/agent/providers/{provider_id}"]
+                .get("put")
+                .is_some()
+        );
+        assert!(
+            paths["/api/v1/agent/providers/{provider_id}"]
+                .get("delete")
+                .is_some()
+        );
+        assert!(paths["/api/v1/agent/sessions"].get("get").is_some());
+        assert!(paths["/api/v1/agent/sessions"].get("post").is_some());
+        assert!(
+            paths["/api/v1/agent/sessions/{session_id}"]
+                .get("put")
+                .is_some()
+        );
+        assert!(
+            paths["/api/v1/agent/sessions/{session_id}"]
+                .get("delete")
+                .is_some()
+        );
+
+        let schemas = document["components"]["schemas"]
+            .as_object()
+            .expect("OpenAPI document must contain schemas");
+        for schema in [
+            "AgentMessage",
+            "AgentMessageContent",
+            "AgentMessageList",
+            "AgentSession",
+            "AgentSessionList",
+            "CreateAgentSessionRequest",
+            "CreateProviderProfileRequest",
+            "ProviderCredentials",
+            "ProviderProfile",
+            "ProviderProfileList",
+            "UpdateAgentSessionRequest",
+            "UpdateProviderProfileRequest",
+        ] {
+            assert!(
+                schemas.contains_key(schema),
+                "missing OpenAPI schema {schema}"
+            );
+        }
+        assert_eq!(
+            schemas["ProviderCredentials"]["properties"]["apiKey"]["writeOnly"],
+            true
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn provider_routes_are_secret_safe_and_enforce_revision_cas() {
+        const API_KEY: &str = "provider-secret-sentinel";
+
+        let directory = TempDir::new().expect("temp directory");
+        let storage =
+            Storage::open(directory.path(), Arc::new(TestVault)).expect("test storage must open");
+        let application = router(Application::with_storage(storage));
+
+        let create_response = application
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/v1/agent/providers",
+                &serde_json::json!({
+                    "name": "Primary",
+                    "kind": "open_ai_compatible",
+                    "baseUrl": "https://provider.example/v1",
+                    "model": "model-1",
+                    "contextWindowTokens": "9007199254740993",
+                    "maxOutputTokens": "8192",
+                    "credentials": { "apiKey": API_KEY }
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        assert_eq!(create_response.status(), StatusCode::CREATED);
+        let create_body = create_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body must collect")
+            .to_bytes();
+        let create_json = std::str::from_utf8(&create_body).expect("response must be UTF-8");
+        for forbidden in [API_KEY, "apiKey", "credentials", "secretRef"] {
+            assert!(!create_json.contains(forbidden));
+        }
+        let created: ProviderProfile =
+            serde_json::from_slice(&create_body).expect("create response must match contract");
+        assert!(created.has_secret);
+        assert_eq!(created.context_window_tokens, "9007199254740993");
+
+        let list_response = application
+            .clone()
+            .oneshot(request(Method::GET, "/api/v1/agent/providers"))
+            .await
+            .expect("router must respond");
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let listed: ProviderProfileList = response_json(list_response).await;
+        assert_eq!(listed.items, vec![created.clone()]);
+
+        let provider_path = format!("/api/v1/agent/providers/{}", created.id);
+        let get_response = application
+            .clone()
+            .oneshot(dynamic_request(Method::GET, &provider_path))
+            .await
+            .expect("router must respond");
+        assert_eq!(get_response.status(), StatusCode::OK);
+        let fetched: ProviderProfile = response_json(get_response).await;
+        assert_eq!(fetched, created);
+
+        let update_response = application
+            .clone()
+            .oneshot(json_request(
+                Method::PUT,
+                &provider_path,
+                &serde_json::json!({
+                    "expectedRevision": fetched.revision,
+                    "name": "Renamed provider",
+                    "kind": "open_ai_compatible",
+                    "baseUrl": "https://provider.example/v1",
+                    "model": "model-2",
+                    "contextWindowTokens": "9007199254740993",
+                    "maxOutputTokens": "16384",
+                    "secretChange": { "action": "keep" }
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        assert_eq!(update_response.status(), StatusCode::OK);
+        let updated: ProviderProfile = response_json(update_response).await;
+        assert_eq!(updated.name, "Renamed provider");
+        assert!(updated.has_secret);
+
+        let conflict_response = application
+            .clone()
+            .oneshot(json_request(
+                Method::PUT,
+                &provider_path,
+                &serde_json::json!({
+                    "expectedRevision": created.revision,
+                    "name": "Stale provider",
+                    "kind": "open_ai_compatible",
+                    "baseUrl": "https://provider.example/v1",
+                    "model": "model-1",
+                    "contextWindowTokens": "9007199254740993",
+                    "maxOutputTokens": "8192",
+                    "secretChange": { "action": "keep" }
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        assert_eq!(conflict_response.status(), StatusCode::CONFLICT);
+        let conflict: ApiError = response_json(conflict_response).await;
+        assert_eq!(conflict.code, "provider_revision_conflict");
+        assert!(matches!(
+            conflict.details,
+            Some(ApiErrorDetails::RevisionConflict {
+                expected_revision,
+                actual_revision: Some(actual_revision),
+            }) if expected_revision == created.revision && actual_revision == updated.revision
+        ));
+
+        let delete_path = format!(
+            "/api/v1/agent/providers/{}?expectedRevision={}",
+            updated.id, updated.revision
+        );
+        let delete_response = application
+            .clone()
+            .oneshot(dynamic_request(Method::DELETE, &delete_path))
+            .await
+            .expect("router must respond");
+        assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
+
+        let missing_response = application
+            .oneshot(dynamic_request(Method::GET, &provider_path))
+            .await
+            .expect("router must respond");
+        assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
+        let error: ApiError = response_json(missing_response).await;
+        assert_eq!(error.code, "provider_not_found");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn agent_session_routes_cover_lifecycle_and_message_pagination() {
+        let directory = TempDir::new().expect("temp directory");
+        let storage =
+            Storage::open(directory.path(), Arc::new(TestVault)).expect("test storage must open");
+        let application = router(Application::with_storage(storage.clone()));
+
+        let provider_response = application
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/v1/agent/providers",
+                &serde_json::json!({
+                    "name": "Primary",
+                    "kind": "anthropic",
+                    "baseUrl": "https://provider.example/v1",
+                    "model": "model-1",
+                    "contextWindowTokens": "200000",
+                    "maxOutputTokens": "8192"
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        assert_eq!(provider_response.status(), StatusCode::CREATED);
+        let provider: ProviderProfile = response_json(provider_response).await;
+
+        let oversized_prompt = "x".repeat(
+            usize::try_from(MAX_AGENT_MESSAGE_BYTES).expect("message limit fits usize") + 1,
+        );
+        let quota_response = application
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/v1/agent/sessions",
+                &serde_json::json!({
+                    "title": "Oversized prompt",
+                    "providerId": provider.id,
+                    "systemPrompt": oversized_prompt
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        assert_eq!(quota_response.status(), StatusCode::INSUFFICIENT_STORAGE);
+        let quota_error: ApiError = response_json(quota_response).await;
+        assert_eq!(quota_error.code, "agent_quota_exceeded");
+
+        let create_response = application
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/v1/agent/sessions",
+                &serde_json::json!({
+                    "title": "First title",
+                    "providerId": provider.id,
+                    "systemPrompt": "Keep answers bounded"
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        assert_eq!(create_response.status(), StatusCode::CREATED);
+        let created: AgentSession = response_json(create_response).await;
+
+        let list_response = application
+            .clone()
+            .oneshot(request(Method::GET, "/api/v1/agent/sessions"))
+            .await
+            .expect("router must respond");
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let listed: AgentSessionList = response_json(list_response).await;
+        assert_eq!(listed.items, vec![created.clone()]);
+
+        let session_path = format!("/api/v1/agent/sessions/{}", created.id);
+        let get_response = application
+            .clone()
+            .oneshot(dynamic_request(Method::GET, &session_path))
+            .await
+            .expect("router must respond");
+        assert_eq!(get_response.status(), StatusCode::OK);
+        let fetched: AgentSession = response_json(get_response).await;
+        assert_eq!(fetched, created);
+
+        let update_response = application
+            .clone()
+            .oneshot(json_request(
+                Method::PUT,
+                &session_path,
+                &serde_json::json!({
+                    "expectedRevision": created.revision,
+                    "title": "Updated title",
+                    "providerId": provider.id
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        assert_eq!(update_response.status(), StatusCode::OK);
+        let updated: AgentSession = response_json(update_response).await;
+        assert_eq!(updated.title, "Updated title");
+
+        for (role, text) in [
+            (AgentMessageRole::User, "Question"),
+            (AgentMessageRole::Assistant, "Answer"),
+        ] {
+            storage
+                .append_agent_message(
+                    &updated.id,
+                    AppendAgentMessage {
+                        role,
+                        summary_through_ordinal: None,
+                        content_json: serde_json::to_string(&vec![AgentMessageContent::Text {
+                            text: text.to_owned(),
+                        }])
+                        .expect("message content must serialize"),
+                    },
+                )
+                .expect("message must append");
+        }
+
+        let first_page_path = format!(
+            "/api/v1/agent/sessions/{}/messages?startOrdinal=0&limit=2",
+            updated.id
+        );
+        let first_page_response = application
+            .clone()
+            .oneshot(dynamic_request(Method::GET, &first_page_path))
+            .await
+            .expect("router must respond");
+        assert_eq!(first_page_response.status(), StatusCode::OK);
+        let first_page: AgentMessageList = response_json(first_page_response).await;
+        assert_eq!(
+            first_page
+                .items
+                .iter()
+                .map(|message| message.ordinal.as_str())
+                .collect::<Vec<_>>(),
+            ["0", "1"]
+        );
+        assert!(first_page.has_more);
+        assert!(matches!(
+            first_page.items[0].content.as_slice(),
+            [AgentMessageContent::Text { text }] if text == "Keep answers bounded"
+        ));
+
+        let final_page_path = format!(
+            "/api/v1/agent/sessions/{}/messages?startOrdinal=2&limit=2",
+            updated.id
+        );
+        let final_page_response = application
+            .clone()
+            .oneshot(dynamic_request(Method::GET, &final_page_path))
+            .await
+            .expect("router must respond");
+        assert_eq!(final_page_response.status(), StatusCode::OK);
+        let final_page: AgentMessageList = response_json(final_page_response).await;
+        assert_eq!(final_page.items.len(), 1);
+        assert_eq!(final_page.items[0].ordinal, "2");
+        assert!(!final_page.has_more);
+
+        let session_json = serde_json::to_value(&updated).expect("session must serialize");
+        for field in ["revision", "createdAtMs", "updatedAtMs"] {
+            assert!(session_json[field].is_string(), "{field} must be a string");
+        }
+        let message_json =
+            serde_json::to_value(&final_page.items[0]).expect("message must serialize");
+        for field in ["ordinal", "createdAtMs"] {
+            assert!(message_json[field].is_string(), "{field} must be a string");
+        }
+
+        let delete_path = format!(
+            "/api/v1/agent/sessions/{}?expectedRevision={}",
+            updated.id, updated.revision
+        );
+        let delete_response = application
+            .clone()
+            .oneshot(dynamic_request(Method::DELETE, &delete_path))
+            .await
+            .expect("router must respond");
+        assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
+
+        let missing_response = application
+            .oneshot(dynamic_request(Method::GET, &session_path))
+            .await
+            .expect("router must respond");
+        assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
+        let error: ApiError = response_json(missing_response).await;
+        assert_eq!(error.code, "agent_session_not_found");
     }
 
     #[tokio::test]

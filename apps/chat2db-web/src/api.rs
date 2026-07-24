@@ -7,13 +7,17 @@ use axum::{
     response::{IntoResponse, Response, sse::Event, sse::KeepAlive, sse::Sse},
 };
 use chat2db_contract::{
-    ApiError, ApiErrorDetails, CancelDisposition, CancelOperationResponse, ColumnNullability,
-    ComponentHealth, ComponentState, CreateDatasourceRequest, Datasource, DatasourceConnection,
-    DatasourceConnectionProperty, DatasourceList, DatasourceSecretChange, HealthResponse,
-    JdbcValue, JdbcValueType, OperationEvent, OperationEventEnvelope, OperationSnapshot,
-    OperationStatus, OperationStreamMessage, OperationSubscriptionAccepted, ProductInfo,
-    QueryAccepted, QueryLimits, QueryParameter, ResultColumn, ResultMetadata, ResultPage,
-    ResultPageRequest, ResultRow, RuntimeStatus, StartQueryRequest, UpdateDatasourceRequest,
+    AgentMessage, AgentMessageContent, AgentMessageList, AgentMessageRole, AgentResultHandle,
+    AgentSession, AgentSessionList, AgentToolCall, AgentToolOutput, ApiError, ApiErrorDetails,
+    CancelDisposition, CancelOperationResponse, ColumnNullability, ComponentHealth, ComponentState,
+    CreateAgentSessionRequest, CreateDatasourceRequest, CreateProviderProfileRequest, Datasource,
+    DatasourceConnection, DatasourceConnectionProperty, DatasourceList, DatasourceSecretChange,
+    HealthResponse, JdbcValue, JdbcValueType, OperationEvent, OperationEventEnvelope,
+    OperationSnapshot, OperationStatus, OperationStreamMessage, OperationSubscriptionAccepted,
+    ProductInfo, ProviderCredentials, ProviderKind, ProviderProfile, ProviderProfileList,
+    ProviderSecretChange, QueryAccepted, QueryLimits, QueryParameter, ResultColumn, ResultMetadata,
+    ResultPage, ResultPageRequest, ResultRow, RuntimeStatus, StartQueryRequest,
+    UpdateAgentSessionRequest, UpdateDatasourceRequest, UpdateProviderProfileRequest,
 };
 use chat2db_core::{AppError, Application};
 use futures_util::{Stream, stream};
@@ -40,9 +44,19 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         (name = "datasources", description = "Secret-safe datasource lifecycle"),
         (name = "queries", description = "Asynchronous query submission"),
         (name = "operations", description = "Query progress, replay, and cancellation"),
-        (name = "results", description = "Bounded retained-result paging")
+        (name = "results", description = "Bounded retained-result paging"),
+        (name = "agents", description = "AI provider profiles, durable sessions, and transcripts")
     ),
     components(schemas(
+        AgentMessage,
+        AgentMessageContent,
+        AgentMessageList,
+        AgentMessageRole,
+        AgentResultHandle,
+        AgentSession,
+        AgentSessionList,
+        AgentToolCall,
+        AgentToolOutput,
         ApiError,
         ApiErrorDetails,
         CancelDisposition,
@@ -50,7 +64,9 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         ColumnNullability,
         ComponentHealth,
         ComponentState,
+        CreateAgentSessionRequest,
         CreateDatasourceRequest,
+        CreateProviderProfileRequest,
         Datasource,
         DatasourceConnection,
         DatasourceConnectionProperty,
@@ -66,6 +82,11 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         OperationStreamMessage,
         OperationSubscriptionAccepted,
         ProductInfo,
+        ProviderCredentials,
+        ProviderKind,
+        ProviderProfile,
+        ProviderProfileList,
+        ProviderSecretChange,
         QueryAccepted,
         QueryLimits,
         QueryParameter,
@@ -76,6 +97,8 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         ResultRow,
         RuntimeStatus,
         StartQueryRequest,
+        UpdateAgentSessionRequest,
+        UpdateProviderProfileRequest,
         UpdateDatasourceRequest
     ))
 )]
@@ -83,8 +106,15 @@ struct ApiDocument;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DeleteDatasourceQuery {
+struct ExpectedRevisionQuery {
     expected_revision: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentMessagePageQuery {
+    start_ordinal: String,
+    limit: String,
 }
 
 fn documented_router() -> OpenApiRouter<Application> {
@@ -97,6 +127,19 @@ fn documented_router() -> OpenApiRouter<Application> {
             update_datasource,
             delete_datasource
         ))
+        .routes(routes!(list_provider_profiles, create_provider_profile))
+        .routes(routes!(
+            get_provider_profile,
+            update_provider_profile,
+            delete_provider_profile
+        ))
+        .routes(routes!(list_agent_sessions, create_agent_session))
+        .routes(routes!(
+            get_agent_session,
+            update_agent_session,
+            delete_agent_session
+        ))
+        .routes(routes!(list_agent_messages))
         .routes(routes!(start_query))
         .routes(routes!(operation_snapshot))
         .routes(routes!(cancel_operation))
@@ -260,12 +303,286 @@ async fn update_datasource(
 async fn delete_datasource(
     State(application): State<Application>,
     ApiPath(datasource_id): ApiPath<String>,
-    ApiQuery(query): ApiQuery<DeleteDatasourceQuery>,
+    ApiQuery(query): ApiQuery<ExpectedRevisionQuery>,
 ) -> Result<StatusCode, WebError> {
     application
         .delete_datasource(&datasource_id, &query.expected_revision)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/agent/providers",
+    tag = "agents",
+    responses(
+        (status = 200, description = "Secret-free provider profile list", body = ProviderProfileList),
+        (status = 503, description = "Provider storage or secret vault is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected provider failure", body = ApiError)
+    )
+)]
+async fn list_provider_profiles(
+    State(application): State<Application>,
+) -> Result<Json<ProviderProfileList>, WebError> {
+    application
+        .list_provider_profiles()
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/agent/providers",
+    tag = "agents",
+    request_body = CreateProviderProfileRequest,
+    responses(
+        (status = 201, description = "Provider profile created", body = ProviderProfile),
+        (status = 400, description = "Invalid provider request", body = ApiError),
+        (status = 409, description = "Provider conflicts with existing state", body = ApiError),
+        (status = 503, description = "Provider storage or secret vault is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected provider failure", body = ApiError)
+    )
+)]
+async fn create_provider_profile(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<CreateProviderProfileRequest>,
+) -> Result<(StatusCode, Json<ProviderProfile>), WebError> {
+    application
+        .create_provider_profile(request)
+        .await
+        .map(|profile| (StatusCode::CREATED, Json(profile)))
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/agent/providers/{provider_id}",
+    tag = "agents",
+    params(("provider_id" = String, Path, description = "Opaque provider profile id")),
+    responses(
+        (status = 200, description = "Secret-free provider profile", body = ProviderProfile),
+        (status = 404, description = "Provider profile does not exist", body = ApiError),
+        (status = 503, description = "Provider storage is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected provider failure", body = ApiError)
+    )
+)]
+async fn get_provider_profile(
+    State(application): State<Application>,
+    ApiPath(provider_id): ApiPath<String>,
+) -> Result<Json<ProviderProfile>, WebError> {
+    application
+        .get_provider_profile(&provider_id)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/v1/agent/providers/{provider_id}",
+    tag = "agents",
+    params(("provider_id" = String, Path, description = "Opaque provider profile id")),
+    request_body = UpdateProviderProfileRequest,
+    responses(
+        (status = 200, description = "Provider profile updated", body = ProviderProfile),
+        (status = 400, description = "Invalid provider request", body = ApiError),
+        (status = 404, description = "Provider profile does not exist", body = ApiError),
+        (status = 409, description = "Provider revision or dependency conflict", body = ApiError),
+        (status = 503, description = "Provider storage or secret vault is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected provider failure", body = ApiError)
+    )
+)]
+async fn update_provider_profile(
+    State(application): State<Application>,
+    ApiPath(provider_id): ApiPath<String>,
+    ApiJson(request): ApiJson<UpdateProviderProfileRequest>,
+) -> Result<Json<ProviderProfile>, WebError> {
+    application
+        .update_provider_profile(&provider_id, request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/agent/providers/{provider_id}",
+    tag = "agents",
+    params(
+        ("provider_id" = String, Path, description = "Opaque provider profile id"),
+        ("expectedRevision" = String, Query, description = "Expected monotonic revision")
+    ),
+    responses(
+        (status = 204, description = "Provider profile deleted"),
+        (status = 400, description = "Invalid expected revision", body = ApiError),
+        (status = 404, description = "Provider profile does not exist", body = ApiError),
+        (status = 409, description = "Provider revision or dependency conflict", body = ApiError),
+        (status = 503, description = "Provider storage or secret vault is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected provider failure", body = ApiError)
+    )
+)]
+async fn delete_provider_profile(
+    State(application): State<Application>,
+    ApiPath(provider_id): ApiPath<String>,
+    ApiQuery(query): ApiQuery<ExpectedRevisionQuery>,
+) -> Result<StatusCode, WebError> {
+    application
+        .delete_provider_profile(&provider_id, &query.expected_revision)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/agent/sessions",
+    tag = "agents",
+    responses(
+        (status = 200, description = "Durable agent session list", body = AgentSessionList),
+        (status = 503, description = "Agent storage is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected agent-session failure", body = ApiError)
+    )
+)]
+async fn list_agent_sessions(
+    State(application): State<Application>,
+) -> Result<Json<AgentSessionList>, WebError> {
+    application
+        .list_agent_sessions()
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/agent/sessions",
+    tag = "agents",
+    request_body = CreateAgentSessionRequest,
+    responses(
+        (status = 201, description = "Agent session created", body = AgentSession),
+        (status = 400, description = "Invalid agent-session request", body = ApiError),
+        (status = 404, description = "Selected provider or datasource does not exist", body = ApiError),
+        (status = 507, description = "Agent message resource limits are exhausted", body = ApiError),
+        (status = 503, description = "Agent storage is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected agent-session failure", body = ApiError)
+    )
+)]
+async fn create_agent_session(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<CreateAgentSessionRequest>,
+) -> Result<(StatusCode, Json<AgentSession>), WebError> {
+    application
+        .create_agent_session(request)
+        .await
+        .map(|session| (StatusCode::CREATED, Json(session)))
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/agent/sessions/{session_id}",
+    tag = "agents",
+    params(("session_id" = String, Path, description = "Opaque agent session id")),
+    responses(
+        (status = 200, description = "Durable agent session", body = AgentSession),
+        (status = 404, description = "Agent session does not exist", body = ApiError),
+        (status = 503, description = "Agent storage is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected agent-session failure", body = ApiError)
+    )
+)]
+async fn get_agent_session(
+    State(application): State<Application>,
+    ApiPath(session_id): ApiPath<String>,
+) -> Result<Json<AgentSession>, WebError> {
+    application
+        .get_agent_session(&session_id)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/v1/agent/sessions/{session_id}",
+    tag = "agents",
+    params(("session_id" = String, Path, description = "Opaque agent session id")),
+    request_body = UpdateAgentSessionRequest,
+    responses(
+        (status = 200, description = "Agent session updated", body = AgentSession),
+        (status = 400, description = "Invalid agent-session request", body = ApiError),
+        (status = 404, description = "Agent session, provider, or datasource does not exist", body = ApiError),
+        (status = 409, description = "Agent-session revision or active-run conflict", body = ApiError),
+        (status = 503, description = "Agent storage is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected agent-session failure", body = ApiError)
+    )
+)]
+async fn update_agent_session(
+    State(application): State<Application>,
+    ApiPath(session_id): ApiPath<String>,
+    ApiJson(request): ApiJson<UpdateAgentSessionRequest>,
+) -> Result<Json<AgentSession>, WebError> {
+    application
+        .update_agent_session(&session_id, request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/agent/sessions/{session_id}",
+    tag = "agents",
+    params(
+        ("session_id" = String, Path, description = "Opaque agent session id"),
+        ("expectedRevision" = String, Query, description = "Expected monotonic revision")
+    ),
+    responses(
+        (status = 204, description = "Agent session and owned state deleted"),
+        (status = 400, description = "Invalid expected revision", body = ApiError),
+        (status = 404, description = "Agent session does not exist", body = ApiError),
+        (status = 409, description = "Agent-session revision or active-run conflict", body = ApiError),
+        (status = 503, description = "Agent storage is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected agent-session failure", body = ApiError)
+    )
+)]
+async fn delete_agent_session(
+    State(application): State<Application>,
+    ApiPath(session_id): ApiPath<String>,
+    ApiQuery(query): ApiQuery<ExpectedRevisionQuery>,
+) -> Result<StatusCode, WebError> {
+    application
+        .delete_agent_session(&session_id, &query.expected_revision)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/agent/sessions/{session_id}/messages",
+    tag = "agents",
+    params(
+        ("session_id" = String, Path, description = "Opaque agent session id"),
+        ("startOrdinal" = String, Query, description = "Inclusive first message ordinal"),
+        ("limit" = String, Query, description = "Maximum number of messages from 1 through 512")
+    ),
+    responses(
+        (status = 200, description = "Bounded forward page of canonical messages", body = AgentMessageList),
+        (status = 400, description = "Invalid message-page bounds", body = ApiError),
+        (status = 404, description = "Agent session does not exist", body = ApiError),
+        (status = 503, description = "Agent storage is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected agent-message failure", body = ApiError)
+    )
+)]
+async fn list_agent_messages(
+    State(application): State<Application>,
+    ApiPath(session_id): ApiPath<String>,
+    ApiQuery(query): ApiQuery<AgentMessagePageQuery>,
+) -> Result<Json<AgentMessageList>, WebError> {
+    application
+        .list_agent_messages(&session_id, &query.start_ordinal, &query.limit)
+        .await
+        .map(Json)
+        .map_err(Into::into)
 }
 
 #[utoipa::path(

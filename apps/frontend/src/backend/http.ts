@@ -1,20 +1,29 @@
 import { createParser } from 'eventsource-parser';
 
 import type {
+  AgentMessageList,
+  AgentSession,
+  AgentSessionList,
   BackendClient,
   CancelOperationResponse,
+  CreateAgentSessionRequest,
   CreateDatasourceRequest,
+  CreateProviderProfileRequest,
   Datasource,
   DatasourceList,
   HealthResponse,
   OperationSnapshot,
   OperationSubscription,
   OperationSubscriptionOptions,
+  ProviderProfile,
+  ProviderProfileList,
   QueryAccepted,
   ResultPage,
   ResultPageRequest,
   StartQueryRequest,
+  UpdateAgentSessionRequest,
   UpdateDatasourceRequest,
+  UpdateProviderProfileRequest,
 } from './client';
 import {
   ApiRequestError,
@@ -125,6 +134,116 @@ export class HttpBackendClient implements BackendClient {
       `/api/v1/datasources/${encodeURIComponent(datasourceId)}?${query}`,
       { method: 'DELETE', signal },
       [204],
+    );
+  }
+
+  listProviderProfiles(signal?: AbortSignal): Promise<ProviderProfileList> {
+    return this.#json('/api/v1/agent/providers', { method: 'GET', signal }, [200]);
+  }
+
+  createProviderProfile(
+    request: CreateProviderProfileRequest,
+    signal?: AbortSignal,
+  ): Promise<ProviderProfile> {
+    return this.#json(
+      '/api/v1/agent/providers',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [201],
+    );
+  }
+
+  getProviderProfile(providerId: string, signal?: AbortSignal): Promise<ProviderProfile> {
+    return this.#json(
+      `/api/v1/agent/providers/${encodeURIComponent(providerId)}`,
+      { method: 'GET', signal },
+      [200],
+    );
+  }
+
+  updateProviderProfile(
+    providerId: string,
+    request: UpdateProviderProfileRequest,
+    signal?: AbortSignal,
+  ): Promise<ProviderProfile> {
+    return this.#json(
+      `/api/v1/agent/providers/${encodeURIComponent(providerId)}`,
+      { method: 'PUT', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  deleteProviderProfile(
+    providerId: string,
+    expectedRevision: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const query = new URLSearchParams({ expectedRevision });
+    return this.#json(
+      `/api/v1/agent/providers/${encodeURIComponent(providerId)}?${query}`,
+      { method: 'DELETE', signal },
+      [204],
+    );
+  }
+
+  listAgentSessions(signal?: AbortSignal): Promise<AgentSessionList> {
+    return this.#json('/api/v1/agent/sessions', { method: 'GET', signal }, [200]);
+  }
+
+  createAgentSession(
+    request: CreateAgentSessionRequest,
+    signal?: AbortSignal,
+  ): Promise<AgentSession> {
+    return this.#json(
+      '/api/v1/agent/sessions',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [201],
+    );
+  }
+
+  getAgentSession(sessionId: string, signal?: AbortSignal): Promise<AgentSession> {
+    return this.#json(
+      `/api/v1/agent/sessions/${encodeURIComponent(sessionId)}`,
+      { method: 'GET', signal },
+      [200],
+    );
+  }
+
+  updateAgentSession(
+    sessionId: string,
+    request: UpdateAgentSessionRequest,
+    signal?: AbortSignal,
+  ): Promise<AgentSession> {
+    return this.#json(
+      `/api/v1/agent/sessions/${encodeURIComponent(sessionId)}`,
+      { method: 'PUT', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  deleteAgentSession(
+    sessionId: string,
+    expectedRevision: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const query = new URLSearchParams({ expectedRevision });
+    return this.#json(
+      `/api/v1/agent/sessions/${encodeURIComponent(sessionId)}?${query}`,
+      { method: 'DELETE', signal },
+      [204],
+    );
+  }
+
+  listAgentMessages(
+    sessionId: string,
+    startOrdinal: string,
+    limit: string,
+    signal?: AbortSignal,
+  ): Promise<AgentMessageList> {
+    const query = new URLSearchParams({ startOrdinal, limit });
+    return this.#json(
+      `/api/v1/agent/sessions/${encodeURIComponent(sessionId)}/messages?${query}`,
+      { method: 'GET', signal },
+      [200],
     );
   }
 

@@ -12,6 +12,783 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/agent/providers": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "list_provider_profiles",
+        "responses": {
+          "200": {
+            "description": "Secret-free provider profile list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderProfileList"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected provider failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Provider storage or secret vault is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "create_provider_profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProviderProfileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Provider profile created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderProfile"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid provider request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Provider conflicts with existing state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected provider failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Provider storage or secret vault is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/providers/{provider_id}": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "get_provider_profile",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "description": "Opaque provider profile id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Secret-free provider profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderProfile"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Provider profile does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected provider failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Provider storage is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "update_provider_profile",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "description": "Opaque provider profile id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProviderProfileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Provider profile updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderProfile"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid provider request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Provider profile does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Provider revision or dependency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected provider failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Provider storage or secret vault is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "delete_provider_profile",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "description": "Opaque provider profile id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expectedRevision",
+            "in": "query",
+            "description": "Expected monotonic revision",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Provider profile deleted"
+          },
+          "400": {
+            "description": "Invalid expected revision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Provider profile does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Provider revision or dependency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected provider failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Provider storage or secret vault is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/sessions": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "list_agent_sessions",
+        "responses": {
+          "200": {
+            "description": "Durable agent session list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSessionList"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected agent-session failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent storage is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "create_agent_session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAgentSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Agent session created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid agent-session request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Selected provider or datasource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected agent-session failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent storage is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "507": {
+            "description": "Agent message resource limits are exhausted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/sessions/{session_id}": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "get_agent_session",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "Opaque agent session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Durable agent session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSession"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Agent session does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected agent-session failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent storage is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "update_agent_session",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "Opaque agent session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAgentSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Agent session updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid agent-session request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Agent session, provider, or datasource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Agent-session revision or active-run conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected agent-session failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent storage is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "delete_agent_session",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "Opaque agent session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expectedRevision",
+            "in": "query",
+            "description": "Expected monotonic revision",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Agent session and owned state deleted"
+          },
+          "400": {
+            "description": "Invalid expected revision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Agent session does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Agent-session revision or active-run conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected agent-session failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent storage is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/sessions/{session_id}/messages": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "list_agent_messages",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "Opaque agent session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "startOrdinal",
+            "in": "query",
+            "description": "Inclusive first message ordinal",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of messages from 1 through 512",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded forward page of canonical messages",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentMessageList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message-page bounds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Agent session does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected agent-message failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent storage is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/datasources": {
       "get": {
         "tags": [
@@ -760,6 +1537,362 @@
   },
   "components": {
     "schemas": {
+      "AgentMessage": {
+        "type": "object",
+        "description": "One durable canonical conversation message.",
+        "required": [
+          "id",
+          "sessionId",
+          "role",
+          "content",
+          "ordinal",
+          "createdAtMs"
+        ],
+        "properties": {
+          "content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentMessageContent"
+            },
+            "description": "Ordered provider-neutral content."
+          },
+          "createdAtMs": {
+            "type": "string",
+            "description": "Creation time as Unix epoch milliseconds encoded as a decimal integer."
+          },
+          "id": {
+            "type": "string",
+            "description": "Opaque message id."
+          },
+          "ordinal": {
+            "type": "string",
+            "description": "Stable session ordinal encoded as a decimal integer."
+          },
+          "role": {
+            "$ref": "#/components/schemas/AgentMessageRole",
+            "description": "Canonical role."
+          },
+          "runId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Run that produced the message, when applicable."
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "Owning session id."
+          }
+        }
+      },
+      "AgentMessageContent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Plain bounded text.",
+            "required": [
+              "text",
+              "type"
+            ],
+            "properties": {
+              "text": {
+                "type": "string",
+                "description": "Text content."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "text"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Assistant tool requests.",
+            "required": [
+              "calls",
+              "type"
+            ],
+            "properties": {
+              "calls": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AgentToolCall"
+                },
+                "description": "Ordered calls emitted in one assistant turn."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "tool_calls"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "One tool result paired by call id.",
+            "required": [
+              "toolCallId",
+              "name",
+              "output",
+              "type"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Registered tool name."
+              },
+              "output": {
+                "$ref": "#/components/schemas/AgentToolOutput",
+                "description": "Bounded output."
+              },
+              "toolCallId": {
+                "type": "string",
+                "description": "Matching tool-call id."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "tool_result"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Provider-neutral canonical message content."
+      },
+      "AgentMessageList": {
+        "type": "object",
+        "description": "Bounded page of canonical session messages.",
+        "required": [
+          "items",
+          "hasMore"
+        ],
+        "properties": {
+          "hasMore": {
+            "type": "boolean",
+            "description": "Whether a higher-ordinal message exists after this forward page."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentMessage"
+            },
+            "description": "Returned messages."
+          }
+        }
+      },
+      "AgentMessageRole": {
+        "type": "string",
+        "description": "Canonical role persisted for one conversation message.",
+        "enum": [
+          "system",
+          "user",
+          "assistant",
+          "tool",
+          "summary"
+        ]
+      },
+      "AgentResultHandle": {
+        "type": "object",
+        "description": "Bounded handle exposed instead of an unbounded database result.",
+        "required": [
+          "handleId",
+          "rowCount",
+          "byteCount",
+          "truncatedByMaxRows",
+          "truncatedByMaxResultBytes",
+          "createdAtMs",
+          "expiresAtMs",
+          "columns",
+          "sampleRows",
+          "sampleTruncated"
+        ],
+        "properties": {
+          "byteCount": {
+            "type": "string",
+            "description": "Retained encoded byte count encoded as a decimal integer."
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResultColumn"
+            },
+            "description": "Result schema."
+          },
+          "createdAtMs": {
+            "type": "string",
+            "description": "Handle creation time as Unix epoch milliseconds encoded as a decimal integer."
+          },
+          "expiresAtMs": {
+            "type": "string",
+            "description": "Handle expiry time as Unix epoch milliseconds encoded as a decimal integer."
+          },
+          "handleId": {
+            "type": "string",
+            "description": "Opaque handle id scoped to one session and run."
+          },
+          "rowCount": {
+            "type": "string",
+            "description": "Retained row count encoded as a decimal integer."
+          },
+          "sampleRows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResultRow"
+            },
+            "description": "Bounded sample rows supplied to the model."
+          },
+          "sampleTruncated": {
+            "type": "boolean",
+            "description": "Whether retained rows exist outside the sample."
+          },
+          "truncatedByMaxResultBytes": {
+            "type": "boolean",
+            "description": "Whether another row exceeded the configured result-byte limit."
+          },
+          "truncatedByMaxRows": {
+            "type": "boolean",
+            "description": "Whether another row existed beyond the configured row limit."
+          }
+        }
+      },
+      "AgentSession": {
+        "type": "object",
+        "description": "Secret-free durable conversation session.",
+        "required": [
+          "id",
+          "title",
+          "providerId",
+          "revision",
+          "createdAtMs",
+          "updatedAtMs"
+        ],
+        "properties": {
+          "createdAtMs": {
+            "type": "string",
+            "description": "Creation time as Unix epoch milliseconds encoded as a decimal integer."
+          },
+          "datasourceId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional datasource id."
+          },
+          "id": {
+            "type": "string",
+            "description": "Opaque session id."
+          },
+          "providerId": {
+            "type": "string",
+            "description": "Active provider profile id."
+          },
+          "revision": {
+            "type": "string",
+            "description": "Monotonic revision encoded as a decimal integer."
+          },
+          "title": {
+            "type": "string",
+            "description": "User-visible title."
+          },
+          "updatedAtMs": {
+            "type": "string",
+            "description": "Last update time as Unix epoch milliseconds encoded as a decimal integer."
+          }
+        }
+      },
+      "AgentSessionList": {
+        "type": "object",
+        "description": "Stable conversation-session collection.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentSession"
+            },
+            "description": "Sessions in reverse update order."
+          }
+        }
+      },
+      "AgentToolCall": {
+        "type": "object",
+        "description": "One provider-neutral tool call.",
+        "required": [
+          "id",
+          "name",
+          "argumentsJson"
+        ],
+        "properties": {
+          "argumentsJson": {
+            "type": "string",
+            "description": "Canonical JSON arguments."
+          },
+          "id": {
+            "type": "string",
+            "description": "Provider-neutral call id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Registered tool name."
+          }
+        }
+      },
+      "AgentToolOutput": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Bounded UTF-8 content.",
+            "required": [
+              "content",
+              "truncated",
+              "type"
+            ],
+            "properties": {
+              "content": {
+                "type": "string",
+                "description": "Tool content."
+              },
+              "truncated": {
+                "type": "boolean",
+                "description": "Whether the tool omitted additional content."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "text"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Retained database result plus bounded sample.",
+            "required": [
+              "handle",
+              "type"
+            ],
+            "properties": {
+              "handle": {
+                "$ref": "#/components/schemas/AgentResultHandle",
+                "description": "Durable result handle."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "result"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Bounded provider-neutral tool output."
+      },
       "ApiError": {
         "type": "object",
         "description": "Stable error envelope used at every external transport boundary.",
@@ -974,6 +2107,38 @@
           "unavailable"
         ]
       },
+      "CreateAgentSessionRequest": {
+        "type": "object",
+        "description": "Request to create a durable conversation session.",
+        "required": [
+          "title",
+          "providerId"
+        ],
+        "properties": {
+          "datasourceId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional datasource available to database tools."
+          },
+          "providerId": {
+            "type": "string",
+            "description": "Provider profile used by the session."
+          },
+          "systemPrompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional bounded system instruction persisted as the first message."
+          },
+          "title": {
+            "type": "string",
+            "description": "User-visible session title."
+          }
+        }
+      },
       "CreateDatasourceRequest": {
         "type": "object",
         "description": "Request to create one datasource and optionally install its connection secret.",
@@ -1000,6 +2165,55 @@
           "name": {
             "type": "string",
             "description": "User-visible datasource name."
+          }
+        }
+      },
+      "CreateProviderProfileRequest": {
+        "type": "object",
+        "description": "Request to create one model-provider profile.",
+        "required": [
+          "name",
+          "kind",
+          "baseUrl",
+          "model",
+          "contextWindowTokens",
+          "maxOutputTokens"
+        ],
+        "properties": {
+          "baseUrl": {
+            "type": "string",
+            "description": "Provider API root URL."
+          },
+          "contextWindowTokens": {
+            "type": "string",
+            "description": "Context window encoded as a decimal token count."
+          },
+          "credentials": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProviderCredentials",
+                "description": "Credentials to install in the secret vault."
+              }
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ProviderKind",
+            "description": "Provider protocol."
+          },
+          "maxOutputTokens": {
+            "type": "string",
+            "description": "Maximum generated output encoded as a decimal token count."
+          },
+          "model": {
+            "type": "string",
+            "description": "Provider model identifier."
+          },
+          "name": {
+            "type": "string",
+            "description": "User-visible profile name."
           }
         }
       },
@@ -1852,6 +3066,163 @@
           }
         }
       },
+      "ProviderCredentials": {
+        "type": "object",
+        "description": "Provider credentials accepted only at a secret-handling boundary.",
+        "required": [
+          "apiKey"
+        ],
+        "properties": {
+          "apiKey": {
+            "type": "string",
+            "description": "Provider API key.",
+            "writeOnly": true
+          }
+        }
+      },
+      "ProviderKind": {
+        "type": "string",
+        "description": "Provider wire protocol selected for one model profile.",
+        "enum": [
+          "open_ai_compatible",
+          "anthropic",
+          "gemini"
+        ]
+      },
+      "ProviderProfile": {
+        "type": "object",
+        "description": "Secret-free provider profile returned to external callers.",
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "baseUrl",
+          "model",
+          "contextWindowTokens",
+          "maxOutputTokens",
+          "hasSecret",
+          "revision",
+          "createdAtMs",
+          "updatedAtMs"
+        ],
+        "properties": {
+          "baseUrl": {
+            "type": "string",
+            "description": "Provider API root URL."
+          },
+          "contextWindowTokens": {
+            "type": "string",
+            "description": "Context window encoded as a decimal token count."
+          },
+          "createdAtMs": {
+            "type": "string",
+            "description": "Creation time as Unix epoch milliseconds encoded as a decimal integer."
+          },
+          "hasSecret": {
+            "type": "boolean",
+            "description": "Whether the profile has a credential in the vault."
+          },
+          "id": {
+            "type": "string",
+            "description": "Opaque profile id."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ProviderKind",
+            "description": "Provider protocol."
+          },
+          "maxOutputTokens": {
+            "type": "string",
+            "description": "Maximum generated output encoded as a decimal token count."
+          },
+          "model": {
+            "type": "string",
+            "description": "Provider model identifier."
+          },
+          "name": {
+            "type": "string",
+            "description": "User-visible profile name."
+          },
+          "revision": {
+            "type": "string",
+            "description": "Monotonic revision encoded as a decimal integer."
+          },
+          "updatedAtMs": {
+            "type": "string",
+            "description": "Last update time as Unix epoch milliseconds encoded as a decimal integer."
+          }
+        }
+      },
+      "ProviderProfileList": {
+        "type": "object",
+        "description": "Stable provider-profile collection.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderProfile"
+            },
+            "description": "Profiles in stable creation order."
+          }
+        }
+      },
+      "ProviderSecretChange": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Retain the current immutable vault value.",
+            "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "keep"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Remove the current credential.",
+            "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "clear"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Replace the current credential with a newly staged value.",
+            "required": [
+              "credentials",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "replace"
+                ]
+              },
+              "credentials": {
+                "$ref": "#/components/schemas/ProviderCredentials",
+                "description": "Complete replacement credential."
+              }
+            }
+          }
+        ],
+        "description": "Explicit credential mutation for a provider-profile update."
+      },
       "QueryAccepted": {
         "type": "object",
         "description": "Immediate acknowledgement for an accepted asynchronous query.",
@@ -2185,6 +3556,36 @@
           }
         }
       },
+      "UpdateAgentSessionRequest": {
+        "type": "object",
+        "description": "Optimistic replacement of mutable session settings.",
+        "required": [
+          "expectedRevision",
+          "title",
+          "providerId"
+        ],
+        "properties": {
+          "datasourceId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional datasource available to later database tools."
+          },
+          "expectedRevision": {
+            "type": "string",
+            "description": "Expected revision encoded as a decimal integer."
+          },
+          "providerId": {
+            "type": "string",
+            "description": "Provider profile used by later runs."
+          },
+          "title": {
+            "type": "string",
+            "description": "User-visible session title."
+          }
+        }
+      },
       "UpdateDatasourceRequest": {
         "type": "object",
         "description": "Optimistic datasource replacement request.",
@@ -2212,6 +3613,54 @@
             "description": "Explicit keep, clear, or replace action for the secret descriptor."
           }
         }
+      },
+      "UpdateProviderProfileRequest": {
+        "type": "object",
+        "description": "Optimistic provider-profile replacement request.",
+        "required": [
+          "expectedRevision",
+          "name",
+          "kind",
+          "baseUrl",
+          "model",
+          "contextWindowTokens",
+          "maxOutputTokens",
+          "secretChange"
+        ],
+        "properties": {
+          "baseUrl": {
+            "type": "string",
+            "description": "Provider API root URL."
+          },
+          "contextWindowTokens": {
+            "type": "string",
+            "description": "Context window encoded as a decimal token count."
+          },
+          "expectedRevision": {
+            "type": "string",
+            "description": "Expected revision encoded as a decimal integer."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ProviderKind",
+            "description": "Provider protocol."
+          },
+          "maxOutputTokens": {
+            "type": "string",
+            "description": "Maximum generated output encoded as a decimal token count."
+          },
+          "model": {
+            "type": "string",
+            "description": "Provider model identifier."
+          },
+          "name": {
+            "type": "string",
+            "description": "User-visible profile name."
+          },
+          "secretChange": {
+            "$ref": "#/components/schemas/ProviderSecretChange",
+            "description": "Explicit keep, clear, or replace action for the credential."
+          }
+        }
       }
     }
   },
@@ -2235,6 +3684,10 @@
     {
       "name": "results",
       "description": "Bounded retained-result paging"
+    },
+    {
+      "name": "agents",
+      "description": "AI provider profiles, durable sessions, and transcripts"
     }
   ]
 }

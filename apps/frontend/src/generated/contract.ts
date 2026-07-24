@@ -4,6 +4,86 @@
  */
 
 export interface paths {
+    "/api/v1/agent/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_provider_profiles"];
+        put?: never;
+        post: operations["create_provider_profile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent/providers/{provider_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_provider_profile"];
+        put: operations["update_provider_profile"];
+        post?: never;
+        delete: operations["delete_provider_profile"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_agent_sessions"];
+        put?: never;
+        post: operations["create_agent_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent/sessions/{session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_agent_session"];
+        put: operations["update_agent_session"];
+        post?: never;
+        delete: operations["delete_agent_session"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agent/sessions/{session_id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_agent_messages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/datasources": {
         parameters: {
             query?: never;
@@ -168,6 +248,124 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description One durable canonical conversation message. */
+        AgentMessage: {
+            /** @description Ordered provider-neutral content. */
+            content: components["schemas"]["AgentMessageContent"][];
+            /** @description Creation time as Unix epoch milliseconds encoded as a decimal integer. */
+            createdAtMs: string;
+            /** @description Opaque message id. */
+            id: string;
+            /** @description Stable session ordinal encoded as a decimal integer. */
+            ordinal: string;
+            /** @description Canonical role. */
+            role: components["schemas"]["AgentMessageRole"];
+            /** @description Run that produced the message, when applicable. */
+            runId?: string | null;
+            /** @description Owning session id. */
+            sessionId: string;
+        };
+        /** @description Provider-neutral canonical message content. */
+        AgentMessageContent: {
+            /** @description Text content. */
+            text: string;
+            /** @enum {string} */
+            type: "text";
+        } | {
+            /** @description Ordered calls emitted in one assistant turn. */
+            calls: components["schemas"]["AgentToolCall"][];
+            /** @enum {string} */
+            type: "tool_calls";
+        } | {
+            /** @description Registered tool name. */
+            name: string;
+            /** @description Bounded output. */
+            output: components["schemas"]["AgentToolOutput"];
+            /** @description Matching tool-call id. */
+            toolCallId: string;
+            /** @enum {string} */
+            type: "tool_result";
+        };
+        /** @description Bounded page of canonical session messages. */
+        AgentMessageList: {
+            /** @description Whether a higher-ordinal message exists after this forward page. */
+            hasMore: boolean;
+            /** @description Returned messages. */
+            items: components["schemas"]["AgentMessage"][];
+        };
+        /**
+         * @description Canonical role persisted for one conversation message.
+         * @enum {string}
+         */
+        AgentMessageRole: "system" | "user" | "assistant" | "tool" | "summary";
+        /** @description Bounded handle exposed instead of an unbounded database result. */
+        AgentResultHandle: {
+            /** @description Retained encoded byte count encoded as a decimal integer. */
+            byteCount: string;
+            /** @description Result schema. */
+            columns: components["schemas"]["ResultColumn"][];
+            /** @description Handle creation time as Unix epoch milliseconds encoded as a decimal integer. */
+            createdAtMs: string;
+            /** @description Handle expiry time as Unix epoch milliseconds encoded as a decimal integer. */
+            expiresAtMs: string;
+            /** @description Opaque handle id scoped to one session and run. */
+            handleId: string;
+            /** @description Retained row count encoded as a decimal integer. */
+            rowCount: string;
+            /** @description Bounded sample rows supplied to the model. */
+            sampleRows: components["schemas"]["ResultRow"][];
+            /** @description Whether retained rows exist outside the sample. */
+            sampleTruncated: boolean;
+            /** @description Whether another row exceeded the configured result-byte limit. */
+            truncatedByMaxResultBytes: boolean;
+            /** @description Whether another row existed beyond the configured row limit. */
+            truncatedByMaxRows: boolean;
+        };
+        /** @description Secret-free durable conversation session. */
+        AgentSession: {
+            /** @description Creation time as Unix epoch milliseconds encoded as a decimal integer. */
+            createdAtMs: string;
+            /** @description Optional datasource id. */
+            datasourceId?: string | null;
+            /** @description Opaque session id. */
+            id: string;
+            /** @description Active provider profile id. */
+            providerId: string;
+            /** @description Monotonic revision encoded as a decimal integer. */
+            revision: string;
+            /** @description User-visible title. */
+            title: string;
+            /** @description Last update time as Unix epoch milliseconds encoded as a decimal integer. */
+            updatedAtMs: string;
+        };
+        /** @description Stable conversation-session collection. */
+        AgentSessionList: {
+            /** @description Sessions in reverse update order. */
+            items: components["schemas"]["AgentSession"][];
+        };
+        /** @description One provider-neutral tool call. */
+        AgentToolCall: {
+            /** @description Canonical JSON arguments. */
+            argumentsJson: string;
+            /** @description Provider-neutral call id. */
+            id: string;
+            /** @description Registered tool name. */
+            name: string;
+        };
+        /** @description Bounded provider-neutral tool output. */
+        AgentToolOutput: {
+            /** @description Tool content. */
+            content: string;
+            /** @description Whether the tool omitted additional content. */
+            truncated: boolean;
+            /** @enum {string} */
+            type: "text";
+        } | {
+            /** @description Durable result handle. */
+            handle: components["schemas"]["AgentResultHandle"];
+            /** @enum {string} */
+            type: "result";
+        };
         /** @description Stable error envelope used at every external transport boundary. */
         ApiError: {
             /** @description Stable machine-readable code. */
@@ -246,12 +444,39 @@ export interface components {
          * @enum {string}
          */
         ComponentState: "ready" | "disabled" | "unavailable";
+        /** @description Request to create a durable conversation session. */
+        CreateAgentSessionRequest: {
+            /** @description Optional datasource available to database tools. */
+            datasourceId?: string | null;
+            /** @description Provider profile used by the session. */
+            providerId: string;
+            /** @description Optional bounded system instruction persisted as the first message. */
+            systemPrompt?: string | null;
+            /** @description User-visible session title. */
+            title: string;
+        };
         /** @description Request to create one datasource and optionally install its connection secret. */
         CreateDatasourceRequest: {
             connection?: null | components["schemas"]["DatasourceConnection"];
             /** @description Compatibility-engine driver id. */
             driverId: string;
             /** @description User-visible datasource name. */
+            name: string;
+        };
+        /** @description Request to create one model-provider profile. */
+        CreateProviderProfileRequest: {
+            /** @description Provider API root URL. */
+            baseUrl: string;
+            /** @description Context window encoded as a decimal token count. */
+            contextWindowTokens: string;
+            credentials?: null | components["schemas"]["ProviderCredentials"];
+            /** @description Provider protocol. */
+            kind: components["schemas"]["ProviderKind"];
+            /** @description Maximum generated output encoded as a decimal token count. */
+            maxOutputTokens: string;
+            /** @description Provider model identifier. */
+            model: string;
+            /** @description User-visible profile name. */
             name: string;
         };
         /** @description Secret-free datasource representation returned to external callers. */
@@ -516,6 +741,59 @@ export interface components {
             /** @description Semantic version of the Rust product runtime. */
             version: string;
         };
+        /** @description Provider credentials accepted only at a secret-handling boundary. */
+        ProviderCredentials: {
+            /** @description Provider API key. */
+            apiKey: string;
+        };
+        /**
+         * @description Provider wire protocol selected for one model profile.
+         * @enum {string}
+         */
+        ProviderKind: "open_ai_compatible" | "anthropic" | "gemini";
+        /** @description Secret-free provider profile returned to external callers. */
+        ProviderProfile: {
+            /** @description Provider API root URL. */
+            baseUrl: string;
+            /** @description Context window encoded as a decimal token count. */
+            contextWindowTokens: string;
+            /** @description Creation time as Unix epoch milliseconds encoded as a decimal integer. */
+            createdAtMs: string;
+            /** @description Whether the profile has a credential in the vault. */
+            hasSecret: boolean;
+            /** @description Opaque profile id. */
+            id: string;
+            /** @description Provider protocol. */
+            kind: components["schemas"]["ProviderKind"];
+            /** @description Maximum generated output encoded as a decimal token count. */
+            maxOutputTokens: string;
+            /** @description Provider model identifier. */
+            model: string;
+            /** @description User-visible profile name. */
+            name: string;
+            /** @description Monotonic revision encoded as a decimal integer. */
+            revision: string;
+            /** @description Last update time as Unix epoch milliseconds encoded as a decimal integer. */
+            updatedAtMs: string;
+        };
+        /** @description Stable provider-profile collection. */
+        ProviderProfileList: {
+            /** @description Profiles in stable creation order. */
+            items: components["schemas"]["ProviderProfile"][];
+        };
+        /** @description Explicit credential mutation for a provider-profile update. */
+        ProviderSecretChange: {
+            /** @enum {string} */
+            action: "keep";
+        } | {
+            /** @enum {string} */
+            action: "clear";
+        } | {
+            /** @enum {string} */
+            action: "replace";
+            /** @description Complete replacement credential. */
+            credentials: components["schemas"]["ProviderCredentials"];
+        };
         /** @description Immediate acknowledgement for an accepted asynchronous query. */
         QueryAccepted: {
             /** @description Opaque operation id used for events, snapshots, and cancellation. */
@@ -659,6 +937,17 @@ export interface components {
             /** @description SQL text executed by the compatibility engine. */
             sql: string;
         };
+        /** @description Optimistic replacement of mutable session settings. */
+        UpdateAgentSessionRequest: {
+            /** @description Optional datasource available to later database tools. */
+            datasourceId?: string | null;
+            /** @description Expected revision encoded as a decimal integer. */
+            expectedRevision: string;
+            /** @description Provider profile used by later runs. */
+            providerId: string;
+            /** @description User-visible session title. */
+            title: string;
+        };
         /** @description Optimistic datasource replacement request. */
         UpdateDatasourceRequest: {
             /** @description Compatibility-engine driver id. */
@@ -670,6 +959,25 @@ export interface components {
             /** @description Explicit keep, clear, or replace action for the secret descriptor. */
             secretChange: components["schemas"]["DatasourceSecretChange"];
         };
+        /** @description Optimistic provider-profile replacement request. */
+        UpdateProviderProfileRequest: {
+            /** @description Provider API root URL. */
+            baseUrl: string;
+            /** @description Context window encoded as a decimal token count. */
+            contextWindowTokens: string;
+            /** @description Expected revision encoded as a decimal integer. */
+            expectedRevision: string;
+            /** @description Provider protocol. */
+            kind: components["schemas"]["ProviderKind"];
+            /** @description Maximum generated output encoded as a decimal token count. */
+            maxOutputTokens: string;
+            /** @description Provider model identifier. */
+            model: string;
+            /** @description User-visible profile name. */
+            name: string;
+            /** @description Explicit keep, clear, or replace action for the credential. */
+            secretChange: components["schemas"]["ProviderSecretChange"];
+        };
     };
     responses: never;
     parameters: never;
@@ -679,6 +987,657 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_provider_profiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Secret-free provider profile list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderProfileList"];
+                };
+            };
+            /** @description Unexpected provider failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Provider storage or secret vault is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    create_provider_profile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateProviderProfileRequest"];
+            };
+        };
+        responses: {
+            /** @description Provider profile created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderProfile"];
+                };
+            };
+            /** @description Invalid provider request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Provider conflicts with existing state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected provider failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Provider storage or secret vault is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    get_provider_profile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Opaque provider profile id */
+                provider_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Secret-free provider profile */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderProfile"];
+                };
+            };
+            /** @description Provider profile does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected provider failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Provider storage is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    update_provider_profile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Opaque provider profile id */
+                provider_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateProviderProfileRequest"];
+            };
+        };
+        responses: {
+            /** @description Provider profile updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderProfile"];
+                };
+            };
+            /** @description Invalid provider request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Provider profile does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Provider revision or dependency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected provider failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Provider storage or secret vault is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    delete_provider_profile: {
+        parameters: {
+            query: {
+                /** @description Expected monotonic revision */
+                expectedRevision: string;
+            };
+            header?: never;
+            path: {
+                /** @description Opaque provider profile id */
+                provider_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Provider profile deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid expected revision */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Provider profile does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Provider revision or dependency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected provider failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Provider storage or secret vault is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    list_agent_sessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Durable agent session list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSessionList"];
+                };
+            };
+            /** @description Unexpected agent-session failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Agent storage is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    create_agent_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateAgentSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Agent session created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSession"];
+                };
+            };
+            /** @description Invalid agent-session request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Selected provider or datasource does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected agent-session failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Agent storage is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Agent message resource limits are exhausted */
+            507: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    get_agent_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Opaque agent session id */
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Durable agent session */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSession"];
+                };
+            };
+            /** @description Agent session does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected agent-session failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Agent storage is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    update_agent_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Opaque agent session id */
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateAgentSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Agent session updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSession"];
+                };
+            };
+            /** @description Invalid agent-session request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Agent session, provider, or datasource does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Agent-session revision or active-run conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected agent-session failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Agent storage is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    delete_agent_session: {
+        parameters: {
+            query: {
+                /** @description Expected monotonic revision */
+                expectedRevision: string;
+            };
+            header?: never;
+            path: {
+                /** @description Opaque agent session id */
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Agent session and owned state deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid expected revision */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Agent session does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Agent-session revision or active-run conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected agent-session failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Agent storage is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    list_agent_messages: {
+        parameters: {
+            query: {
+                /** @description Inclusive first message ordinal */
+                startOrdinal: string;
+                /** @description Maximum number of messages from 1 through 512 */
+                limit: string;
+            };
+            header?: never;
+            path: {
+                /** @description Opaque agent session id */
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded forward page of canonical messages */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentMessageList"];
+                };
+            };
+            /** @description Invalid message-page bounds */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Agent session does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected agent-message failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Agent storage is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
     list_datasources: {
         parameters: {
             query?: never;

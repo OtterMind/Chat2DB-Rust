@@ -1,9 +1,14 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 
 import type {
+  AgentMessageList,
+  AgentSession,
+  AgentSessionList,
   BackendClient,
   CancelOperationResponse,
+  CreateAgentSessionRequest,
   CreateDatasourceRequest,
+  CreateProviderProfileRequest,
   Datasource,
   DatasourceList,
   HealthResponse,
@@ -13,11 +18,15 @@ import type {
   OperationSubscription,
   OperationSubscriptionAccepted,
   OperationSubscriptionOptions,
+  ProviderProfile,
+  ProviderProfileList,
   QueryAccepted,
   ResultPage,
   ResultPageRequest,
   StartQueryRequest,
+  UpdateAgentSessionRequest,
   UpdateDatasourceRequest,
+  UpdateProviderProfileRequest,
 } from './client';
 import {
   abortError,
@@ -89,6 +98,81 @@ export class TauriBackendClient implements BackendClient {
     signal?: AbortSignal,
   ): Promise<void> {
     return this.#request('delete_datasource', { datasourceId, expectedRevision }, signal);
+  }
+
+  listProviderProfiles(signal?: AbortSignal): Promise<ProviderProfileList> {
+    return this.#request('list_provider_profiles', undefined, signal);
+  }
+
+  createProviderProfile(
+    request: CreateProviderProfileRequest,
+    signal?: AbortSignal,
+  ): Promise<ProviderProfile> {
+    return this.#request('create_provider_profile', { request }, signal);
+  }
+
+  getProviderProfile(providerId: string, signal?: AbortSignal): Promise<ProviderProfile> {
+    return this.#request('get_provider_profile', { providerId }, signal);
+  }
+
+  updateProviderProfile(
+    providerId: string,
+    request: UpdateProviderProfileRequest,
+    signal?: AbortSignal,
+  ): Promise<ProviderProfile> {
+    return this.#request('update_provider_profile', { providerId, request }, signal);
+  }
+
+  deleteProviderProfile(
+    providerId: string,
+    expectedRevision: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return this.#request('delete_provider_profile', { providerId, expectedRevision }, signal);
+  }
+
+  listAgentSessions(signal?: AbortSignal): Promise<AgentSessionList> {
+    return this.#request('list_agent_sessions', undefined, signal);
+  }
+
+  createAgentSession(
+    request: CreateAgentSessionRequest,
+    signal?: AbortSignal,
+  ): Promise<AgentSession> {
+    return this.#request('create_agent_session', { request }, signal);
+  }
+
+  getAgentSession(sessionId: string, signal?: AbortSignal): Promise<AgentSession> {
+    return this.#request('get_agent_session', { sessionId }, signal);
+  }
+
+  updateAgentSession(
+    sessionId: string,
+    request: UpdateAgentSessionRequest,
+    signal?: AbortSignal,
+  ): Promise<AgentSession> {
+    return this.#request('update_agent_session', { sessionId, request }, signal);
+  }
+
+  deleteAgentSession(
+    sessionId: string,
+    expectedRevision: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return this.#request('delete_agent_session', { sessionId, expectedRevision }, signal);
+  }
+
+  listAgentMessages(
+    sessionId: string,
+    startOrdinal: string,
+    limit: string,
+    signal?: AbortSignal,
+  ): Promise<AgentMessageList> {
+    return this.#request(
+      'list_agent_messages',
+      { sessionId, startOrdinal, limit },
+      signal,
+    );
   }
 
   startQuery(request: StartQueryRequest, signal?: AbortSignal): Promise<QueryAccepted> {

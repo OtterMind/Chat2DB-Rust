@@ -13,10 +13,12 @@ use std::{
 };
 
 use chat2db_contract::{
-    ApiError, CancelOperationResponse, CreateDatasourceRequest, Datasource, DatasourceList,
-    HealthResponse, OperationEventEnvelope, OperationSnapshot, OperationStreamMessage,
-    OperationSubscriptionAccepted, QueryAccepted, ResultPage, ResultPageRequest, StartQueryRequest,
-    UpdateDatasourceRequest,
+    AgentMessageList, AgentSession, AgentSessionList, ApiError, CancelOperationResponse,
+    CreateAgentSessionRequest, CreateDatasourceRequest, CreateProviderProfileRequest, Datasource,
+    DatasourceList, HealthResponse, OperationEventEnvelope, OperationSnapshot,
+    OperationStreamMessage, OperationSubscriptionAccepted, ProviderProfile, ProviderProfileList,
+    QueryAccepted, ResultPage, ResultPageRequest, StartQueryRequest, UpdateAgentSessionRequest,
+    UpdateDatasourceRequest, UpdateProviderProfileRequest,
 };
 use chat2db_core::{AppError, Application, RuntimeConfig, RuntimeHost};
 use chat2db_java_bridge::{EngineCommand, EngineConfig};
@@ -208,6 +210,17 @@ pub fn run() -> Result<i32, DesktopError> {
             get_datasource,
             update_datasource,
             delete_datasource,
+            list_provider_profiles,
+            create_provider_profile,
+            get_provider_profile,
+            update_provider_profile,
+            delete_provider_profile,
+            list_agent_sessions,
+            create_agent_session,
+            get_agent_session,
+            update_agent_session,
+            delete_agent_session,
+            list_agent_messages,
             start_query,
             operation_snapshot,
             cancel_operation,
@@ -349,6 +362,142 @@ async fn delete_datasource(
     state
         .application
         .delete_datasource(&datasource_id, &expected_revision)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn list_provider_profiles(
+    state: State<'_, Arc<DesktopState>>,
+) -> Result<ProviderProfileList, ApiError> {
+    state
+        .application
+        .list_provider_profiles()
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn create_provider_profile(
+    state: State<'_, Arc<DesktopState>>,
+    request: CreateProviderProfileRequest,
+) -> Result<ProviderProfile, ApiError> {
+    state
+        .application
+        .create_provider_profile(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn get_provider_profile(
+    state: State<'_, Arc<DesktopState>>,
+    provider_id: String,
+) -> Result<ProviderProfile, ApiError> {
+    state
+        .application
+        .get_provider_profile(&provider_id)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn update_provider_profile(
+    state: State<'_, Arc<DesktopState>>,
+    provider_id: String,
+    request: UpdateProviderProfileRequest,
+) -> Result<ProviderProfile, ApiError> {
+    state
+        .application
+        .update_provider_profile(&provider_id, request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn delete_provider_profile(
+    state: State<'_, Arc<DesktopState>>,
+    provider_id: String,
+    expected_revision: String,
+) -> Result<(), ApiError> {
+    state
+        .application
+        .delete_provider_profile(&provider_id, &expected_revision)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn list_agent_sessions(
+    state: State<'_, Arc<DesktopState>>,
+) -> Result<AgentSessionList, ApiError> {
+    state
+        .application
+        .list_agent_sessions()
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn create_agent_session(
+    state: State<'_, Arc<DesktopState>>,
+    request: CreateAgentSessionRequest,
+) -> Result<AgentSession, ApiError> {
+    state
+        .application
+        .create_agent_session(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn get_agent_session(
+    state: State<'_, Arc<DesktopState>>,
+    session_id: String,
+) -> Result<AgentSession, ApiError> {
+    state
+        .application
+        .get_agent_session(&session_id)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn update_agent_session(
+    state: State<'_, Arc<DesktopState>>,
+    session_id: String,
+    request: UpdateAgentSessionRequest,
+) -> Result<AgentSession, ApiError> {
+    state
+        .application
+        .update_agent_session(&session_id, request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn delete_agent_session(
+    state: State<'_, Arc<DesktopState>>,
+    session_id: String,
+    expected_revision: String,
+) -> Result<(), ApiError> {
+    state
+        .application
+        .delete_agent_session(&session_id, &expected_revision)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn list_agent_messages(
+    state: State<'_, Arc<DesktopState>>,
+    session_id: String,
+    start_ordinal: String,
+    limit: String,
+) -> Result<AgentMessageList, ApiError> {
+    state
+        .application
+        .list_agent_messages(&session_id, &start_ordinal, &limit)
         .await
         .map_err(|error| api_error(&error))
 }
