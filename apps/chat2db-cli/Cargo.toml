@@ -1,0 +1,21 @@
+[package]
+name = "chat2db-cli"
+description = "Command-line delivery surface for Chat2DB Rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "chat2db"
+path = "src/main.rs"
+
+[dependencies]
+chat2db-core = { path = "../../crates/chat2db-core" }
+clap.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

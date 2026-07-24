@@ -1,0 +1,16 @@
+[package]
+name = "chat2db-contract"
+description = "Canonical API and event contracts for Chat2DB Rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

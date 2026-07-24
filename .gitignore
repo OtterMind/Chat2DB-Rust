@@ -1,0 +1,17 @@
+.DS_Store
+.idea/
+.vscode/
+
+# Rust
+/target/
+
+# Java
+java/**/target/
+
+# Frontend
+apps/frontend/node_modules/
+apps/frontend/dist/
+
+# Runtime state
+.chat2db/
+*.log

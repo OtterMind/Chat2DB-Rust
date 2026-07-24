@@ -1,0 +1,15 @@
+[package]
+name = "chat2db-core"
+description = "Transport-neutral Chat2DB product services"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+chat2db-contract = { path = "../chat2db-contract" }
+
+[lints]
+workspace = true

@@ -1,0 +1,28 @@
+[package]
+name = "chat2db-web"
+description = "Axum Web delivery surface for Chat2DB Rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum.workspace = true
+chat2db-contract = { path = "../../crates/chat2db-contract" }
+chat2db-core = { path = "../../crates/chat2db-core" }
+subtle.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true
