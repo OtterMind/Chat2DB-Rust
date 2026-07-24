@@ -447,13 +447,13 @@ final class JdbcRuntime implements AutoCloseable {
                 return;
             }
             if (terminalFailure != null) {
-                writeQueryFailure(operation.meta(), progress.current(), terminalFailure);
+                writeQueryFailure(operation, progress.current(), terminalFailure);
                 return;
             }
             QueryCompletion completedQuery = completion;
             if (completedQuery == null) {
                 writeQueryFailure(
-                        operation.meta(),
+                        operation,
                         progress.current(),
                         operation.session().decorate(RuntimeFailure.internal(
                                 "database.query_internal_failure",
@@ -471,7 +471,7 @@ final class JdbcRuntime implements AutoCloseable {
                     .build();
             try {
                 ensureFrameFits(completed, "query_completed");
-                writer.write(completed);
+                writer.write(completed, () -> operations.finish(operation));
                 progress.advance();
             } catch (IOException | RuntimeFailure failure) {
                 operation.session().markBroken();
@@ -604,7 +604,7 @@ final class JdbcRuntime implements AutoCloseable {
                         writer.peerMaximumFrameBytes());
         try {
             ensureFrameFits(response, terminalFailure == null ? "update_completed" : "update_error");
-            writer.write(response);
+            writer.write(response, () -> operations.finish(operation));
         } catch (IOException | RuntimeFailure failure) {
             operation.session().markBroken();
             diagnostics.printf(
@@ -885,16 +885,20 @@ final class JdbcRuntime implements AutoCloseable {
         return budget;
     }
 
-    private void writeQueryFailure(RequestMeta meta, long sequence, RuntimeFailure failure) {
+    private void writeQueryFailure(
+            OperationRegistry.QueryOperation operation,
+            long sequence,
+            RuntimeFailure failure) {
         try {
             ServerEnvelope response = ProtocolResponses.failure(
-                    meta, sequence, failure, writer.peerMaximumFrameBytes());
+                    operation.meta(), sequence, failure, writer.peerMaximumFrameBytes());
             ensureFrameFits(response, "query_error");
-            writer.write(response);
+            writer.write(response, () -> operations.finish(operation));
         } catch (IOException | RuntimeFailure writeFailure) {
+            operation.session().markBroken();
             diagnostics.printf(
                     "[compat-runtime] asynchronous response failed code=protocol.write_failed request_id=%s%n",
-                    meta.getRequestId());
+                    operation.requestId());
         }
     }
 

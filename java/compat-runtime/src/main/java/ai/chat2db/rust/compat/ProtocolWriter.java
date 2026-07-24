@@ -41,6 +41,10 @@ final class ProtocolWriter implements AutoCloseable {
     }
 
     void write(ServerEnvelope envelope) throws IOException {
+        write(envelope, () -> {});
+    }
+
+    void write(ServerEnvelope envelope, Runnable beforeWrite) throws IOException {
         if (closing.get()) {
             throw new IOException("protocol writer is closing");
         }
@@ -54,7 +58,7 @@ final class ProtocolWriter implements AutoCloseable {
                             : FrameCodec.FrameError.TOO_LARGE,
                     "response frame does not fit the negotiated peer limit");
         }
-        WriteRequest request = WriteRequest.message(envelope);
+        WriteRequest request = WriteRequest.message(envelope, beforeWrite);
         put(request);
         await(request.completion);
     }
@@ -104,6 +108,7 @@ final class ProtocolWriter implements AutoCloseable {
                 return;
             }
             try {
+                request.beforeWrite.run();
                 FrameCodec.writeFrame(output, request.envelope, peerMaximumFrameBytes.get());
                 request.completion.complete(null);
             } catch (IOException writerFailure) {
@@ -170,19 +175,21 @@ final class ProtocolWriter implements AutoCloseable {
     private static final class WriteRequest {
         private final ServerEnvelope envelope;
         private final boolean poison;
+        private final Runnable beforeWrite;
         private final CompletableFuture<Void> completion = new CompletableFuture<>();
 
-        private WriteRequest(ServerEnvelope envelope, boolean poison) {
+        private WriteRequest(ServerEnvelope envelope, boolean poison, Runnable beforeWrite) {
             this.envelope = envelope;
             this.poison = poison;
+            this.beforeWrite = beforeWrite;
         }
 
-        private static WriteRequest message(ServerEnvelope envelope) {
-            return new WriteRequest(envelope, false);
+        private static WriteRequest message(ServerEnvelope envelope, Runnable beforeWrite) {
+            return new WriteRequest(envelope, false, beforeWrite);
         }
 
         private static WriteRequest poison() {
-            return new WriteRequest(null, true);
+            return new WriteRequest(null, true, () -> {});
         }
     }
 }

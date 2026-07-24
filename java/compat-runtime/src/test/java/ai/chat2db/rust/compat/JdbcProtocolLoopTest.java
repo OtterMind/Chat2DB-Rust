@@ -201,6 +201,10 @@ class JdbcProtocolLoopTest {
                             .setIsolation(TransactionIsolation.TRANSACTION_ISOLATION_READ_COMMITTED))
                     .build());
             ServerEnvelope transaction = harness.read();
+            assertEquals("begin", transaction.getMeta().getRequestId());
+            assertEquals(
+                    ServerEnvelope.PayloadCase.TRANSACTION_STARTED,
+                    transaction.getPayloadCase());
             assertEquals(
                     SessionState.SESSION_STATE_TRANSACTION_ACTIVE,
                     transaction.getTransactionStarted().getSessionState());

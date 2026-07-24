@@ -146,6 +146,11 @@ scanner before error text crosses the wire.
 
 Query registration occurs synchronously on the protocol thread before the
 worker is submitted, so immediate credit and cancel requests can find it.
+For a normally settled query or update, the single protocol writer retires the
+operation and releases its session ownership immediately before writing the
+first byte of the terminal frame. A request sent after observing that terminal
+frame therefore cannot collide with the completed operation, while its response
+still remains ordered behind the terminal frame on the wire.
 Deadlines have a watchdog and cancellation uses a separate bounded worker. If
 driver cancellation does not settle before the terminal timeout, Java returns
 `UNKNOWN` with a `BROKEN` session but retains the ResultSet, Statement,

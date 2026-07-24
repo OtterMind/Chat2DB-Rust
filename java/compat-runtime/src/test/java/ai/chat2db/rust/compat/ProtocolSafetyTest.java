@@ -11,11 +11,14 @@ import ai.chat2db.rust.compat.protocol.v1.RequestMeta;
 import ai.chat2db.rust.compat.protocol.v1.ServerEnvelope;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.FilterOutputStream;
+import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 class ProtocolSafetyTest {
@@ -64,6 +67,38 @@ class ProtocolSafetyTest {
                 .orElseThrow();
         assertEquals("small", written.getMeta().getRequestId());
         assertEquals(7, written.getPong().getNonce());
+    }
+
+    @Test
+    void preWriteHookRunsBeforeTheTerminalFrameBecomesObservable() throws Exception {
+        AtomicBoolean hookRan = new AtomicBoolean();
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        FilterOutputStream guardedOutput = new FilterOutputStream(bytes) {
+            @Override
+            public void write(int value) throws IOException {
+                assertTrue(hookRan.get(), "the pre-write hook must run before any frame byte");
+                super.write(value);
+            }
+
+            @Override
+            public void write(byte[] buffer, int offset, int length) throws IOException {
+                assertTrue(hookRan.get(), "the pre-write hook must run before any frame byte");
+                super.write(buffer, offset, length);
+            }
+        };
+        ServerEnvelope terminal = ProtocolResponses.response(meta("terminal"), 0, true)
+                .setPong(Pong.newBuilder().setNonce(11))
+                .build();
+
+        try (ProtocolWriter writer = new ProtocolWriter(guardedOutput)) {
+            writer.write(terminal, () -> hookRan.set(true));
+        }
+
+        assertTrue(hookRan.get());
+        ServerEnvelope written = FrameCodec.readFrame(
+                        new ByteArrayInputStream(bytes.toByteArray()), ServerEnvelope.parser())
+                .orElseThrow();
+        assertEquals("terminal", written.getMeta().getRequestId());
     }
 
     @Test
