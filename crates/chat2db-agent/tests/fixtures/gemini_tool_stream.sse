@@ -1,0 +1,5 @@
+data: {"candidates":[{"index":0,"content":{"parts":[{"thought":true,"text":"private"},{"text":"结果"}]}}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":1,"totalTokenCount":5}}
+
+data: {"candidates":[{"index":0,"content":{"parts":[{"functionCall":{"name":"query","args":{"sql":"select 1"}}}]},"finishReason":"STOP"}]}
+
+: fixture eof
