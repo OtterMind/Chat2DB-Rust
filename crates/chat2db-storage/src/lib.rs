@@ -373,6 +373,7 @@ pub(crate) fn secure_directory(path: &Path) -> Result<(), StorageError> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 pub(crate) fn secure_directory(_path: &Path) -> Result<(), StorageError> {
     Ok(())
 }
@@ -386,6 +387,7 @@ pub(crate) fn secure_file(path: &Path) -> Result<(), StorageError> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 pub(crate) fn secure_file(_path: &Path) -> Result<(), StorageError> {
     Ok(())
 }
@@ -398,6 +400,7 @@ pub(crate) fn sync_directory(path: &Path) -> Result<(), StorageError> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 pub(crate) fn sync_directory(_path: &Path) -> Result<(), StorageError> {
     Ok(())
 }
