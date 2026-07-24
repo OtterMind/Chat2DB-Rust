@@ -11,12 +11,14 @@ repository.workspace = true
 [dependencies]
 aes-gcm.workspace = true
 base64.workspace = true
+chat2db-contract = { path = "../chat2db-contract" }
 chat2db-engine-protocol = { path = "../chat2db-engine-protocol" }
 directories.workspace = true
 fs2.workspace = true
 prost.workspace = true
 rand.workspace = true
 rusqlite.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

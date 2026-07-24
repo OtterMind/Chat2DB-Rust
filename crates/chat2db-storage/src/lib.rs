@@ -1,7 +1,9 @@
 //! Durable `Chat2DB` product state and retained query-result storage.
 
+mod agent;
 mod datasource;
 mod error;
+mod provider;
 mod result_store;
 mod secret;
 mod vault;
@@ -18,10 +20,23 @@ use directories::ProjectDirs;
 use fs2::FileExt;
 use rusqlite::{Connection, OpenFlags};
 
+pub use agent::{
+    AgentMessageRecord, AgentMessageRole, AgentRecoveryReport, AgentResultHandle, AgentRunMessage,
+    AgentRunRecord, AgentRunStatus, AgentRunUpdate, AgentSessionRecord, AppendAgentMessage,
+    CancelAgentRun, CancelledAgentRun, CompleteAgentRun, CompletedAgentRun, CreateAgentSession,
+    FailAgentRun, FailedAgentRun, MAX_AGENT_MESSAGE_BYTES, MAX_AGENT_MESSAGE_BYTES_PER_SESSION,
+    MAX_AGENT_MESSAGE_PAGE_SIZE, MAX_AGENT_MESSAGES_PER_SESSION, MAX_AGENT_SESSION_TITLE_BYTES,
+    RequestToolPermission, SqlPermissionMode, StartAgentRun, StartedAgentRun,
+    ToolPermissionDecision, ToolPermissionRecord, ToolPermissionStatus, UnknownAgentWrite,
+    UpdateAgentSession,
+};
 pub use datasource::{
     CreateDatasource, DatasourceRecord, SecretChange, SecretCleanupReport, UpdateDatasource,
 };
 pub use error::StorageError;
+pub use provider::{
+    CreateProviderProfile, ProviderKind, ProviderProfileRecord, UpdateProviderProfile,
+};
 pub use result_store::{
     MAX_RESULT_PAGE_BYTES, MAX_RESULT_PAGE_ROWS, MIN_RESULT_PAGE_BYTES, PageRequest, PurgeReport,
     RecoveryReport, ResultMetadata, ResultPage, ResultWriter,
@@ -34,7 +49,7 @@ pub use vault::OsSecretVault;
 const DATABASE_FILE: &str = "chat2db.sqlite3";
 const LOCK_FILE: &str = ".chat2db.lock";
 const RESULTS_DIRECTORY: &str = "results";
-const CURRENT_SCHEMA_VERSION: i64 = 1;
+const CURRENT_SCHEMA_VERSION: i64 = 2;
 
 #[cfg(test)]
 #[derive(Clone, Copy)]
@@ -49,6 +64,9 @@ pub(crate) enum FaultPoint {
     ResultCompletionReadback = 1 << 6,
     DatasourceCreateBeforeCommit = 1 << 7,
     ResultChunkBeforeCommit = 1 << 8,
+    ProviderCreateAfterCommit = 1 << 9,
+    ProviderUpdateAfterCommit = 1 << 10,
+    ProviderDeleteAfterCommit = 1 << 11,
 }
 
 #[cfg(test)]
@@ -97,6 +115,8 @@ pub struct StartupReport {
     pub results: RecoveryReport,
     /// Deferred secret deletions retried against the configured vault.
     pub secrets: SecretCleanupReport,
+    /// Agent runs, permissions, and result handles recovered at startup.
+    pub agents: AgentRecoveryReport,
 }
 
 impl Default for StorageOptions {
@@ -246,7 +266,9 @@ impl Storage {
                 source,
             })?;
 
-        let recovery = storage.recover_at(now_millis()?)?;
+        let timestamp = now_millis()?;
+        let recovery = storage.recover_at(timestamp)?;
+        let agents = storage.recover_agents_at(timestamp)?;
         let secrets = storage.reconcile_secrets()?;
         storage
             .inner
@@ -254,6 +276,7 @@ impl Storage {
             .set(StartupReport {
                 results: recovery,
                 secrets,
+                agents,
             })
             .map_err(|_| {
                 StorageError::Integrity("startup recovery initialized twice".to_owned())
@@ -296,7 +319,7 @@ impl Storage {
         self.inner
             .secret_gate
             .lock()
-            .map_err(|_| StorageError::Integrity("datasource secret lock is poisoned".to_owned()))
+            .map_err(|_| StorageError::Integrity("storage secret lock is poisoned".to_owned()))
     }
 
     pub(crate) fn lock_results(&self) -> Result<MutexGuard<'_, HashSet<String>>, StorageError> {
@@ -326,16 +349,25 @@ fn configure_connection(connection: &Connection) -> Result<(), StorageError> {
 }
 
 fn migrate(connection: &Connection) -> Result<(), StorageError> {
-    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let mut version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version > CURRENT_SCHEMA_VERSION {
         return Err(StorageError::UnsupportedSchema {
             found: version,
             supported: CURRENT_SCHEMA_VERSION,
         });
     }
-    if version == 0
-        && let Err(error) = connection.execute_batch(include_str!("../migrations/001_initial.sql"))
-    {
+    if version == 0 {
+        apply_migration(connection, include_str!("../migrations/001_initial.sql"))?;
+        version = 1;
+    }
+    if version == 1 {
+        apply_migration(connection, include_str!("../migrations/002_agent.sql"))?;
+    }
+    Ok(())
+}
+
+fn apply_migration(connection: &Connection, sql: &str) -> Result<(), StorageError> {
+    if let Err(error) = connection.execute_batch(sql) {
         let _ = connection.execute_batch("ROLLBACK");
         return Err(error.into());
     }
@@ -464,7 +496,7 @@ mod tests {
         let synchronous: i64 = connection
             .pragma_query_value(None, "synchronous", |row| row.get(0))
             .expect("synchronous reads");
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
         assert_eq!(foreign_keys, 1);
         assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
         assert_eq!(synchronous, 2);
@@ -483,22 +515,103 @@ mod tests {
         let database = directory.path().join(DATABASE_FILE);
         Connection::open(&database)
             .expect("database opens")
-            .execute_batch("PRAGMA user_version = 2")
+            .execute_batch("PRAGMA user_version = 3")
             .expect("test version updates");
 
         let error = Storage::open(directory.path(), vault()).expect_err("newer schema must fail");
         assert!(matches!(
             error,
             StorageError::UnsupportedSchema {
-                found: 2,
-                supported: 1
+                found: 3,
+                supported: 2
             }
         ));
         let version: i64 = Connection::open(database)
             .expect("database opens")
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version reads");
+        assert_eq!(version, 3);
+    }
+
+    #[test]
+    fn version_one_upgrades_atomically_and_preserves_existing_state() {
+        let directory = TempDir::new().expect("temp dir");
+        let database = directory.path().join(DATABASE_FILE);
+        let connection = Connection::open(&database).expect("database opens");
+        connection
+            .execute_batch(include_str!("../migrations/001_initial.sql"))
+            .expect("version one schema creates");
+        connection
+            .execute(
+                "INSERT INTO datasources (
+                    id, name, driver_id, revision, created_at_ms, updated_at_ms
+                 ) VALUES ('existing', 'Existing', 'driver', 1, 1, 1)",
+                [],
+            )
+            .expect("version one state inserts");
+        drop(connection);
+
+        let storage = Storage::open(directory.path(), vault()).expect("version one upgrades");
+        let connection = storage.connection().expect("connection opens");
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("schema version reads");
+        let provider_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'provider_profiles'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("provider table count reads");
         assert_eq!(version, 2);
+        assert_eq!(provider_table, 1);
+        assert!(
+            storage
+                .get_datasource("existing")
+                .expect("datasource reads")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn failed_version_two_upgrade_rolls_back_every_new_agent_table() {
+        let directory = TempDir::new().expect("temp dir");
+        let database = directory.path().join(DATABASE_FILE);
+        let connection = Connection::open(&database).expect("database opens");
+        connection
+            .execute_batch(include_str!("../migrations/001_initial.sql"))
+            .expect("version one schema creates");
+        connection
+            .execute_batch("CREATE TABLE agent_runs (sentinel TEXT)")
+            .expect("conflicting table creates");
+        drop(connection);
+
+        Storage::open(directory.path(), vault()).expect_err("version two upgrade must fail");
+        let connection = Connection::open(database).expect("database reopens");
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("schema version reads");
+        let partial_tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name IN (
+                    'provider_profiles', 'agent_sessions', 'agent_messages'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("partial table count reads");
+        let sentinel_columns: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('agent_runs') WHERE name = 'sentinel'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("sentinel column count reads");
+        assert_eq!(version, 1);
+        assert_eq!(partial_tables, 0);
+        assert_eq!(sentinel_columns, 1);
     }
 
     #[test]

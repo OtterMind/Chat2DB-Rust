@@ -1,6 +1,6 @@
 use std::fmt::Formatter;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use uuid::Uuid;
 
 use crate::{SecretRef, SecretValue, Storage, StorageError, now_millis};
@@ -253,7 +253,9 @@ impl Storage {
 
         let mutation = (|| -> Result<(), StorageError> {
             let mut connection = self.connection()?;
-            let transaction = connection.transaction()?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            reject_active_datasource_mutation(&transaction, id)?;
             let changed = transaction.execute(
                 "UPDATE datasources
                  SET name = ?1, driver_id = ?2, secret_ref = ?3,
@@ -328,7 +330,9 @@ impl Storage {
         let timestamp = now_millis()?;
         let mutation = (|| -> Result<(), StorageError> {
             let mut connection = self.connection()?;
-            let transaction = connection.transaction()?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            reject_active_datasource_mutation(&transaction, id)?;
             let changed = transaction.execute(
                 "DELETE FROM datasources WHERE id = ?1 AND revision = ?2",
                 params![
@@ -438,13 +442,15 @@ impl Storage {
         self.reconcile_secrets_locked()
     }
 
-    fn reconcile_secrets_locked(&self) -> Result<SecretCleanupReport, StorageError> {
+    pub(crate) fn reconcile_secrets_locked(&self) -> Result<SecretCleanupReport, StorageError> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
             "SELECT q.secret_ref
              FROM secret_cleanup_queue q
              WHERE NOT EXISTS (
                  SELECT 1 FROM datasources d WHERE d.secret_ref = q.secret_ref
+             ) AND NOT EXISTS (
+                 SELECT 1 FROM provider_profiles p WHERE p.secret_ref = q.secret_ref
              )
              ORDER BY q.enqueued_at_ms, q.secret_ref",
         )?;
@@ -461,6 +467,8 @@ impl Storage {
                     "DELETE FROM secret_cleanup_queue WHERE secret_ref = ?1
                      AND NOT EXISTS (
                          SELECT 1 FROM datasources WHERE secret_ref = ?1
+                     ) AND NOT EXISTS (
+                         SELECT 1 FROM provider_profiles WHERE secret_ref = ?1
                      )",
                     [reference.as_str()],
                 )?;
@@ -478,7 +486,7 @@ impl Storage {
         })
     }
 
-    fn stage_secret(&self, value: &SecretValue) -> Result<SecretRef, StorageError> {
+    pub(crate) fn stage_secret(&self, value: &SecretValue) -> Result<SecretRef, StorageError> {
         let reference = SecretRef::generate();
         let connection = self.connection()?;
         connection.execute(
@@ -495,7 +503,11 @@ impl Storage {
         Ok(reference)
     }
 
-    fn cleanup_staged_secret(&self, reference: &SecretRef, primary: StorageError) -> StorageError {
+    pub(crate) fn cleanup_staged_secret(
+        &self,
+        reference: &SecretRef,
+        primary: StorageError,
+    ) -> StorageError {
         match self.inner.vault.delete(reference) {
             Ok(()) => {
                 if let Ok(connection) = self.connection() {
@@ -503,6 +515,8 @@ impl Storage {
                         "DELETE FROM secret_cleanup_queue WHERE secret_ref = ?1
                          AND NOT EXISTS (
                              SELECT 1 FROM datasources WHERE secret_ref = ?1
+                         ) AND NOT EXISTS (
+                             SELECT 1 FROM provider_profiles WHERE secret_ref = ?1
                          )",
                         [reference.as_str()],
                     );
@@ -571,6 +585,29 @@ impl Storage {
             actual: self.get_datasource(id)?.map(|record| record.revision),
         })
     }
+}
+
+fn reject_active_datasource_mutation(
+    connection: &Connection,
+    id: &str,
+) -> Result<(), StorageError> {
+    let active: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM agent_sessions s
+            JOIN agent_runs r ON r.session_id = s.id
+            WHERE s.datasource_id = ?1 AND r.status IN ('running', 'waiting_permission')
+         )",
+        [id],
+        |row| row.get(0),
+    )?;
+    if active {
+        return Err(StorageError::AgentDependencyBusy {
+            resource: "datasource",
+            id: id.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 fn validate_datasource(name: &str, driver_id: &str) -> Result<(), StorageError> {

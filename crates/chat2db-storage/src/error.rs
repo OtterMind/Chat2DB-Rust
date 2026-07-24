@@ -62,6 +62,94 @@ pub enum StorageError {
     /// A datasource field violates the durable contract.
     #[error("invalid datasource: {0}")]
     InvalidDatasource(&'static str),
+    /// The requested provider profile does not exist.
+    #[error("provider profile not found: {0}")]
+    ProviderNotFound(String),
+    /// A provider update lost an optimistic-concurrency race.
+    #[error("provider revision conflict for {id}: expected {expected}, actual {actual:?}")]
+    ProviderRevisionConflict {
+        /// Provider profile id.
+        id: String,
+        /// Revision supplied by the caller.
+        expected: u64,
+        /// Current revision, or `None` when deleted.
+        actual: Option<u64>,
+    },
+    /// A provider field violates the durable contract.
+    #[error("invalid provider profile: {0}")]
+    InvalidProvider(&'static str),
+    /// The requested agent session does not exist.
+    #[error("agent session not found: {0}")]
+    AgentSessionNotFound(String),
+    /// A session update lost an optimistic-concurrency race.
+    #[error("agent session revision conflict for {id}: expected {expected}, actual {actual:?}")]
+    AgentSessionRevisionConflict {
+        /// Session id.
+        id: String,
+        /// Revision supplied by the caller.
+        expected: u64,
+        /// Current revision, or `None` when deleted.
+        actual: Option<u64>,
+    },
+    /// A session already owns a running or permission-waiting agent run.
+    #[error("agent session already has an active run: {0}")]
+    AgentSessionBusy(String),
+    /// A mutable provider or datasource is bound to an active agent run.
+    #[error("{resource} is bound to an active agent run: {id}")]
+    AgentDependencyBusy {
+        /// Stable resource category.
+        resource: &'static str,
+        /// Provider or datasource id.
+        id: String,
+    },
+    /// The requested agent run does not exist.
+    #[error("agent run not found: {0}")]
+    AgentRunNotFound(String),
+    /// An agent run lifecycle CAS failed.
+    #[error("agent run state conflict for {id}: expected {expected}, actual {actual}")]
+    AgentStateConflict {
+        /// Run id.
+        id: String,
+        /// Expected persisted state.
+        expected: &'static str,
+        /// Actual persisted state.
+        actual: &'static str,
+    },
+    /// Agent state or input violates the durable contract.
+    #[error("invalid agent state: {0}")]
+    InvalidAgent(&'static str),
+    /// A bounded session-message resource limit was reached.
+    #[error("agent quota exceeded for {resource}: limit {limit}")]
+    AgentQuotaExceeded {
+        /// Bounded resource name.
+        resource: &'static str,
+        /// Configured hard limit.
+        limit: u64,
+    },
+    /// The requested tool permission does not exist.
+    #[error("tool permission not found: {0}")]
+    PermissionNotFound(String),
+    /// A tool-permission decision or consume lost its revision CAS.
+    #[error("tool permission revision conflict for {id}: expected {expected}, actual {actual:?}")]
+    PermissionRevisionConflict {
+        /// Permission id.
+        id: String,
+        /// Expected revision.
+        expected: u64,
+        /// Current revision, or `None` when deleted.
+        actual: Option<u64>,
+    },
+    /// A permission cannot authorize execution.
+    #[error("tool permission {id} is not executable: {reason}")]
+    PermissionNotExecutable {
+        /// Permission or owning run id.
+        id: String,
+        /// Non-sensitive rejection reason.
+        reason: &'static str,
+    },
+    /// A result handle does not exist, is expired, or belongs to another owner.
+    #[error("agent result handle not found: {0}")]
+    ResultHandleNotFound(String),
     /// The external secret vault rejected an operation.
     #[error("secret vault {operation} failed: {source}")]
     SecretVault {

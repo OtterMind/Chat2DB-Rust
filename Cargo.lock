@@ -672,6 +672,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
+ "chat2db-contract",
  "chat2db-engine-protocol",
  "directories",
  "fs2",
@@ -679,6 +680,7 @@ dependencies = [
  "prost",
  "rand 0.9.5",
  "rusqlite",
+ "serde_json",
  "sha2",
  "tempfile",
  "thiserror 2.0.19",
