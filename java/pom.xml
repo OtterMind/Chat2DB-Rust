@@ -22,9 +22,14 @@
         <junit.version>5.12.2</junit.version>
         <maven.antrun.version>3.2.0</maven.antrun.version>
         <maven.compiler.version>3.14.0</maven.compiler.version>
+        <maven.failsafe.version>3.5.3</maven.failsafe.version>
         <maven.jar.version>3.4.2</maven.jar.version>
+        <maven.shade.version>3.6.0</maven.shade.version>
         <maven.enforcer.version>3.6.2</maven.enforcer.version>
         <maven.surefire.version>3.5.3</maven.surefire.version>
+        <os.maven.version>1.7.1</os.maven.version>
+        <protobuf.maven.version>0.6.1</protobuf.maven.version>
+        <protobuf.version>4.31.1</protobuf.version>
     </properties>
 
     <dependencyManagement>
@@ -36,10 +41,22 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+            <dependency>
+                <groupId>com.google.protobuf</groupId>
+                <artifactId>protobuf-java</artifactId>
+                <version>${protobuf.version}</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
     <build>
+        <extensions>
+            <extension>
+                <groupId>kr.motd.maven</groupId>
+                <artifactId>os-maven-plugin</artifactId>
+                <version>${os.maven.version}</version>
+            </extension>
+        </extensions>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -82,8 +99,21 @@
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-failsafe-plugin</artifactId>
+                    <version>${maven.failsafe.version}</version>
+                    <configuration>
+                        <useModulePath>false</useModulePath>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-jar-plugin</artifactId>
                     <version>${maven.jar.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-shade-plugin</artifactId>
+                    <version>${maven.shade.version}</version>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
@@ -92,6 +122,11 @@
                     <configuration>
                         <useModulePath>false</useModulePath>
                     </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.xolstice.maven.plugins</groupId>
+                    <artifactId>protobuf-maven-plugin</artifactId>
+                    <version>${protobuf.maven.version}</version>
                 </plugin>
             </plugins>
         </pluginManagement>

@@ -2,9 +2,15 @@
 
 ## Status
 
-This is the target architecture. The repository reports implementation status
-through code, tests, and the staged-delivery ledger; target components are not
-treated as implemented until their acceptance gate passes.
+The repository has completed the buildable baseline and the versioned
+Rust-to-Java lifecycle protocol. Protobuf generation, framing, handshake, ping,
+request correlation, stderr capture, process exit classification, and shutdown
+are implemented and cross-language tested.
+
+JDBC sessions, database operations, streaming rows, storage, Tauri, AI, MCP,
+plugin migration, and packaging remain target components. In particular,
+protocol readiness is not reported as database readiness before the Stage 3
+JDBC gate passes.
 
 ## Ownership
 
@@ -53,12 +59,17 @@ inside the Java process.
 - Desktop and Web adapters call the same application services and contain no
   business rules.
 - The Java protocol is versioned and capability-negotiated.
-- Every cross-process request carries request, session, deadline, cancellation,
-  sequence, and trace identity.
+- Every cross-process request carries request, optional session, deadline,
+  cancellation, and trace identity. Responses add stream sequence and terminal
+  state while echoing request and trace identity.
 - Typed row batches use explicit backpressure; stdout is protocol-only and
   stderr is diagnostic-only.
 - Read-only metadata/parser work may retry after a Java restart. Transactions,
   DML, and unknown-outcome operations are never replayed automatically.
+
+The implemented lifecycle subset is documented in [`protocol.md`](protocol.md).
+It intentionally contains no placeholder database request that could report a
+false success.
 
 ## Database boundary
 

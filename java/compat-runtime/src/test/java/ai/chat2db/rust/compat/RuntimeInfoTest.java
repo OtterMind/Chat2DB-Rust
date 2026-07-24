@@ -13,8 +13,9 @@ class RuntimeInfoTest {
 
         assertEquals("chat2db-java-compat", info.name());
         assertEquals("development", info.version());
-        assertEquals(0, info.protocolMajor());
-        assertEquals("chat2db-java-compat development (protocol 0.1)", info.displayVersion());
+        assertEquals(1, info.protocolMajor());
+        assertEquals(0, info.protocolMinor());
+        assertEquals("chat2db-java-compat development (protocol 1.0)", info.displayVersion());
     }
 
     @Test

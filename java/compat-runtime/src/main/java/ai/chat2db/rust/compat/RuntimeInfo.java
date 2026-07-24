@@ -18,7 +18,11 @@ public record RuntimeInfo(String name, String version, int protocolMajor, int pr
         String implementationVersion = Optional.ofNullable(
                         RuntimeInfo.class.getPackage().getImplementationVersion())
                 .orElse("development");
-        return new RuntimeInfo("chat2db-java-compat", implementationVersion, 0, 1);
+        return new RuntimeInfo(
+                "chat2db-java-compat",
+                implementationVersion,
+                ProtocolLoop.PROTOCOL_MAJOR,
+                ProtocolLoop.PROTOCOL_MINOR);
     }
 
     public String displayVersion() {

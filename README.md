@@ -4,19 +4,24 @@ Private implementation of the Chat2DB Community hybrid runtime.
 
 ## Current state
 
-The repository currently provides the buildable bootstrap surface:
+The repository currently provides the first two buildable stages:
 
 - canonical Rust API contracts;
 - a transport-neutral Rust application service root;
 - an Axum health API bound to loopback by default;
 - a Rust CLI status command;
 - a React runtime-status shell;
-- a Java 17 compatibility-process identity and test baseline.
+- one Protobuf 1.0 lifecycle contract generated in Rust and Java;
+- a supervised Rust client with handshake, ping, bounded stderr capture,
+  request correlation, crash reporting, and forced/clean shutdown;
+- a shaded Java 17 compatibility engine whose stdout is protocol-only; and
+- real Rust-to-Java process integration tests.
 
-Database IPC, JDBC sessions, SQLite storage, Tauri, AI, MCP, driver packs, and
+JDBC operations and sessions, SQLite storage, Tauri, AI, MCP, driver packs, and
 the existing Chat2DB plugin/ANTLR estate are tracked as explicit staged work in
-[`docs/stages.md`](docs/stages.md). Disabled components are reported as disabled;
-the bootstrap build does not pretend that those capabilities are implemented.
+[`docs/stages.md`](docs/stages.md). The lifecycle protocol does not yet expose a
+database operation, and runtime health continues to report the database engine
+as disabled rather than treating protocol readiness as JDBC readiness.
 
 ## Architecture
 
@@ -33,7 +38,8 @@ React / TypeScript
 ```
 
 See [`docs/architecture.md`](docs/architecture.md) for ownership and protocol
-decisions.
+decisions and [`docs/protocol.md`](docs/protocol.md) for the implemented 1.0
+process contract.
 
 ## Build
 
@@ -43,7 +49,7 @@ Prerequisites:
 - Java 17; the checked-in Maven Wrapper downloads Maven 3.9.12;
 - Node.js 22.12 or newer within the Node 22 release line, and npm 10.9.7.
 
-Run all current verification gates:
+Run all current verification gates, including real Rust-to-Java process tests:
 
 ```bash
 make verify
@@ -75,6 +81,9 @@ apps/
 crates/
   chat2db-contract/  canonical DTOs and errors
   chat2db-core/      transport-neutral product services
+  chat2db-engine-protocol/ generated internal wire types and frame codec
+  chat2db-java-bridge/ supervised Java process client
+proto/               canonical Rust-Java process schema
 java/
   compat-runtime/    private Java compatibility process
 docs/                architecture and staged delivery contract

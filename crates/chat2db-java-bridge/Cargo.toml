@@ -1,0 +1,39 @@
+[package]
+name = "chat2db-java-bridge"
+description = "Supervised client for the private Java compatibility engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+chat2db-engine-protocol = { path = "../chat2db-engine-protocol" }
+prost = { workspace = true, optional = true }
+thiserror.workspace = true
+tokio.workspace = true
+
+[[bin]]
+name = "chat2db-engine-fixture"
+path = "tests/support/engine_fixture.rs"
+required-features = ["test-fixture"]
+
+[[test]]
+name = "supervisor"
+path = "tests/supervisor.rs"
+required-features = ["test-fixture"]
+
+[[test]]
+name = "java_engine"
+path = "tests/java_engine.rs"
+required-features = ["java-integration"]
+
+[features]
+default = []
+java-integration = []
+test-fixture = ["dep:prost"]
+
+[lints]
+workspace = true

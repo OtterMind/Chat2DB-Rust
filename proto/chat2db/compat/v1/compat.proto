@@ -1,0 +1,109 @@
+syntax = "proto3";
+
+package chat2db.compat.v1;
+
+option java_multiple_files = true;
+option java_package = "ai.chat2db.rust.compat.protocol.v1";
+option java_outer_classname = "CompatibilityProtocol";
+
+message ProtocolVersion {
+  uint32 major = 1;
+  uint32 minor = 2;
+}
+
+message RequestMeta {
+  string request_id = 1;
+  string trace_id = 2;
+  optional string session_id = 3;
+  optional uint64 deadline_unix_millis = 4;
+  optional string cancellation_id = 5;
+}
+
+message ResponseMeta {
+  string request_id = 1;
+  string trace_id = 2;
+  uint64 sequence = 3;
+  bool terminal = 4;
+}
+
+message ClientEnvelope {
+  RequestMeta meta = 1;
+
+  oneof payload {
+    ClientHello hello = 10;
+    Ping ping = 11;
+    Shutdown shutdown = 12;
+  }
+}
+
+message ServerEnvelope {
+  ResponseMeta meta = 1;
+
+  oneof payload {
+    ServerHello hello = 10;
+    Pong pong = 11;
+    ShutdownAck shutdown_ack = 12;
+    EngineError error = 15;
+  }
+}
+
+message ClientHello {
+  string runtime_name = 1;
+  string runtime_version = 2;
+  repeated ProtocolVersion supported_versions = 3;
+  repeated string required_capabilities = 4;
+  uint32 max_receive_frame_bytes = 5;
+}
+
+message ServerHello {
+  string engine_name = 1;
+  string engine_version = 2;
+  string engine_instance_id = 3;
+  ProtocolVersion selected_version = 4;
+  repeated string capabilities = 5;
+  uint32 max_receive_frame_bytes = 6;
+}
+
+message Ping {
+  uint64 nonce = 1;
+}
+
+message Pong {
+  uint64 nonce = 1;
+  uint64 uptime_millis = 2;
+}
+
+message Shutdown {
+  string reason = 1;
+}
+
+message ShutdownAck {}
+
+message EngineError {
+  string code = 1;
+  string message = 2;
+  ErrorCategory category = 3;
+  bool retryable = 4;
+  bool fatal = 5;
+  OperationOutcome outcome = 6;
+  map<string, string> metadata = 7;
+}
+
+enum ErrorCategory {
+  ERROR_CATEGORY_UNSPECIFIED = 0;
+  ERROR_CATEGORY_PROTOCOL = 1;
+  ERROR_CATEGORY_VALIDATION = 2;
+  ERROR_CATEGORY_CANCELLED = 3;
+  ERROR_CATEGORY_DEADLINE = 4;
+  ERROR_CATEGORY_UNAVAILABLE = 5;
+  ERROR_CATEGORY_DATABASE = 6;
+  ERROR_CATEGORY_INTERNAL = 7;
+}
+
+enum OperationOutcome {
+  OPERATION_OUTCOME_UNSPECIFIED = 0;
+  OPERATION_OUTCOME_NOT_APPLICABLE = 1;
+  OPERATION_OUTCOME_NOT_STARTED = 2;
+  OPERATION_OUTCOME_KNOWN_FAILED = 3;
+  OPERATION_OUTCOME_UNKNOWN = 4;
+}
