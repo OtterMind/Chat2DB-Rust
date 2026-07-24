@@ -10,6 +10,10 @@ repository.workspace = true
 
 [dependencies]
 chat2db-contract = { path = "../chat2db-contract" }
+chat2db-storage = { path = "../chat2db-storage" }
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

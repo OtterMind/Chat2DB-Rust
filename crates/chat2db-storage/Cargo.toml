@@ -1,0 +1,26 @@
+[package]
+name = "chat2db-storage"
+description = "SQLite product state and disk-backed query results for Chat2DB"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+chat2db-engine-protocol = { path = "../chat2db-engine-protocol" }
+directories.workspace = true
+fs2.workspace = true
+prost.workspace = true
+rusqlite.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

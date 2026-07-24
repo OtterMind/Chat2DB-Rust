@@ -9,7 +9,7 @@ in runtime health until then.
 | 1 | Complete | Repository baseline | Rust format/Clippy/tests, Java tests/package, frontend typecheck/build, CI workflow |
 | 2 | Complete | Rust-Java process protocol | Generated Protobuf in both languages, handshake, ping, version negotiation, stderr capture, process shutdown and crash tests |
 | 3 | Complete | JDBC vertical slice | Dynamic H2 driver load, session lifecycle, typed query batches, backpressure, cancellation, transaction semantics, Rust integration tests |
-| 4 | Planned | Product and result storage | SQLite migrations, secret boundary, datasource records, disk-backed result chunks, paging, expiry and recovery tests |
+| 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
 | 5 | Planned | Product transports | Shared generated frontend contract, Axum APIs/streams, Tauri 2 IPC/events, desktop/Web parity tests |
 | 6 | Planned | Agent, MCP, and CLI | Provider adapters, bounded tool loop, result handles, compaction, SQL permissions, `rmcp`, local IPC attachment |
 | 7 | Planned | Chat2DB compatibility estate | Existing database SPI/plugins, JDBC packs, Java ANTLR parsers, metadata/builders, per-dialect conformance |
@@ -21,6 +21,17 @@ typed query batches under explicit limits, credits, deadlines, and
 cancellation. It does not mean the bootstrap product runtime composes that
 bridge: `chat2db-core` and the Web adapter do not yet start the Java supervisor,
 so `database-engine` remains `disabled` until product integration is delivered.
+
+Stage 4 completion means `chat2db-storage` owns a process-locked SQLite schema,
+datasource revisions and secret references, persistent secret-cleanup intents,
+and immutable completed result files indexed by full-frame hashes. Result pages
+have row and encoded-byte limits, quota accounting includes indexed and physical
+files, active writers hold leases, and startup rejects unknown result formats
+before mutation. `chat2db-core` can accept an opened `Storage`, but the bootstrap
+Web and CLI adapters do not compose it: a production OS-vault adapter and public
+datasource/result transports remain later-stage work. Consequently their
+`local-storage` health remains `disabled`, and `database-engine` remains
+`disabled` independently.
 
 ## Commit policy
 

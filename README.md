@@ -4,7 +4,7 @@ Private implementation of the Chat2DB Community hybrid runtime.
 
 ## Current state
 
-The repository currently provides the first three buildable stages:
+The repository currently provides the first four buildable stages:
 
 - canonical Rust API contracts;
 - a transport-neutral Rust application service root;
@@ -19,14 +19,21 @@ The repository currently provides the first three buildable stages:
 - Rust driver, session, transaction, update, and credit-streaming query APIs;
 - typed row batches, cancellation, deadlines, bounded results, and explicit
   unknown-outcome handling; and
-- real Rust-to-Java H2 integration tests with H2 outside the engine JAR.
+- real Rust-to-Java H2 integration tests with H2 outside the engine JAR;
+- process-locked SQLite storage with verified WAL, foreign keys, full
+  synchronous writes, transactional migrations, and startup integrity checks;
+- revisioned datasource metadata whose complete connection descriptor lives
+  behind an injected, readiness-checked secret-vault boundary; and
+- disk-backed Protobuf result frames with SHA-256 indexes, row/byte-bounded
+  paging, a physical-byte quota, expiry, writer cleanup, and crash recovery.
 
-SQLite storage, Tauri, AI, MCP, signed driver packs, and the existing Chat2DB
-plugin/ANTLR estate are tracked as explicit staged work in
-[`docs/stages.md`](docs/stages.md). The bootstrap Web and core composition do
-not yet start the Java supervisor, so runtime health continues to report the
-database engine as disabled. This avoids presenting an integration-tested
-bridge as a product-wired database service.
+Tauri, AI, MCP, signed driver packs, and the existing Chat2DB plugin/ANTLR
+estate are tracked as explicit staged work in [`docs/stages.md`](docs/stages.md).
+Stage 4 exposes storage through `Application::with_storage`, but the bootstrap
+Web and CLI adapters intentionally use `Application::new`: no production OS
+secret-vault adapter or Stage 5 datasource/result transport is composed yet.
+Their runtime health therefore keeps local storage disabled. The bootstrap also
+does not start the Java supervisor, so the database engine remains disabled.
 
 ## Architecture
 
@@ -95,6 +102,7 @@ crates/
   chat2db-core/      transport-neutral product services
   chat2db-engine-protocol/ generated internal wire types and frame codec
   chat2db-java-bridge/ supervised Java process client
+  chat2db-storage/   SQLite state, secret references, and retained results
 proto/               canonical Rust-Java process schema
 java/
   compat-runtime/    private Java compatibility process

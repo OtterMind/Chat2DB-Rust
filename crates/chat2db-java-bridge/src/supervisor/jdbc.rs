@@ -411,6 +411,38 @@ impl JdbcValue {
     }
 }
 
+impl From<JdbcValue> for wire::JdbcValue {
+    fn from(value: JdbcValue) -> Self {
+        use wire::jdbc_value::Value;
+
+        let value = match value {
+            JdbcValue::Null => Value::NullValue(wire::JdbcNull {}),
+            JdbcValue::Boolean(value) => Value::BooleanValue(value),
+            JdbcValue::SignedInteger(value) => Value::SignedIntegerValue(value),
+            JdbcValue::UnsignedInteger(value) => Value::UnsignedIntegerValue(value),
+            JdbcValue::Float32(value) => Value::Float32Value(value),
+            JdbcValue::Float64(value) => Value::Float64Value(value),
+            JdbcValue::Decimal(value) => Value::DecimalValue(value),
+            JdbcValue::Text(value) => Value::TextValue(value),
+            JdbcValue::Binary(value) => Value::BinaryValue(value),
+            JdbcValue::Date(value) => Value::DateValue(value),
+            JdbcValue::Time(value) => Value::TimeValue(value),
+            JdbcValue::Timestamp(value) => Value::TimestampValue(value),
+            JdbcValue::TimestampWithTimeZone(value) => Value::TimestampWithTimeZoneValue(value),
+            JdbcValue::Json(value) => Value::JsonValue(value),
+            JdbcValue::Uuid(value) => Value::UuidValue(value),
+            JdbcValue::Opaque {
+                type_name,
+                display_value,
+            } => Value::OpaqueValue(wire::OpaqueValue {
+                type_name,
+                display_value,
+            }),
+        };
+        Self { value: Some(value) }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct JdbcParameter {
     pub position: u32,
@@ -487,6 +519,28 @@ impl JdbcValueType {
     }
 }
 
+impl From<JdbcValueType> for wire::JdbcValueType {
+    fn from(value: JdbcValueType) -> Self {
+        match value {
+            JdbcValueType::Boolean => Self::Boolean,
+            JdbcValueType::SignedInteger => Self::SignedInteger,
+            JdbcValueType::UnsignedInteger => Self::UnsignedInteger,
+            JdbcValueType::Float32 => Self::Float32,
+            JdbcValueType::Float64 => Self::Float64,
+            JdbcValueType::Decimal => Self::Decimal,
+            JdbcValueType::Text => Self::Text,
+            JdbcValueType::Binary => Self::Binary,
+            JdbcValueType::Date => Self::Date,
+            JdbcValueType::Time => Self::Time,
+            JdbcValueType::Timestamp => Self::Timestamp,
+            JdbcValueType::TimestampWithTimeZone => Self::TimestampWithTimeZone,
+            JdbcValueType::Json => Self::Json,
+            JdbcValueType::Uuid => Self::Uuid,
+            JdbcValueType::Opaque => Self::Opaque,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColumnNullability {
     Unknown,
@@ -501,6 +555,16 @@ impl ColumnNullability {
             Ok(wire::ColumnNullability::NoNulls) => Ok(Self::NoNulls),
             Ok(wire::ColumnNullability::Nullable) => Ok(Self::Nullable),
             Err(_) => Err(format!("unknown column nullability {value}")),
+        }
+    }
+}
+
+impl From<ColumnNullability> for wire::ColumnNullability {
+    fn from(value: ColumnNullability) -> Self {
+        match value {
+            ColumnNullability::Unknown => Self::Unknown,
+            ColumnNullability::NoNulls => Self::NoNulls,
+            ColumnNullability::Nullable => Self::Nullable,
         }
     }
 }
@@ -544,6 +608,27 @@ impl JdbcColumn {
     }
 }
 
+impl From<JdbcColumn> for wire::JdbcColumn {
+    fn from(column: JdbcColumn) -> Self {
+        Self {
+            ordinal: column.ordinal,
+            label: column.label,
+            name: column.name,
+            jdbc_type: column.jdbc_type,
+            jdbc_type_name: column.jdbc_type_name,
+            value_type: wire::JdbcValueType::from(column.value_type) as i32,
+            nullability: wire::ColumnNullability::from(column.nullability) as i32,
+            precision: column.precision,
+            scale: column.scale,
+            display_size: column.display_size,
+            signed: column.signed,
+            catalog_name: column.catalog_name,
+            schema_name: column.schema_name,
+            table_name: column.table_name,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct JdbcRow {
     pub values: Vec<JdbcValue>,
@@ -558,6 +643,14 @@ impl JdbcRow {
                 .map(JdbcValue::from_wire)
                 .collect::<Result<_, _>>()?,
         })
+    }
+}
+
+impl From<JdbcRow> for wire::JdbcRow {
+    fn from(row: JdbcRow) -> Self {
+        Self {
+            values: row.values.into_iter().map(Into::into).collect(),
+        }
     }
 }
 
@@ -664,10 +757,27 @@ pub struct QueryStarted {
     pub columns: Vec<JdbcColumn>,
 }
 
+impl From<QueryStarted> for wire::QueryStarted {
+    fn from(started: QueryStarted) -> Self {
+        Self {
+            columns: started.columns.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RowBatch {
     pub start_row_offset: u64,
     pub rows: Vec<JdbcRow>,
+}
+
+impl From<RowBatch> for wire::RowBatch {
+    fn from(batch: RowBatch) -> Self {
+        Self {
+            start_row_offset: batch.start_row_offset,
+            rows: batch.rows.into_iter().map(Into::into).collect(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -675,6 +785,16 @@ pub struct QueryCompleted {
     pub row_count: u64,
     pub truncated_by_max_rows: bool,
     pub truncated_by_max_result_bytes: bool,
+}
+
+impl From<QueryCompleted> for wire::QueryCompleted {
+    fn from(completed: QueryCompleted) -> Self {
+        Self {
+            row_count: completed.row_count,
+            truncated_by_max_rows: completed.truncated_by_max_rows,
+            truncated_by_max_result_bytes: completed.truncated_by_max_result_bytes,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1521,6 +1641,91 @@ mod tests {
                 "expected {message:?} to contain {expected:?}"
             ),
             other => panic!("expected invalid request containing {expected:?}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn retained_result_wire_conversion_preserves_schema_rows_and_completion() {
+        let started = QueryStarted {
+            columns: vec![JdbcColumn {
+                ordinal: 1,
+                label: "payload".to_owned(),
+                name: "payload".to_owned(),
+                jdbc_type: 1111,
+                jdbc_type_name: "OTHER".to_owned(),
+                value_type: JdbcValueType::Opaque,
+                nullability: ColumnNullability::Nullable,
+                precision: Some(38),
+                scale: Some(4),
+                display_size: Some(128),
+                signed: Some(false),
+                catalog_name: Some("catalog".to_owned()),
+                schema_name: Some("public".to_owned()),
+                table_name: Some("events".to_owned()),
+            }],
+        };
+        let batch = RowBatch {
+            start_row_offset: 4,
+            rows: vec![JdbcRow {
+                values: vec![JdbcValue::Opaque {
+                    type_name: "vendor_type".to_owned(),
+                    display_value: "value".to_owned(),
+                }],
+            }],
+        };
+        let completed = QueryCompleted {
+            row_count: 5,
+            truncated_by_max_rows: true,
+            truncated_by_max_result_bytes: false,
+        };
+
+        let wire_started = wire::QueryStarted::from(started);
+        let wire_batch = wire::RowBatch::from(batch);
+        let wire_completed = wire::QueryCompleted::from(completed);
+        assert_eq!(
+            wire_started.columns[0].value_type,
+            wire::JdbcValueType::Opaque as i32
+        );
+        assert_eq!(wire_batch.start_row_offset, 4);
+        assert_eq!(wire_started.columns[0].precision, Some(38));
+        assert_eq!(wire_started.columns[0].scale, Some(4));
+        assert_eq!(wire_started.columns[0].signed, Some(false));
+        assert!(matches!(
+            wire_batch.rows[0].values[0].value,
+            Some(wire::jdbc_value::Value::OpaqueValue(_))
+        ));
+        assert_eq!(wire_completed.row_count, 5);
+        assert!(wire_completed.truncated_by_max_rows);
+    }
+
+    #[test]
+    fn retained_result_wire_conversion_preserves_every_jdbc_value_variant() {
+        let values = vec![
+            JdbcValue::Null,
+            JdbcValue::Boolean(true),
+            JdbcValue::SignedInteger(-7),
+            JdbcValue::UnsignedInteger(9),
+            JdbcValue::Float32(1.25),
+            JdbcValue::Float64(-2.5),
+            JdbcValue::Decimal("123.450".to_owned()),
+            JdbcValue::Text("text".to_owned()),
+            JdbcValue::Binary(vec![0, 1, 255]),
+            JdbcValue::Date("2026-07-24".to_owned()),
+            JdbcValue::Time("12:34:56".to_owned()),
+            JdbcValue::Timestamp("2026-07-24T12:34:56".to_owned()),
+            JdbcValue::TimestampWithTimeZone("2026-07-24T12:34:56+08:00".to_owned()),
+            JdbcValue::Json("{\"ok\":true}".to_owned()),
+            JdbcValue::Uuid("550e8400-e29b-41d4-a716-446655440000".to_owned()),
+            JdbcValue::Opaque {
+                type_name: "vendor_type".to_owned(),
+                display_value: "opaque".to_owned(),
+            },
+        ];
+
+        for value in values {
+            let decoded = JdbcValue::from_wire(wire::JdbcValue::from(value.clone()))
+                .expect("converted value decodes");
+            assert_eq!(decoded, value);
         }
     }
 

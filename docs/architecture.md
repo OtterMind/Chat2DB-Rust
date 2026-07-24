@@ -3,18 +3,19 @@
 ## Status
 
 The repository has completed the buildable baseline, the versioned Rust-to-Java
-process protocol, and the JDBC vertical slice. In addition to lifecycle
-supervision, the implemented bridge loads external driver JARs, owns sessions
-and local transactions, executes updates, and streams typed query batches with
-credits, cancellation, deadlines, hard limits, and explicit unknown outcomes.
-The complete path is cross-language tested against H2 without embedding H2 in
-the compatibility-engine JAR.
+process protocol, the JDBC vertical slice, and the local storage foundation. In
+addition to lifecycle supervision, the implemented bridge loads external driver
+JARs, owns sessions and local transactions, executes updates, and streams typed
+query batches with credits, cancellation, deadlines, hard limits, and explicit
+unknown outcomes. The complete database path is cross-language tested against
+H2 without embedding H2 in the compatibility-engine JAR.
 
-SQLite product storage, retained result files, Tauri, AI, MCP, Chat2DB plugin
-and parser integration, and packaging remain target components. The bootstrap
-`chat2db-core` and Web composition do not start the Java supervisor, so product
-health still reports `database-engine` as `disabled`; bridge readiness is not
-reported as product database readiness.
+The implemented storage crate provides SQLite product records and disk-backed
+retained results. Tauri, AI, MCP, Chat2DB plugin/parser integration, production
+OS-vault integration, transport APIs, and packaging remain target components.
+The bootstrap Web composition starts neither storage nor the Java supervisor,
+so product health still reports both `local-storage` and `database-engine` as
+`disabled`; tested components are not presented as product-wired services.
 
 ## Ownership
 
@@ -24,7 +25,7 @@ reported as product database readiness.
 | Desktop | Rust / Tauri 2 | Tauri commands and events; no product localhost HTTP |
 | Web | Rust / Axum | JSON HTTP, SSE, and WebSocket |
 | Product services | Rust | Workspace, state, policy, tasks, dashboards, and orchestration |
-| Durable state | Rust | SQLite plus OS-rooted secret protection |
+| Durable state | Rust | SQLite, retained-result files, and a mandatory injected secret-vault contract |
 | AI agent | Rust | Provider adapters, tool loop, limits, compaction, and cancellation |
 | MCP and CLI | Rust | Adapters around the same product services and policy |
 | Database compatibility | Java 17 | Existing SPI/plugins, JDBC, metadata, builders, and execution |
@@ -103,11 +104,36 @@ this repository; they remain Stage 7 work.
 Spring Boot, Spring Web, Spring AI, MCP, JCEF, product storage, and updater logic
 do not belong in the final Java engine.
 
-## Large result boundary
+## Local storage boundary
 
-Java now streams typed row batches to Rust under bounded row and byte budgets.
-Writing retained batches to disk, indexing chunk offsets and expiry in SQLite,
-and paging by an opaque result id are Stage 4 work and are not yet implemented.
+Stage 4 implements one exclusively process-owned data directory with owner-only
+permissions. Every SQLite connection verifies WAL mode, foreign keys, and
+`synchronous=FULL`; startup applies an explicit transactional schema migration,
+runs integrity and foreign-key checks, and performs idempotent recovery before a
+`Storage` handle is exposed.
+
+SQLite stores datasource id, display name, driver id, opaque `SecretRef`,
+revision, and timestamps. The complete connection descriptor, including JDBC
+URL and properties, is one `SecretValue` owned by the injected vault and never
+enters SQLite. Vault creation is create-only. A durable cleanup queue plus a
+single secret mutation gate covers staging, datasource CAS, commit
+reconciliation, rotation, and deferred deletion. Storage startup requires the
+vault readiness probe to succeed.
+
+Java streams typed row batches to Rust under bounded row and byte budgets. Rust
+persists the schema and batches as four-byte big-endian length-prefixed Protobuf
+frames and indexes full-frame SHA-256 hashes, offsets, ordinals, row ranges,
+completion state, and expiry in SQLite. File data is synced before its index
+transaction. Completed results are immutable and page reads enforce both row
+and encoded-byte budgets.
+
+Quota accounting covers the union of SQLite-indexed bytes and physical result
+files, including orphan files and unindexed tails. Active writers hold
+process-local leases; explicit abort, known finish failure, and ordinary drop
+reclaim them immediately, while runtime expiry can reclaim abandoned writing
+records. Startup removes incomplete/expired/corrupt data, truncates valid
+unindexed tails, removes orphans, and rejects an unknown result format before
+mutating any result.
 
 AI tools receive schema, counts, truncation state, bounded samples, statistics,
 and the result id. They never append an unbounded database result directly to
@@ -120,8 +146,9 @@ new explicit budget.
 - Non-loopback Web mode requires an explicit access token.
 - Local CLI/MCP attachment uses an owner-only Unix-domain socket or Windows
   named pipe.
-- Secrets are rooted in the operating-system credential store and are never
-  persisted by Java.
+- Storage requires an injected, readiness-checked credential vault and never
+  persists connection descriptors in SQLite or Java. A production OS-backed
+  vault adapter is not implemented yet.
 - SQL write access is enforced outside prompts and scoped to the active run.
 - User-provided driver JARs are treated as native-trust code.
 - Java copies each supplied driver artifact into a private snapshot, verifies
