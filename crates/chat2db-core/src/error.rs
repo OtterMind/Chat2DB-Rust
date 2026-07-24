@@ -149,6 +149,13 @@ impl From<StorageError> for AppError {
                 actual,
             ),
             StorageError::InvalidProvider(message) => Self::invalid("invalid_provider", message),
+            StorageError::ProviderInUse(_) => Self::new(
+                AppErrorKind::Conflict,
+                ApiError::new(
+                    "provider_in_use",
+                    "The provider profile is still selected by an agent session",
+                ),
+            ),
             StorageError::AgentSessionNotFound(id) => Self::not_found(
                 "agent_session_not_found",
                 format!("Agent session {id} does not exist"),
@@ -402,6 +409,11 @@ mod tests {
                 StorageError::InvalidProvider("invalid provider"),
                 AppErrorKind::InvalidRequest,
                 "invalid_provider",
+            ),
+            (
+                StorageError::ProviderInUse("provider-1".to_owned()),
+                AppErrorKind::Conflict,
+                "provider_in_use",
             ),
             (
                 StorageError::InvalidAgent("invalid agent"),

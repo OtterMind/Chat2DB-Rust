@@ -78,6 +78,9 @@ pub enum StorageError {
     /// A provider field violates the durable contract.
     #[error("invalid provider profile: {0}")]
     InvalidProvider(&'static str),
+    /// A provider profile is still selected by at least one durable agent session.
+    #[error("provider profile is still in use: {0}")]
+    ProviderInUse(String),
     /// The requested agent session does not exist.
     #[error("agent session not found: {0}")]
     AgentSessionNotFound(String),

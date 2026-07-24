@@ -6,6 +6,80 @@ use chat2db_storage as storage;
 
 use crate::AppError;
 
+pub(crate) const fn provider_kind_to_storage(
+    kind: contract::ProviderKind,
+) -> storage::ProviderKind {
+    match kind {
+        contract::ProviderKind::OpenAiCompatible => storage::ProviderKind::OpenAiCompatible,
+        contract::ProviderKind::Anthropic => storage::ProviderKind::Anthropic,
+        contract::ProviderKind::Gemini => storage::ProviderKind::Gemini,
+    }
+}
+
+pub(crate) const fn provider_kind(kind: storage::ProviderKind) -> contract::ProviderKind {
+    match kind {
+        storage::ProviderKind::OpenAiCompatible => contract::ProviderKind::OpenAiCompatible,
+        storage::ProviderKind::Anthropic => contract::ProviderKind::Anthropic,
+        storage::ProviderKind::Gemini => contract::ProviderKind::Gemini,
+    }
+}
+
+pub(crate) fn provider_profile(
+    record: storage::ProviderProfileRecord,
+) -> contract::ProviderProfile {
+    contract::ProviderProfile {
+        id: record.id,
+        name: record.name,
+        kind: provider_kind(record.kind),
+        base_url: record.base_url,
+        model: record.model,
+        context_window_tokens: record.context_window_tokens.to_string(),
+        max_output_tokens: record.max_output_tokens.to_string(),
+        has_secret: record.secret_ref.is_some(),
+        revision: record.revision.to_string(),
+        created_at_ms: record.created_at_ms.to_string(),
+        updated_at_ms: record.updated_at_ms.to_string(),
+    }
+}
+
+pub(crate) fn agent_session(record: storage::AgentSessionRecord) -> contract::AgentSession {
+    contract::AgentSession {
+        id: record.id,
+        title: record.title,
+        provider_id: record.provider_id,
+        datasource_id: record.datasource_id,
+        revision: record.revision.to_string(),
+        created_at_ms: record.created_at_ms.to_string(),
+        updated_at_ms: record.updated_at_ms.to_string(),
+    }
+}
+
+pub(crate) fn agent_message(
+    record: storage::AgentMessageRecord,
+) -> Result<contract::AgentMessage, AppError> {
+    let content = serde_json::from_str::<Vec<contract::AgentMessageContent>>(&record.content_json)
+        .map_err(|_| AppError::internal())?;
+    Ok(contract::AgentMessage {
+        id: record.id,
+        session_id: record.session_id,
+        run_id: record.run_id,
+        role: agent_message_role(record.role),
+        content,
+        ordinal: record.ordinal.to_string(),
+        created_at_ms: record.created_at_ms.to_string(),
+    })
+}
+
+const fn agent_message_role(role: storage::AgentMessageRole) -> contract::AgentMessageRole {
+    match role {
+        storage::AgentMessageRole::System => contract::AgentMessageRole::System,
+        storage::AgentMessageRole::User => contract::AgentMessageRole::User,
+        storage::AgentMessageRole::Assistant => contract::AgentMessageRole::Assistant,
+        storage::AgentMessageRole::Tool => contract::AgentMessageRole::Tool,
+        storage::AgentMessageRole::Summary => contract::AgentMessageRole::Summary,
+    }
+}
+
 pub(crate) fn datasource(record: storage::DatasourceRecord) -> contract::Datasource {
     contract::Datasource {
         id: record.id,

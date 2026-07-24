@@ -939,6 +939,58 @@ impl Storage {
         })
     }
 
+    /// Deletes a session and all session-owned agent state using revision CAS.
+    ///
+    /// Provider profiles, datasources, and retained results are shared resources
+    /// and are not removed. A running or permission-waiting run keeps the
+    /// session alive until that run reaches a terminal state.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, revision-conflict, busy-session, numeric-range, or
+    /// `SQLite` failures.
+    pub fn delete_agent_session(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<(), StorageError> {
+        let expected_revision_sql = to_sql_i64(expected_revision, "agent session revision")?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = load_session(&transaction, id)?
+            .ok_or_else(|| StorageError::AgentSessionNotFound(id.to_owned()))?;
+        if current.revision != expected_revision {
+            return Err(StorageError::AgentSessionRevisionConflict {
+                id: id.to_owned(),
+                expected: expected_revision,
+                actual: Some(current.revision),
+            });
+        }
+        if row_exists(
+            &transaction,
+            "SELECT EXISTS(
+                SELECT 1 FROM agent_runs
+                WHERE session_id = ?1 AND status IN ('running', 'waiting_permission')
+             )",
+            id,
+        )? {
+            return Err(StorageError::AgentSessionBusy(id.to_owned()));
+        }
+        let changed = transaction.execute(
+            "DELETE FROM agent_sessions WHERE id = ?1 AND revision = ?2",
+            params![id, expected_revision_sql],
+        )?;
+        if changed != 1 {
+            return Err(StorageError::AgentSessionRevisionConflict {
+                id: id.to_owned(),
+                expected: expected_revision,
+                actual: load_session(&transaction, id)?.map(|record| record.revision),
+            });
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Appends one strict, normalized session message with a contiguous ordinal.
     ///
     /// A session with an active run rejects the append. Run-owned messages use
@@ -3381,6 +3433,205 @@ mod tests {
                 actual: Some(2),
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn session_delete_enforces_revision_and_active_run_guards() {
+        let directory = TempDir::new().expect("temp dir");
+        let (storage, provider_id) = setup(&directory);
+        let session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("session creates");
+        let updated = storage
+            .update_agent_session(
+                &session.id,
+                session.revision,
+                UpdateAgentSession {
+                    title: "Updated".to_owned(),
+                    provider_id: provider_id.clone(),
+                    datasource_id: None,
+                },
+            )
+            .expect("session updates");
+
+        assert!(matches!(
+            storage.delete_agent_session(&session.id, session.revision),
+            Err(StorageError::AgentSessionRevisionConflict {
+                actual: Some(2),
+                ..
+            })
+        ));
+
+        let run = create_running_run(&storage, &session.id);
+        assert!(matches!(
+            storage.delete_agent_session(&session.id, updated.revision),
+            Err(StorageError::AgentSessionBusy(_))
+        ));
+        assert!(
+            storage
+                .get_agent_session(&session.id)
+                .expect("session reads")
+                .is_some()
+        );
+        assert!(storage.get_agent_run(&run.id).expect("run reads").is_some());
+    }
+
+    #[test]
+    fn concurrent_session_delete_has_one_winner_and_a_not_found_loser() {
+        let directory = TempDir::new().expect("temp dir");
+        let (storage, provider_id) = setup(&directory);
+        let session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("session creates");
+        let barrier = Arc::new(Barrier::new(3));
+
+        let outcomes = thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for _ in 0..2 {
+                let storage = storage.clone();
+                let barrier = barrier.clone();
+                let session_id = session.id.clone();
+                handles.push(scope.spawn(move || {
+                    barrier.wait();
+                    storage.delete_agent_session(&session_id, session.revision)
+                }));
+            }
+            barrier.wait();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("delete thread joins"))
+                .collect::<Vec<_>>()
+        });
+
+        assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| {
+                    matches!(outcome, Err(StorageError::AgentSessionNotFound(id)) if id == &session.id)
+                })
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn session_delete_cascades_agent_state_but_keeps_shared_resources() {
+        let directory = TempDir::new().expect("temp dir");
+        let (storage, provider_id) = setup(&directory);
+        let datasource = storage
+            .create_datasource(
+                CreateDatasource {
+                    name: "Shared database".to_owned(),
+                    driver_id: "driver-a".to_owned(),
+                },
+                None,
+            )
+            .expect("datasource creates");
+        let session = storage
+            .create_agent_session(CreateAgentSession {
+                title: "Deletable session".to_owned(),
+                provider_id: provider_id.clone(),
+                datasource_id: Some(datasource.id.clone()),
+                system_prompt: Some("private system prompt".to_owned()),
+            })
+            .expect("session creates");
+        let run = create_running_run(&storage, &session.id);
+        let result_id = completed_result(&storage);
+        let handle = storage
+            .create_agent_result_handle(&session.id, &run.id, &result_id, Duration::from_secs(60))
+            .expect("result handle creates");
+        let digest = [11_u8; 32];
+        let permission = storage
+            .create_tool_permission(&run.id, permission_input("delete-cascade", digest, 2))
+            .expect("permission creates");
+        storage
+            .decide_tool_permission(
+                &permission.id,
+                permission.revision,
+                &run.id,
+                "delete-cascade",
+                digest,
+                3,
+                ToolPermissionDecision::Deny,
+            )
+            .expect("permission denies");
+        storage
+            .complete_agent_run(
+                &run.id,
+                AgentRunStatus::Running,
+                CompleteAgentRun {
+                    last_sequence: 4,
+                    model_rounds: 1,
+                    tool_calls: 1,
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    total_tokens: 2,
+                    messages: vec![AgentRunMessage {
+                        role: AgentMessageRole::Assistant,
+                        summary_through_ordinal: None,
+                        content_json: message_json("done"),
+                    }],
+                    compaction_count: 0,
+                    compacted_through_ordinal: None,
+                },
+            )
+            .expect("run completes");
+
+        storage
+            .delete_agent_session(&session.id, session.revision)
+            .expect("session deletes");
+
+        let counts: (i64, i64, i64, i64, i64) = storage
+            .connection()
+            .expect("connection opens")
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM agent_sessions WHERE id = ?1),
+                    (SELECT COUNT(*) FROM agent_messages WHERE session_id = ?1),
+                    (SELECT COUNT(*) FROM agent_runs WHERE session_id = ?1),
+                    (SELECT COUNT(*) FROM tool_permissions WHERE run_id = ?2),
+                    (SELECT COUNT(*) FROM agent_result_handles WHERE session_id = ?1)",
+                rusqlite::params![session.id, run.id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("cascade counts read");
+        assert_eq!(counts, (0, 0, 0, 0, 0));
+        assert!(
+            storage
+                .get_provider_profile(&provider_id)
+                .expect("provider reads")
+                .is_some()
+        );
+        assert!(
+            storage
+                .get_datasource(&datasource.id)
+                .expect("datasource reads")
+                .is_some()
+        );
+        assert!(
+            storage
+                .result_metadata(&result_id)
+                .expect("result metadata reads")
+                .is_some()
+        );
+        assert!(matches!(
+            storage.resolve_agent_result_handle(&handle.id, &session.id, &run.id),
+            Err(StorageError::ResultHandleNotFound(_))
+        ));
+        assert!(matches!(
+            storage.delete_agent_session(&session.id, session.revision),
+            Err(StorageError::AgentSessionNotFound(_))
         ));
     }
 

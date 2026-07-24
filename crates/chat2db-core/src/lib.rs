@@ -1,5 +1,6 @@
 //! Transport-neutral product services.
 
+mod agent;
 mod convert;
 mod error;
 mod operation;

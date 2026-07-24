@@ -325,7 +325,7 @@ pub struct AgentMessage {
 pub struct AgentMessageList {
     /// Returned messages.
     pub items: Vec<AgentMessage>,
-    /// Whether an older message exists outside this page.
+    /// Whether a higher-ordinal message exists after this forward page.
     pub has_more: bool,
 }
 

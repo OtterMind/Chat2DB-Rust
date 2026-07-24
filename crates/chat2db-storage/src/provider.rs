@@ -382,6 +382,7 @@ impl Storage {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             reject_active_provider_mutation(&transaction, id)?;
+            reject_provider_delete_if_in_use(&transaction, id)?;
             let changed = transaction.execute(
                 "DELETE FROM provider_profiles WHERE id = ?1 AND revision = ?2",
                 params![id, expected_revision_sql],
@@ -485,6 +486,18 @@ fn reject_active_provider_mutation(connection: &Connection, id: &str) -> Result<
             resource: "provider profile",
             id: id.to_owned(),
         });
+    }
+    Ok(())
+}
+
+fn reject_provider_delete_if_in_use(connection: &Connection, id: &str) -> Result<(), StorageError> {
+    let in_use: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_sessions WHERE provider_id = ?1)",
+        [id],
+        |row| row.get(0),
+    )?;
+    if in_use {
+        return Err(StorageError::ProviderInUse(id.to_owned()));
     }
     Ok(())
 }
@@ -637,7 +650,8 @@ mod tests {
 
     use super::{CreateProviderProfile, ProviderKind};
     use crate::{
-        SecretChange, SecretRef, SecretValue, SecretVault, SecretVaultError, Storage, StorageError,
+        CreateAgentSession, SecretChange, SecretRef, SecretValue, SecretVault, SecretVaultError,
+        Storage, StorageError,
     };
 
     #[derive(Default)]
@@ -768,6 +782,42 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn provider_delete_reports_a_structured_conflict_while_a_session_uses_it() {
+        let directory = TempDir::new().expect("temp dir");
+        let storage = Storage::open(directory.path(), Arc::new(MemoryVault::default()))
+            .expect("storage opens");
+        let provider = storage
+            .create_provider_profile(input("primary"), None)
+            .expect("provider creates");
+        let session = storage
+            .create_agent_session(CreateAgentSession {
+                title: "Session".to_owned(),
+                provider_id: provider.id.clone(),
+                datasource_id: None,
+                system_prompt: None,
+            })
+            .expect("session creates");
+
+        assert!(matches!(
+            storage.delete_provider_profile(&provider.id, provider.revision),
+            Err(StorageError::ProviderInUse(id)) if id == provider.id
+        ));
+        assert!(
+            storage
+                .get_provider_profile(&provider.id)
+                .expect("provider reads")
+                .is_some()
+        );
+
+        storage
+            .delete_agent_session(&session.id, session.revision)
+            .expect("session deletes");
+        storage
+            .delete_provider_profile(&provider.id, provider.revision)
+            .expect("unused provider deletes");
     }
 
     #[test]
