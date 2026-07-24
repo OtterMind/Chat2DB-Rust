@@ -8,16 +8,19 @@ in runtime health until then.
 | --- | --- | --- | --- |
 | 1 | Complete | Repository baseline | Rust format/Clippy/tests, Java tests/package, frontend typecheck/build, CI workflow |
 | 2 | Complete | Rust-Java process protocol | Generated Protobuf in both languages, handshake, ping, version negotiation, stderr capture, process shutdown and crash tests |
-| 3 | Planned | JDBC vertical slice | Dynamic H2 driver load, session lifecycle, typed query batches, backpressure, cancellation, transaction semantics, Rust integration tests |
+| 3 | Complete | JDBC vertical slice | Dynamic H2 driver load, session lifecycle, typed query batches, backpressure, cancellation, transaction semantics, Rust integration tests |
 | 4 | Planned | Product and result storage | SQLite migrations, secret boundary, datasource records, disk-backed result chunks, paging, expiry and recovery tests |
 | 5 | Planned | Product transports | Shared generated frontend contract, Axum APIs/streams, Tauri 2 IPC/events, desktop/Web parity tests |
 | 6 | Planned | Agent, MCP, and CLI | Provider adapters, bounded tool loop, result handles, compaction, SQL permissions, `rmcp`, local IPC attachment |
 | 7 | Planned | Chat2DB compatibility estate | Existing database SPI/plugins, JDBC packs, Java ANTLR parsers, metadata/builders, per-dialect conformance |
 | 8 | Planned | Packaging and release | jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
 
-Stage 2 completion means lifecycle IPC and process supervision are implemented.
-It does not mean JDBC is available; `database-engine` remains `disabled` until
-the Stage 3 acceptance gate passes.
+Stage 3 completion means the versioned Rust-Java bridge can load an external
+JDBC driver, own sessions and local transactions, execute updates, and stream
+typed query batches under explicit limits, credits, deadlines, and
+cancellation. It does not mean the bootstrap product runtime composes that
+bridge: `chat2db-core` and the Web adapter do not yet start the Java supervisor,
+so `database-engine` remains `disabled` until product integration is delivered.
 
 ## Commit policy
 

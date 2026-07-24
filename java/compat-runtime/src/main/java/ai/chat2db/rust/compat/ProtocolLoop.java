@@ -32,9 +32,25 @@ final class ProtocolLoop {
     static final int PROTOCOL_MINOR = 0;
     static final String PING_CAPABILITY = "lifecycle.ping.v1";
     static final String SHUTDOWN_CAPABILITY = "lifecycle.shutdown.v1";
+    static final String EXTERNAL_DRIVER_CAPABILITY = "driver.external-jar.v1";
+    static final String JDBC_SESSION_CAPABILITY = "session.jdbc.v1";
+    static final String TYPED_QUERY_CAPABILITY = "query.typed-batches.v1";
+    static final String CREDIT_FLOW_CAPABILITY = "flow.credit.v1";
+    static final String OPERATION_CANCEL_CAPABILITY = "operation.cancel.v1";
+    static final String JDBC_UPDATE_CAPABILITY = "update.jdbc.v1";
+    static final String LOCAL_TRANSACTION_CAPABILITY = "transaction.local.v1";
 
     private static final int MINIMUM_PEER_FRAME_BYTES = 1024;
-    private static final List<String> CAPABILITIES = List.of(PING_CAPABILITY, SHUTDOWN_CAPABILITY);
+    private static final List<String> CAPABILITIES = List.of(
+            PING_CAPABILITY,
+            SHUTDOWN_CAPABILITY,
+            EXTERNAL_DRIVER_CAPABILITY,
+            JDBC_SESSION_CAPABILITY,
+            TYPED_QUERY_CAPABILITY,
+            CREDIT_FLOW_CAPABILITY,
+            OPERATION_CANCEL_CAPABILITY,
+            JDBC_UPDATE_CAPABILITY,
+            LOCAL_TRANSACTION_CAPABILITY);
     private static final List<ProtocolVersion> SUPPORTED_VERSIONS = List.of(version(1, 0));
 
     private final RuntimeInfo runtimeInfo;
@@ -63,26 +79,34 @@ final class ProtocolLoop {
     }
 
     int serve(InputStream input, OutputStream output) throws IOException {
-        while (state != State.CLOSED) {
-            Optional<ClientEnvelope> request =
-                    FrameCodec.readFrame(input, ClientEnvelope.parser());
-            if (request.isEmpty()) {
-                diagnostics.println("[compat-runtime] stdin closed; stopping protocol loop");
-                return CompatibilityRuntime.EXIT_OK;
-            }
+        try (ProtocolWriter writer = new ProtocolWriter(output);
+                JdbcRuntime jdbcRuntime = new JdbcRuntime(writer, diagnostics)) {
+            while (state != State.CLOSED) {
+                Optional<ClientEnvelope> request =
+                        FrameCodec.readFrame(input, ClientEnvelope.parser());
+                if (request.isEmpty()) {
+                    diagnostics.println("[compat-runtime] stdin closed; stopping protocol loop");
+                    return CompatibilityRuntime.EXIT_OK;
+                }
 
-            Dispatch dispatch = dispatch(request.orElseThrow());
-            int maximum = Math.min(peerMaximumFrameBytes, FrameCodec.MAX_FRAME_BYTES);
-            FrameCodec.writeFrame(output, dispatch.response(), maximum);
-            if (dispatch.terminate()) {
-                state = State.CLOSED;
-                return dispatch.exitCode();
+                Dispatch dispatch = dispatch(request.orElseThrow(), jdbcRuntime, writer);
+                if (dispatch.terminate()) {
+                    jdbcRuntime.close();
+                }
+                if (dispatch.response() != null) {
+                    writer.write(dispatch.response());
+                }
+                if (dispatch.terminate()) {
+                    state = State.CLOSED;
+                    return dispatch.exitCode();
+                }
             }
         }
         return CompatibilityRuntime.EXIT_OK;
     }
 
-    private Dispatch dispatch(ClientEnvelope envelope) {
+    private Dispatch dispatch(
+            ClientEnvelope envelope, JdbcRuntime jdbcRuntime, ProtocolWriter writer) {
         RequestMeta meta = envelope.hasMeta()
                 ? envelope.getMeta()
                 : RequestMeta.getDefaultInstance();
@@ -90,9 +114,20 @@ final class ProtocolLoop {
                 || meta.getRequestId().isBlank()
                 || meta.getTraceId().isBlank()) {
             return error(
-                    meta,
+                    compactCorrelationMeta(meta),
                     "protocol.invalid_request_meta",
                     "request_id and trace_id are required",
+                    ErrorCategory.ERROR_CATEGORY_VALIDATION,
+                    true,
+                    CompatibilityRuntime.EXIT_PROTOCOL);
+        }
+        try {
+            validateRequestMeta(meta);
+        } catch (RuntimeFailure failure) {
+            return error(
+                    compactCorrelationMeta(meta),
+                    failure.code(),
+                    failure.getMessage(),
                     ErrorCategory.ERROR_CATEGORY_VALIDATION,
                     true,
                     CompatibilityRuntime.EXIT_PROTOCOL);
@@ -108,30 +143,91 @@ final class ProtocolLoop {
                         true,
                         CompatibilityRuntime.EXIT_PROTOCOL);
             }
-            return handshake(meta, envelope.getHello());
+            return handshake(meta, envelope.getHello(), writer);
         }
 
-        return switch (envelope.getPayloadCase()) {
-            case PING -> pong(meta, envelope.getPing().getNonce());
-            case SHUTDOWN -> shutdown(meta);
-            case HELLO -> error(
-                    meta,
-                    "protocol.handshake_already_completed",
-                    "client hello is only valid as the first request",
-                    ErrorCategory.ERROR_CATEGORY_PROTOCOL,
-                    true,
-                    CompatibilityRuntime.EXIT_PROTOCOL);
-            case PAYLOAD_NOT_SET -> error(
-                    meta,
-                    "protocol.unsupported_message",
-                    "the request does not contain a supported payload",
-                    ErrorCategory.ERROR_CATEGORY_PROTOCOL,
-                    false,
-                    CompatibilityRuntime.EXIT_OK);
-        };
+        try {
+            return switch (envelope.getPayloadCase()) {
+                case PING -> pong(meta, envelope.getPing().getNonce());
+                case SHUTDOWN -> shutdown(meta);
+                case LOAD_DRIVER -> {
+                    jdbcRuntime.schedule(
+                            meta, () -> jdbcRuntime.loadDriver(meta, envelope.getLoadDriver()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case UNLOAD_DRIVER -> {
+                    jdbcRuntime.schedule(
+                            meta, () -> jdbcRuntime.unloadDriver(meta, envelope.getUnloadDriver()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case OPEN_SESSION -> {
+                    jdbcRuntime.schedule(
+                            meta, () -> jdbcRuntime.openSession(meta, envelope.getOpenSession()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case CLOSE_SESSION -> {
+                    jdbcRuntime.schedule(
+                            meta, () -> jdbcRuntime.closeSession(meta, envelope.getCloseSession()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case BEGIN_TRANSACTION -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.beginTransaction(meta, envelope.getBeginTransaction()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case COMMIT_TRANSACTION -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.commitTransaction(meta, envelope.getCommitTransaction()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case ROLLBACK_TRANSACTION -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.rollbackTransaction(meta, envelope.getRollbackTransaction()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case EXECUTE_QUERY -> {
+                    jdbcRuntime.executeQuery(meta, envelope.getExecuteQuery());
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case EXECUTE_UPDATE -> {
+                    jdbcRuntime.executeUpdate(meta, envelope.getExecuteUpdate());
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case GRANT_CREDITS -> response(jdbcRuntime.grantCredits(
+                        meta, envelope.getGrantCredits()));
+                case CANCEL_OPERATION -> response(jdbcRuntime.cancelOperation(
+                        meta, envelope.getCancelOperation()));
+                case HELLO -> error(
+                        meta,
+                        "protocol.handshake_already_completed",
+                        "client hello is only valid as the first request",
+                        ErrorCategory.ERROR_CATEGORY_PROTOCOL,
+                        true,
+                        CompatibilityRuntime.EXIT_PROTOCOL);
+                case PAYLOAD_NOT_SET -> error(
+                        meta,
+                        "protocol.unsupported_message",
+                        "the request does not contain a supported payload",
+                        ErrorCategory.ERROR_CATEGORY_PROTOCOL,
+                        false,
+                        CompatibilityRuntime.EXIT_OK);
+            };
+        } catch (RuntimeFailure failure) {
+            failure = jdbcRuntime.attachSessionState(meta, failure);
+            diagnostics.printf(
+                    "[compat-runtime] JDBC request failed code=%s request_id=%s%n",
+                    failure.code(),
+                    meta.getRequestId());
+            return response(ProtocolResponses.failure(
+                    meta, 0, failure, writer.peerMaximumFrameBytes()));
+        }
     }
 
-    private Dispatch handshake(RequestMeta meta, ClientHello hello) {
+    private Dispatch handshake(
+            RequestMeta meta, ClientHello hello, ProtocolWriter writer) {
         if (hello.getMaxReceiveFrameBytes() < MINIMUM_PEER_FRAME_BYTES) {
             return error(
                     meta,
@@ -142,6 +238,7 @@ final class ProtocolLoop {
                     CompatibilityRuntime.EXIT_PROTOCOL);
         }
         peerMaximumFrameBytes = hello.getMaxReceiveFrameBytes();
+        writer.setPeerMaximumFrameBytes(peerMaximumFrameBytes);
 
         Optional<ProtocolVersion> selectedVersion = SUPPORTED_VERSIONS.stream()
                 .filter(supported -> hello.getSupportedVersionsList().stream()
@@ -216,6 +313,10 @@ final class ProtocolLoop {
                 CompatibilityRuntime.EXIT_OK);
     }
 
+    private static Dispatch response(ServerEnvelope response) {
+        return new Dispatch(response, false, CompatibilityRuntime.EXIT_OK);
+    }
+
     private Dispatch error(
             RequestMeta meta,
             String code,
@@ -260,6 +361,32 @@ final class ProtocolLoop {
                 .setTerminal(true)
                 .build();
         return ServerEnvelope.newBuilder().setMeta(meta);
+    }
+
+    private static void validateRequestMeta(RequestMeta meta) throws RuntimeFailure {
+        ProtocolLimits.requireNonBlankUtf8(
+                meta.getRequestId(), ProtocolLimits.MAX_DRIVER_ID_BYTES, "request_id");
+        ProtocolLimits.requireNonBlankUtf8(
+                meta.getTraceId(), ProtocolLimits.MAX_DRIVER_ID_BYTES, "trace_id");
+        if (meta.hasSessionId()) {
+            ProtocolLimits.requireNonBlankUtf8(
+                    meta.getSessionId(), ProtocolLimits.MAX_DRIVER_ID_BYTES, "session_id");
+        }
+        if (meta.hasCancellationId()) {
+            ProtocolLimits.requireNonBlankUtf8(
+                    meta.getCancellationId(),
+                    ProtocolLimits.MAX_DRIVER_ID_BYTES,
+                    "cancellation_id");
+        }
+    }
+
+    private static RequestMeta compactCorrelationMeta(RequestMeta meta) {
+        return meta.toBuilder()
+                .setRequestId(ProtocolLimits.truncateUtf8(
+                        meta.getRequestId(), ProtocolLimits.MAX_DRIVER_ID_BYTES))
+                .setTraceId(ProtocolLimits.truncateUtf8(
+                        meta.getTraceId(), ProtocolLimits.MAX_DRIVER_ID_BYTES))
+                .build();
     }
 
     private static ProtocolVersion version(int major, int minor) {

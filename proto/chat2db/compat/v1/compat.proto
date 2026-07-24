@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package chat2db.compat.v1;
 
+import "chat2db/compat/v1/jdbc.proto";
+
 option java_multiple_files = true;
 option java_package = "ai.chat2db.rust.compat.protocol.v1";
 option java_outer_classname = "CompatibilityProtocol";
@@ -22,6 +24,8 @@ message RequestMeta {
 message ResponseMeta {
   string request_id = 1;
   string trace_id = 2;
+  // ExecuteQuery responses use one strictly increasing sequence beginning at
+  // zero. The request_id is the stream identity.
   uint64 sequence = 3;
   bool terminal = 4;
 }
@@ -33,6 +37,17 @@ message ClientEnvelope {
     ClientHello hello = 10;
     Ping ping = 11;
     Shutdown shutdown = 12;
+    LoadDriverRequest load_driver = 100;
+    UnloadDriverRequest unload_driver = 101;
+    OpenSessionRequest open_session = 110;
+    CloseSessionRequest close_session = 111;
+    BeginTransactionRequest begin_transaction = 120;
+    CommitTransactionRequest commit_transaction = 121;
+    RollbackTransactionRequest rollback_transaction = 122;
+    ExecuteQueryRequest execute_query = 130;
+    ExecuteUpdateRequest execute_update = 131;
+    GrantCreditsRequest grant_credits = 132;
+    CancelOperationRequest cancel_operation = 133;
   }
 }
 
@@ -44,6 +59,19 @@ message ServerEnvelope {
     Pong pong = 11;
     ShutdownAck shutdown_ack = 12;
     EngineError error = 15;
+    DriverLoaded driver_loaded = 100;
+    DriverUnloaded driver_unloaded = 101;
+    SessionOpened session_opened = 110;
+    SessionClosed session_closed = 111;
+    TransactionStarted transaction_started = 120;
+    TransactionCommitted transaction_committed = 121;
+    TransactionRolledBack transaction_rolled_back = 122;
+    QueryStarted query_started = 130;
+    RowBatch row_batch = 131;
+    QueryCompleted query_completed = 132;
+    UpdateCompleted update_completed = 133;
+    CreditsGranted credits_granted = 134;
+    OperationCancelled operation_cancelled = 135;
   }
 }
 
@@ -87,6 +115,11 @@ message EngineError {
   bool fatal = 5;
   OperationOutcome outcome = 6;
   map<string, string> metadata = 7;
+  // Present only when category is ERROR_CATEGORY_DATABASE.
+  DatabaseErrorDetail database_error = 8;
+  // Present for session-bound failures when the post-failure state is known,
+  // including cancellation and deadline errors without database_error.
+  optional SessionState session_state = 9;
 }
 
 enum ErrorCategory {

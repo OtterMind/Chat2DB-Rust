@@ -1,11 +1,25 @@
-use std::{collections::HashMap, io::Write, process::ExitCode, time::Duration};
+use std::{
+    collections::HashMap, fmt::Write as _, fs::OpenOptions, io::Write, path::PathBuf,
+    process::ExitCode, time::Duration,
+};
 
 use chat2db_engine_protocol::{MAX_FRAME_BYTES, current_version, read_frame, wire, write_frame};
 use prost::Message;
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 const PING_CAPABILITY: &str = "lifecycle.ping.v1";
 const SHUTDOWN_CAPABILITY: &str = "lifecycle.shutdown.v1";
+const DRIVER_ID_DOMAIN_SEPARATOR: &[u8] = b"chat2db-jdbc-driver-v1\0";
+const JDBC_CAPABILITIES: [&str; 7] = [
+    "driver.external-jar.v1",
+    "session.jdbc.v1",
+    "query.typed-batches.v1",
+    "flow.credit.v1",
+    "operation.cancel.v1",
+    "update.jdbc.v1",
+    "transaction.local.v1",
+];
 
 #[derive(Default)]
 struct Options {
@@ -15,6 +29,11 @@ struct Options {
     stderr_bytes: usize,
     reverse_pings: usize,
     max_receive_frame_bytes: Option<u32>,
+    jdbc: Option<JdbcBehavior>,
+    exit_on_update: bool,
+    exit_on_commit: bool,
+    hang: HangBehavior,
+    write_journal: Option<PathBuf>,
 }
 
 #[derive(Default, PartialEq, Eq)]
@@ -46,6 +65,34 @@ enum ShutdownBehavior {
     IgnoreBeforeAck,
 }
 
+#[derive(Default, PartialEq, Eq)]
+enum HangBehavior {
+    #[default]
+    None,
+    Update,
+    GrantCredits,
+    Cancel,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JdbcBehavior {
+    Normal,
+    Gap,
+    Duplicate,
+    RowBeforeStarted,
+    MultipleTerminal,
+    AfterTerminal,
+    WrongTrace,
+    StartedTerminal,
+    CompletedNonTerminal,
+    WrongOffset,
+    WrongColumnCount,
+    Paused,
+    AwaitControl,
+    CancelCompletes,
+    CancelHangs,
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let options = Options::parse();
@@ -71,11 +118,17 @@ async fn main() -> ExitCode {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run(options: Options) -> Result<u8, Box<dyn std::error::Error>> {
     let mut input = tokio::io::stdin();
     let mut output = tokio::io::stdout();
-    if let HandshakeResult::Exit(code) =
-        perform_handshake(&mut input, &mut output, options.max_receive_frame_bytes).await?
+    if let HandshakeResult::Exit(code) = perform_handshake(
+        &mut input,
+        &mut output,
+        options.max_receive_frame_bytes,
+        options.jdbc.is_some(),
+    )
+    .await?
     {
         return Ok(code);
     }
@@ -85,6 +138,8 @@ async fn run(options: Options) -> Result<u8, Box<dyn std::error::Error>> {
 
     let mut reversed = Vec::new();
     let mut ping_count = 0_u64;
+    let mut active_queries = HashMap::<String, wire::RequestMeta>::new();
+    let mut cancel_count = 0_u64;
     while let Some(request) = read_frame::<_, wire::ClientEnvelope>(&mut input).await? {
         let meta = request.meta.clone().ok_or("request metadata is missing")?;
         match request.payload {
@@ -139,6 +194,226 @@ async fn run(options: Options) -> Result<u8, Box<dyn std::error::Error>> {
                     "the protocol handshake is already complete",
                 )
                 .await?;
+            }
+            Some(wire::client_envelope::Payload::LoadDriver(load)) => {
+                let driver_id = derive_driver_id(&load);
+                write_response(
+                    &mut output,
+                    &meta,
+                    wire::server_envelope::Payload::DriverLoaded(wire::DriverLoaded {
+                        driver_id,
+                        driver_class: load.driver_class,
+                        artifact_count: u32::try_from(load.artifacts.len()).unwrap_or(u32::MAX),
+                    }),
+                    0,
+                    true,
+                    None,
+                )
+                .await?;
+            }
+            Some(wire::client_envelope::Payload::UnloadDriver(unload)) => {
+                write_response(
+                    &mut output,
+                    &meta,
+                    wire::server_envelope::Payload::DriverUnloaded(wire::DriverUnloaded {
+                        driver_id: unload.driver_id,
+                    }),
+                    0,
+                    true,
+                    None,
+                )
+                .await?;
+            }
+            Some(wire::client_envelope::Payload::OpenSession(open)) => {
+                write_response(
+                    &mut output,
+                    &meta,
+                    wire::server_envelope::Payload::SessionOpened(wire::SessionOpened {
+                        session_id: "fixture-session".to_owned(),
+                        database: Some(wire::DatabaseProduct {
+                            name: "FixtureDB".to_owned(),
+                            version: "1".to_owned(),
+                            driver_name: open.driver_id,
+                            driver_version: "1".to_owned(),
+                        }),
+                        read_only: open.read_only,
+                        session_state: wire::SessionState::AutoCommit as i32,
+                    }),
+                    0,
+                    true,
+                    None,
+                )
+                .await?;
+            }
+            Some(wire::client_envelope::Payload::CloseSession(_)) => {
+                write_response(
+                    &mut output,
+                    &meta,
+                    wire::server_envelope::Payload::SessionClosed(wire::SessionClosed {
+                        session_state: wire::SessionState::Closed as i32,
+                    }),
+                    0,
+                    true,
+                    None,
+                )
+                .await?;
+            }
+            Some(wire::client_envelope::Payload::BeginTransaction(begin)) => {
+                write_response(
+                    &mut output,
+                    &meta,
+                    wire::server_envelope::Payload::TransactionStarted(wire::TransactionStarted {
+                        transaction_id: "fixture-transaction".to_owned(),
+                        isolation: begin.isolation,
+                        read_only: begin.read_only,
+                        session_state: wire::SessionState::TransactionActive as i32,
+                    }),
+                    0,
+                    true,
+                    None,
+                )
+                .await?;
+            }
+            Some(wire::client_envelope::Payload::CommitTransaction(commit)) => {
+                if options.exit_on_commit {
+                    append_journal(&options, "commit")?;
+                    return Ok(42);
+                }
+                write_response(
+                    &mut output,
+                    &meta,
+                    wire::server_envelope::Payload::TransactionCommitted(
+                        wire::TransactionCommitted {
+                            transaction_id: commit.transaction_id,
+                            session_state: wire::SessionState::AutoCommit as i32,
+                        },
+                    ),
+                    0,
+                    true,
+                    None,
+                )
+                .await?;
+            }
+            Some(wire::client_envelope::Payload::RollbackTransaction(rollback)) => {
+                write_response(
+                    &mut output,
+                    &meta,
+                    wire::server_envelope::Payload::TransactionRolledBack(
+                        wire::TransactionRolledBack {
+                            transaction_id: rollback.transaction_id,
+                            session_state: wire::SessionState::AutoCommit as i32,
+                        },
+                    ),
+                    0,
+                    true,
+                    None,
+                )
+                .await?;
+            }
+            Some(wire::client_envelope::Payload::ExecuteUpdate(_)) => {
+                if options.hang == HangBehavior::Update {
+                    eprintln!("fixture received hanging update");
+                    continue;
+                }
+                if options.exit_on_update {
+                    append_journal(&options, "update")?;
+                    return Ok(42);
+                }
+                write_response(
+                    &mut output,
+                    &meta,
+                    wire::server_envelope::Payload::UpdateCompleted(wire::UpdateCompleted {
+                        affected_rows: 3,
+                    }),
+                    0,
+                    true,
+                    None,
+                )
+                .await?;
+            }
+            Some(wire::client_envelope::Payload::ExecuteQuery(_)) => {
+                let behavior = options.jdbc.unwrap_or(JdbcBehavior::Normal);
+                if behavior == JdbcBehavior::AwaitControl {
+                    eprintln!("fixture received await-control query {}", meta.request_id);
+                }
+                write_query_fixture(&mut output, &meta, behavior).await?;
+                if matches!(
+                    behavior,
+                    JdbcBehavior::Paused
+                        | JdbcBehavior::AwaitControl
+                        | JdbcBehavior::CancelCompletes
+                        | JdbcBehavior::CancelHangs
+                ) {
+                    active_queries.insert(meta.request_id.clone(), meta);
+                }
+            }
+            Some(wire::client_envelope::Payload::GrantCredits(grant)) => {
+                let query_meta = active_queries
+                    .get(&grant.target_request_id)
+                    .cloned()
+                    .ok_or("credit request did not have an active query")?;
+                if grant.target_request_id != query_meta.request_id {
+                    return Err("credit request targeted another query".into());
+                }
+                if options.hang == HangBehavior::GrantCredits {
+                    eprintln!("fixture received hanging credit grant");
+                    continue;
+                }
+                write_response(
+                    &mut output,
+                    &meta,
+                    wire::server_envelope::Payload::CreditsGranted(wire::CreditsGranted {
+                        accepted_batch_credits: grant.batch_credits,
+                    }),
+                    0,
+                    true,
+                    None,
+                )
+                .await?;
+                if options.jdbc == Some(JdbcBehavior::AwaitControl) {
+                    eprintln!("fixture received credit grant before query started");
+                    write_query_started(&mut output, &query_meta, false, None).await?;
+                }
+                write_row_batch(&mut output, &query_meta, 1, 0, 1, None).await?;
+                write_query_completed(&mut output, &query_meta, 2, true, 1).await?;
+                active_queries.remove(&grant.target_request_id);
+            }
+            Some(wire::client_envelope::Payload::CancelOperation(cancel)) => {
+                let query_meta = active_queries
+                    .get(&cancel.target_request_id)
+                    .cloned()
+                    .ok_or("cancel request did not have an active query")?;
+                if options.hang == HangBehavior::Cancel {
+                    eprintln!(
+                        "fixture received hanging cancel {}",
+                        cancel.target_request_id
+                    );
+                    continue;
+                }
+                cancel_count = cancel_count.saturating_add(1);
+                eprintln!("fixture query cancel count {cancel_count}");
+                write_response(
+                    &mut output,
+                    &meta,
+                    wire::server_envelope::Payload::OperationCancelled(wire::OperationCancelled {
+                        disposition: wire::CancelDisposition::Accepted as i32,
+                    }),
+                    0,
+                    true,
+                    None,
+                )
+                .await?;
+                if matches!(
+                    options.jdbc,
+                    Some(JdbcBehavior::CancelCompletes | JdbcBehavior::AwaitControl)
+                ) {
+                    active_queries.remove(&cancel.target_request_id);
+                    if options.jdbc == Some(JdbcBehavior::AwaitControl) {
+                        eprintln!("fixture received cancel before query started");
+                        write_query_started(&mut output, &query_meta, false, None).await?;
+                    }
+                    write_query_completed(&mut output, &query_meta, 1, true, 0).await?;
+                }
             }
             None => {
                 write_error(
@@ -195,6 +470,7 @@ async fn perform_handshake<R, W>(
     input: &mut R,
     output: &mut W,
     max_receive_frame_bytes: Option<u32>,
+    jdbc_enabled: bool,
 ) -> Result<HandshakeResult, Box<dyn std::error::Error>>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -226,7 +502,10 @@ where
         .await?;
         return Ok(HandshakeResult::Exit(3));
     }
-    let capabilities = vec![PING_CAPABILITY.to_owned(), SHUTDOWN_CAPABILITY.to_owned()];
+    let mut capabilities = vec![PING_CAPABILITY.to_owned(), SHUTDOWN_CAPABILITY.to_owned()];
+    if jdbc_enabled {
+        capabilities.extend(JDBC_CAPABILITIES.map(str::to_owned));
+    }
     if let Some(missing) = hello
         .required_capabilities
         .iter()
@@ -326,6 +605,190 @@ where
     Ok(())
 }
 
+async fn write_query_fixture<W>(
+    output: &mut W,
+    meta: &wire::RequestMeta,
+    behavior: JdbcBehavior,
+) -> Result<(), chat2db_engine_protocol::FrameError>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    match behavior {
+        JdbcBehavior::AwaitControl => {}
+        JdbcBehavior::RowBeforeStarted => {
+            write_row_batch(output, meta, 0, 0, 1, None).await?;
+        }
+        JdbcBehavior::StartedTerminal => {
+            write_query_started(output, meta, true, None).await?;
+        }
+        JdbcBehavior::WrongTrace => {
+            write_query_started(output, meta, false, Some("wrong-trace")).await?;
+        }
+        behavior => {
+            write_query_started(output, meta, false, None).await?;
+            match behavior {
+                JdbcBehavior::Normal => {
+                    write_row_batch(output, meta, 1, 0, 1, None).await?;
+                    write_query_completed(output, meta, 2, true, 1).await?;
+                }
+                JdbcBehavior::Gap => {
+                    write_row_batch(output, meta, 2, 0, 1, None).await?;
+                }
+                JdbcBehavior::Duplicate => {
+                    write_row_batch(output, meta, 1, 0, 1, None).await?;
+                    write_row_batch(output, meta, 1, 1, 1, None).await?;
+                }
+                JdbcBehavior::MultipleTerminal => {
+                    write_query_completed(output, meta, 1, true, 0).await?;
+                    write_query_completed(output, meta, 2, true, 0).await?;
+                }
+                JdbcBehavior::AfterTerminal => {
+                    write_query_completed(output, meta, 1, true, 0).await?;
+                    write_row_batch(output, meta, 2, 0, 1, None).await?;
+                }
+                JdbcBehavior::CompletedNonTerminal => {
+                    write_query_completed(output, meta, 1, false, 0).await?;
+                }
+                JdbcBehavior::WrongOffset => {
+                    write_row_batch(output, meta, 1, 1, 1, None).await?;
+                }
+                JdbcBehavior::WrongColumnCount => {
+                    write_row_batch(output, meta, 1, 0, 0, None).await?;
+                }
+                JdbcBehavior::Paused
+                | JdbcBehavior::AwaitControl
+                | JdbcBehavior::CancelCompletes
+                | JdbcBehavior::CancelHangs => {}
+                JdbcBehavior::RowBeforeStarted
+                | JdbcBehavior::StartedTerminal
+                | JdbcBehavior::WrongTrace => {
+                    unreachable!("these behaviors are handled before query-started")
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn write_query_started<W>(
+    output: &mut W,
+    meta: &wire::RequestMeta,
+    terminal: bool,
+    trace_id: Option<&str>,
+) -> Result<(), chat2db_engine_protocol::FrameError>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    write_response(
+        output,
+        meta,
+        wire::server_envelope::Payload::QueryStarted(wire::QueryStarted {
+            columns: vec![wire::JdbcColumn {
+                ordinal: 1,
+                label: "value".to_owned(),
+                name: "value".to_owned(),
+                jdbc_type: 12,
+                jdbc_type_name: "VARCHAR".to_owned(),
+                value_type: wire::JdbcValueType::Text as i32,
+                nullability: wire::ColumnNullability::Nullable as i32,
+                precision: None,
+                scale: None,
+                display_size: None,
+                signed: None,
+                catalog_name: None,
+                schema_name: None,
+                table_name: None,
+            }],
+        }),
+        0,
+        terminal,
+        trace_id,
+    )
+    .await
+}
+
+async fn write_row_batch<W>(
+    output: &mut W,
+    meta: &wire::RequestMeta,
+    sequence: u64,
+    start_row_offset: u64,
+    value_count: usize,
+    trace_id: Option<&str>,
+) -> Result<(), chat2db_engine_protocol::FrameError>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    write_response(
+        output,
+        meta,
+        wire::server_envelope::Payload::RowBatch(wire::RowBatch {
+            start_row_offset,
+            rows: vec![wire::JdbcRow {
+                values: (0..value_count)
+                    .map(|_| wire::JdbcValue {
+                        value: Some(wire::jdbc_value::Value::TextValue("fixture-row".to_owned())),
+                    })
+                    .collect(),
+            }],
+        }),
+        sequence,
+        false,
+        trace_id,
+    )
+    .await
+}
+
+async fn write_query_completed<W>(
+    output: &mut W,
+    meta: &wire::RequestMeta,
+    sequence: u64,
+    terminal: bool,
+    row_count: u64,
+) -> Result<(), chat2db_engine_protocol::FrameError>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    write_response(
+        output,
+        meta,
+        wire::server_envelope::Payload::QueryCompleted(wire::QueryCompleted {
+            row_count,
+            truncated_by_max_rows: false,
+            truncated_by_max_result_bytes: false,
+        }),
+        sequence,
+        terminal,
+        None,
+    )
+    .await
+}
+
+async fn write_response<W>(
+    output: &mut W,
+    request: &wire::RequestMeta,
+    payload: wire::server_envelope::Payload,
+    sequence: u64,
+    terminal: bool,
+    trace_id: Option<&str>,
+) -> Result<(), chat2db_engine_protocol::FrameError>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    write_frame(
+        output,
+        &wire::ServerEnvelope {
+            meta: Some(wire::ResponseMeta {
+                request_id: request.request_id.clone(),
+                trace_id: trace_id.unwrap_or(&request.trace_id).to_owned(),
+                sequence,
+                terminal,
+            }),
+            payload: Some(payload),
+        },
+    )
+    .await
+}
+
 async fn write_error<W>(
     output: &mut W,
     meta: &wire::RequestMeta,
@@ -347,6 +810,8 @@ where
                 fatal: true,
                 outcome: wire::OperationOutcome::NotStarted as i32,
                 metadata: HashMap::new(),
+                database_error: None,
+                session_state: None,
             })),
         },
     )
@@ -384,6 +849,11 @@ impl Options {
                     options.shutdown = ShutdownBehavior::WrongResponse;
                 }
                 "--ignore-shutdown" => options.shutdown = ShutdownBehavior::IgnoreBeforeAck,
+                "--exit-on-update" => options.exit_on_update = true,
+                "--exit-on-commit" => options.exit_on_commit = true,
+                "--hang-on-update" => options.hang = HangBehavior::Update,
+                "--hang-on-grant-credits" => options.hang = HangBehavior::GrantCredits,
+                "--hang-on-cancel" => options.hang = HangBehavior::Cancel,
                 _ => {
                     if let Some(value) = argument.strip_prefix("--stderr-bytes=") {
                         options.stderr_bytes = value.parse().expect("stderr byte count must parse");
@@ -392,6 +862,27 @@ impl Options {
                     } else if let Some(value) = argument.strip_prefix("--peer-max-frame-bytes=") {
                         options.max_receive_frame_bytes =
                             Some(value.parse().expect("frame byte limit must parse"));
+                    } else if let Some(value) = argument.strip_prefix("--jdbc-stream=") {
+                        options.jdbc = Some(match value {
+                            "normal" => JdbcBehavior::Normal,
+                            "gap" => JdbcBehavior::Gap,
+                            "duplicate" => JdbcBehavior::Duplicate,
+                            "row-before-started" => JdbcBehavior::RowBeforeStarted,
+                            "multiple-terminal" => JdbcBehavior::MultipleTerminal,
+                            "after-terminal" => JdbcBehavior::AfterTerminal,
+                            "wrong-trace" => JdbcBehavior::WrongTrace,
+                            "started-terminal" => JdbcBehavior::StartedTerminal,
+                            "completed-nonterminal" => JdbcBehavior::CompletedNonTerminal,
+                            "wrong-offset" => JdbcBehavior::WrongOffset,
+                            "wrong-column-count" => JdbcBehavior::WrongColumnCount,
+                            "paused" => JdbcBehavior::Paused,
+                            "await-control" => JdbcBehavior::AwaitControl,
+                            "cancel-completes" => JdbcBehavior::CancelCompletes,
+                            "cancel-hangs" => JdbcBehavior::CancelHangs,
+                            _ => panic!("unknown JDBC fixture behavior: {value}"),
+                        });
+                    } else if let Some(value) = argument.strip_prefix("--write-journal=") {
+                        options.write_journal = Some(PathBuf::from(value));
                     } else {
                         panic!("unknown engine fixture argument: {argument}");
                     }
@@ -400,4 +891,33 @@ impl Options {
         }
         options
     }
+}
+
+fn derive_driver_id(request: &wire::LoadDriverRequest) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(DRIVER_ID_DOMAIN_SEPARATOR);
+    hasher.update(request.driver_class.as_bytes());
+    hasher.update([0]);
+    for artifact in &request.artifacts {
+        hasher.update(&artifact.sha256);
+    }
+
+    let digest = hasher.finalize();
+    let mut driver_id = String::with_capacity("sha256:".len() + digest.len() * 2);
+    driver_id.push_str("sha256:");
+    for byte in digest {
+        write!(&mut driver_id, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    driver_id
+}
+
+fn append_journal(options: &Options, operation: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let path = options
+        .write_journal
+        .as_ref()
+        .ok_or("exit-on-write fixture requires --write-journal")?;
+    let mut journal = OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(journal, "{operation}")?;
+    journal.sync_all()?;
+    Ok(())
 }

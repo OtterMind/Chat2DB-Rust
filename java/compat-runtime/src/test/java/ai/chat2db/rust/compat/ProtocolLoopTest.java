@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.chat2db.rust.compat.protocol.v1.CancelDisposition;
+import ai.chat2db.rust.compat.protocol.v1.CancelOperationRequest;
 import ai.chat2db.rust.compat.protocol.v1.ClientEnvelope;
 import ai.chat2db.rust.compat.protocol.v1.ClientHello;
 import ai.chat2db.rust.compat.protocol.v1.Ping;
@@ -47,7 +49,16 @@ class ProtocolLoopTest {
         assertEquals(ServerEnvelope.PayloadCase.HELLO, serverHello.getPayloadCase());
         assertEquals(version(1, 0), serverHello.getHello().getSelectedVersion());
         assertEquals(
-                List.of(ProtocolLoop.PING_CAPABILITY, ProtocolLoop.SHUTDOWN_CAPABILITY),
+                List.of(
+                        ProtocolLoop.PING_CAPABILITY,
+                        ProtocolLoop.SHUTDOWN_CAPABILITY,
+                        ProtocolLoop.EXTERNAL_DRIVER_CAPABILITY,
+                        ProtocolLoop.JDBC_SESSION_CAPABILITY,
+                        ProtocolLoop.TYPED_QUERY_CAPABILITY,
+                        ProtocolLoop.CREDIT_FLOW_CAPABILITY,
+                        ProtocolLoop.OPERATION_CANCEL_CAPABILITY,
+                        ProtocolLoop.JDBC_UPDATE_CAPABILITY,
+                        ProtocolLoop.LOCAL_TRANSACTION_CAPABILITY),
                 serverHello.getHello().getCapabilitiesList());
         assertEquals(FrameCodec.MAX_FRAME_BYTES, serverHello.getHello().getMaxReceiveFrameBytes());
         assertResponseMeta(serverHello, "hello");
@@ -164,6 +175,70 @@ class ProtocolLoopTest {
         assertEquals("protocol.unsupported_message", result.responses().get(1).getError().getCode());
         assertFalse(result.responses().get(1).getError().getFatal());
         assertEquals(ServerEnvelope.PayloadCase.SHUTDOWN_ACK, result.responses().get(2).getPayloadCase());
+    }
+
+    @Test
+    void rejectsOversizedCorrelationBeforeDispatchAndFitsThePeerFrame() throws Exception {
+        RequestMeta oversized = RequestMeta.newBuilder()
+                .setRequestId("oversized-trace")
+                .setTraceId("t".repeat(20_000))
+                .build();
+        ClientEnvelope cancel = ClientEnvelope.newBuilder()
+                .setMeta(oversized)
+                .setCancelOperation(CancelOperationRequest.newBuilder()
+                        .setTargetRequestId("not-active"))
+                .build();
+
+        RunResult result = run(
+                hello(
+                        "hello",
+                        List.of(version(1, 0)),
+                        List.of(ProtocolLoop.SHUTDOWN_CAPABILITY),
+                        1_024),
+                cancel);
+
+        assertEquals(CompatibilityRuntime.EXIT_PROTOCOL, result.exitCode());
+        ServerEnvelope failure = result.responses().get(1);
+        assertEquals("protocol.limit_exceeded", failure.getError().getCode());
+        assertTrue(failure.getError().getFatal());
+        assertTrue(failure.getSerializedSize() <= 1_024);
+        assertTrue(ProtocolLimits.utf8Length(failure.getMeta().getTraceId())
+                <= ProtocolLimits.MAX_DRIVER_ID_BYTES);
+    }
+
+    @Test
+    void maximumCorrelationFitsCancelAckAtTheMinimumPeerFrame() throws Exception {
+        String requestId = "r".repeat(ProtocolLimits.MAX_DRIVER_ID_BYTES);
+        String traceId = "t".repeat(ProtocolLimits.MAX_DRIVER_ID_BYTES);
+        ClientEnvelope cancel = ClientEnvelope.newBuilder()
+                .setMeta(RequestMeta.newBuilder()
+                        .setRequestId(requestId)
+                        .setTraceId(traceId))
+                .setCancelOperation(CancelOperationRequest.newBuilder()
+                        .setTargetRequestId("not-active"))
+                .build();
+        ClientEnvelope shutdown = ClientEnvelope.newBuilder()
+                .setMeta(meta("shutdown"))
+                .setShutdown(Shutdown.getDefaultInstance())
+                .build();
+
+        RunResult result = run(
+                hello(
+                        "hello",
+                        List.of(version(1, 0)),
+                        List.of(ProtocolLoop.SHUTDOWN_CAPABILITY),
+                        1_024),
+                cancel,
+                shutdown);
+
+        ServerEnvelope cancelled = result.responses().get(1);
+        assertEquals(ServerEnvelope.PayloadCase.OPERATION_CANCELLED, cancelled.getPayloadCase());
+        assertEquals(
+                CancelDisposition.CANCEL_DISPOSITION_UNKNOWN_REQUEST,
+                cancelled.getOperationCancelled().getDisposition());
+        assertEquals(requestId, cancelled.getMeta().getRequestId());
+        assertEquals(traceId, cancelled.getMeta().getTraceId());
+        assertTrue(cancelled.getSerializedSize() <= 1_024);
     }
 
     private static RunResult run(ClientEnvelope... requests) throws Exception {

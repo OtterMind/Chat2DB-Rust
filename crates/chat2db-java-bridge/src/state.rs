@@ -1,4 +1,56 @@
+use std::sync::Mutex;
+
 use chat2db_engine_protocol::wire::ProtocolVersion;
+
+/// JDBC session state reported after lifecycle and transaction operations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionState {
+    AutoCommit,
+    TransactionActive,
+    RollbackRequired,
+    Broken,
+    Closed,
+}
+
+impl SessionState {
+    pub(crate) fn from_wire(value: i32) -> Result<Self, String> {
+        use chat2db_engine_protocol::wire;
+
+        match wire::SessionState::try_from(value) {
+            Ok(wire::SessionState::AutoCommit) => Ok(Self::AutoCommit),
+            Ok(wire::SessionState::TransactionActive) => Ok(Self::TransactionActive),
+            Ok(wire::SessionState::RollbackRequired) => Ok(Self::RollbackRequired),
+            Ok(wire::SessionState::Broken) => Ok(Self::Broken),
+            Ok(wire::SessionState::Closed) => Ok(Self::Closed),
+            Ok(wire::SessionState::Unspecified) | Err(_) => {
+                Err(format!("unknown JDBC session state {value}"))
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct SessionStateCell(Mutex<SessionState>);
+
+impl SessionStateCell {
+    pub(crate) const fn new(state: SessionState) -> Self {
+        Self(Mutex::new(state))
+    }
+
+    pub(crate) fn get(&self) -> SessionState {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn set(&self, state: SessionState) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = state;
+    }
+}
 
 /// Engine details proven by a successful protocol handshake.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -2,15 +2,19 @@
 
 ## Status
 
-The repository has completed the buildable baseline and the versioned
-Rust-to-Java lifecycle protocol. Protobuf generation, framing, handshake, ping,
-request correlation, stderr capture, process exit classification, and shutdown
-are implemented and cross-language tested.
+The repository has completed the buildable baseline, the versioned Rust-to-Java
+process protocol, and the JDBC vertical slice. In addition to lifecycle
+supervision, the implemented bridge loads external driver JARs, owns sessions
+and local transactions, executes updates, and streams typed query batches with
+credits, cancellation, deadlines, hard limits, and explicit unknown outcomes.
+The complete path is cross-language tested against H2 without embedding H2 in
+the compatibility-engine JAR.
 
-JDBC sessions, database operations, streaming rows, storage, Tauri, AI, MCP,
-plugin migration, and packaging remain target components. In particular,
-protocol readiness is not reported as database readiness before the Stage 3
-JDBC gate passes.
+SQLite product storage, retained result files, Tauri, AI, MCP, Chat2DB plugin
+and parser integration, and packaging remain target components. The bootstrap
+`chat2db-core` and Web composition do not start the Java supervisor, so product
+health still reports `database-engine` as `disabled`; bridge readiness is not
+reported as product database readiness.
 
 ## Ownership
 
@@ -67,9 +71,9 @@ inside the Java process.
 - Read-only metadata/parser work may retry after a Java restart. Transactions,
   DML, and unknown-outcome operations are never replayed automatically.
 
-The implemented lifecycle subset is documented in [`protocol.md`](protocol.md).
-It intentionally contains no placeholder database request that could report a
-false success.
+The implemented lifecycle and JDBC subset is documented in
+[`protocol.md`](protocol.md). Capabilities are advertised only after their
+cross-language acceptance gates pass.
 
 ## Database boundary
 
@@ -77,22 +81,33 @@ Java remains the primary database implementation at the first complete release.
 Rust does not reimplement vendor wire protocols and does not introduce parallel
 native-driver behavior before the Java-backed conformance baseline passes.
 
-The compatibility engine retains:
+Stage 3 currently implements:
 
-- dynamic driver JAR loading and classloader isolation;
-- JDBC connection, statement, result, and transaction ownership;
+- verified external JAR snapshots and per-driver classloader isolation;
+- JDBC session and local-transaction ownership;
+- prepared query and update execution with typed parameters;
+- typed row batches with row, byte, frame, and scalar limits;
+- credit flow control, cancellation, deadlines, and conservative outcomes.
+
+The complete compatibility engine will additionally retain the existing
+Chat2DB-specific estate:
+
 - Chat2DB database plugins, metadata, builders, and type conversion;
 - relational and existing non-relational operations;
 - Java ANTLR parsing, splitting, formatting, validation, and completion.
+
+The existing Chat2DB database plugins, metadata implementations, SQL builders,
+non-relational operations, and Java ANTLR estate are not yet integrated into
+this repository; they remain Stage 7 work.
 
 Spring Boot, Spring Web, Spring AI, MCP, JCEF, product storage, and updater logic
 do not belong in the final Java engine.
 
 ## Large result boundary
 
-Java streams typed row batches to Rust. Rust writes retained batches to bounded
-disk files and indexes chunk offsets and expiry in SQLite. UI, CLI, and MCP
-clients page by an opaque result id.
+Java now streams typed row batches to Rust under bounded row and byte budgets.
+Writing retained batches to disk, indexing chunk offsets and expiry in SQLite,
+and paging by an opaque result id are Stage 4 work and are not yet implemented.
 
 AI tools receive schema, counts, truncation state, bounded samples, statistics,
 and the result id. They never append an unbounded database result directly to
@@ -109,6 +124,9 @@ new explicit budget.
   persisted by Java.
 - SQL write access is enforced outside prompts and scoped to the active run.
 - User-provided driver JARs are treated as native-trust code.
+- Java copies each supplied driver artifact into a private snapshot, verifies
+  its SHA-256, rejects manifest `Class-Path`, and deletes the snapshot only
+  after the driver has no remaining session lease.
 
 ## Packaging target
 

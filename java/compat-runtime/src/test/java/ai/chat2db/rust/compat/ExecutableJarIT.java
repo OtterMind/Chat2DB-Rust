@@ -24,11 +24,31 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.jar.JarFile;
 import org.junit.jupiter.api.Test;
 
 class ExecutableJarIT {
 
     private static final Duration TIMEOUT = Duration.ofSeconds(10);
+    private static final String H2_DRIVER_ENTRY = "org/h2/Driver.class";
+
+    @Test
+    void h2TestDriverRemainsExternalToTheShadedRuntime() throws Exception {
+        Path runtimeJar = Path.of(System.getProperty("compat.runtime.jar"));
+        Path h2DriverJar = Path.of(System.getProperty("compat.h2.driver.jar"));
+        assertTrue(Files.isRegularFile(runtimeJar), "shaded runtime jar must exist");
+        assertTrue(Files.isRegularFile(h2DriverJar), "external H2 test driver must exist");
+
+        try (JarFile runtimeArchive = new JarFile(runtimeJar.toFile());
+                JarFile h2Archive = new JarFile(h2DriverJar.toFile())) {
+            assertFalse(
+                    runtimeArchive.stream().anyMatch(entry -> entry.getName().equals(H2_DRIVER_ENTRY)),
+                    "shaded runtime jar must not embed the H2 driver");
+            assertTrue(
+                    h2Archive.stream().anyMatch(entry -> entry.getName().equals(H2_DRIVER_ENTRY)),
+                    "external H2 test driver must contain org.h2.Driver");
+        }
+    }
 
     @Test
     void shadedJarRunsTheBinaryProtocolWithoutStdoutContamination() throws Exception {
@@ -46,7 +66,16 @@ class ExecutableJarIT {
             assertEquals(1, serverHello.getHello().getSelectedVersion().getMajor());
             assertEquals(0, serverHello.getHello().getSelectedVersion().getMinor());
             assertEquals(
-                    List.of(ProtocolLoop.PING_CAPABILITY, ProtocolLoop.SHUTDOWN_CAPABILITY),
+                    List.of(
+                            ProtocolLoop.PING_CAPABILITY,
+                            ProtocolLoop.SHUTDOWN_CAPABILITY,
+                            ProtocolLoop.EXTERNAL_DRIVER_CAPABILITY,
+                            ProtocolLoop.JDBC_SESSION_CAPABILITY,
+                            ProtocolLoop.TYPED_QUERY_CAPABILITY,
+                            ProtocolLoop.CREDIT_FLOW_CAPABILITY,
+                            ProtocolLoop.OPERATION_CANCEL_CAPABILITY,
+                            ProtocolLoop.JDBC_UPDATE_CAPABILITY,
+                            ProtocolLoop.LOCAL_TRANSACTION_CAPABILITY),
                     serverHello.getHello().getCapabilitiesList());
 
             FrameCodec.writeFrame(

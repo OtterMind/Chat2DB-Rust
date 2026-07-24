@@ -11,7 +11,8 @@ publish = false
 
 [dependencies]
 chat2db-engine-protocol = { path = "../chat2db-engine-protocol" }
-prost = { workspace = true, optional = true }
+prost.workspace = true
+sha2 = "0.10"
 thiserror.workspace = true
 tokio.workspace = true
 
@@ -30,10 +31,15 @@ name = "java_engine"
 path = "tests/java_engine.rs"
 required-features = ["java-integration"]
 
+[[test]]
+name = "java_jdbc_h2"
+path = "tests/java_jdbc_h2.rs"
+required-features = ["java-integration"]
+
 [features]
 default = []
 java-integration = []
-test-fixture = ["dep:prost"]
+test-fixture = []
 
 [lints]
 workspace = true

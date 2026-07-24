@@ -4,24 +4,29 @@ Private implementation of the Chat2DB Community hybrid runtime.
 
 ## Current state
 
-The repository currently provides the first two buildable stages:
+The repository currently provides the first three buildable stages:
 
 - canonical Rust API contracts;
 - a transport-neutral Rust application service root;
 - an Axum health API bound to loopback by default;
 - a Rust CLI status command;
 - a React runtime-status shell;
-- one Protobuf 1.0 lifecycle contract generated in Rust and Java;
+- one Protobuf 1.0 lifecycle and JDBC contract generated in Rust and Java;
 - a supervised Rust client with handshake, ping, bounded stderr capture,
   request correlation, crash reporting, and forced/clean shutdown;
-- a shaded Java 17 compatibility engine whose stdout is protocol-only; and
-- real Rust-to-Java process integration tests.
+- an external-driver Java 17 compatibility engine whose stdout is
+  protocol-only;
+- Rust driver, session, transaction, update, and credit-streaming query APIs;
+- typed row batches, cancellation, deadlines, bounded results, and explicit
+  unknown-outcome handling; and
+- real Rust-to-Java H2 integration tests with H2 outside the engine JAR.
 
-JDBC operations and sessions, SQLite storage, Tauri, AI, MCP, driver packs, and
-the existing Chat2DB plugin/ANTLR estate are tracked as explicit staged work in
-[`docs/stages.md`](docs/stages.md). The lifecycle protocol does not yet expose a
-database operation, and runtime health continues to report the database engine
-as disabled rather than treating protocol readiness as JDBC readiness.
+SQLite storage, Tauri, AI, MCP, signed driver packs, and the existing Chat2DB
+plugin/ANTLR estate are tracked as explicit staged work in
+[`docs/stages.md`](docs/stages.md). The bootstrap Web and core composition do
+not yet start the Java supervisor, so runtime health continues to report the
+database engine as disabled. This avoids presenting an integration-tested
+bridge as a product-wired database service.
 
 ## Architecture
 
@@ -54,6 +59,13 @@ Run all current verification gates, including real Rust-to-Java process tests:
 ```bash
 make verify
 ```
+
+Java verification downloads H2 `2.3.232` into
+`java/compat-runtime/target/test-drivers/` as an external Stage 3 test fixture.
+H2 is not a runtime dependency of the compatibility engine, and the packaged
+JAR integration test rejects any build that embeds `org/h2/Driver.class`.
+The real H2 gate covers the implemented Stage 3 JDBC vertical slice; H2 is a
+test fixture rather than a bundled product driver.
 
 Run the Web API:
 

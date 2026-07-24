@@ -56,7 +56,7 @@ jobs:
           cache-dependency-path: |
             java/pom.xml
             java/compat-runtime/pom.xml
-      - name: Verify
+      - name: Verify tests and driver isolation
         working-directory: java
         run: ./mvnw -B clean verify
 
@@ -82,8 +82,14 @@ jobs:
         run: ./mvnw -B -DskipTests package
       - name: Verify Rust-Java process protocol
         env:
-          CHAT2DB_JAVA_ENGINE_JAR: ${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar
+          CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
+          CHAT2DB_H2_DRIVER_JAR: "${{ github.workspace }}/java/compat-runtime/target/test-drivers/h2-2.3.232.jar"
         run: cargo test -p chat2db-java-bridge --features java-integration --test java_engine --locked
+      - name: Verify H2 JDBC vertical slice
+        env:
+          CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
+          CHAT2DB_H2_DRIVER_JAR: "${{ github.workspace }}/java/compat-runtime/target/test-drivers/h2-2.3.232.jar"
+        run: cargo test -p chat2db-java-bridge --features java-integration --test java_jdbc_h2 --locked
 
   frontend:
     name: Frontend

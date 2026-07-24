@@ -1,0 +1,368 @@
+syntax = "proto3";
+
+package chat2db.compat.v1;
+
+option java_multiple_files = true;
+option java_package = "ai.chat2db.rust.compat.protocol.v1";
+option java_outer_classname = "JdbcProtocol";
+
+// Hard protocol limits shared by generated Rust and Java code. Receivers MUST
+// reject values above these limits with protocol.limit_exceeded before using
+// them to allocate resources or call JDBC. Limits count UTF-8 bytes for strings.
+// MAX_SCALAR_BYTES applies to every string/bytes field without a narrower
+// named limit. MAX_DRIVER_ID_BYTES applies to all opaque JDBC protocol ids.
+enum JdbcProtocolLimit {
+  JDBC_PROTOCOL_LIMIT_UNSPECIFIED = 0;
+  JDBC_PROTOCOL_LIMIT_MAX_CREDIT_GRANT = 8;
+  JDBC_PROTOCOL_LIMIT_MAX_ERROR_CAUSES = 16;
+  JDBC_PROTOCOL_LIMIT_MAX_DRIVER_ARTIFACTS = 32;
+  JDBC_PROTOCOL_LIMIT_MAX_CONNECTION_PROPERTIES = 128;
+  JDBC_PROTOCOL_LIMIT_MAX_DRIVER_ID_BYTES = 255;
+  JDBC_PROTOCOL_LIMIT_MAX_PROPERTY_KEY_BYTES = 256;
+  JDBC_PROTOCOL_LIMIT_MAX_DRIVER_CLASS_BYTES = 512;
+  JDBC_PROTOCOL_LIMIT_MAX_COLUMNS = 2048;
+  JDBC_PROTOCOL_LIMIT_MAX_BATCH_ROWS = 4096;
+  JDBC_PROTOCOL_LIMIT_MAX_PATH_BYTES = 8192;
+  JDBC_PROTOCOL_LIMIT_MAX_PARAMETERS = 32768;
+  JDBC_PROTOCOL_LIMIT_MAX_JDBC_URL_BYTES = 65536;
+  JDBC_PROTOCOL_LIMIT_MAX_PROPERTY_VALUE_BYTES = 262144;
+  JDBC_PROTOCOL_LIMIT_MAX_SQL_BYTES = 1048576;
+  JDBC_PROTOCOL_LIMIT_MAX_SCALAR_BYTES = 4194304;
+  JDBC_PROTOCOL_LIMIT_MAX_BATCH_BYTES = 8388608;
+}
+
+// Kept separate because protobuf enum values are package-scoped constants and
+// MAX_DRIVER_ARTIFACTS already has the same numeric value.
+enum JdbcCreditWindowLimit {
+  JDBC_CREDIT_WINDOW_LIMIT_UNSPECIFIED = 0;
+  JDBC_CREDIT_WINDOW_LIMIT_MAX_OUTSTANDING_CREDITS = 32;
+}
+
+// Query result budgets stay representable by Java's signed long after a
+// uint64 wire decode. Zero selects the fixed default; callers may request a
+// smaller or larger value only up to the hard maximum.
+enum JdbcResultByteLimit {
+  JDBC_RESULT_BYTE_LIMIT_UNSPECIFIED = 0;
+  JDBC_RESULT_BYTE_LIMIT_DEFAULT_RESULT_BYTES = 67108864;
+  JDBC_RESULT_BYTE_LIMIT_MAX_RESULT_BYTES = 1073741824;
+}
+
+// An external JAR on the engine host. path MUST be absolute and sha256 MUST
+// contain exactly 32 bytes. The engine verifies the digest before classloading.
+message DriverArtifact {
+  string path = 1;
+  bytes sha256 = 2;
+}
+
+message LoadDriverRequest {
+  // Driver ids are engine-owned. The engine computes
+  // "sha256:" + lower_hex(SHA-256("chat2db-jdbc-driver-v1\\0" ||
+  // UTF8(driver_class) || "\\0" || artifact[0].sha256 || ...)) after it has
+  // verified every artifact digest. Artifact order is significant.
+  reserved 1;
+  string driver_class = 2;
+  repeated DriverArtifact artifacts = 3;
+}
+
+message DriverLoaded {
+  string driver_id = 1;
+  string driver_class = 2;
+  uint32 artifact_count = 3;
+}
+
+message UnloadDriverRequest {
+  string driver_id = 1;
+}
+
+message DriverUnloaded {
+  string driver_id = 1;
+}
+
+message ConnectionProperty {
+  string key = 1;
+  string value = 2;
+  // Sensitive properties must never be copied to diagnostics or errors.
+  bool sensitive = 3;
+}
+
+message OpenSessionRequest {
+  string driver_id = 1;
+  string jdbc_url = 2;
+  // Keys MUST be non-empty and unique.
+  repeated ConnectionProperty properties = 3;
+  bool read_only = 4;
+}
+
+message DatabaseProduct {
+  string name = 1;
+  string version = 2;
+  string driver_name = 3;
+  string driver_version = 4;
+}
+
+message SessionOpened {
+  string session_id = 1;
+  DatabaseProduct database = 2;
+  bool read_only = 3;
+  // MUST be SESSION_STATE_AUTO_COMMIT.
+  SessionState session_state = 4;
+}
+
+// Session-bound messages rely on RequestMeta.session_id and do not duplicate it.
+message CloseSessionRequest {}
+
+message SessionClosed {
+  // MUST be SESSION_STATE_CLOSED.
+  SessionState session_state = 1;
+}
+
+enum SessionState {
+  SESSION_STATE_UNSPECIFIED = 0;
+  // The connection is usable and no explicit transaction is active.
+  SESSION_STATE_AUTO_COMMIT = 1;
+  // An explicit transaction is active and accepts statements.
+  SESSION_STATE_TRANSACTION_ACTIVE = 2;
+  // The transaction must be rolled back before another statement is accepted.
+  SESSION_STATE_ROLLBACK_REQUIRED = 3;
+  // The connection outcome is unsafe; no further operation is accepted.
+  SESSION_STATE_BROKEN = 4;
+  // The engine has released the connection.
+  SESSION_STATE_CLOSED = 5;
+}
+
+enum TransactionIsolation {
+  TRANSACTION_ISOLATION_DEFAULT = 0;
+  TRANSACTION_ISOLATION_READ_UNCOMMITTED = 1;
+  TRANSACTION_ISOLATION_READ_COMMITTED = 2;
+  TRANSACTION_ISOLATION_REPEATABLE_READ = 4;
+  TRANSACTION_ISOLATION_SERIALIZABLE = 8;
+}
+
+message BeginTransactionRequest {
+  TransactionIsolation isolation = 1;
+  bool read_only = 2;
+}
+
+message TransactionStarted {
+  string transaction_id = 1;
+  TransactionIsolation isolation = 2;
+  bool read_only = 3;
+  // MUST be SESSION_STATE_TRANSACTION_ACTIVE.
+  SessionState session_state = 4;
+}
+
+message CommitTransactionRequest {
+  string transaction_id = 1;
+}
+
+message TransactionCommitted {
+  string transaction_id = 1;
+  // MUST be SESSION_STATE_AUTO_COMMIT.
+  SessionState session_state = 2;
+}
+
+message RollbackTransactionRequest {
+  string transaction_id = 1;
+}
+
+message TransactionRolledBack {
+  string transaction_id = 1;
+  // MUST be SESSION_STATE_AUTO_COMMIT.
+  SessionState session_state = 2;
+}
+
+enum JdbcValueType {
+  JDBC_VALUE_TYPE_UNSPECIFIED = 0;
+  JDBC_VALUE_TYPE_BOOLEAN = 1;
+  JDBC_VALUE_TYPE_SIGNED_INTEGER = 2;
+  JDBC_VALUE_TYPE_UNSIGNED_INTEGER = 3;
+  JDBC_VALUE_TYPE_FLOAT32 = 4;
+  JDBC_VALUE_TYPE_FLOAT64 = 5;
+  JDBC_VALUE_TYPE_DECIMAL = 6;
+  JDBC_VALUE_TYPE_TEXT = 7;
+  JDBC_VALUE_TYPE_BINARY = 8;
+  JDBC_VALUE_TYPE_DATE = 9;
+  JDBC_VALUE_TYPE_TIME = 10;
+  JDBC_VALUE_TYPE_TIMESTAMP = 11;
+  JDBC_VALUE_TYPE_TIMESTAMP_WITH_TIME_ZONE = 12;
+  JDBC_VALUE_TYPE_JSON = 13;
+  JDBC_VALUE_TYPE_UUID = 14;
+  JDBC_VALUE_TYPE_OPAQUE = 15;
+}
+
+message JdbcNull {}
+
+message OpaqueValue {
+  string type_name = 1;
+  string display_value = 2;
+}
+
+// Decimal values use a base-10 plain string. Date/time values use ISO-8601;
+// timestamp_with_time_zone_value MUST include an offset. Opaque values are
+// output-only and MUST be rejected as statement parameters.
+message JdbcValue {
+  oneof value {
+    JdbcNull null_value = 1;
+    bool boolean_value = 2;
+    sint64 signed_integer_value = 3;
+    uint64 unsigned_integer_value = 4;
+    float float32_value = 5;
+    double float64_value = 6;
+    string decimal_value = 7;
+    string text_value = 8;
+    bytes binary_value = 9;
+    string date_value = 10;
+    string time_value = 11;
+    string timestamp_value = 12;
+    string timestamp_with_time_zone_value = 13;
+    string json_value = 14;
+    string uuid_value = 15;
+    OpaqueValue opaque_value = 16;
+  }
+}
+
+message JdbcParameter {
+  // JDBC's one-based parameter position. Positions MUST be unique.
+  uint32 position = 1;
+  JdbcValue value = 2;
+  // Required for a null when the driver cannot infer its target type.
+  optional int32 jdbc_type = 3;
+  optional string jdbc_type_name = 4;
+}
+
+enum ColumnNullability {
+  COLUMN_NULLABILITY_UNKNOWN = 0;
+  COLUMN_NULLABILITY_NO_NULLS = 1;
+  COLUMN_NULLABILITY_NULLABLE = 2;
+}
+
+message JdbcColumn {
+  // JDBC's one-based column ordinal.
+  uint32 ordinal = 1;
+  string label = 2;
+  string name = 3;
+  int32 jdbc_type = 4;
+  string jdbc_type_name = 5;
+  JdbcValueType value_type = 6;
+  ColumnNullability nullability = 7;
+  optional uint32 precision = 8;
+  optional sint32 scale = 9;
+  optional uint32 display_size = 10;
+  optional bool signed = 11;
+  optional string catalog_name = 12;
+  optional string schema_name = 13;
+  optional string table_name = 14;
+}
+
+message JdbcRow {
+  // Values MUST have the same count and order as QueryStarted.columns.
+  repeated JdbcValue values = 1;
+}
+
+message QueryOptions {
+  // Zero means no total row cap. Streaming remains bounded by credits.
+  uint64 max_rows = 1;
+  // Zero selects the engine default; otherwise 1..MAX_BATCH_ROWS.
+  uint32 target_batch_rows = 2;
+  // Zero selects the engine default; otherwise 1024..MAX_BATCH_BYTES.
+  uint32 target_batch_bytes = 3;
+  // Zero permits metadata but pauses row batches until credit is granted;
+  // otherwise MUST be at most MAX_CREDIT_GRANT (8).
+  uint32 initial_batch_credits = 4;
+  // Zero selects DEFAULT_RESULT_BYTES (64 MiB). Otherwise this caps the
+  // cumulative protobuf encoded_size of emitted JdbcRow messages and MUST be
+  // at most MAX_RESULT_BYTES (1 GiB).
+  uint64 max_result_bytes = 5;
+}
+
+message ExecuteQueryRequest {
+  // SQL MUST be non-empty and at most MAX_SQL_BYTES.
+  string sql = 1;
+  // At most MAX_PARAMETERS entries, with positions in 1..MAX_PARAMETERS.
+  repeated JdbcParameter parameters = 2;
+  optional string transaction_id = 3;
+  QueryOptions options = 4;
+}
+
+message ExecuteUpdateRequest {
+  // SQL MUST be non-empty and at most MAX_SQL_BYTES.
+  string sql = 1;
+  // At most MAX_PARAMETERS entries, with positions in 1..MAX_PARAMETERS.
+  repeated JdbcParameter parameters = 2;
+  optional string transaction_id = 3;
+}
+
+// QueryStarted is sequence zero and does not consume credit.
+message QueryStarted {
+  // At most MAX_COLUMNS entries, ordered by ordinal.
+  repeated JdbcColumn columns = 1;
+}
+
+// Each RowBatch consumes exactly one credit. Its rows and encoded message size
+// MUST respect the negotiated query limits and the global frame limit.
+message RowBatch {
+  // Zero-based offset of the first row in this batch.
+  uint64 start_row_offset = 1;
+  // At most MAX_BATCH_ROWS entries.
+  repeated JdbcRow rows = 2;
+}
+
+// QueryCompleted is terminal and does not consume credit.
+message QueryCompleted {
+  // Number of rows actually emitted, not the database's unbounded total.
+  uint64 row_count = 1;
+  // A flag is true only after the engine observes a row that cannot be emitted
+  // under that limit. Exactly reaching a limit with no additional row is not
+  // truncation. A single row larger than the remaining byte budget is omitted
+  // and sets truncated_by_max_result_bytes.
+  bool truncated_by_max_rows = 2;
+  bool truncated_by_max_result_bytes = 3;
+}
+
+message UpdateCompleted {
+  uint64 affected_rows = 1;
+}
+
+message GrantCreditsRequest {
+  // Identifies the ExecuteQueryRequest by RequestMeta.request_id.
+  string target_request_id = 1;
+  // MUST be 1..MAX_CREDIT_GRANT (8); outstanding credit MUST remain at or
+  // below MAX_OUTSTANDING_CREDITS (32).
+  uint32 batch_credits = 2;
+}
+
+message CreditsGranted {
+  uint32 accepted_batch_credits = 1;
+}
+
+message CancelOperationRequest {
+  // Identifies the ExecuteQueryRequest by RequestMeta.request_id.
+  string target_request_id = 1;
+  optional string reason = 2;
+}
+
+enum CancelDisposition {
+  CANCEL_DISPOSITION_UNSPECIFIED = 0;
+  CANCEL_DISPOSITION_ACCEPTED = 1;
+  CANCEL_DISPOSITION_ALREADY_TERMINAL = 2;
+  CANCEL_DISPOSITION_UNKNOWN_REQUEST = 3;
+}
+
+message OperationCancelled {
+  CancelDisposition disposition = 1;
+}
+
+message DatabaseErrorCause {
+  string class_name = 1;
+  string message = 2;
+  optional string sql_state = 3;
+  optional int32 vendor_code = 4;
+}
+
+message DatabaseErrorDetail {
+  optional string sql_state = 1;
+  optional int32 vendor_code = 2;
+  optional string constraint_name = 3;
+  optional uint32 statement_position = 4;
+  repeated DatabaseErrorCause causes = 5;
+}
