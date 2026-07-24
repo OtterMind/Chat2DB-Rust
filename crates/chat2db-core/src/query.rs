@@ -458,10 +458,7 @@ fn is_cancelled(error: &BridgeError) -> bool {
 async fn grant_next_credit(stream: &QueryStream) -> Result<(), AppError> {
     match stream.grant_credits(1).await {
         Ok(accepted) => validate_credit_grant(accepted),
-        Err(BridgeError::InvalidRequest(message))
-            if message.starts_with("target query stream ")
-                && message.ends_with(" is not active") =>
-        {
+        Err(error) if is_inactive_credit_grant_error(&error) => {
             // The engine can retire an exhausted query immediately after its
             // last batch. The already-queued terminal event remains mandatory.
             Ok(())
@@ -560,6 +557,17 @@ fn is_inactive_stream_message(message: &str) -> bool {
     message.starts_with("target query stream ") && message.ends_with(" is not active")
 }
 
+fn is_inactive_credit_grant_error(error: &BridgeError) -> bool {
+    match error {
+        BridgeError::InvalidRequest(message) => is_inactive_stream_message(message),
+        BridgeError::Remote(remote) => {
+            remote.category == wire::ErrorCategory::Validation
+                && remote.code == "operation.not_active"
+        }
+        _ => false,
+    }
+}
+
 async fn run_blocking<T, F>(operation: F) -> Result<T, AppError>
 where
     T: Send + 'static,
@@ -573,15 +581,48 @@ where
 
 #[cfg(test)]
 mod tests {
-    use chat2db_contract::ApiError;
+    use std::collections::HashMap;
 
-    use super::{AppError, QueryTaskError, preserve_primary_outcome, validate_credit_grant};
+    use chat2db_contract::ApiError;
+    use chat2db_engine_protocol::wire;
+    use chat2db_java_bridge::{BridgeError, RemoteEngineError};
+
+    use super::{
+        AppError, QueryTaskError, is_inactive_credit_grant_error, preserve_primary_outcome,
+        validate_credit_grant,
+    };
 
     #[test]
     fn query_progress_requires_the_requested_credit_to_be_accepted() {
         validate_credit_grant(1).expect("one accepted credit makes progress");
         let error = validate_credit_grant(0).expect_err("zero credits cannot make progress");
         assert_eq!(error.api_error().code, "database_flow_control_exhausted");
+    }
+
+    #[test]
+    fn exhausted_query_accepts_local_inactive_credit_error() {
+        let error =
+            BridgeError::InvalidRequest("target query stream request-1 is not active".to_owned());
+
+        assert!(is_inactive_credit_grant_error(&error));
+    }
+
+    #[test]
+    fn exhausted_query_accepts_remote_inactive_credit_error() {
+        let error = remote_credit_error(wire::ErrorCategory::Validation, "operation.not_active");
+
+        assert!(is_inactive_credit_grant_error(&error));
+    }
+
+    #[test]
+    fn active_credit_errors_are_not_suppressed() {
+        let wrong_category =
+            remote_credit_error(wire::ErrorCategory::Internal, "operation.not_active");
+        let wrong_code =
+            remote_credit_error(wire::ErrorCategory::Validation, "operation.invalid_credit");
+
+        assert!(!is_inactive_credit_grant_error(&wrong_category));
+        assert!(!is_inactive_credit_grant_error(&wrong_code));
     }
 
     #[test]
@@ -636,5 +677,19 @@ mod tests {
             error.api_error(),
             ApiError::new("cleanup_failure", "cleanup")
         );
+    }
+
+    fn remote_credit_error(category: wire::ErrorCategory, code: &str) -> BridgeError {
+        BridgeError::Remote(Box::new(RemoteEngineError {
+            code: code.to_owned(),
+            message: "credit grant failed".to_owned(),
+            category,
+            retryable: false,
+            fatal: false,
+            outcome: wire::OperationOutcome::NotStarted,
+            metadata: HashMap::new(),
+            database_error: None,
+            session_state: None,
+        }))
     }
 }
