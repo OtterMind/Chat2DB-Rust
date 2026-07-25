@@ -25,6 +25,7 @@ use chat2db_contract::{
 };
 use chat2db_core::{AppError, Application, RuntimeConfig, RuntimeHost};
 use chat2db_java_bridge::{EngineCommand, EngineConfig};
+use chat2db_local::{LocalError, LocalServer};
 use tauri::{State, ipc::Channel};
 use tokio::sync::{Mutex, oneshot};
 
@@ -35,6 +36,7 @@ const VAULT_MASTER_KEY_ENV: &str = "CHAT2DB_VAULT_MASTER_KEY";
 
 struct DesktopState {
     application: Application,
+    local_server: Mutex<Option<LocalServer>>,
     runtime_host: Mutex<Option<RuntimeHost>>,
     subscriptions: SubscriptionRegistry,
     next_subscription_id: AtomicU64,
@@ -104,12 +106,22 @@ impl SubscriptionRegistry {
 impl DesktopState {
     async fn open_from_environment() -> Result<Self, DesktopError> {
         let runtime_config = runtime_config_from_environment()?;
-        let runtime_host = RuntimeHost::open(runtime_config)
+        let mut runtime_host = RuntimeHost::open(runtime_config)
             .await
             .map_err(DesktopError::runtime)?;
         let application = runtime_host.application();
+        let local_server = match LocalServer::start(application.clone()) {
+            Ok(server) => server,
+            Err(error) => {
+                if let Err(shutdown_error) = runtime_host.shutdown().await {
+                    tracing::error!(%shutdown_error, "runtime cleanup failed after local attachment startup error");
+                }
+                return Err(DesktopError::local(error));
+            }
+        };
         Ok(Self {
             application,
+            local_server: Mutex::new(Some(local_server)),
             runtime_host: Mutex::new(Some(runtime_host)),
             subscriptions: SubscriptionRegistry::default(),
             next_subscription_id: AtomicU64::new(1),
@@ -118,14 +130,23 @@ impl DesktopState {
 
     async fn shutdown(&self) -> Result<(), DesktopError> {
         self.subscriptions.release_all().await;
+        let local_server = self.local_server.lock().await.take();
+        let local_result = match local_server {
+            Some(mut local_server) => local_server.shutdown().await.map_err(DesktopError::local),
+            None => Ok(()),
+        };
         let runtime_host = self.runtime_host.lock().await.take();
-        if let Some(mut runtime_host) = runtime_host {
-            runtime_host
-                .shutdown()
-                .await
-                .map_err(DesktopError::runtime)?;
+        let runtime_result = match runtime_host {
+            Some(mut runtime_host) => runtime_host.shutdown().await.map_err(DesktopError::runtime),
+            None => Ok(()),
+        };
+        if let Err(error) = local_result {
+            if let Err(runtime_error) = runtime_result {
+                tracing::error!(%runtime_error, "runtime cleanup also failed after local attachment shutdown error");
+            }
+            return Err(error);
         }
-        Ok(())
+        runtime_result
     }
 }
 
@@ -139,6 +160,7 @@ pub enum DesktopError {
         source: std::io::Error,
     },
     InvalidVaultMasterKeyEncoding,
+    Local(Box<LocalError>),
     Runtime(Box<AppError>),
     Tauri(Box<tauri::Error>),
 }
@@ -146,6 +168,10 @@ pub enum DesktopError {
 impl DesktopError {
     fn runtime(error: AppError) -> Self {
         Self::Runtime(Box::new(error))
+    }
+
+    fn local(error: LocalError) -> Self {
+        Self::Local(Box::new(error))
     }
 
     fn tauri(error: tauri::Error) -> Self {
@@ -174,6 +200,7 @@ impl std::fmt::Display for DesktopError {
                 formatter,
                 "{VAULT_MASTER_KEY_ENV} must be UTF-8 standard base64 for exactly 32 bytes"
             ),
+            Self::Local(error) => write!(formatter, "local attachment failed: {error}"),
             Self::Runtime(error) => write!(formatter, "Chat2DB runtime failed: {error}"),
             Self::Tauri(error) => write!(formatter, "Tauri desktop failed: {error}"),
         }
@@ -184,6 +211,7 @@ impl std::error::Error for DesktopError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::JavaEngineJarMetadata { source, .. } => Some(source),
+            Self::Local(error) => Some(error.as_ref()),
             Self::Runtime(error) => Some(error.as_ref()),
             Self::Tauri(error) => Some(error.as_ref()),
             Self::MissingJavaEngineJar

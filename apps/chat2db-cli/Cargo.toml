@@ -13,9 +13,11 @@ name = "chat2db"
 path = "src/main.rs"
 
 [dependencies]
-chat2db-core = { path = "../../crates/chat2db-core" }
+chat2db-contract = { path = "../../crates/chat2db-contract" }
+chat2db-local = { path = "../../crates/chat2db-local" }
 clap.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

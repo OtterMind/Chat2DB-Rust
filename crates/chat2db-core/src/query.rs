@@ -60,20 +60,34 @@ impl Application {
         self.start_prepared_query(prepared).await
     }
 
+    /// Accepts a query for asynchronous execution through a forced read-only
+    /// JDBC session, regardless of the datasource's interactive setting.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation or component-availability error before acceptance.
+    pub async fn start_read_query(
+        &self,
+        request: StartQueryRequest,
+    ) -> Result<QueryAccepted, AppError> {
+        let mut prepared = PreparedQuery::try_from(request)?;
+        prepared.force_read_only = true;
+        self.start_prepared_query(prepared).await
+    }
+
     pub(crate) async fn start_agent_read_query(
         &self,
         datasource_id: String,
         sql: String,
         limits: QueryLimits,
     ) -> Result<QueryAccepted, AppError> {
-        let mut prepared = PreparedQuery::try_from(StartQueryRequest {
+        self.start_read_query(StartQueryRequest {
             datasource_id,
             sql,
             parameters: Vec::new(),
             limits,
-        })?;
-        prepared.force_read_only = true;
-        self.start_prepared_query(prepared).await
+        })
+        .await
     }
 
     async fn start_prepared_query(

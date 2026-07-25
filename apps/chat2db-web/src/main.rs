@@ -2,6 +2,7 @@ use std::{env, ffi::OsString, io, net::SocketAddr, path::PathBuf, process::ExitC
 
 use chat2db_core::{RuntimeConfig, RuntimeHost};
 use chat2db_java_bridge::{EngineCommand, EngineConfig};
+use chat2db_local::LocalServer;
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -38,6 +39,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(address).await?;
     let mut host = RuntimeHost::open(runtime_config).await?;
     let application = host.application();
+    let mut local_server = match LocalServer::start(application.clone()) {
+        Ok(server) => server,
+        Err(error) => {
+            if let Err(shutdown_error) = host.shutdown().await {
+                tracing::error!(%shutdown_error, "runtime cleanup failed after local attachment startup error");
+            }
+            return Err(Box::new(error));
+        }
+    };
     let shutdown_application = application.clone();
     info!(%address, frontend_dir = %frontend_dir.display(), "Chat2DB Web runtime listening");
 
@@ -51,17 +61,26 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_application.begin_shutdown().await;
     })
     .await;
+    let local_shutdown_result = local_server.shutdown().await;
     let shutdown_result = host.shutdown().await;
 
-    match (serve_result, shutdown_result) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(serve_error), Ok(())) => Err(Box::new(serve_error)),
-        (Ok(()), Err(shutdown_error)) => Err(Box::new(shutdown_error)),
-        (Err(serve_error), Err(shutdown_error)) => {
-            tracing::error!(%shutdown_error, "runtime cleanup also failed after Web serve error");
-            Err(Box::new(serve_error))
+    if let Err(serve_error) = serve_result {
+        if let Err(local_error) = local_shutdown_result {
+            tracing::error!(%local_error, "local attachment cleanup also failed after Web serve error");
         }
+        if let Err(shutdown_error) = shutdown_result {
+            tracing::error!(%shutdown_error, "runtime cleanup also failed after Web serve error");
+        }
+        return Err(Box::new(serve_error));
     }
+    if let Err(local_error) = local_shutdown_result {
+        if let Err(runtime_error) = shutdown_result {
+            tracing::error!(%runtime_error, "runtime cleanup also failed after local attachment shutdown error");
+        }
+        return Err(Box::new(local_error));
+    }
+    shutdown_result?;
+    Ok(())
 }
 
 fn runtime_config_from_env() -> Result<RuntimeConfig, Box<dyn std::error::Error>> {

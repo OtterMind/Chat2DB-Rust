@@ -9,6 +9,8 @@ members = [
     "crates/chat2db-core",
     "crates/chat2db-engine-protocol",
     "crates/chat2db-java-bridge",
+    "crates/chat2db-local",
+    "crates/chat2db-local-ipc-windows",
     "crates/chat2db-storage",
 ]
 
@@ -37,6 +39,7 @@ prost = "0.14"
 rand = "0.9.2"
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
+rustix = { version = "1", features = ["fs", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

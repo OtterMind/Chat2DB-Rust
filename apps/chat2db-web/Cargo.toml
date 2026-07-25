@@ -14,6 +14,7 @@ axum.workspace = true
 chat2db-contract = { path = "../../crates/chat2db-contract" }
 chat2db-core = { path = "../../crates/chat2db-core" }
 chat2db-java-bridge = { path = "../../crates/chat2db-java-bridge" }
+chat2db-local = { path = "../../crates/chat2db-local" }
 futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true

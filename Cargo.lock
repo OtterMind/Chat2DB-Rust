@@ -600,9 +600,11 @@ dependencies = [
 name = "chat2db-cli"
 version = "0.1.0"
 dependencies = [
- "chat2db-core",
+ "chat2db-contract",
+ "chat2db-local",
  "clap",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -643,11 +645,13 @@ dependencies = [
  "chat2db-contract",
  "chat2db-core",
  "chat2db-java-bridge",
+ "chat2db-local",
  "tauri",
  "tauri-build",
  "tauri-runtime",
  "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -670,6 +674,38 @@ dependencies = [
  "sha2",
  "thiserror 2.0.19",
  "tokio",
+]
+
+[[package]]
+name = "chat2db-local"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chat2db-contract",
+ "chat2db-core",
+ "chat2db-local-ipc-windows",
+ "chat2db-storage",
+ "fs2",
+ "rand 0.9.5",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "chat2db-local-ipc-windows"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -702,6 +738,7 @@ dependencies = [
  "chat2db-contract",
  "chat2db-core",
  "chat2db-java-bridge",
+ "chat2db-local",
  "chat2db-storage",
  "futures-util",
  "http-body-util",

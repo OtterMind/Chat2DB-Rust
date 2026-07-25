@@ -1,0 +1,38 @@
+[package]
+name = "chat2db-local"
+description = "Owner-only local attachment transport for Chat2DB Rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+base64.workspace = true
+chat2db-contract = { path = "../chat2db-contract" }
+chat2db-core = { path = "../chat2db-core" }
+chat2db-storage = { path = "../chat2db-storage" }
+fs2.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+chat2db-local-ipc-windows = { path = "../chat2db-local-ipc-windows" }
+
+[lints]
+workspace = true
