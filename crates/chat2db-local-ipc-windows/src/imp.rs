@@ -26,7 +26,7 @@ use windows_sys::Win32::{
         },
         CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, GetAce, GetAclInformation,
         GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
-        GetTokenInformation, IsValidAcl, IsValidSid, OBJECT_INHERIT_ACE,
+        GetTokenInformation, INHERIT_ONLY_ACE, IsValidAcl, IsValidSid, OBJECT_INHERIT_ACE,
         OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
         PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
@@ -376,48 +376,69 @@ fn verify_owner_only_security(file: &File, object: OwnerOnlyObject) -> io::Resul
     {
         return Err(io::Error::last_os_error());
     }
-    if information.AceCount != 1 {
-        return Err(permission_denied(
-            "owner-only IPC DACL must contain exactly one ACE",
-        ));
+    if information.AceCount == 0 {
+        return Err(permission_denied("owner-only IPC DACL is empty"));
     }
 
-    let mut raw_ace = null_mut();
-    // SAFETY: the validated ACL reports one ACE, and `raw_ace` is a writable
-    // output pointer.
-    if unsafe { GetAce(dacl, 0, &raw mut raw_ace) } == 0 {
-        return Err(io::Error::last_os_error());
+    let mut grants_object = false;
+    let mut inherits_to_files = matches!(object, OwnerOnlyObject::File);
+    let mut inherits_to_directories = matches!(object, OwnerOnlyObject::File);
+    // NTFS may split one inheritable generic ACE into effective and
+    // inherit-only ACEs, so validate the complete ACL by semantics.
+    for index in 0..information.AceCount {
+        let mut raw_ace = null_mut();
+        // SAFETY: the validated ACL reports `AceCount` entries, and `raw_ace`
+        // is a writable output pointer.
+        if unsafe { GetAce(dacl, index, &raw mut raw_ace) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if raw_ace.is_null() {
+            return Err(invalid_data("owner-only IPC DACL returned a null ACE"));
+        }
+        // SAFETY: GetAce returned a pointer to an ACE_HEADER in the live ACL.
+        let header = unsafe { &*raw_ace.cast::<ACE_HEADER>() };
+        if u32::from(header.AceType) != ACCESS_ALLOWED_ACE_TYPE
+            || usize::from(header.AceSize) < size_of::<ACCESS_ALLOWED_ACE>()
+        {
+            return Err(permission_denied(
+                "owner-only IPC DACL has an unexpected ACE type",
+            ));
+        }
+        let flags = u32::from(header.AceFlags);
+        let inherit_only = flags & INHERIT_ONLY_ACE != 0;
+        let has_inheritance = flags & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) != 0;
+        if flags & !allowed_ace_flags(object) != 0 || inherit_only && !has_inheritance {
+            return Err(permission_denied(
+                "owner-only IPC DACL has unexpected inheritance flags",
+            ));
+        }
+        // SAFETY: the ACE type and minimum size were checked above.
+        let allowed = unsafe { &*raw_ace.cast::<ACCESS_ALLOWED_ACE>() };
+        if allowed.Mask & GENERIC_ALL == 0 && allowed.Mask & FILE_ALL_ACCESS != FILE_ALL_ACCESS {
+            return Err(permission_denied(
+                "owner-only IPC ACE does not grant full control",
+            ));
+        }
+        let ace_sid = std::ptr::addr_of!(allowed.SidStart)
+            .cast_mut()
+            .cast::<c_void>();
+        if !sid_matches(&current_user, ace_sid)? {
+            return Err(permission_denied(
+                "owner-only IPC ACE does not target the current user",
+            ));
+        }
+        grants_object |= !inherit_only;
+        inherits_to_files |= flags & OBJECT_INHERIT_ACE != 0;
+        inherits_to_directories |= flags & CONTAINER_INHERIT_ACE != 0;
     }
-    if raw_ace.is_null() {
-        return Err(invalid_data("owner-only IPC DACL returned a null ACE"));
-    }
-    // SAFETY: GetAce returned a pointer to an ACE_HEADER in the live ACL.
-    let header = unsafe { &*raw_ace.cast::<ACE_HEADER>() };
-    if u32::from(header.AceType) != ACCESS_ALLOWED_ACE_TYPE
-        || usize::from(header.AceSize) < size_of::<ACCESS_ALLOWED_ACE>()
-    {
+    if !grants_object {
         return Err(permission_denied(
-            "owner-only IPC DACL has an unexpected ACE type",
+            "owner-only IPC DACL does not grant access to the object",
         ));
     }
-    if u32::from(header.AceFlags) != expected_ace_flags(object) {
+    if !inherits_to_files || !inherits_to_directories {
         return Err(permission_denied(
-            "owner-only IPC DACL has unexpected inheritance flags",
-        ));
-    }
-    // SAFETY: the ACE type and minimum size were checked above.
-    let allowed = unsafe { &*raw_ace.cast::<ACCESS_ALLOWED_ACE>() };
-    if allowed.Mask & GENERIC_ALL == 0 && allowed.Mask & FILE_ALL_ACCESS != FILE_ALL_ACCESS {
-        return Err(permission_denied(
-            "owner-only IPC ACE does not grant full control",
-        ));
-    }
-    let ace_sid = std::ptr::addr_of!(allowed.SidStart)
-        .cast_mut()
-        .cast::<c_void>();
-    if !sid_matches(&current_user, ace_sid)? {
-        return Err(permission_denied(
-            "owner-only IPC ACE does not target the current user",
+            "owner-only IPC directory DACL does not cover child objects",
         ));
     }
     Ok(())
@@ -466,10 +487,10 @@ fn sid_matches(expected: &[u16], candidate: PSID) -> io::Result<bool> {
     Ok(SidString::from_sid(candidate)?.to_vec()? == expected)
 }
 
-const fn expected_ace_flags(object: OwnerOnlyObject) -> u32 {
+const fn allowed_ace_flags(object: OwnerOnlyObject) -> u32 {
     match object {
         OwnerOnlyObject::File => 0,
-        OwnerOnlyObject::Directory => OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+        OwnerOnlyObject::Directory => OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE,
     }
 }
 
