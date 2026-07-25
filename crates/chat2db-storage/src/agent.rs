@@ -901,6 +901,7 @@ impl Storage {
                 &transaction,
                 &record.id,
                 None,
+                None,
                 AgentMessageRole::System,
                 None,
                 canonical,
@@ -1117,6 +1118,7 @@ impl Storage {
             &transaction,
             session_id,
             None,
+            None,
             role,
             summary_through_ordinal,
             &canonical,
@@ -1198,6 +1200,36 @@ impl Storage {
         session_id: &str,
         input: StartAgentRun,
     ) -> Result<StartedAgentRun, StorageError> {
+        self.start_agent_run_with_ids(
+            &Uuid::new_v4().to_string(),
+            &Uuid::new_v4().to_string(),
+            session_id,
+            input,
+        )
+    }
+
+    /// Atomically persists one caller-identified running run and user message.
+    ///
+    /// Caller-provided identifiers let an async owner reconcile a lost task
+    /// result without creating a second conversation turn.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as [`Storage::start_agent_run`], including an
+    /// unknown outcome when a commit cannot be classified by durable readback.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn start_agent_run_with_ids(
+        &self,
+        run_id: &str,
+        user_message_id: &str,
+        session_id: &str,
+        input: StartAgentRun,
+    ) -> Result<StartedAgentRun, StorageError> {
+        if run_id.trim().is_empty() || user_message_id.trim().is_empty() {
+            return Err(StorageError::InvalidAgent(
+                "agent run and message ids must not be empty",
+            ));
+        }
         let timestamp = now_millis()?;
         let mut connection = self.connection()?;
         let (canonical, canonical_bytes) = text_message_json(&connection, &input.user_message)?;
@@ -1220,7 +1252,7 @@ impl Storage {
             return Err(StorageError::AgentSessionBusy(session_id.to_owned()));
         }
         let run = AgentRunRecord {
-            id: Uuid::new_v4().to_string(),
+            id: run_id.to_owned(),
             session_id: session_id.to_owned(),
             status: AgentRunStatus::Running,
             sql_permission_mode: input.sql_permission_mode,
@@ -1259,14 +1291,61 @@ impl Storage {
             &transaction,
             session_id,
             Some(&run.id),
+            Some(user_message_id),
             AgentMessageRole::User,
             None,
             &canonical,
             canonical_bytes,
             timestamp,
         )?;
-        transaction.commit()?;
+        let commit_error = transaction.commit().err().map(StorageError::Sqlite);
+        #[cfg(test)]
+        let post_commit_failure = crate::take_fault(crate::FaultPoint::AgentRunStartAfterCommit);
+        #[cfg(not(test))]
+        let post_commit_failure = false;
+        if commit_error.is_some() || post_commit_failure {
+            return self.reconcile_agent_run_start_commit(
+                &run,
+                &user_message,
+                commit_error.unwrap_or_else(|| StorageError::OutcomeUnknown {
+                    operation: "start agent run",
+                    id: run.id.clone(),
+                }),
+            );
+        }
         Ok(StartedAgentRun { run, user_message })
+    }
+
+    fn reconcile_agent_run_start_commit(
+        &self,
+        expected_run: &AgentRunRecord,
+        expected_user_message: &AgentMessageRecord,
+        original_error: StorageError,
+    ) -> Result<StartedAgentRun, StorageError> {
+        let unknown = || StorageError::OutcomeUnknown {
+            operation: "start agent run",
+            id: expected_run.id.clone(),
+        };
+        #[cfg(test)]
+        if crate::take_fault(crate::FaultPoint::AgentRunStartReadback) {
+            return Err(unknown());
+        }
+        let connection = self.connection().map_err(|_| unknown())?;
+        let actual_run = load_run(&connection, &expected_run.id).map_err(|_| unknown())?;
+        let actual_message =
+            load_message(&connection, &expected_user_message.id).map_err(|_| unknown())?;
+        if actual_run.as_ref() == Some(expected_run)
+            && actual_message.as_ref() == Some(expected_user_message)
+        {
+            return Ok(StartedAgentRun {
+                run: expected_run.clone(),
+                user_message: expected_user_message.clone(),
+            });
+        }
+        if actual_run.is_none() && actual_message.is_none() {
+            return Err(original_error);
+        }
+        Err(unknown())
     }
 
     /// Loads one durable run.
@@ -1276,6 +1355,37 @@ impl Storage {
     /// Returns `SQLite` or persisted-data validation failures.
     pub fn get_agent_run(&self, id: &str) -> Result<Option<AgentRunRecord>, StorageError> {
         load_run(&self.connection()?, id)
+    }
+
+    /// Loads the exact durable records created by a caller-identified start.
+    ///
+    /// # Errors
+    ///
+    /// Returns persisted-data, `SQLite`, or partial-start failures.
+    pub fn get_started_agent_run(
+        &self,
+        run_id: &str,
+        user_message_id: &str,
+    ) -> Result<Option<StartedAgentRun>, StorageError> {
+        let connection = self.connection()?;
+        let Some(run) = load_run(&connection, run_id)? else {
+            return Ok(None);
+        };
+        let user_message = load_message(&connection, user_message_id)?.ok_or_else(|| {
+            StorageError::OutcomeUnknown {
+                operation: "read started agent run",
+                id: run_id.to_owned(),
+            }
+        })?;
+        if user_message.run_id.as_deref() != Some(run_id)
+            || user_message.session_id != run.session_id
+            || user_message.role != AgentMessageRole::User
+        {
+            return Err(StorageError::InvalidAgent(
+                "persisted agent run initiating message is invalid",
+            ));
+        }
+        Ok(Some(StartedAgentRun { run, user_message }))
     }
 
     /// Replaces monotonic run progress under a lifecycle-state CAS.
@@ -1478,6 +1588,7 @@ impl Storage {
                     &transaction,
                     &current.session_id,
                     Some(id),
+                    None,
                     summary.role,
                     summary.summary_through_ordinal,
                     &summary.content_json,
@@ -1651,6 +1762,7 @@ impl Storage {
                 &transaction,
                 &current.session_id,
                 Some(id),
+                None,
                 message.role,
                 message.summary_through_ordinal,
                 &message.content_json,
@@ -1762,6 +1874,7 @@ impl Storage {
                 &transaction,
                 &current.session_id,
                 Some(id),
+                None,
                 message.role,
                 message.summary_through_ordinal,
                 &message.content_json,
@@ -1825,14 +1938,18 @@ impl Storage {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = load_run(&transaction, id)?
             .ok_or_else(|| StorageError::AgentRunNotFound(id.to_owned()))?;
+        if current.status.is_terminal() || current.cancel_requested {
+            return Ok(current);
+        }
         let timestamp = now_millis()?;
-        if !current.status.is_terminal() {
-            transaction.execute(
-                "UPDATE agent_runs
-                 SET cancel_requested = 1, updated_at_ms = ?1
-                 WHERE id = ?2 AND status = ?3",
-                params![timestamp, id, current.status.as_str()],
-            )?;
+        let changed = transaction.execute(
+            "UPDATE agent_runs
+             SET cancel_requested = 1, updated_at_ms = ?1
+             WHERE id = ?2 AND status = ?3",
+            params![timestamp, id, current.status.as_str()],
+        )?;
+        if changed != 1 {
+            return Err(run_state_conflict(id, current.status, current.status));
         }
         transaction.execute(
             "UPDATE tool_permissions
@@ -1840,11 +1957,55 @@ impl Storage {
              WHERE run_id = ?2 AND status IN ('pending', 'approved')",
             params![timestamp, id],
         )?;
-        transaction.commit()?;
+        let prior_run = current.clone();
+        let commit_error = transaction.commit().err().map(StorageError::Sqlite);
+        #[cfg(test)]
+        let post_commit_failure =
+            crate::take_fault(crate::FaultPoint::AgentRunCancellationAfterCommit);
+        #[cfg(not(test))]
+        let post_commit_failure = false;
+        if commit_error.is_some() || post_commit_failure {
+            return self.reconcile_agent_run_cancellation_commit(
+                id,
+                &prior_run,
+                commit_error.unwrap_or_else(|| StorageError::OutcomeUnknown {
+                    operation: "request agent run cancellation",
+                    id: id.to_owned(),
+                }),
+            );
+        }
         load_run(&connection, id)?.ok_or_else(|| StorageError::OutcomeUnknown {
             operation: "request agent run cancellation",
             id: id.to_owned(),
         })
+    }
+
+    fn reconcile_agent_run_cancellation_commit(
+        &self,
+        id: &str,
+        prior_run: &AgentRunRecord,
+        original_error: StorageError,
+    ) -> Result<AgentRunRecord, StorageError> {
+        let unknown = || StorageError::OutcomeUnknown {
+            operation: "request agent run cancellation",
+            id: id.to_owned(),
+        };
+        #[cfg(test)]
+        if crate::take_fault(crate::FaultPoint::AgentRunCancellationReadback) {
+            return Err(unknown());
+        }
+        let connection = self.connection().map_err(|_| unknown())?;
+        let actual = load_run(&connection, id).map_err(|_| unknown())?;
+        let Some(actual) = actual else {
+            return Err(original_error);
+        };
+        if actual.status.is_terminal() || actual.cancel_requested {
+            return Ok(actual);
+        }
+        if &actual == prior_run {
+            return Err(original_error);
+        }
+        Err(unknown())
     }
 
     /// Atomically appends complete messages and finalizes a requested cancellation.
@@ -1900,6 +2061,7 @@ impl Storage {
                 &transaction,
                 &current.session_id,
                 Some(id),
+                None,
                 message.role,
                 message.summary_through_ordinal,
                 &message.content_json,
@@ -2481,6 +2643,7 @@ impl Storage {
                 &transaction,
                 &current.session_id,
                 Some(run_id),
+                None,
                 message.role,
                 message.summary_through_ordinal,
                 &message.content_json,
@@ -3091,6 +3254,7 @@ fn append_message_in_transaction(
     connection: &Connection,
     session_id: &str,
     run_id: Option<&str>,
+    message_id: Option<&str>,
     role: AgentMessageRole,
     summary_through_ordinal: Option<u64>,
     content_json: &str,
@@ -3167,7 +3331,7 @@ fn append_message_in_transaction(
         ));
     }
     let record = AgentMessageRecord {
-        id: Uuid::new_v4().to_string(),
+        id: message_id.map_or_else(|| Uuid::new_v4().to_string(), ToOwned::to_owned),
         session_id: session_id.to_owned(),
         run_id: run_id.map(ToOwned::to_owned),
         ordinal,
@@ -3801,6 +3965,81 @@ mod tests {
                 },
             )
             .expect("run starts")
+    }
+
+    #[test]
+    fn agent_start_and_cancellation_reconcile_post_commit_failures() {
+        let directory = TempDir::new().expect("temp dir");
+        let (storage, provider_id) = setup(&directory);
+        let recovered_session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("session creates");
+        crate::inject_faults(&[crate::FaultPoint::AgentRunStartAfterCommit]);
+        let recovered = storage
+            .start_agent_run_with_ids(
+                "run-recovered",
+                "message-recovered",
+                &recovered_session.id,
+                StartAgentRun {
+                    user_message: "recover start".to_owned(),
+                    sql_permission_mode: SqlPermissionMode::ReadOnly,
+                },
+            )
+            .expect("post-commit start readback recovers");
+        assert_eq!(recovered.run.id, "run-recovered");
+        assert_eq!(recovered.user_message.id, "message-recovered");
+
+        crate::inject_faults(&[crate::FaultPoint::AgentRunCancellationAfterCommit]);
+        let cancelled = storage
+            .request_agent_run_cancellation(&recovered.run.id)
+            .expect("post-commit cancellation readback recovers");
+        assert!(cancelled.cancel_requested);
+
+        let unknown_session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("second session creates");
+        crate::inject_faults(&[
+            crate::FaultPoint::AgentRunStartAfterCommit,
+            crate::FaultPoint::AgentRunStartReadback,
+        ]);
+        assert!(matches!(
+            storage.start_agent_run_with_ids(
+                "run-unknown",
+                "message-unknown",
+                &unknown_session.id,
+                StartAgentRun {
+                    user_message: "unknown start".to_owned(),
+                    sql_permission_mode: SqlPermissionMode::ReadOnly,
+                },
+            ),
+            Err(StorageError::OutcomeUnknown {
+                operation: "start agent run",
+                ..
+            })
+        ));
+        let unknown = storage
+            .get_started_agent_run("run-unknown", "message-unknown")
+            .expect("committed start reads")
+            .expect("committed start exists");
+
+        crate::inject_faults(&[
+            crate::FaultPoint::AgentRunCancellationAfterCommit,
+            crate::FaultPoint::AgentRunCancellationReadback,
+        ]);
+        assert!(matches!(
+            storage.request_agent_run_cancellation(&unknown.run.id),
+            Err(StorageError::OutcomeUnknown {
+                operation: "request agent run cancellation",
+                ..
+            })
+        ));
+        assert!(
+            storage
+                .get_agent_run(&unknown.run.id)
+                .expect("run reads")
+                .expect("run exists")
+                .cancel_requested
+        );
     }
 
     fn permission_input(

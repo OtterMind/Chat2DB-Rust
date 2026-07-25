@@ -617,12 +617,14 @@ dependencies = [
 name = "chat2db-core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64 0.22.1",
  "chat2db-agent",
  "chat2db-contract",
  "chat2db-engine-protocol",
  "chat2db-java-bridge",
  "chat2db-storage",
+ "futures-util",
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",

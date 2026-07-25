@@ -33,6 +33,21 @@ pub(super) struct MappedCompaction {
     event: AgentEvent,
 }
 
+impl MappedCompaction {
+    pub(super) const fn durable_effect(&self) -> (bool, Option<u64>) {
+        match self.storage {
+            AgentCompaction::NoOp => (false, None),
+            AgentCompaction::DeterministicTrim {
+                compacted_through_ordinal,
+            }
+            | AgentCompaction::Summary {
+                compacted_through_ordinal,
+                ..
+            } => (true, Some(compacted_through_ordinal)),
+        }
+    }
+}
+
 enum CompactionCommitFailure {
     Storage(StorageError),
     Indeterminate(AppError),

@@ -518,6 +518,22 @@ impl AgentRunHub {
         Ok(true)
     }
 
+    /// Returns the currently retained process-local run ids.
+    pub(crate) fn run_ids(&self) -> Vec<String> {
+        lock_std(&self.inner.runs).keys().cloned().collect()
+    }
+
+    /// Invalidates and removes a run whose durable start could not be handed
+    /// to an owned worker.
+    pub(crate) fn abandon(&self, run_id: &str) {
+        let entry = lock_std(&self.inner.runs)
+            .get(run_id)
+            .map(|registered| Arc::clone(&registered.entry));
+        if let Some(entry) = entry {
+            self.invalidate_entry(run_id, &entry, true);
+        }
+    }
+
     /// Installs or re-subscribes to the waiter for one exact permission id.
     ///
     /// # Errors
@@ -604,7 +620,7 @@ impl AgentRunHub {
     /// Waits for every owned worker until one shared deadline. At the deadline,
     /// it aborts workers and monitors, invalidates their entries, releases their
     /// permits, and returns without another unbounded wait.
-    pub(crate) async fn join_tasks(&self, timeout: Duration) {
+    pub(crate) async fn join_tasks(&self, timeout: Duration) -> Vec<String> {
         let entries = lock_std(&self.inner.runs)
             .iter()
             .map(|(run_id, registered)| (run_id.clone(), Arc::clone(&registered.entry)))
@@ -636,9 +652,10 @@ impl AgentRunHub {
                         self.invalidate_entry(run_id, entry, true);
                     }
                 }
-                return;
+                return entries.into_iter().map(|(run_id, _)| run_id).collect();
             }
         }
+        entries.into_iter().map(|(run_id, _)| run_id).collect()
     }
 
     /// Transfers ownership of a worker task to the hub. A monitor awaits the
@@ -2080,7 +2097,7 @@ mod tests {
         hub.cancel_all().await;
         assert!(registered.cancellation_token().is_cancelled());
         assert_eq!(waiter.wait().await, AgentPermissionWaitOutcome::Cancelled);
-        hub.join_tasks(Duration::from_millis(10)).await;
+        let _ = hub.join_tasks(Duration::from_millis(10)).await;
 
         let reservation = reserve_eventually(&hub).await;
         reservation
@@ -2103,7 +2120,7 @@ mod tests {
             .expect("subscription");
 
         hub.cancel_all().await;
-        hub.join_tasks(Duration::from_millis(10)).await;
+        let _ = hub.join_tasks(Duration::from_millis(10)).await;
 
         assert!(registered.cancellation_token().is_cancelled());
         assert_eq!(
@@ -2148,7 +2165,7 @@ mod tests {
                 .code,
             "agent_run_capacity_exhausted"
         );
-        tokio::time::timeout(
+        let _ = tokio::time::timeout(
             Duration::from_millis(200),
             hub.join_tasks(Duration::from_millis(10)),
         )
@@ -2180,7 +2197,7 @@ mod tests {
         hub.attach_task("run-hard-timeout", worker)
             .expect("task attachment");
 
-        tokio::time::timeout(
+        let _ = tokio::time::timeout(
             Duration::from_millis(200),
             hub.join_tasks(Duration::from_millis(10)),
         )

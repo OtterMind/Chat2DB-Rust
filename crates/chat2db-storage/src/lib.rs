@@ -71,6 +71,10 @@ pub(crate) enum FaultPoint {
     AgentCompactionAfterCommit = 1 << 13,
     AgentCompactionReadback = 1 << 14,
     AgentCompactionCommitFailure = 1 << 15,
+    AgentRunStartAfterCommit = 1 << 16,
+    AgentRunStartReadback = 1 << 17,
+    AgentRunCancellationAfterCommit = 1 << 18,
+    AgentRunCancellationReadback = 1 << 19,
 }
 
 #[cfg(test)]

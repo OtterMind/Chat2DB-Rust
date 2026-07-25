@@ -48,6 +48,7 @@ pub(crate) struct ApplicationInner {
     agent_runs: AgentRunHub,
     operations: OperationHub,
     accepting_work: Mutex<bool>,
+    shutdown_agent_run_ids: Mutex<Vec<String>>,
     tasks: Mutex<HashMap<String, JoinHandle<()>>>,
 }
 
@@ -167,6 +168,7 @@ impl Application {
                 agent_runs: AgentRunHub::new(),
                 operations: OperationHub::new(),
                 accepting_work: Mutex::new(true),
+                shutdown_agent_run_ids: Mutex::new(Vec::new()),
                 tasks: Mutex::new(HashMap::new()),
             }),
         }
@@ -427,9 +429,13 @@ impl Application {
             return;
         }
         *accepting_work = false;
+        let agent_run_ids = self.inner.agent_runs.run_ids();
+        *self.inner.shutdown_agent_run_ids.lock().await = agent_run_ids.clone();
         self.inner
             .operations
             .cancel_all("Chat2DB runtime is shutting down")
+            .await;
+        self.persist_agent_shutdown_cancellations(&agent_run_ids)
             .await;
         self.inner.agent_runs.cancel_all().await;
     }
@@ -437,7 +443,13 @@ impl Application {
     async fn join_tasks(&self) {
         let query_tasks = self.join_query_tasks();
         let agent_tasks = self.inner.agent_runs.join_tasks(TASK_SHUTDOWN_TIMEOUT);
-        tokio::join!(query_tasks, agent_tasks);
+        let ((), mut agent_run_ids) = tokio::join!(query_tasks, agent_tasks);
+        agent_run_ids.extend(std::mem::take(
+            &mut *self.inner.shutdown_agent_run_ids.lock().await,
+        ));
+        agent_run_ids.sort_unstable();
+        agent_run_ids.dedup();
+        self.reconcile_agent_shutdown_runs(agent_run_ids).await;
     }
 
     async fn join_query_tasks(&self) {

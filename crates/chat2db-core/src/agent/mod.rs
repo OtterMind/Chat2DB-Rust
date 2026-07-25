@@ -1,4 +1,5 @@
 mod catalog;
+mod execution;
 #[allow(
     dead_code,
     reason = "the next staged agent-run transport slice consumes this foundation"
