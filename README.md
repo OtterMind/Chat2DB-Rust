@@ -4,7 +4,8 @@ Private implementation of the Chat2DB Community hybrid runtime.
 
 ## Current state
 
-The repository currently provides the first five buildable stages:
+The repository has completed the first five buildable stages and now provides
+an independently reviewable Stage 6 slice:
 
 - canonical Rust API contracts;
 - a transport-neutral Rust application service root;
@@ -35,13 +36,26 @@ The repository currently provides the first five buildable stages:
   Tauri 2 commands/channels;
 - a checked-in OpenAPI contract with generated TypeScript types and drift
   verification; and
-- one shared React SQL workbench with HTTP and Tauri backend adapters.
+- one shared React SQL workbench with HTTP and Tauri backend adapters;
+- a provider-neutral bounded agent loop with direct OpenAI, Anthropic, and
+  Gemini adapters, durable sessions/messages/runs/permissions, and atomic
+  context compaction;
+- shared `query_database`, `inspect_query_result`, and
+  `execute_database_write` tools with read-only enforcement, per-call write
+  approval, bounded result previews, run-bound handles, and conservative
+  unknown-outcome handling; and
+- durable Agent run start, snapshot, cancellation, permission decision, and
+  replay/live streaming through Axum SSE, Tauri channels, and matching
+  frontend HTTP/Tauri observers.
 
-AI, MCP, signed driver packs, and the existing Chat2DB plugin/ANTLR estate are
-tracked as explicit staged work in [`docs/stages.md`](docs/stages.md). Web and
-desktop compose the complete Stage 5 runtime; the current CLI remains a
-status-only adapter. Driver loading is proven through the internal H2 product
-fixture, while user-facing driver-pack provisioning remains Stage 7.
+Stage 6 remains in progress: the built-in Agent execution path and product
+transports are implemented, while `rmcp` integration and local CLI/MCP
+attachment remain staged work in [`docs/stages.md`](docs/stages.md). Signed
+driver packs and the existing Chat2DB plugin/ANTLR estate also remain staged.
+Web and desktop compose the complete Stage 5 runtime plus the implemented Stage
+6 slice; the current CLI remains a status-only adapter. Driver loading is
+proven through the internal H2 product fixture, while user-facing driver-pack
+provisioning remains Stage 7.
 
 ## Architecture
 
@@ -122,6 +136,7 @@ apps/
   frontend/          shared React application
 contracts/openapi/   generated external HTTP contract
 crates/
+  chat2db-agent/     provider adapters and bounded agent/tool runtime
   chat2db-contract/  canonical DTOs and errors
   chat2db-core/      transport-neutral product services
   chat2db-engine-protocol/ generated internal wire types and frame codec

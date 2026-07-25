@@ -4,20 +4,24 @@
 
 The repository has completed the buildable baseline, the versioned Rust-to-Java
 process protocol, the JDBC vertical slice, the local storage foundation, and
-the Web/desktop product transports. In addition to lifecycle supervision, the
-implemented bridge loads external driver JARs, owns sessions and local
-transactions, executes updates, and streams typed query batches with credits,
-cancellation, deadlines, hard limits, and explicit unknown outcomes. The
-complete storage-to-Java-to-retained-result path is cross-language tested
+the Web/desktop product transports. Stage 6 is in progress: provider adapters,
+the bounded durable Agent runtime, SQL read/write tools, explicit write
+permissions, and Web/Tauri run transports are implemented. `rmcp` and local
+CLI/MCP attachment are not implemented yet. In addition to lifecycle
+supervision, the implemented bridge loads external driver JARs, owns sessions
+and local transactions, executes updates, and streams typed query batches with
+credits, cancellation, deadlines, hard limits, and explicit unknown outcomes.
+The complete storage-to-Java-to-retained-result path is cross-language tested
 against H2 without embedding H2 in the compatibility-engine JAR.
 
 The Web and Tauri hosts now open the production vault, SQLite storage, and Java
 supervisor before exposing a shared `Application`. Axum serves JSON, SSE, and
 the React SPA; Tauri exposes commands and per-subscription channels without a
-localhost product server. AI, MCP, managed driver packs, the existing Chat2DB
-plugin/parser estate, and packaging remain target components. The status-only
-CLI does not compose the product runtime and therefore still reports optional
-components as disabled.
+localhost product server. That same `Application` owns durable Agent run
+execution, replay, cancellation, and write-permission decisions. MCP, managed
+driver packs, the existing Chat2DB plugin/parser estate, and packaging remain
+target components. The status-only CLI does not compose the product runtime and
+therefore still reports optional components as disabled.
 
 ## Ownership
 
@@ -143,10 +147,39 @@ records. Startup removes incomplete/expired/corrupt data, truncates valid
 unindexed tails, removes orphans, and rejects an unknown result format before
 mutating any result.
 
-AI tools receive schema, counts, truncation state, bounded samples, statistics,
-and the result id. They never append an unbounded database result directly to
-model history. Follow-up tools inspect or aggregate the retained result under a
-new explicit budget.
+The Stage 6 SQL executor registers `query_database` and `inspect_query_result`
+for every datasource-bound run, and registers `execute_database_write` only for
+`ask_before_write` runs. Reads open JDBC sessions in read-only mode. Every write
+requires a fresh permission bound to the run id, tool-call id, tool name, and
+SHA-256 digest of the normalized arguments; approval is consumed once before
+dispatch. A durable write fence remains until Java reports a known outcome, and
+unknown outcomes terminate the run without replaying the write.
+
+Query tools receive schema, counts, truncation state, and a bounded sample
+rather than appending an unbounded database result to model history. Inline
+previews are capped at approximately 48 KiB, while the retained result stays in
+the existing result store. The returned handle is bound to the exact session
+and run, expires after 15 minutes by default, and can be paged through
+`inspect_query_result` under a new explicit budget.
+
+## Agent transport boundary
+
+Core owns provider resolution, durable transcript restoration, serialized
+state transitions, the bounded `AgentRunner`, SQL tool execution, permission
+waits, terminal transcript commits, and shutdown reconciliation. Every public
+Agent event is committed before it becomes visible to a subscriber. Tool
+arguments are SHA-256 identified; `ToolStarted`, bounded `ToolCompleted`, and
+`ToolFailed` events preserve tool identity without placing unbounded output in
+the transcript. Cancellation can interrupt model or read work, but a dispatched
+write waits for a known settlement or becomes an explicit unknown outcome.
+
+Axum exposes run start, snapshot, cancellation, permission decision, and
+cursor-replay SSE. Tauri exposes the same four operations plus channel
+subscribe/unsubscribe, with independent subscription ids and shutdown cleanup.
+The shared frontend observer deduplicates sequences, performs bounded reconnects,
+and recovers from a snapshot before resuming HTTP SSE or a Tauri channel. These
+are transport adapters; a complete end-user Agent workspace is not claimed by
+this stage slice.
 
 ## Product transport boundary
 
@@ -159,17 +192,18 @@ portable string representations. Binary values use standard base64 and every
 JDBC value is explicitly tagged.
 
 Axum exposes secret-safe datasource CRUD, asynchronous query start, operation
-snapshot/cancel, cursor-replay SSE, retained-result paging, health, product
-identity, and OpenAPI. Unknown `/api` routes remain structured JSON errors even
-when SPA history fallback is enabled. Loopback is the default; any non-loopback
-listener requires a constant-time-checked bearer token of at least 32 bytes.
+snapshot/cancel, cursor-replay SSE, retained-result paging, Agent run lifecycle
+and permission routes, health, product identity, and OpenAPI. Unknown `/api`
+routes remain structured JSON errors even when SPA history fallback is enabled.
+Loopback is the default; any non-loopback listener requires a
+constant-time-checked bearer token of at least 32 bytes.
 
-Tauri exposes the same application methods as commands. Each operation
-subscription receives its own `Channel<OperationEventEnvelope>` after the
-subscription is established; a closed Web stream or Tauri channel drops only
-that observer and never implies cancellation. Desktop starts no Axum listener.
-Both delivery hosts own `RuntimeHost` and shut down active operations and the
-Java generation on exit.
+Tauri exposes the same application methods as commands. Each operation or Agent
+run subscription receives its own channel after the subscription is
+established; a closed Web stream or Tauri channel drops only that observer and
+never implies cancellation. Desktop starts no Axum listener. Both delivery
+hosts own `RuntimeHost` and shut down active operations, Agent runs, observers,
+and the Java generation on exit.
 
 The current operation journal retains at most 256 events per operation.
 Subscriptions atomically capture replay plus live delivery, reject cursors
@@ -186,8 +220,8 @@ long-tail driver provisioning remains Stage 7.
 
 - Community binds to loopback by default.
 - Non-loopback Web mode requires an explicit access token.
-- Local CLI/MCP attachment uses an owner-only Unix-domain socket or Windows
-  named pipe.
+- Local CLI/MCP attachment must use an owner-only Unix-domain socket or Windows
+  named pipe when it is implemented.
 - Storage requires an injected, readiness-checked credential vault and never
   persists connection descriptors in SQLite or Java. Interactive hosts use an
   OS-keyring-rooted encrypted file vault; headless mode requires an explicit

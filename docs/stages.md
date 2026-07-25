@@ -11,7 +11,7 @@ in runtime health until then.
 | 3 | Complete | JDBC vertical slice | Dynamic H2 driver load, session lifecycle, typed query batches, backpressure, cancellation, transaction semantics, Rust integration tests |
 | 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
 | 5 | Complete | Product transports | Generated OpenAPI/TypeScript contract, Axum JSON/SSE, Tauri 2 commands/channels, shared SQL workbench, product H2 tests |
-| 6 | Planned | Agent, MCP, and CLI | Provider adapters, bounded tool loop, result handles, compaction, SQL permissions, `rmcp`, local IPC attachment |
+| 6 | In progress | Agent, MCP, and CLI | Implemented provider adapters, durable bounded tool loop, SQL tools/permissions, result handles, compaction, and Web/Tauri run transports; pending `rmcp` and local CLI/MCP attachment |
 | 7 | Planned | Chat2DB compatibility estate | Existing database SPI/plugins, JDBC packs, Java ANTLR parsers, metadata/builders, per-dialect conformance |
 | 8 | Planned | Packaging and release | jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
 
@@ -43,6 +43,18 @@ cancellation, and Java session release. Managed driver-pack installation and
 the existing Chat2DB plugin/ANTLR compatibility estate remain Stage 7, so the
 production hosts currently require drivers to be provisioned by a future driver
 manager; H2 is loaded only by the product integration fixture.
+
+The implemented Stage 6 slice provides direct OpenAI, Anthropic, and Gemini
+adapters; a provider-neutral bounded Agent loop; durable session, message, run,
+permission, and compaction state; and Core-owned start, snapshot, replay,
+cancellation, terminal commit, and shutdown behavior. Datasource-bound runs can
+query through a forced read-only JDBC session, inspect retained results through
+run-bound expiring handles, and execute a write only after a fresh approval
+bound to the exact tool call and argument digest. Axum exposes the lifecycle as
+JSON plus replay/live SSE; Tauri exposes matching commands and independent
+channels; the frontend has matching HTTP/Tauri observers with bounded recovery.
+Stage 6 is not complete until `rmcp` and the owner-only local CLI/MCP attachment
+path use these same services and policies.
 
 ## Commit policy
 
