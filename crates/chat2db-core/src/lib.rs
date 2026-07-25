@@ -430,7 +430,11 @@ impl Application {
         }
         *accepting_work = false;
         let agent_run_ids = self.inner.agent_runs.run_ids();
-        *self.inner.shutdown_agent_run_ids.lock().await = agent_run_ids.clone();
+        self.inner
+            .shutdown_agent_run_ids
+            .lock()
+            .await
+            .clone_from(&agent_run_ids);
         self.inner
             .operations
             .cancel_all("Chat2DB runtime is shutting down")
