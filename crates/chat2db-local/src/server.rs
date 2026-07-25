@@ -315,13 +315,21 @@ fn acquire_lock(data_dir: &Path) -> Result<fs::File, LocalError> {
         }
     }
     fs2::FileExt::try_lock_exclusive(&file).map_err(|error| {
-        if error.kind() == io::ErrorKind::WouldBlock {
+        if lock_is_contended(&error) {
             LocalError::Unavailable("another local attachment listener is active".to_owned())
         } else {
             LocalError::io("lock local attachment", error)
         }
     })?;
     Ok(file)
+}
+
+fn lock_is_contended(error: &io::Error) -> bool {
+    let expected = fs2::lock_contended_error();
+    match (error.raw_os_error(), expected.raw_os_error()) {
+        (Some(actual), Some(expected)) => actual == expected,
+        _ => error.kind() == expected.kind(),
+    }
 }
 
 fn publish_metadata(data_dir: &Path, metadata: &EndpointMetadata) -> Result<(), LocalError> {
