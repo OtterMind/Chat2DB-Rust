@@ -5,6 +5,7 @@ import { HttpBackendClient } from './http';
 import { TauriBackendClient } from './tauri';
 
 export * from './client';
+export * from './agent';
 export * from './operation';
 export { HttpBackendClient } from './http';
 export { TauriBackendClient } from './tauri';

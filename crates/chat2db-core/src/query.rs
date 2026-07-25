@@ -5,9 +5,11 @@ use chat2db_engine_protocol::wire;
 use chat2db_java_bridge::{
     BridgeError, CancelDisposition as BridgeCancelDisposition, ConnectionProperty, EngineClient,
     JdbcParameter, QueryEvent, QueryOptions, QueryRequest, QueryStream, SessionConfig,
+    UpdateRequest,
 };
 use chat2db_storage::{ResultWriter, SecretValue, Storage, StorageError};
 use tokio::sync::{oneshot, watch};
+use tokio_util::sync::CancellationToken;
 
 use crate::{AppError, AppErrorKind, Application, convert, operation::CancellationRequest};
 
@@ -17,6 +19,19 @@ struct PreparedQuery {
     parameters: Vec<JdbcParameter>,
     options: QueryOptions,
     retention: Duration,
+    force_read_only: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DatabaseWriteOutcome {
+    NotStarted,
+    Failed,
+    Unknown,
+}
+
+pub(crate) struct DatabaseWriteError {
+    pub(crate) error: AppError,
+    pub(crate) outcome: DatabaseWriteOutcome,
 }
 
 enum QueryTaskError {
@@ -42,6 +57,29 @@ impl Application {
     /// Returns a validation or component-availability error before acceptance.
     pub async fn start_query(&self, request: StartQueryRequest) -> Result<QueryAccepted, AppError> {
         let prepared = PreparedQuery::try_from(request)?;
+        self.start_prepared_query(prepared).await
+    }
+
+    pub(crate) async fn start_agent_read_query(
+        &self,
+        datasource_id: String,
+        sql: String,
+        limits: QueryLimits,
+    ) -> Result<QueryAccepted, AppError> {
+        let mut prepared = PreparedQuery::try_from(StartQueryRequest {
+            datasource_id,
+            sql,
+            parameters: Vec::new(),
+            limits,
+        })?;
+        prepared.force_read_only = true;
+        self.start_prepared_query(prepared).await
+    }
+
+    async fn start_prepared_query(
+        &self,
+        prepared: PreparedQuery,
+    ) -> Result<QueryAccepted, AppError> {
         let storage = self.require_storage()?;
         let engine = self.require_engine()?;
         let accepting_work = self.inner.accepting_work.lock().await;
@@ -168,7 +206,7 @@ impl Application {
                         sensitive: property.sensitive,
                     })
                     .collect(),
-                read_only: connection.read_only,
+                read_only: query.force_read_only || connection.read_only,
             })
             .await
             .map_err(AppError::from)?;
@@ -323,6 +361,120 @@ impl Application {
 
         finish_stream_consumption(operation_id, result, &mut stream, writer).await
     }
+
+    pub(crate) async fn execute_agent_update(
+        &self,
+        datasource_id: String,
+        sql: String,
+        cancellation: CancellationToken,
+    ) -> Result<u64, DatabaseWriteError> {
+        if cancellation.is_cancelled() {
+            return Err(DatabaseWriteError::not_started(AppError::new(
+                AppErrorKind::Conflict,
+                ApiError::new(
+                    "agent_tool_cancelled",
+                    "The database write was cancelled before dispatch",
+                ),
+            )));
+        }
+        let storage = self
+            .require_storage()
+            .map_err(DatabaseWriteError::not_started)?;
+        let engine = self
+            .require_engine()
+            .map_err(DatabaseWriteError::not_started)?;
+        let datasource_storage = storage.clone();
+        let loaded =
+            run_blocking(move || datasource_storage.get_datasource_with_secret(&datasource_id))
+                .await
+                .map_err(DatabaseWriteError::not_started)?;
+        let (datasource, secret) = loaded;
+        let secret = secret.ok_or_else(|| {
+            DatabaseWriteError::not_started(AppError::new(
+                AppErrorKind::Conflict,
+                ApiError::new(
+                    "datasource_connection_missing",
+                    "The datasource has no installed connection descriptor",
+                ),
+            ))
+        })?;
+        let connection = decode_connection(&secret).map_err(DatabaseWriteError::not_started)?;
+        if connection.read_only {
+            return Err(DatabaseWriteError::not_started(AppError::new(
+                AppErrorKind::Conflict,
+                ApiError::new(
+                    "datasource_read_only",
+                    "The datasource connection is configured as read-only",
+                ),
+            )));
+        }
+        let driver = engine
+            .driver_client()
+            .map_err(AppError::from)
+            .map_err(DatabaseWriteError::not_started)?;
+        let session = driver
+            .open_session(SessionConfig {
+                driver_id: datasource.driver_id,
+                jdbc_url: connection.jdbc_url,
+                properties: connection
+                    .properties
+                    .into_iter()
+                    .map(|property| ConnectionProperty {
+                        key: property.key,
+                        value: property.value,
+                        sensitive: property.sensitive,
+                    })
+                    .collect(),
+                read_only: false,
+            })
+            .await
+            .map_err(|error| DatabaseWriteError::from_bridge(error, false))?;
+        if cancellation.is_cancelled() {
+            let _ = session.close().await;
+            return Err(DatabaseWriteError::not_started(AppError::new(
+                AppErrorKind::Conflict,
+                ApiError::new(
+                    "agent_tool_cancelled",
+                    "The database write was cancelled before dispatch",
+                ),
+            )));
+        }
+
+        let result = session
+            .execute_update(UpdateRequest {
+                sql,
+                parameters: Vec::new(),
+                transaction_id: None,
+            })
+            .await;
+        let close_result = session.close().await;
+        if let Err(close_error) = close_result {
+            tracing::warn!(
+                error = %close_error,
+                "database write session cleanup failed after the outcome was determined"
+            );
+        }
+        result
+            .map(|completed| completed.affected_rows)
+            .map_err(|error| DatabaseWriteError::from_bridge(error, true))
+    }
+}
+
+impl DatabaseWriteError {
+    fn not_started(error: AppError) -> Self {
+        Self {
+            error,
+            outcome: DatabaseWriteOutcome::NotStarted,
+        }
+    }
+
+    fn from_bridge(error: BridgeError, dispatched: bool) -> Self {
+        let outcome = database_write_outcome(&error, dispatched);
+        Self {
+            error: error.into(),
+            outcome,
+        }
+    }
 }
 
 impl TryFrom<StartQueryRequest> for PreparedQuery {
@@ -370,6 +522,7 @@ impl TryFrom<StartQueryRequest> for PreparedQuery {
                 max_result_bytes: parse_u64(&max_result_bytes, "maxResultBytes")?,
             },
             retention: Duration::from_secs(u64::from(result_ttl_seconds)),
+            force_read_only: false,
         })
     }
 }
@@ -425,16 +578,50 @@ impl RetainedWriter {
 
 fn decode_connection(
     secret: &SecretValue,
-) -> Result<chat2db_contract::DatasourceConnection, QueryTaskError> {
+) -> Result<chat2db_contract::DatasourceConnection, AppError> {
     serde_json::from_slice(secret.expose_secret()).map_err(|_| {
-        QueryTaskError::Failed(AppError::new(
+        AppError::new(
             AppErrorKind::Internal,
             ApiError::new(
                 "datasource_connection_invalid",
                 "The stored datasource connection descriptor is invalid",
             ),
-        ))
+        )
     })
+}
+
+fn database_write_outcome(error: &BridgeError, dispatched: bool) -> DatabaseWriteOutcome {
+    use chat2db_engine_protocol::wire::OperationOutcome;
+    use chat2db_java_bridge::DeliveryOutcome;
+
+    match error {
+        BridgeError::Remote(remote) => match remote.outcome {
+            OperationOutcome::NotApplicable | OperationOutcome::NotStarted => {
+                DatabaseWriteOutcome::NotStarted
+            }
+            OperationOutcome::KnownFailed => DatabaseWriteOutcome::Failed,
+            OperationOutcome::Unknown | OperationOutcome::Unspecified => {
+                DatabaseWriteOutcome::Unknown
+            }
+        },
+        BridgeError::CommandChannelClosed { outcome }
+        | BridgeError::RequestTimeout { outcome, .. }
+        | BridgeError::ProcessUnavailable { outcome, .. } => match outcome {
+            DeliveryOutcome::NotSent => DatabaseWriteOutcome::NotStarted,
+            DeliveryOutcome::Unknown => DatabaseWriteOutcome::Unknown,
+        },
+        BridgeError::Protocol(_)
+        | BridgeError::UnexpectedResponse(_)
+        | BridgeError::Frame(_)
+        | BridgeError::SupervisorTask(_)
+        | BridgeError::ShutdownTimeout
+            if dispatched =>
+        {
+            DatabaseWriteOutcome::Unknown
+        }
+        _ if dispatched => DatabaseWriteOutcome::Failed,
+        _ => DatabaseWriteOutcome::NotStarted,
+    }
 }
 
 fn parse_u64(value: &str, field: &str) -> Result<u64, AppError> {

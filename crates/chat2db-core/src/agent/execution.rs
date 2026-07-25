@@ -7,15 +7,17 @@ use chat2db_agent::{
     ToolOutputHandle, ToolResult, Usage,
 };
 use chat2db_contract::{
-    AgentEvent, AgentMessageContent, AgentPermissionRequest, AgentRunAccepted, AgentRunSnapshot,
+    AgentEvent, AgentMessageContent, AgentPermissionDecision, AgentPermissionRequest,
+    AgentPermissionResponse, AgentRunAccepted, AgentRunSnapshot,
     AgentRunStatus as ContractRunStatus, AgentToolCall, AgentToolOutput, AgentUsage, ApiError,
-    CancelAgentRunResponse, CancelDisposition, StartAgentRunRequest,
+    CancelAgentRunResponse, CancelDisposition, DecideAgentPermissionRequest, StartAgentRunRequest,
 };
 use chat2db_storage::{
     AgentMessageRecord, AgentMessageRole, AgentRunMessage, AgentRunRecord,
     AgentRunStatus as StorageRunStatus, AgentRunUpdate, CancelAgentRun, CompleteAgentRun,
     FailAgentRun, MAX_AGENT_MESSAGE_BYTES, MAX_AGENT_MESSAGE_PAGE_SIZE, SqlPermissionMode,
-    StartAgentRun, Storage, StorageError, ToolPermissionRecord, ToolPermissionStatus,
+    StartAgentRun, Storage, StorageError, ToolPermissionDecision, ToolPermissionRecord,
+    ToolPermissionStatus, UnknownAgentWrite,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -25,6 +27,10 @@ use super::{
     AgentRunSubscription,
     hub::{AgentRunHub, AgentTransitionFailure, DurableAgentTransition},
     runtime::{RunProgress, map_context_compaction, persist_context_compaction},
+    sql_tools::{
+        SharedToolProgress, SqlToolExecutor, ToolProgress, UnknownWrite, is_write_tool,
+        permission_status, tool_definitions,
+    },
     transcript::CompactionOrdinalMap,
 };
 use crate::{AppError, Application, storage_call};
@@ -37,6 +43,8 @@ const RESULT_HANDLE_MEDIA_TYPE: &str = "application/vnd.chat2db.result+json";
 
 struct PreparedAgentRun {
     provider_id: String,
+    datasource_id: Option<String>,
+    permission_mode: SqlPermissionMode,
     messages: Vec<Message>,
     ordinals: CompactionOrdinalMap,
 }
@@ -58,6 +66,10 @@ enum WorkerExit {
         terminal_allowed: bool,
     },
     Cancelled,
+    UnknownWrite {
+        error: AppError,
+        write: UnknownWrite,
+    },
 }
 
 struct NoTools;
@@ -250,6 +262,121 @@ impl Application {
             .await
     }
 
+    /// Resolves one exact pending permission and wakes only its bound tool call.
+    ///
+    /// The durable decision continues even if the delivery adapter disconnects.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid-input, not-found, conflict, expiry, or availability failures.
+    pub async fn decide_agent_permission(
+        &self,
+        permission_id: &str,
+        request: DecideAgentPermissionRequest,
+    ) -> Result<AgentPermissionResponse, AppError> {
+        let application = self.clone();
+        let permission_id = permission_id.to_owned();
+        let (response_sender, response_receiver) = oneshot::channel();
+        tokio::spawn(async move {
+            let response = application
+                .coordinate_agent_permission_decision(&permission_id, request)
+                .await;
+            let _ = response_sender.send(response);
+        });
+        response_receiver
+            .await
+            .unwrap_or_else(|_| Err(AppError::internal()))
+    }
+
+    async fn coordinate_agent_permission_decision(
+        &self,
+        permission_id: &str,
+        request: DecideAgentPermissionRequest,
+    ) -> Result<AgentPermissionResponse, AppError> {
+        let storage = self.require_storage()?;
+        let digest = parse_hex_digest(&request.arguments_sha256)?;
+        let decision = match request.decision {
+            AgentPermissionDecision::AllowOnce => ToolPermissionDecision::Approve,
+            AgentPermissionDecision::Deny => ToolPermissionDecision::Deny,
+        };
+        let run_id = request.run_id;
+        let tool_call_id = request.tool_call_id;
+        let permission_id = permission_id.to_owned();
+        let response_permission_id = permission_id.clone();
+        let transition_run_id = run_id.clone();
+        let (status_sender, status_receiver) = oneshot::channel();
+        self.inner
+            .agent_runs
+            .transition(&run_id, move |sequence| async move {
+                let commit_storage = storage.clone();
+                let commit_permission_id = permission_id.clone();
+                let commit_run_id = transition_run_id.clone();
+                let commit_tool_call_id = tool_call_id.clone();
+                let permission = blocking_transition(move || {
+                    let current = commit_storage
+                        .get_tool_permission(&commit_permission_id)?
+                        .ok_or_else(|| {
+                            StorageError::PermissionNotFound(commit_permission_id.clone())
+                        })?;
+                    commit_storage.decide_tool_permission(
+                        &commit_permission_id,
+                        current.revision,
+                        &commit_run_id,
+                        &commit_tool_call_id,
+                        digest,
+                        sequence,
+                        decision,
+                    )
+                })
+                .await?;
+                let status = permission_status(permission.status);
+                if !matches!(
+                    status,
+                    chat2db_contract::AgentPermissionStatus::Approved
+                        | chat2db_contract::AgentPermissionStatus::Denied
+                        | chat2db_contract::AgentPermissionStatus::Expired
+                ) {
+                    return Err(AgentTransitionFailure::indeterminate(AppError::internal()));
+                }
+                let load_storage = storage;
+                let load_run_id = transition_run_id;
+                let missing_run_id = load_run_id.clone();
+                let run =
+                    tokio::task::spawn_blocking(move || load_storage.get_agent_run(&load_run_id))
+                        .await
+                        .map_err(|_| AgentTransitionFailure::indeterminate(AppError::internal()))?
+                        .map_err(|error| {
+                            AgentTransitionFailure::indeterminate(AppError::from(error))
+                        })?
+                        .ok_or_else(|| {
+                            AgentTransitionFailure::indeterminate(AppError::from(
+                                StorageError::AgentRunNotFound(missing_run_id),
+                            ))
+                        })?;
+                let permission_for_snapshot =
+                    (permission.status == ToolPermissionStatus::Approved).then_some(&permission);
+                let mut snapshot = snapshot_from_run(run, permission_for_snapshot)
+                    .map_err(AgentTransitionFailure::indeterminate)?;
+                snapshot.status = ContractRunStatus::Running;
+                snapshot.pending_permission = None;
+                let durable = DurableAgentTransition::new(
+                    snapshot,
+                    AgentEvent::PermissionResolved {
+                        permission_id,
+                        status,
+                    },
+                );
+                let _ = status_sender.send(status);
+                Ok(durable)
+            })
+            .await?;
+        let status = status_receiver.await.map_err(|_| AppError::internal())?;
+        Ok(AgentPermissionResponse {
+            permission_id: response_permission_id,
+            status,
+        })
+    }
+
     /// Durably requests cancellation before signalling the owned worker.
     ///
     /// # Errors
@@ -413,6 +540,7 @@ impl Application {
                 },
             },
             WorkerExit::Cancelled => WorkerExit::Cancelled,
+            WorkerExit::UnknownWrite { error, write } => WorkerExit::UnknownWrite { error, write },
         };
 
         let terminal_result = match outcome {
@@ -430,6 +558,10 @@ impl Application {
             WorkerExit::Cancelled => {
                 let terminal_allowed = hub_entry_available(&self.inner.agent_runs, &run_id).await;
                 self.finish_cancelled_worker(storage, &run_id, &state, terminal_allowed)
+                    .await
+            }
+            WorkerExit::UnknownWrite { error, write } => {
+                self.finish_unknown_write_worker(storage, &run_id, &state, write, error)
                     .await
             }
         };
@@ -526,9 +658,28 @@ impl Application {
         if cancellation.is_cancelled() {
             return WorkerExit::Cancelled;
         }
-        let runner = AgentRunner::new(provider, Arc::new(NoTools));
-        let input = AgentInput::new(prepared.messages, Vec::new());
-        match drive_agent_runner(
+        let shared_progress = Arc::new(tokio::sync::Mutex::new(state.tool_progress()));
+        let sql_executor = prepared.datasource_id.map(|datasource_id| {
+            Arc::new(SqlToolExecutor::new(
+                self.clone(),
+                storage.clone(),
+                started.run.id.clone(),
+                started.run.session_id.clone(),
+                datasource_id,
+                prepared.permission_mode,
+                Arc::clone(&shared_progress),
+            ))
+        });
+        let executor: Arc<dyn ToolExecutor> = sql_executor.as_ref().map_or_else(
+            || Arc::new(NoTools) as Arc<dyn ToolExecutor>,
+            |executor| executor.clone(),
+        );
+        let tools = sql_executor
+            .as_ref()
+            .map_or_else(Vec::new, |_| tool_definitions(prepared.permission_mode));
+        let runner = AgentRunner::new(provider, executor);
+        let input = AgentInput::new(prepared.messages, tools);
+        let driven = drive_agent_runner(
             runner,
             input,
             cancellation.clone(),
@@ -536,10 +687,22 @@ impl Application {
             storage,
             &started.run.id,
             state,
+            shared_progress,
             prepared.ordinals,
         )
-        .await
-        {
+        .await;
+        if let Some(write) = match &sql_executor {
+            Some(executor) => executor.take_unknown_write().await,
+            None => None,
+        } {
+            let error = match driven {
+                Err(DriveFailure::Agent(error)) => AppError::from(error),
+                Err(DriveFailure::Host { error, .. }) => error,
+                Ok(_) => AppError::internal(),
+            };
+            return WorkerExit::UnknownWrite { error, write };
+        }
+        match driven {
             Ok(result) => WorkerExit::Completed(result),
             Err(DriveFailure::Agent(AgentError::Cancelled)) if cancellation.is_cancelled() => {
                 WorkerExit::Cancelled
@@ -590,6 +753,61 @@ impl Application {
             first.expect_err("checked error"),
         )
         .await
+    }
+
+    async fn finish_unknown_write_worker(
+        &self,
+        storage: Storage,
+        run_id: &str,
+        state: &AgentWorkerState,
+        write: UnknownWrite,
+        source: AppError,
+    ) -> Result<(), AppError> {
+        let messages = serialize_run_messages(&state.generated_messages).unwrap_or_default();
+        let run_id_owned = run_id.to_owned();
+        let progress = state.progress;
+        let compaction_count = state.compaction_count;
+        let compacted_through_ordinal = state.compacted_through_ordinal;
+        let tool_call_id = write.tool_call_id;
+        let arguments_sha256 = write.arguments_sha256;
+        let error = ApiError::new(
+            "database_outcome_unknown",
+            "Database write outcome is unknown and must not be retried",
+        );
+        let event_error = error.clone();
+        let result = self
+            .inner
+            .agent_runs
+            .transition(run_id, move |sequence| async move {
+                let failed = blocking_transition(move || {
+                    storage.fail_agent_write_outcome_unknown(
+                        &run_id_owned,
+                        &tool_call_id,
+                        arguments_sha256,
+                        UnknownAgentWrite {
+                            last_sequence: sequence,
+                            model_rounds: progress.model_rounds,
+                            tool_calls: progress.tool_calls,
+                            input_tokens: progress.usage.input_tokens,
+                            output_tokens: progress.usage.output_tokens,
+                            total_tokens: progress.usage.total_tokens,
+                            messages,
+                            compaction_count,
+                            compacted_through_ordinal,
+                        },
+                    )
+                })
+                .await?;
+                let snapshot = snapshot_from_run(failed.run, None)
+                    .map_err(AgentTransitionFailure::indeterminate)?;
+                Ok(DurableAgentTransition::new(
+                    snapshot,
+                    AgentEvent::Failed { error: event_error },
+                ))
+            })
+            .await
+            .map(|_| ());
+        result.map_err(|_| source)
     }
 
     async fn recover_failed_terminal(
@@ -847,6 +1065,7 @@ async fn drive_agent_runner(
     storage: Storage,
     run_id: &str,
     state: &mut AgentWorkerState,
+    tool_progress: SharedToolProgress,
     mut ordinals: CompactionOrdinalMap,
 ) -> Result<RunResult, DriveFailure> {
     let runner_cancellation = cancellation.child_token();
@@ -866,6 +1085,7 @@ async fn drive_agent_runner(
                     storage.clone(),
                     run_id,
                     state,
+                    &tool_progress,
                     &mut ordinals,
                     event,
                 ).await {
@@ -883,8 +1103,16 @@ async fn drive_agent_runner(
     };
 
     while let Some(event) = receiver.recv().await {
-        if let Err(error) =
-            process_run_event(hub, storage.clone(), run_id, state, &mut ordinals, event).await
+        if let Err(error) = process_run_event(
+            hub,
+            storage.clone(),
+            run_id,
+            state,
+            &tool_progress,
+            &mut ordinals,
+            event,
+        )
+        .await
         {
             return Err(DriveFailure::Host {
                 terminal_allowed: hub_entry_available(hub, run_id).await,
@@ -900,6 +1128,7 @@ async fn process_run_event(
     storage: Storage,
     run_id: &str,
     state: &mut AgentWorkerState,
+    tool_progress: &SharedToolProgress,
     ordinals: &mut CompactionOrdinalMap,
     event: RunEvent,
 ) -> Result<(), AppError> {
@@ -916,6 +1145,7 @@ async fn process_run_event(
                     .ok_or_else(AppError::internal)?;
                 state.compacted_through_ordinal = coverage;
             }
+            *tool_progress.lock().await = state.tool_progress();
             Ok(())
         }
         RunEvent::ModelRoundStarted { round } => state.start_round(round),
@@ -967,7 +1197,103 @@ async fn process_run_event(
             }
             Ok(())
         }
-        RunEvent::ToolStarted { .. } | RunEvent::ToolCompleted { .. } => Err(AppError::internal()),
+        event @ (RunEvent::ToolStarted { .. }
+        | RunEvent::ToolCompleted { .. }
+        | RunEvent::ToolFailed { .. }) => {
+            process_tool_event(hub, storage, run_id, state, tool_progress, event).await
+        }
+    }
+}
+
+async fn process_tool_event(
+    hub: &AgentRunHub,
+    storage: Storage,
+    run_id: &str,
+    state: &mut AgentWorkerState,
+    tool_progress: &SharedToolProgress,
+    event: RunEvent,
+) -> Result<(), AppError> {
+    match event {
+        RunEvent::ToolStarted {
+            round,
+            call_id,
+            name,
+            arguments_sha256,
+        } => {
+            state.start_tool_call(round)?;
+            *tool_progress.lock().await = state.tool_progress();
+            if is_write_tool(&name) {
+                return Ok(());
+            }
+            persist_running_event(
+                hub,
+                storage,
+                run_id,
+                state,
+                AgentEvent::ToolStarted {
+                    tool_call_id: call_id,
+                    name,
+                    arguments_sha256: hex_digest(arguments_sha256),
+                },
+            )
+            .await
+        }
+        RunEvent::ToolCompleted {
+            round,
+            call_id,
+            name,
+            output,
+        } => {
+            state.require_completed_round(round)?;
+            let output = tool_output_to_contract(&output)?;
+            persist_running_event(
+                hub,
+                storage,
+                run_id,
+                state,
+                AgentEvent::ToolCompleted {
+                    tool_call_id: call_id,
+                    name,
+                    output,
+                },
+            )
+            .await
+        }
+        RunEvent::ToolFailed {
+            round,
+            call_id,
+            name,
+            code,
+            message,
+            outcome,
+        } => {
+            state.require_completed_round(round)?;
+            if outcome == ExecutionOutcome::Unknown {
+                return Ok(());
+            }
+            let error = normalize_terminal_error(ApiError::new(code, message));
+            persist_running_event(
+                hub,
+                storage,
+                run_id,
+                state,
+                AgentEvent::ToolFailed {
+                    tool_call_id: call_id,
+                    name,
+                    error,
+                },
+            )
+            .await
+        }
+        RunEvent::RunStarted
+        | RunEvent::ContextCompacted { .. }
+        | RunEvent::ModelRoundStarted { .. }
+        | RunEvent::TextDelta { .. }
+        | RunEvent::Usage { .. }
+        | RunEvent::ModelRoundCompleted { .. }
+        | RunEvent::TranscriptMessages { .. }
+        | RunEvent::RunCompleted { .. }
+        | RunEvent::RunFailed { .. } => Err(AppError::internal()),
     }
 }
 
@@ -1010,6 +1336,35 @@ impl AgentWorkerState {
         self.active_round = Some(round);
         self.round_usage = Usage::default();
         Ok(())
+    }
+
+    fn require_completed_round(&self, round: usize) -> Result<(), AppError> {
+        if self.active_round.is_none() && self.progress.model_rounds == usize_to_u64(round)? {
+            Ok(())
+        } else {
+            Err(AppError::internal())
+        }
+    }
+
+    fn start_tool_call(&mut self, round: usize) -> Result<(), AppError> {
+        self.require_completed_round(round)?;
+        self.progress.tool_calls = self
+            .progress
+            .tool_calls
+            .checked_add(1)
+            .filter(|value| *value <= MAX_DURABLE_COUNTER)
+            .ok_or_else(|| provider_protocol_error("The AI provider exceeded durable counters"))?;
+        Ok(())
+    }
+
+    fn tool_progress(&self) -> ToolProgress {
+        ToolProgress {
+            model_rounds: self.progress.model_rounds,
+            tool_calls: self.progress.tool_calls,
+            usage: self.progress.usage,
+            compaction_count: self.compaction_count,
+            compacted_through_ordinal: self.compacted_through_ordinal,
+        }
     }
 
     fn require_active_round(&self, round: usize) -> Result<(), AppError> {
@@ -1137,6 +1492,8 @@ async fn load_prepared_agent_run(
     let (messages, ordinals) = prepare_transcript(&records, coverage)?;
     Ok(PreparedAgentRun {
         provider_id: session.provider_id,
+        datasource_id: session.datasource_id,
+        permission_mode: started.run.sql_permission_mode,
         messages,
         ordinals,
     })
@@ -1254,8 +1611,8 @@ fn message_from_record(record: &AgentMessageRecord) -> Result<Message, AppError>
             let [
                 AgentMessageContent::ToolResult {
                     tool_call_id,
+                    name,
                     output,
-                    ..
                 },
             ] = content.as_slice()
             else {
@@ -1264,8 +1621,9 @@ fn message_from_record(record: &AgentMessageRecord) -> Result<Message, AppError>
             let output = tool_output_from_contract(output)?;
             Ok(Message::new(
                 Role::Tool,
-                vec![MessageBlock::ToolResult(ToolResult::new(
+                vec![MessageBlock::ToolResult(ToolResult::named(
                     tool_call_id,
+                    name,
                     output,
                 ))],
             ))
@@ -1302,6 +1660,31 @@ fn tool_output_from_contract(output: &AgentToolOutput) -> Result<ToolOutput, App
     }
 }
 
+fn tool_output_to_contract(output: &ToolOutput) -> Result<AgentToolOutput, AppError> {
+    let Some(handle) = output.output_handle() else {
+        return Ok(AgentToolOutput::Text {
+            content: output
+                .inline_content()
+                .ok_or_else(AppError::internal)?
+                .to_owned(),
+            truncated: false,
+        });
+    };
+    if handle.media_type() != Some(RESULT_HANDLE_MEDIA_TYPE) {
+        return Err(AppError::internal());
+    }
+    let result = serde_json::from_str::<chat2db_contract::AgentResultHandle>(
+        output.inline_content().ok_or_else(AppError::internal)?,
+    )
+    .map_err(|_| AppError::internal())?;
+    if result.handle_id != handle.id() {
+        return Err(AppError::internal());
+    }
+    Ok(AgentToolOutput::Result {
+        handle: Box::new(result),
+    })
+}
+
 fn serialize_run_messages(messages: &[Message]) -> Result<Vec<AgentRunMessage>, AppError> {
     messages.iter().map(serialize_run_message).collect()
 }
@@ -1333,7 +1716,21 @@ fn serialize_run_message(message: &Message) -> Result<AgentRunMessage, AppError>
             }
             (AgentMessageRole::Assistant, content)
         }
-        Role::Tool | Role::System | Role::User => return Err(AppError::internal()),
+        Role::Tool => {
+            let [MessageBlock::ToolResult(result)] = message.blocks() else {
+                return Err(AppError::internal());
+            };
+            let name = result.name().ok_or_else(AppError::internal)?;
+            (
+                AgentMessageRole::Tool,
+                vec![AgentMessageContent::ToolResult {
+                    tool_call_id: result.call_id().to_owned(),
+                    name: name.to_owned(),
+                    output: tool_output_to_contract(result.output())?,
+                }],
+            )
+        }
+        Role::System | Role::User => return Err(AppError::internal()),
     };
     if content.is_empty() {
         return Err(AppError::new(
@@ -1527,7 +1924,7 @@ async fn persist_cancelled_run(
     .map(|_| ())
 }
 
-async fn blocking_transition<T, F>(operation: F) -> Result<T, AgentTransitionFailure>
+pub(super) async fn blocking_transition<T, F>(operation: F) -> Result<T, AgentTransitionFailure>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, StorageError> + Send + 'static,
@@ -1546,6 +1943,9 @@ fn classify_storage_transition(error: StorageError) -> AgentTransitionFailure {
             | StorageError::AgentStateConflict { .. }
             | StorageError::InvalidAgent(_)
             | StorageError::AgentQuotaExceeded { .. }
+            | StorageError::PermissionNotFound(_)
+            | StorageError::PermissionRevisionConflict { .. }
+            | StorageError::PermissionNotExecutable { .. }
     );
     let error = AppError::from(error);
     if definitely_not_committed {
@@ -1739,7 +2139,7 @@ async fn hub_entry_available(hub: &AgentRunHub, run_id: &str) -> bool {
     hub.cached_snapshot(run_id).await.is_ok()
 }
 
-fn snapshot_from_run(
+pub(super) fn snapshot_from_run(
     run: AgentRunRecord,
     permission: Option<&ToolPermissionRecord>,
 ) -> Result<AgentRunSnapshot, AppError> {
@@ -1812,7 +2212,7 @@ fn snapshot_from_run(
     })
 }
 
-fn permission_request(
+pub(super) fn permission_request(
     permission: &ToolPermissionRecord,
 ) -> Result<AgentPermissionRequest, AppError> {
     if !matches!(
@@ -1833,7 +2233,7 @@ fn permission_request(
     })
 }
 
-fn hex_digest(bytes: [u8; 32]) -> String {
+pub(super) fn hex_digest(bytes: [u8; 32]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(64);
     for byte in bytes {
@@ -1841,6 +2241,33 @@ fn hex_digest(bytes: [u8; 32]) -> String {
         output.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     output
+}
+
+fn parse_hex_digest(value: &str) -> Result<[u8; 32], AppError> {
+    if value.len() != 64
+        || !value
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(AppError::invalid(
+            "invalid_permission_digest",
+            "argumentsSha256 must be a lowercase hexadecimal SHA-256 digest",
+        ));
+    }
+    let mut digest = [0_u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        digest[index] = (hex_nibble(pair[0]) << 4) | hex_nibble(pair[1]);
+    }
+    Ok(digest)
+}
+
+const fn hex_nibble(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => byte - b'a' + 10,
+        _ => 0,
+    }
 }
 
 fn normalize_terminal_error(error: ApiError) -> ApiError {
@@ -1922,12 +2349,14 @@ mod tests {
         ProviderEventStream, ProviderKind as AgentProviderKind, ProviderRequest, StopReason,
     };
     use chat2db_contract::{
-        AgentEvent, AgentEventEnvelope, AgentMessageContent, AgentRunStatus, SqlPermissionMode,
+        AgentEvent, AgentEventEnvelope, AgentMessageContent, AgentPermissionDecision,
+        AgentPermissionStatus, AgentRunStatus, DecideAgentPermissionRequest, SqlPermissionMode,
         StartAgentRunRequest,
     };
     use chat2db_storage::{
         AgentMessageRole, AppendAgentMessage, CreateAgentSession, CreateProviderProfile,
-        ProviderKind, SecretRef, SecretValue, SecretVault, SecretVaultError, Storage,
+        ProviderKind, RequestToolPermission, SecretRef, SecretValue, SecretVault, SecretVaultError,
+        Storage, ToolPermissionRecord, ToolPermissionStatus,
     };
     use futures_util::{poll, stream};
     use tempfile::TempDir;
@@ -2132,17 +2561,185 @@ mod tests {
         session_id: &str,
         provider: Arc<dyn Provider>,
     ) -> AgentRunAccepted {
+        start_with_provider_and_mode(
+            application,
+            session_id,
+            provider,
+            SqlPermissionMode::ReadOnly,
+        )
+        .await
+    }
+
+    async fn start_with_provider_and_mode(
+        application: &Application,
+        session_id: &str,
+        provider: Arc<dyn Provider>,
+        sql_permission_mode: SqlPermissionMode,
+    ) -> AgentRunAccepted {
         application
             .start_agent_run_with_resolver(
                 StartAgentRunRequest {
                     session_id: session_id.to_owned(),
                     message: "current question".to_owned(),
-                    sql_permission_mode: SqlPermissionMode::ReadOnly,
+                    sql_permission_mode,
                 },
                 move |_application, _provider_id| async move { Ok(provider) },
             )
             .await
             .expect("run starts")
+    }
+
+    async fn install_pending_permission(
+        fixture: &Fixture,
+        run_id: &str,
+        digest: [u8; 32],
+        retention: Duration,
+    ) -> ToolPermissionRecord {
+        let storage = fixture.storage.clone();
+        let transition_run_id = run_id.to_owned();
+        fixture
+            .application
+            .inner
+            .agent_runs
+            .transition(run_id, move |sequence| async move {
+                let commit_storage = storage.clone();
+                let commit_run_id = transition_run_id.clone();
+                let permission = blocking_transition(move || {
+                    commit_storage.create_tool_permission(
+                        &commit_run_id,
+                        RequestToolPermission {
+                            tool_call_id: "write-1".to_owned(),
+                            tool_name: crate::agent::sql_tools::SQL_WRITE_TOOL.to_owned(),
+                            arguments_sha256: digest,
+                            summary: "Execute SQL write: UPDATE example SET value = 1".to_owned(),
+                            last_sequence: sequence,
+                            model_rounds: 0,
+                            tool_calls: 1,
+                            input_tokens: 0,
+                            output_tokens: 0,
+                            total_tokens: 0,
+                            compaction_count: 0,
+                            compacted_through_ordinal: None,
+                            retention,
+                        },
+                    )
+                })
+                .await?;
+                let load_storage = storage;
+                let load_run_id = transition_run_id;
+                let run = tokio::task::spawn_blocking(move || {
+                    load_storage
+                        .get_agent_run(&load_run_id)?
+                        .ok_or(StorageError::AgentRunNotFound(load_run_id))
+                })
+                .await
+                .map_err(|_| AgentTransitionFailure::indeterminate(AppError::internal()))?
+                .map_err(|error| AgentTransitionFailure::indeterminate(AppError::from(error)))?;
+                let request = permission_request(&permission)
+                    .map_err(AgentTransitionFailure::indeterminate)?;
+                let snapshot = snapshot_from_run(run, Some(&permission))
+                    .map_err(AgentTransitionFailure::indeterminate)?;
+                Ok(DurableAgentTransition::new(
+                    snapshot,
+                    AgentEvent::PermissionRequested {
+                        permission: request,
+                    },
+                ))
+            })
+            .await
+            .expect("permission request persists");
+        fixture
+            .storage
+            .get_active_tool_permission_for_run(run_id)
+            .expect("permission reads")
+            .expect("permission is active")
+    }
+
+    fn permission_decision(
+        run_id: &str,
+        decision: AgentPermissionDecision,
+        digest: [u8; 32],
+    ) -> DecideAgentPermissionRequest {
+        DecideAgentPermissionRequest {
+            run_id: run_id.to_owned(),
+            tool_call_id: "write-1".to_owned(),
+            decision,
+            arguments_sha256: hex_digest(digest),
+        }
+    }
+
+    async fn expire_pending_permission(
+        fixture: &Fixture,
+        permission: &ToolPermissionRecord,
+    ) -> Result<(), AppError> {
+        let storage = fixture.storage.clone();
+        let run_id = permission.run_id.clone();
+        let transition_run_id = run_id.clone();
+        let permission_id = permission.id.clone();
+        let tool_call_id = permission.tool_call_id.clone();
+        let digest = permission.arguments_sha256;
+        let revision = permission.revision;
+        fixture
+            .application
+            .inner
+            .agent_runs
+            .transition(&run_id, move |sequence| async move {
+                let commit_storage = storage.clone();
+                let commit_run_id = transition_run_id.clone();
+                let commit_permission_id = permission_id.clone();
+                blocking_transition(move || {
+                    commit_storage.expire_tool_permission(
+                        &commit_permission_id,
+                        revision,
+                        &commit_run_id,
+                        &tool_call_id,
+                        digest,
+                        sequence,
+                    )
+                })
+                .await?;
+                let load_storage = storage;
+                let load_run_id = transition_run_id;
+                let run = tokio::task::spawn_blocking(move || {
+                    load_storage
+                        .get_agent_run(&load_run_id)?
+                        .ok_or(StorageError::AgentRunNotFound(load_run_id))
+                })
+                .await
+                .map_err(|_| AgentTransitionFailure::indeterminate(AppError::internal()))?
+                .map_err(|error| AgentTransitionFailure::indeterminate(AppError::from(error)))?;
+                let snapshot =
+                    snapshot_from_run(run, None).map_err(AgentTransitionFailure::indeterminate)?;
+                Ok(DurableAgentTransition::new(
+                    snapshot,
+                    AgentEvent::PermissionResolved {
+                        permission_id,
+                        status: AgentPermissionStatus::Expired,
+                    },
+                ))
+            })
+            .await
+            .map(|_| ())
+    }
+
+    async fn wait_for_terminal_snapshot(
+        application: &Application,
+        run_id: &str,
+    ) -> AgentRunSnapshot {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let snapshot = application
+                    .agent_run_snapshot(run_id)
+                    .await
+                    .expect("snapshot reads");
+                if is_contract_terminal(snapshot.status) {
+                    break snapshot;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("run reaches a terminal state")
     }
 
     async fn collect_events(mut subscription: AgentRunSubscription) -> Vec<AgentEventEnvelope> {
@@ -2156,6 +2753,229 @@ mod tests {
             events.push(event);
         }
         events
+    }
+
+    #[tokio::test]
+    async fn permission_approval_commits_before_waking_the_exact_waiter() {
+        let fixture = setup(None);
+        let accepted = start_with_provider_and_mode(
+            &fixture.application,
+            &fixture.session_id,
+            ScriptedProvider::pending(),
+            SqlPermissionMode::AskBeforeWrite,
+        )
+        .await;
+        let digest = [7_u8; 32];
+        let permission =
+            install_pending_permission(&fixture, &accepted.run_id, digest, Duration::from_secs(60))
+                .await;
+        let waiter = fixture
+            .application
+            .inner
+            .agent_runs
+            .install_permission_waiter(&accepted.run_id, &permission.id)
+            .await
+            .expect("waiter installs");
+
+        let response = fixture
+            .application
+            .decide_agent_permission(
+                &permission.id,
+                permission_decision(&accepted.run_id, AgentPermissionDecision::AllowOnce, digest),
+            )
+            .await
+            .expect("permission approves");
+        assert_eq!(response.status, AgentPermissionStatus::Approved);
+        assert_eq!(
+            waiter.wait().await,
+            super::super::hub::AgentPermissionWaitOutcome::Resolved(
+                AgentPermissionStatus::Approved
+            )
+        );
+        let cached = fixture
+            .application
+            .inner
+            .agent_runs
+            .cached_snapshot(&accepted.run_id)
+            .await
+            .expect("live snapshot remains available");
+        assert_eq!(cached.status, AgentRunStatus::Running);
+        assert!(cached.pending_permission.is_none());
+        let durable = fixture
+            .storage
+            .get_tool_permission(&permission.id)
+            .expect("permission reads")
+            .expect("permission exists");
+        assert_eq!(durable.status, ToolPermissionStatus::Approved);
+
+        fixture
+            .application
+            .cancel_agent_run(&accepted.run_id)
+            .await
+            .expect("run cancels");
+    }
+
+    #[tokio::test]
+    async fn concurrent_permission_decisions_have_one_durable_winner() {
+        let fixture = setup(None);
+        let accepted = start_with_provider_and_mode(
+            &fixture.application,
+            &fixture.session_id,
+            ScriptedProvider::pending(),
+            SqlPermissionMode::AskBeforeWrite,
+        )
+        .await;
+        let digest = [8_u8; 32];
+        let permission =
+            install_pending_permission(&fixture, &accepted.run_id, digest, Duration::from_secs(60))
+                .await;
+        let allow_request =
+            permission_decision(&accepted.run_id, AgentPermissionDecision::AllowOnce, digest);
+        let deny_request =
+            permission_decision(&accepted.run_id, AgentPermissionDecision::Deny, digest);
+        let (allowed, denied) = tokio::join!(
+            fixture
+                .application
+                .decide_agent_permission(&permission.id, allow_request),
+            fixture
+                .application
+                .decide_agent_permission(&permission.id, deny_request),
+        );
+        assert_ne!(allowed.is_ok(), denied.is_ok());
+        let winner = allowed
+            .as_ref()
+            .or(denied.as_ref())
+            .expect("one decision succeeds")
+            .status;
+        let durable = fixture
+            .storage
+            .get_tool_permission(&permission.id)
+            .expect("permission reads")
+            .expect("permission exists");
+        assert_eq!(permission_status(durable.status), winner);
+        fixture
+            .application
+            .inner
+            .agent_runs
+            .cached_snapshot(&accepted.run_id)
+            .await
+            .expect("losing CAS does not invalidate the live run");
+
+        fixture
+            .application
+            .cancel_agent_run(&accepted.run_id)
+            .await
+            .expect("run cancels");
+    }
+
+    #[tokio::test]
+    async fn cancellation_racing_approval_revokes_the_write_permission() {
+        let fixture = setup(None);
+        let accepted = start_with_provider_and_mode(
+            &fixture.application,
+            &fixture.session_id,
+            ScriptedProvider::pending(),
+            SqlPermissionMode::AskBeforeWrite,
+        )
+        .await;
+        let digest = [9_u8; 32];
+        let permission =
+            install_pending_permission(&fixture, &accepted.run_id, digest, Duration::from_secs(60))
+                .await;
+        let (decision, cancellation) = tokio::join!(
+            fixture.application.decide_agent_permission(
+                &permission.id,
+                permission_decision(&accepted.run_id, AgentPermissionDecision::AllowOnce, digest,),
+            ),
+            fixture.application.cancel_agent_run(&accepted.run_id),
+        );
+        cancellation.expect("cancellation is durable");
+        if let Ok(response) = decision {
+            assert_eq!(response.status, AgentPermissionStatus::Approved);
+        }
+        let terminal = wait_for_terminal_snapshot(&fixture.application, &accepted.run_id).await;
+        assert_eq!(terminal.status, AgentRunStatus::Cancelled);
+        let durable = fixture
+            .storage
+            .get_tool_permission(&permission.id)
+            .expect("permission reads")
+            .expect("permission exists");
+        assert_eq!(durable.status, ToolPermissionStatus::Revoked);
+    }
+
+    #[tokio::test]
+    async fn permission_expiry_racing_a_decision_has_one_resolution_event() {
+        let fixture = setup(None);
+        let accepted = start_with_provider_and_mode(
+            &fixture.application,
+            &fixture.session_id,
+            ScriptedProvider::pending(),
+            SqlPermissionMode::AskBeforeWrite,
+        )
+        .await;
+        let digest = [10_u8; 32];
+        let permission = install_pending_permission(
+            &fixture,
+            &accepted.run_id,
+            digest,
+            Duration::from_millis(1),
+        )
+        .await;
+        let waiter = fixture
+            .application
+            .inner
+            .agent_runs
+            .install_permission_waiter(&accepted.run_id, &permission.id)
+            .await
+            .expect("waiter installs");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let (decision, expiry) = tokio::join!(
+            fixture.application.decide_agent_permission(
+                &permission.id,
+                permission_decision(&accepted.run_id, AgentPermissionDecision::AllowOnce, digest,),
+            ),
+            expire_pending_permission(&fixture, &permission),
+        );
+        assert_ne!(decision.is_ok(), expiry.is_ok());
+        if let Ok(response) = decision {
+            assert_eq!(response.status, AgentPermissionStatus::Expired);
+        }
+        assert_eq!(
+            waiter.wait().await,
+            super::super::hub::AgentPermissionWaitOutcome::Resolved(AgentPermissionStatus::Expired)
+        );
+        assert_eq!(
+            fixture
+                .storage
+                .get_tool_permission(&permission.id)
+                .expect("permission reads")
+                .expect("permission exists")
+                .status,
+            ToolPermissionStatus::Expired
+        );
+
+        fixture
+            .application
+            .cancel_agent_run(&accepted.run_id)
+            .await
+            .expect("run cancels");
+    }
+
+    #[test]
+    fn permission_digest_parser_requires_canonical_lowercase_sha256() {
+        assert_eq!(
+            parse_hex_digest(&"ab".repeat(32)).expect("digest parses"),
+            [0xab; 32]
+        );
+        for invalid in ["ab", &"AB".repeat(32), &"gg".repeat(32)] {
+            assert_eq!(
+                parse_hex_digest(invalid)
+                    .expect_err("digest is rejected")
+                    .api_error()
+                    .code,
+                "invalid_permission_digest"
+            );
+        }
     }
 
     #[tokio::test]

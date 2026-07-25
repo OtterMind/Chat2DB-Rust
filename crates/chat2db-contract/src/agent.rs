@@ -229,6 +229,7 @@ pub struct AgentToolCall {
 }
 
 /// Bounded handle exposed instead of an unbounded database result.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentResultHandle {
@@ -248,6 +249,8 @@ pub struct AgentResultHandle {
     pub expires_at_ms: String,
     /// Result schema.
     pub columns: Vec<ResultColumn>,
+    /// Whether additional result columns were omitted from the model preview.
+    pub columns_truncated: bool,
     /// Bounded sample rows supplied to the model.
     pub sample_rows: Vec<ResultRow>,
     /// Whether retained rows exist outside the sample.
@@ -675,6 +678,7 @@ impl Debug for AgentResultHandle {
             .field("created_at_ms", &self.created_at_ms)
             .field("expires_at_ms", &self.expires_at_ms)
             .field("column_count", &self.columns.len())
+            .field("columns_truncated", &self.columns_truncated)
             .field("sample_row_count", &self.sample_rows.len())
             .field("sample_truncated", &self.sample_truncated)
             .finish()
@@ -886,6 +890,7 @@ mod tests {
             created_at_ms: "1".to_owned(),
             expires_at_ms: "2".to_owned(),
             columns: Vec::new(),
+            columns_truncated: false,
             sample_rows: vec![ResultRow {
                 values: vec![JdbcValue::Text {
                     value: SENTINEL.to_owned(),
@@ -997,6 +1002,7 @@ mod tests {
                 created_at_ms: "1784900000000".to_owned(),
                 expires_at_ms: "1784903600000".to_owned(),
                 columns: Vec::new(),
+                columns_truncated: false,
                 sample_rows: Vec::new(),
                 sample_truncated: true,
             }),

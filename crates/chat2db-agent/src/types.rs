@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, fmt, ops::Range};
 
 use serde::Serialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::{ConfigError, ToolOutputError};
 
@@ -280,6 +281,7 @@ impl ProviderContinuation {
 #[derive(Clone, PartialEq)]
 pub struct ToolResult {
     call_id: String,
+    name: Option<String>,
     output: ToolOutput,
 }
 
@@ -288,6 +290,16 @@ impl ToolResult {
     pub fn new(call_id: impl Into<String>, output: ToolOutput) -> Self {
         Self {
             call_id: call_id.into(),
+            name: None,
+            output,
+        }
+    }
+
+    #[must_use]
+    pub fn named(call_id: impl Into<String>, name: impl Into<String>, output: ToolOutput) -> Self {
+        Self {
+            call_id: call_id.into(),
+            name: Some(name.into()),
             output,
         }
     }
@@ -295,6 +307,11 @@ impl ToolResult {
     #[must_use]
     pub fn call_id(&self) -> &str {
         &self.call_id
+    }
+
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
     #[must_use]
@@ -506,6 +523,7 @@ pub struct ToolInvocation {
     call_id: String,
     name: String,
     arguments: Value,
+    arguments_sha256: [u8; 32],
 }
 
 impl From<&ToolCall> for ToolInvocation {
@@ -514,6 +532,10 @@ impl From<&ToolCall> for ToolInvocation {
             call_id: call.id.clone(),
             name: call.name.clone(),
             arguments: call.arguments.clone(),
+            arguments_sha256: Sha256::digest(
+                serde_json::to_vec(&call.arguments).expect("a serde_json::Value always serializes"),
+            )
+            .into(),
         }
     }
 }
@@ -532,6 +554,12 @@ impl ToolInvocation {
     #[must_use]
     pub const fn arguments(&self) -> &Value {
         &self.arguments
+    }
+
+    /// Returns the SHA-256 digest of the exact normalized JSON arguments.
+    #[must_use]
+    pub const fn arguments_sha256(&self) -> [u8; 32] {
+        self.arguments_sha256
     }
 }
 
@@ -815,13 +843,22 @@ pub enum RunEvent {
         round: usize,
         call_id: String,
         name: String,
+        arguments_sha256: [u8; 32],
     },
     ToolCompleted {
         round: usize,
         call_id: String,
         name: String,
-        inline_bytes: usize,
-        handle_id: Option<String>,
+        #[serde(skip_serializing)]
+        output: ToolOutput,
+    },
+    ToolFailed {
+        round: usize,
+        call_id: String,
+        name: String,
+        code: String,
+        message: String,
+        outcome: ExecutionOutcome,
     },
     TranscriptMessages {
         round: usize,
@@ -930,6 +967,7 @@ impl fmt::Debug for ToolResult {
         formatter
             .debug_struct("ToolResult")
             .field("call_id", &self.call_id)
+            .field("name", &self.name)
             .field("output", &self.output)
             .finish()
     }
@@ -983,6 +1021,7 @@ impl fmt::Debug for ToolInvocation {
                 "argument_fields",
                 &self.arguments.as_object().map_or(0, serde_json::Map::len),
             )
+            .field("arguments_sha256", &self.arguments_sha256)
             .finish()
     }
 }
@@ -1048,25 +1087,41 @@ impl fmt::Debug for RunEvent {
                 round,
                 call_id,
                 name,
+                arguments_sha256,
             } => formatter
                 .debug_struct("ToolStarted")
                 .field("round", round)
                 .field("call_id", call_id)
                 .field("name", name)
+                .field("arguments_sha256", arguments_sha256)
                 .finish(),
             Self::ToolCompleted {
                 round,
                 call_id,
                 name,
-                inline_bytes,
-                handle_id,
+                output,
             } => formatter
                 .debug_struct("ToolCompleted")
                 .field("round", round)
                 .field("call_id", call_id)
                 .field("name", name)
-                .field("inline_bytes", inline_bytes)
-                .field("has_handle", &handle_id.is_some())
+                .field("output", output)
+                .finish(),
+            Self::ToolFailed {
+                round,
+                call_id,
+                name,
+                code,
+                message,
+                outcome,
+            } => formatter
+                .debug_struct("ToolFailed")
+                .field("round", round)
+                .field("call_id", call_id)
+                .field("name", name)
+                .field("code", code)
+                .field("message_bytes", &message.len())
+                .field("outcome", outcome)
                 .finish(),
             Self::TranscriptMessages { round, messages } => formatter
                 .debug_struct("TranscriptMessages")
@@ -1125,6 +1180,24 @@ mod tests {
         let metadata =
             BTreeMap::from([("key".to_owned(), "x".repeat(MAX_TOOL_HANDLE_METADATA_BYTES))]);
         assert!(ToolOutputHandle::new("result", None, metadata).is_err());
+    }
+
+    #[test]
+    fn tool_invocation_hashes_the_exact_normalized_json_arguments() {
+        let call = ToolCall::new(
+            "call-1",
+            "query_database",
+            serde_json::json!({"sql": "select 1"}),
+        )
+        .expect("valid call");
+        assert_eq!(
+            ToolInvocation::from(&call).arguments_sha256(),
+            [
+                0x9c, 0x20, 0x1c, 0x0b, 0x3f, 0x4b, 0xd9, 0xf0, 0xa6, 0x54, 0x29, 0x8b, 0xa5, 0x13,
+                0xfe, 0x14, 0xcc, 0x96, 0x7e, 0x53, 0x4e, 0x15, 0x88, 0xe4, 0x8a, 0x03, 0x93, 0xef,
+                0xcf, 0x8d, 0xc6, 0x11,
+            ]
+        );
     }
 
     #[test]
@@ -1212,6 +1285,26 @@ mod tests {
             round: 1,
             text: SENTINEL.to_owned(),
         };
+        let tool_started = RunEvent::ToolStarted {
+            round: 1,
+            call_id: "call-1".to_owned(),
+            name: "query".to_owned(),
+            arguments_sha256: invocation.arguments_sha256(),
+        };
+        let tool_completed = RunEvent::ToolCompleted {
+            round: 1,
+            call_id: "call-1".to_owned(),
+            name: "query".to_owned(),
+            output: output.clone(),
+        };
+        let tool_failed = RunEvent::ToolFailed {
+            round: 1,
+            call_id: "call-1".to_owned(),
+            name: "query".to_owned(),
+            code: "query_failed".to_owned(),
+            message: SENTINEL.to_owned(),
+            outcome: super::ExecutionOutcome::Failed,
+        };
         let result = RunResult {
             messages: vec![user_message.clone(), assistant_message.clone()],
             generated_messages: vec![tool_message.clone()],
@@ -1242,6 +1335,9 @@ mod tests {
             format!("{:?}", StopReason::Other(SENTINEL.to_owned())),
             format!("{transcript:?}"),
             format!("{text_delta:?}"),
+            format!("{tool_started:?}"),
+            format!("{tool_completed:?}"),
+            format!("{tool_failed:?}"),
             format!(
                 "{:?}",
                 RunEvent::ModelRoundCompleted {

@@ -351,6 +351,401 @@
         }
       }
     },
+    "/api/v1/agent/runs": {
+      "post": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "start_agent_run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartAgentRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Agent run accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRunAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid agent-run request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Agent session, provider, or datasource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Agent session already has an active run",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected agent-run failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent runtime or storage is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "507": {
+            "description": "Agent run resource limits are exhausted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/runs/{run_id}": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "agent_run_snapshot",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Opaque agent run id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current agent-run snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRunSnapshot"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Agent run does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected agent-run failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent storage is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/runs/{run_id}/cancel": {
+      "post": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "cancel_agent_run",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Opaque agent run id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Idempotent agent-run cancellation disposition",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelAgentRunResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected agent-run cancellation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent runtime or storage is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/runs/{run_id}/events": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "agent_run_events",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Opaque agent run id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "description": "Last consumed numeric event sequence",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Replay followed by live agent-run events",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Last-Event-ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Agent run does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Requested event fell outside the replay window",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected subscription failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent event stream is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/runs/{run_id}/permissions/{permission_id}/decision": {
+      "post": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "decide_agent_permission",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Opaque agent run id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "permission_id",
+            "in": "path",
+            "description": "Opaque pending permission id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideAgentPermissionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Permission decision recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentPermissionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or mismatched permission decision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Agent run or permission does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Permission is stale or no longer executable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected permission-decision failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Agent runtime or storage is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/agent/sessions": {
       "get": {
         "tags": [
@@ -1537,6 +1932,316 @@
   },
   "components": {
     "schemas": {
+      "AgentEvent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The run entered the bounded loop.",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "started"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Bounded assistant text increment.",
+            "required": [
+              "delta",
+              "type"
+            ],
+            "properties": {
+              "delta": {
+                "type": "string",
+                "description": "Text increment."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "text_delta"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A validated tool call started.",
+            "required": [
+              "toolCallId",
+              "name",
+              "argumentsSha256",
+              "type"
+            ],
+            "properties": {
+              "argumentsSha256": {
+                "type": "string",
+                "description": "Canonical argument digest."
+              },
+              "name": {
+                "type": "string",
+                "description": "Registered tool name."
+              },
+              "toolCallId": {
+                "type": "string",
+                "description": "Tool-call id."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "tool_started"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A tool returned bounded output.",
+            "required": [
+              "toolCallId",
+              "name",
+              "output",
+              "type"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Registered tool name."
+              },
+              "output": {
+                "$ref": "#/components/schemas/AgentToolOutput",
+                "description": "Bounded output."
+              },
+              "toolCallId": {
+                "type": "string",
+                "description": "Tool-call id."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "tool_completed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A tool failed without terminating through a provider retry.",
+            "required": [
+              "toolCallId",
+              "name",
+              "error",
+              "type"
+            ],
+            "properties": {
+              "error": {
+                "$ref": "#/components/schemas/ApiError",
+                "description": "Safe failure."
+              },
+              "name": {
+                "type": "string",
+                "description": "Registered tool name."
+              },
+              "toolCallId": {
+                "type": "string",
+                "description": "Tool-call id."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "tool_failed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The run paused for an external permission decision.",
+            "required": [
+              "permission",
+              "type"
+            ],
+            "properties": {
+              "permission": {
+                "$ref": "#/components/schemas/AgentPermissionRequest",
+                "description": "Exact pending permission."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "permission_requested"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A permission decision was recorded.",
+            "required": [
+              "permissionId",
+              "status",
+              "type"
+            ],
+            "properties": {
+              "permissionId": {
+                "type": "string",
+                "description": "Opaque permission id."
+              },
+              "status": {
+                "$ref": "#/components/schemas/AgentPermissionStatus",
+                "description": "Resulting state."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "permission_resolved"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Complete older turns were compacted.",
+            "required": [
+              "strategy",
+              "droppedTurns",
+              "type"
+            ],
+            "properties": {
+              "droppedTurns": {
+                "type": "string",
+                "description": "Removed turn count encoded as a decimal integer."
+              },
+              "strategy": {
+                "$ref": "#/components/schemas/ContextCompactionStrategy",
+                "description": "Compaction fallback used."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "context_compacted"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Provider usage advanced.",
+            "required": [
+              "usage",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "usage"
+                ]
+              },
+              "usage": {
+                "$ref": "#/components/schemas/AgentUsage",
+                "description": "Accumulated usage."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The assistant message became durable.",
+            "required": [
+              "messageId",
+              "type"
+            ],
+            "properties": {
+              "messageId": {
+                "type": "string",
+                "description": "Durable assistant message id."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "completed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The run failed.",
+            "required": [
+              "error",
+              "type"
+            ],
+            "properties": {
+              "error": {
+                "$ref": "#/components/schemas/ApiError",
+                "description": "Safe terminal error."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "failed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The run was cancelled.",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Optional safe cancellation reason."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "cancelled"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "One replayable agent event."
+      },
+      "AgentEventEnvelope": {
+        "type": "object",
+        "description": "One replayable event with a monotonically increasing per-run sequence.",
+        "required": [
+          "runId",
+          "sequence",
+          "occurredAtMs",
+          "event"
+        ],
+        "properties": {
+          "event": {
+            "$ref": "#/components/schemas/AgentEvent",
+            "description": "Typed run event."
+          },
+          "occurredAtMs": {
+            "type": "string",
+            "description": "Event creation time as Unix epoch milliseconds encoded as a decimal integer."
+          },
+          "runId": {
+            "type": "string",
+            "description": "Opaque run id."
+          },
+          "sequence": {
+            "type": "string",
+            "description": "Monotonic sequence encoded as a decimal integer."
+          }
+        }
+      },
       "AgentMessage": {
         "type": "object",
         "description": "One durable canonical conversation message.",
@@ -1695,6 +2400,92 @@
           "summary"
         ]
       },
+      "AgentPermissionDecision": {
+        "type": "string",
+        "description": "User decision for one pending permission.",
+        "enum": [
+          "allow_once",
+          "deny"
+        ]
+      },
+      "AgentPermissionRequest": {
+        "type": "object",
+        "description": "One permission that cannot be widened or reused by the model.",
+        "required": [
+          "permissionId",
+          "runId",
+          "toolCallId",
+          "toolName",
+          "argumentsSha256",
+          "summary",
+          "requestedAtMs",
+          "expiresAtMs"
+        ],
+        "properties": {
+          "argumentsSha256": {
+            "type": "string",
+            "description": "Lowercase hexadecimal SHA-256 of the canonical arguments."
+          },
+          "expiresAtMs": {
+            "type": "string",
+            "description": "Expiry time as Unix epoch milliseconds encoded as a decimal integer."
+          },
+          "permissionId": {
+            "type": "string",
+            "description": "Opaque permission id."
+          },
+          "requestedAtMs": {
+            "type": "string",
+            "description": "Request time as Unix epoch milliseconds encoded as a decimal integer."
+          },
+          "runId": {
+            "type": "string",
+            "description": "Owning run id."
+          },
+          "summary": {
+            "type": "string",
+            "description": "Bounded user-visible operation summary."
+          },
+          "toolCallId": {
+            "type": "string",
+            "description": "Exact tool-call id."
+          },
+          "toolName": {
+            "type": "string",
+            "description": "Requested tool name."
+          }
+        }
+      },
+      "AgentPermissionResponse": {
+        "type": "object",
+        "description": "Result of resolving one permission.",
+        "required": [
+          "permissionId",
+          "status"
+        ],
+        "properties": {
+          "permissionId": {
+            "type": "string",
+            "description": "Opaque permission id."
+          },
+          "status": {
+            "$ref": "#/components/schemas/AgentPermissionStatus",
+            "description": "Current permission state."
+          }
+        }
+      },
+      "AgentPermissionStatus": {
+        "type": "string",
+        "description": "Permission lifecycle state returned to clients.",
+        "enum": [
+          "pending",
+          "approved",
+          "denied",
+          "consumed",
+          "expired",
+          "revoked"
+        ]
+      },
       "AgentResultHandle": {
         "type": "object",
         "description": "Bounded handle exposed instead of an unbounded database result.",
@@ -1707,6 +2498,7 @@
           "createdAtMs",
           "expiresAtMs",
           "columns",
+          "columnsTruncated",
           "sampleRows",
           "sampleTruncated"
         ],
@@ -1721,6 +2513,10 @@
               "$ref": "#/components/schemas/ResultColumn"
             },
             "description": "Result schema."
+          },
+          "columnsTruncated": {
+            "type": "boolean",
+            "description": "Whether additional result columns were omitted from the model preview."
           },
           "createdAtMs": {
             "type": "string",
@@ -1758,6 +2554,117 @@
             "description": "Whether another row existed beyond the configured row limit."
           }
         }
+      },
+      "AgentRunAccepted": {
+        "type": "object",
+        "description": "Immediate acknowledgement for one accepted agent run.",
+        "required": [
+          "runId",
+          "sessionId"
+        ],
+        "properties": {
+          "runId": {
+            "type": "string",
+            "description": "Opaque run id."
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "Owning session id."
+          }
+        }
+      },
+      "AgentRunSnapshot": {
+        "type": "object",
+        "description": "Materialized state for reconnect and polling clients.",
+        "required": [
+          "runId",
+          "sessionId",
+          "status",
+          "lastSequence",
+          "startedAtMs",
+          "updatedAtMs",
+          "modelRounds",
+          "toolCalls",
+          "usage"
+        ],
+        "properties": {
+          "error": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ApiError",
+                "description": "Terminal failure."
+              }
+            ]
+          },
+          "lastSequence": {
+            "type": "string",
+            "description": "Latest event sequence encoded as a decimal integer."
+          },
+          "messageId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Durable final assistant message id."
+          },
+          "modelRounds": {
+            "type": "string",
+            "description": "Completed model round count encoded as a decimal integer."
+          },
+          "pendingPermission": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AgentPermissionRequest",
+                "description": "Current pending permission, if execution is paused."
+              }
+            ]
+          },
+          "runId": {
+            "type": "string",
+            "description": "Opaque run id."
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "Owning session id."
+          },
+          "startedAtMs": {
+            "type": "string",
+            "description": "Run start time as Unix epoch milliseconds encoded as a decimal integer."
+          },
+          "status": {
+            "$ref": "#/components/schemas/AgentRunStatus",
+            "description": "Current lifecycle state."
+          },
+          "toolCalls": {
+            "type": "string",
+            "description": "Started tool-call count encoded as a decimal integer."
+          },
+          "updatedAtMs": {
+            "type": "string",
+            "description": "Latest state-change time as Unix epoch milliseconds encoded as a decimal integer."
+          },
+          "usage": {
+            "$ref": "#/components/schemas/AgentUsage",
+            "description": "Accumulated provider usage."
+          }
+        }
+      },
+      "AgentRunStatus": {
+        "type": "string",
+        "description": "Materialized agent-run lifecycle state.",
+        "enum": [
+          "running",
+          "waiting_for_permission",
+          "completed",
+          "failed",
+          "cancelled"
+        ]
       },
       "AgentSession": {
         "type": "object",
@@ -1817,6 +2724,79 @@
               "$ref": "#/components/schemas/AgentSession"
             },
             "description": "Sessions in reverse update order."
+          }
+        }
+      },
+      "AgentStreamMessage": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "One replayable run event.",
+            "required": [
+              "event",
+              "type"
+            ],
+            "properties": {
+              "event": {
+                "$ref": "#/components/schemas/AgentEventEnvelope",
+                "description": "Event delivered by the run journal."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "event"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The observer failed.",
+            "required": [
+              "error",
+              "type"
+            ],
+            "properties": {
+              "error": {
+                "$ref": "#/components/schemas/ApiError",
+                "description": "Safe external error."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "error"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The observer reached a clean end.",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "end"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "One explicit desktop/local-RPC stream outcome."
+      },
+      "AgentSubscriptionAccepted": {
+        "type": "object",
+        "description": "Immediate acknowledgement for an established run observer.",
+        "required": [
+          "subscriptionId"
+        ],
+        "properties": {
+          "subscriptionId": {
+            "type": "string",
+            "description": "Opaque observer id used only to release this subscription."
           }
         }
       },
@@ -1892,6 +2872,29 @@
           }
         ],
         "description": "Bounded provider-neutral tool output."
+      },
+      "AgentUsage": {
+        "type": "object",
+        "description": "Provider usage accumulated by one run.",
+        "required": [
+          "inputTokens",
+          "outputTokens",
+          "totalTokens"
+        ],
+        "properties": {
+          "inputTokens": {
+            "type": "string",
+            "description": "Input tokens encoded as a decimal integer."
+          },
+          "outputTokens": {
+            "type": "string",
+            "description": "Output tokens encoded as a decimal integer."
+          },
+          "totalTokens": {
+            "type": "string",
+            "description": "Total tokens encoded as a decimal integer."
+          }
+        }
       },
       "ApiError": {
         "type": "object",
@@ -2034,6 +3037,24 @@
         ],
         "description": "Bounded structured details for externally visible API failures."
       },
+      "CancelAgentRunResponse": {
+        "type": "object",
+        "description": "Result of an idempotent agent-run cancellation request.",
+        "required": [
+          "runId",
+          "disposition"
+        ],
+        "properties": {
+          "disposition": {
+            "$ref": "#/components/schemas/CancelDisposition",
+            "description": "Idempotent cancellation disposition."
+          },
+          "runId": {
+            "type": "string",
+            "description": "Opaque run id supplied by the caller."
+          }
+        }
+      },
       "CancelDisposition": {
         "type": "string",
         "description": "Result of an idempotent cancellation request.",
@@ -2105,6 +3126,14 @@
           "ready",
           "disabled",
           "unavailable"
+        ]
+      },
+      "ContextCompactionStrategy": {
+        "type": "string",
+        "description": "Reason one context compaction was performed.",
+        "enum": [
+          "summary",
+          "deterministic_trim"
         ]
       },
       "CreateAgentSessionRequest": {
@@ -2379,6 +3408,34 @@
           }
         ],
         "description": "Explicit connection-secret mutation for a datasource update."
+      },
+      "DecideAgentPermissionRequest": {
+        "type": "object",
+        "description": "Request body used to resolve a pending permission.",
+        "required": [
+          "runId",
+          "toolCallId",
+          "decision",
+          "argumentsSha256"
+        ],
+        "properties": {
+          "argumentsSha256": {
+            "type": "string",
+            "description": "Digest displayed to the user and bound to the decision."
+          },
+          "decision": {
+            "$ref": "#/components/schemas/AgentPermissionDecision",
+            "description": "User decision."
+          },
+          "runId": {
+            "type": "string",
+            "description": "Owning run id displayed with the permission request."
+          },
+          "toolCallId": {
+            "type": "string",
+            "description": "Exact tool-call id displayed with the permission request."
+          }
+        }
       },
       "HealthResponse": {
         "type": "object",
@@ -3524,6 +4581,36 @@
           "degraded",
           "unavailable"
         ]
+      },
+      "SqlPermissionMode": {
+        "type": "string",
+        "description": "SQL capability available to one agent run.",
+        "enum": [
+          "read_only",
+          "ask_before_write"
+        ]
+      },
+      "StartAgentRunRequest": {
+        "type": "object",
+        "description": "Request to start one bounded agent run in an existing session.",
+        "required": [
+          "sessionId",
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "New user message."
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "Existing conversation session id."
+          },
+          "sqlPermissionMode": {
+            "$ref": "#/components/schemas/SqlPermissionMode",
+            "description": "SQL permission policy for this run."
+          }
+        }
       },
       "StartQueryRequest": {
         "type": "object",

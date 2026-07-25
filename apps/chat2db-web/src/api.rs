@@ -7,17 +7,22 @@ use axum::{
     response::{IntoResponse, Response, sse::Event, sse::KeepAlive, sse::Sse},
 };
 use chat2db_contract::{
-    AgentMessage, AgentMessageContent, AgentMessageList, AgentMessageRole, AgentResultHandle,
-    AgentSession, AgentSessionList, AgentToolCall, AgentToolOutput, ApiError, ApiErrorDetails,
+    AgentEvent, AgentEventEnvelope, AgentMessage, AgentMessageContent, AgentMessageList,
+    AgentMessageRole, AgentPermissionDecision, AgentPermissionRequest, AgentPermissionResponse,
+    AgentPermissionStatus, AgentResultHandle, AgentRunAccepted, AgentRunSnapshot, AgentRunStatus,
+    AgentSession, AgentSessionList, AgentStreamMessage, AgentSubscriptionAccepted, AgentToolCall,
+    AgentToolOutput, AgentUsage, ApiError, ApiErrorDetails, CancelAgentRunResponse,
     CancelDisposition, CancelOperationResponse, ColumnNullability, ComponentHealth, ComponentState,
-    CreateAgentSessionRequest, CreateDatasourceRequest, CreateProviderProfileRequest, Datasource,
-    DatasourceConnection, DatasourceConnectionProperty, DatasourceList, DatasourceSecretChange,
-    HealthResponse, JdbcValue, JdbcValueType, OperationEvent, OperationEventEnvelope,
-    OperationSnapshot, OperationStatus, OperationStreamMessage, OperationSubscriptionAccepted,
-    ProductInfo, ProviderCredentials, ProviderKind, ProviderProfile, ProviderProfileList,
-    ProviderSecretChange, QueryAccepted, QueryLimits, QueryParameter, ResultColumn, ResultMetadata,
-    ResultPage, ResultPageRequest, ResultRow, RuntimeStatus, StartQueryRequest,
-    UpdateAgentSessionRequest, UpdateDatasourceRequest, UpdateProviderProfileRequest,
+    ContextCompactionStrategy, CreateAgentSessionRequest, CreateDatasourceRequest,
+    CreateProviderProfileRequest, Datasource, DatasourceConnection, DatasourceConnectionProperty,
+    DatasourceList, DatasourceSecretChange, DecideAgentPermissionRequest, HealthResponse,
+    JdbcValue, JdbcValueType, OperationEvent, OperationEventEnvelope, OperationSnapshot,
+    OperationStatus, OperationStreamMessage, OperationSubscriptionAccepted, ProductInfo,
+    ProviderCredentials, ProviderKind, ProviderProfile, ProviderProfileList, ProviderSecretChange,
+    QueryAccepted, QueryLimits, QueryParameter, ResultColumn, ResultMetadata, ResultPage,
+    ResultPageRequest, ResultRow, RuntimeStatus, SqlPermissionMode, StartAgentRunRequest,
+    StartQueryRequest, UpdateAgentSessionRequest, UpdateDatasourceRequest,
+    UpdateProviderProfileRequest,
 };
 use chat2db_core::{AppError, Application};
 use futures_util::{Stream, stream};
@@ -52,18 +57,32 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         AgentMessageContent,
         AgentMessageList,
         AgentMessageRole,
+        AgentEvent,
+        AgentEventEnvelope,
+        AgentPermissionDecision,
+        AgentPermissionRequest,
+        AgentPermissionResponse,
+        AgentPermissionStatus,
         AgentResultHandle,
+        AgentRunAccepted,
+        AgentRunSnapshot,
+        AgentRunStatus,
         AgentSession,
         AgentSessionList,
+        AgentStreamMessage,
+        AgentSubscriptionAccepted,
         AgentToolCall,
         AgentToolOutput,
+        AgentUsage,
         ApiError,
         ApiErrorDetails,
+        CancelAgentRunResponse,
         CancelDisposition,
         CancelOperationResponse,
         ColumnNullability,
         ComponentHealth,
         ComponentState,
+        ContextCompactionStrategy,
         CreateAgentSessionRequest,
         CreateDatasourceRequest,
         CreateProviderProfileRequest,
@@ -72,6 +91,7 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         DatasourceConnectionProperty,
         DatasourceList,
         DatasourceSecretChange,
+        DecideAgentPermissionRequest,
         HealthResponse,
         JdbcValue,
         JdbcValueType,
@@ -96,6 +116,8 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         ResultPageRequest,
         ResultRow,
         RuntimeStatus,
+        SqlPermissionMode,
+        StartAgentRunRequest,
         StartQueryRequest,
         UpdateAgentSessionRequest,
         UpdateProviderProfileRequest,
@@ -140,6 +162,11 @@ fn documented_router() -> OpenApiRouter<Application> {
             delete_agent_session
         ))
         .routes(routes!(list_agent_messages))
+        .routes(routes!(start_agent_run))
+        .routes(routes!(agent_run_snapshot))
+        .routes(routes!(cancel_agent_run))
+        .routes(routes!(decide_agent_permission))
+        .routes(routes!(agent_run_events))
         .routes(routes!(start_query))
         .routes(routes!(operation_snapshot))
         .routes(routes!(cancel_operation))
@@ -587,6 +614,161 @@ async fn list_agent_messages(
 
 #[utoipa::path(
     post,
+    path = "/api/v1/agent/runs",
+    tag = "agents",
+    request_body = StartAgentRunRequest,
+    responses(
+        (status = 202, description = "Agent run accepted", body = AgentRunAccepted),
+        (status = 400, description = "Invalid agent-run request", body = ApiError),
+        (status = 404, description = "Agent session, provider, or datasource does not exist", body = ApiError),
+        (status = 409, description = "Agent session already has an active run", body = ApiError),
+        (status = 507, description = "Agent run resource limits are exhausted", body = ApiError),
+        (status = 503, description = "Agent runtime or storage is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected agent-run failure", body = ApiError)
+    )
+)]
+async fn start_agent_run(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<StartAgentRunRequest>,
+) -> Result<(StatusCode, Json<AgentRunAccepted>), WebError> {
+    application
+        .start_agent_run(request)
+        .await
+        .map(|accepted| (StatusCode::ACCEPTED, Json(accepted)))
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/agent/runs/{run_id}",
+    tag = "agents",
+    params(("run_id" = String, Path, description = "Opaque agent run id")),
+    responses(
+        (status = 200, description = "Current agent-run snapshot", body = AgentRunSnapshot),
+        (status = 404, description = "Agent run does not exist", body = ApiError),
+        (status = 503, description = "Agent storage is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected agent-run failure", body = ApiError)
+    )
+)]
+async fn agent_run_snapshot(
+    State(application): State<Application>,
+    ApiPath(run_id): ApiPath<String>,
+) -> Result<Json<AgentRunSnapshot>, WebError> {
+    application
+        .agent_run_snapshot(&run_id)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/agent/runs/{run_id}/cancel",
+    tag = "agents",
+    params(("run_id" = String, Path, description = "Opaque agent run id")),
+    responses(
+        (status = 200, description = "Idempotent agent-run cancellation disposition", body = CancelAgentRunResponse),
+        (status = 503, description = "Agent runtime or storage is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected agent-run cancellation failure", body = ApiError)
+    )
+)]
+async fn cancel_agent_run(
+    State(application): State<Application>,
+    ApiPath(run_id): ApiPath<String>,
+) -> Result<Json<CancelAgentRunResponse>, WebError> {
+    application
+        .cancel_agent_run(&run_id)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/agent/runs/{run_id}/permissions/{permission_id}/decision",
+    tag = "agents",
+    params(
+        ("run_id" = String, Path, description = "Opaque agent run id"),
+        ("permission_id" = String, Path, description = "Opaque pending permission id")
+    ),
+    request_body = DecideAgentPermissionRequest,
+    responses(
+        (status = 200, description = "Permission decision recorded", body = AgentPermissionResponse),
+        (status = 400, description = "Invalid or mismatched permission decision", body = ApiError),
+        (status = 404, description = "Agent run or permission does not exist", body = ApiError),
+        (status = 409, description = "Permission is stale or no longer executable", body = ApiError),
+        (status = 503, description = "Agent runtime or storage is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected permission-decision failure", body = ApiError)
+    )
+)]
+async fn decide_agent_permission(
+    State(application): State<Application>,
+    ApiPath((run_id, permission_id)): ApiPath<(String, String)>,
+    ApiJson(request): ApiJson<DecideAgentPermissionRequest>,
+) -> Result<Json<AgentPermissionResponse>, WebError> {
+    if request.run_id != run_id {
+        return Err(WebError::bad_request(
+            "agent_run_id_mismatch",
+            "The permission request runId must match the route run id",
+        ));
+    }
+    application
+        .decide_agent_permission(&permission_id, request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/agent/runs/{run_id}/events",
+    tag = "agents",
+    params(
+        ("run_id" = String, Path, description = "Opaque agent run id"),
+        ("Last-Event-ID" = Option<String>, Header, description = "Last consumed numeric event sequence")
+    ),
+    responses(
+        (status = 200, description = "Replay followed by live agent-run events", body = String, content_type = "text/event-stream"),
+        (status = 400, description = "Invalid Last-Event-ID", body = ApiError),
+        (status = 404, description = "Agent run does not exist", body = ApiError),
+        (status = 409, description = "Requested event fell outside the replay window", body = ApiError),
+        (status = 503, description = "Agent event stream is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected subscription failure", body = ApiError)
+    )
+)]
+async fn agent_run_events(
+    State(application): State<Application>,
+    ApiPath(run_id): ApiPath<String>,
+    headers: HeaderMap,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, WebError> {
+    let last_event_id = parse_last_event_id(&headers)?;
+    let subscription = application
+        .subscribe_agent_run(&run_id, last_event_id)
+        .await?;
+    let events = stream::unfold(
+        (subscription, false),
+        |(mut subscription, finished)| async move {
+            if finished {
+                return None;
+            }
+
+            match subscription.next_event().await {
+                Ok(Some(envelope)) => Some((Ok(agent_sse_event(envelope)), (subscription, false))),
+                Ok(None) => None,
+                Err(error) => Some((Ok(error_sse_event(&error)), (subscription, true))),
+            }
+        },
+    );
+
+    Ok(Sse::new(events).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(SSE_KEEP_ALIVE_SECONDS))
+            .text("keep-alive"),
+    ))
+}
+
+#[utoipa::path(
+    post,
     path = "/api/v1/queries",
     tag = "queries",
     request_body = StartQueryRequest,
@@ -777,6 +959,32 @@ fn operation_sse_event(envelope: OperationEventEnvelope) -> Event {
         })
 }
 
+fn agent_sse_event(envelope: AgentEventEnvelope) -> Event {
+    let event_name = match &envelope.event {
+        AgentEvent::Started => "started",
+        AgentEvent::TextDelta { .. } => "text_delta",
+        AgentEvent::ToolStarted { .. } => "tool_started",
+        AgentEvent::ToolCompleted { .. } => "tool_completed",
+        AgentEvent::ToolFailed { .. } => "tool_failed",
+        AgentEvent::PermissionRequested { .. } => "permission_requested",
+        AgentEvent::PermissionResolved { .. } => "permission_resolved",
+        AgentEvent::ContextCompacted { .. } => "context_compacted",
+        AgentEvent::Usage { .. } => "usage",
+        AgentEvent::Completed { .. } => "completed",
+        AgentEvent::Failed { .. } => "failed",
+        AgentEvent::Cancelled { .. } => "cancelled",
+    };
+    let sequence = envelope.sequence.clone();
+    Event::default()
+        .event(event_name)
+        .id(sequence)
+        .json_data(envelope)
+        .unwrap_or_else(|error| {
+            tracing::error!(%error, "failed to serialize agent SSE event");
+            serialization_error_event()
+        })
+}
+
 fn error_sse_event(error: &AppError) -> Event {
     let error = error.api_error();
     Event::default()
@@ -790,7 +998,7 @@ fn error_sse_event(error: &AppError) -> Event {
 
 fn serialization_error_event() -> Event {
     Event::default().event("error").data(
-        r#"{"code":"serialization_error","message":"Unable to encode operation event","retryable":false}"#,
+        r#"{"code":"serialization_error","message":"Unable to encode stream event","retryable":false}"#,
     )
 }
 
@@ -818,11 +1026,13 @@ mod tests {
         http::{HeaderMap, HeaderValue, header},
         response::{IntoResponse, sse::Sse},
     };
-    use chat2db_contract::{OperationEvent, OperationEventEnvelope};
+    use chat2db_contract::{
+        AgentEvent, AgentEventEnvelope, OperationEvent, OperationEventEnvelope,
+    };
     use futures_util::stream;
     use http_body_util::BodyExt;
 
-    use super::{operation_sse_event, parse_last_event_id};
+    use super::{agent_sse_event, operation_sse_event, parse_last_event_id};
 
     #[test]
     fn last_event_id_is_parsed_as_the_shared_numeric_sequence() {
@@ -863,5 +1073,34 @@ mod tests {
         assert!(body.contains("event: started"));
         assert!(body.contains("\"operationId\":\"operation-1\""));
         assert!(body.contains("\"sequence\":\"9007199254740993\""));
+    }
+
+    #[tokio::test]
+    async fn agent_event_is_encoded_with_sse_id_name_and_json_data() {
+        let event = agent_sse_event(AgentEventEnvelope {
+            run_id: "run-1".to_owned(),
+            sequence: "9007199254740993".to_owned(),
+            occurred_at_ms: "1784900000000".to_owned(),
+            event: AgentEvent::TextDelta {
+                delta: "bounded".to_owned(),
+            },
+        });
+        let response = Sse::new(stream::iter([Ok::<_, Infallible>(event)])).into_response();
+
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/event-stream"
+        );
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("SSE body must collect")
+            .to_bytes();
+        let body = std::str::from_utf8(&body).expect("SSE body must be UTF-8");
+        assert!(body.contains("id: 9007199254740993"));
+        assert!(body.contains("event: text_delta"));
+        assert!(body.contains("\"runId\":\"run-1\""));
+        assert!(body.contains("\"delta\":\"bounded\""));
     }
 }

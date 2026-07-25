@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type {
+  AgentEventEnvelope,
+  AgentRunSnapshot,
   CreateAgentSessionRequest,
   CreateProviderProfileRequest,
+  DecideAgentPermissionRequest,
   OperationEventEnvelope,
+  StartAgentRunRequest,
   UpdateAgentSessionRequest,
   UpdateProviderProfileRequest,
 } from './client';
@@ -69,6 +73,41 @@ const agentSession = {
   updatedAtMs: '1740000000003',
 };
 
+const startRunRequest = {
+  sessionId: agentSession.id,
+  message: 'Find the largest recent orders',
+  sqlPermissionMode: 'read_only',
+} satisfies StartAgentRunRequest;
+
+const agentRunSnapshot = {
+  runId: 'run/1',
+  sessionId: agentSession.id,
+  status: 'waiting_for_permission',
+  lastSequence: '18446744073709551614',
+  startedAtMs: '1740000000010',
+  updatedAtMs: '1740000000011',
+  modelRounds: '2',
+  toolCalls: '1',
+  usage: { inputTokens: '120', outputTokens: '40', totalTokens: '160' },
+  pendingPermission: {
+    permissionId: 'permission-1',
+    runId: 'run/1',
+    toolCallId: 'tool-1',
+    toolName: 'execute_sql',
+    argumentsSha256: 'a'.repeat(64),
+    summary: 'Update one order',
+    requestedAtMs: '1740000000011',
+    expiresAtMs: '1740000060011',
+  },
+} satisfies AgentRunSnapshot;
+
+const permissionDecisionRequest = {
+  runId: 'run/1',
+  toolCallId: 'tool-1',
+  decision: 'allow_once',
+  argumentsSha256: 'a'.repeat(64),
+} satisfies DecideAgentPermissionRequest;
+
 function jsonResponse(value: unknown, status: number): Response {
   return new Response(JSON.stringify(value), {
     status,
@@ -82,6 +121,24 @@ function eventStream(events: OperationEventEnvelope[]): Response {
     start(controller) {
       for (const event of events) {
         controller.enqueue(encoder.encode(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`));
+      }
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream' },
+  });
+}
+
+function agentEventStream(events: AgentEventEnvelope[]): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const event of events) {
+        controller.enqueue(encoder.encode(
+          `id: ${event.sequence}\nevent: ${event.event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+        ));
       }
       controller.close();
     },
@@ -247,6 +304,72 @@ describe('HttpBackendClient', () => {
     });
   });
 
+  it('maps the agent run lifecycle to the HTTP contract and validates responses', async () => {
+    const responses = [
+      jsonResponse({ runId: 'run/1', sessionId: agentSession.id }, 202),
+      jsonResponse(agentRunSnapshot, 200),
+      jsonResponse({ permissionId: 'permission/1', status: 'approved' }, 200),
+      jsonResponse({ runId: 'run/1', disposition: 'accepted' }, 200),
+    ];
+    const calls: Array<{ input: string; init?: RequestInit }> = [];
+    const client = new HttpBackendClient({
+      baseUrl: 'http://127.0.0.1:10825/',
+      fetch: async (input, init) => {
+        calls.push({ input: String(input), init });
+        const response = responses.shift();
+        if (!response) throw new Error('unexpected request');
+        return response;
+      },
+    });
+
+    await expect(client.startAgentRun(startRunRequest)).resolves.toEqual({
+      runId: 'run/1',
+      sessionId: agentSession.id,
+    });
+    await expect(client.agentRunSnapshot('run/1')).resolves.toEqual(agentRunSnapshot);
+    await expect(
+      client.decideAgentPermission('permission/1', permissionDecisionRequest),
+    ).resolves.toEqual({ permissionId: 'permission/1', status: 'approved' });
+    await expect(client.cancelAgentRun('run/1')).resolves.toEqual({
+      runId: 'run/1',
+      disposition: 'accepted',
+    });
+
+    expect(calls.map(({ input, init }) => ({ input, method: init?.method, body: init?.body })))
+      .toEqual([
+        {
+          input: 'http://127.0.0.1:10825/api/v1/agent/runs',
+          method: 'POST',
+          body: JSON.stringify(startRunRequest),
+        },
+        {
+          input: 'http://127.0.0.1:10825/api/v1/agent/runs/run%2F1',
+          method: 'GET',
+          body: undefined,
+        },
+        {
+          input: 'http://127.0.0.1:10825/api/v1/agent/runs/run%2F1/permissions/permission%2F1/decision',
+          method: 'POST',
+          body: JSON.stringify(permissionDecisionRequest),
+        },
+        {
+          input: 'http://127.0.0.1:10825/api/v1/agent/runs/run%2F1/cancel',
+          method: 'POST',
+          body: undefined,
+        },
+      ]);
+  });
+
+  it('rejects an invalid successful agent run response', async () => {
+    const client = new HttpBackendClient({
+      fetch: async () => jsonResponse({ runId: 7, sessionId: 'session-1' }, 202),
+    });
+
+    await expect(client.startAgentRun(startRunRequest)).rejects.toMatchObject({
+      apiError: { code: 'invalid_transport_response' },
+    });
+  });
+
   it('preserves the stable ApiError envelope and HTTP status', async () => {
     const fetch = vi.fn(async () => jsonResponse({
       code: 'revision_conflict',
@@ -327,6 +450,84 @@ describe('HttpBackendClient', () => {
     expect(new Headers(request?.headers).get('Last-Event-ID')).toBe('7');
     expect(received.map((event) => event.sequence)).toEqual(['8', '9']);
     expect(received[1]?.event).toEqual({ type: 'progress', rowCount: '32', byteCount: '4096' });
+  });
+
+  it('streams typed agent events in sequence and sends the run replay cursor', async () => {
+    const events: AgentEventEnvelope[] = [
+      {
+        runId: 'run/1',
+        sequence: '8',
+        occurredAtMs: '1740000000020',
+        event: { type: 'text_delta', delta: 'Found ' },
+      },
+      {
+        runId: 'run/1',
+        sequence: '9',
+        occurredAtMs: '1740000000021',
+        event: {
+          type: 'tool_completed',
+          toolCallId: 'tool-1',
+          name: 'execute_sql',
+          output: {
+            type: 'result',
+            handle: {
+              handleId: 'result-1',
+              rowCount: '18446744073709551615',
+              byteCount: '1024',
+              truncatedByMaxRows: true,
+              truncatedByMaxResultBytes: false,
+              createdAtMs: '1740000000021',
+              expiresAtMs: '1740000060021',
+              columns: [{
+                jdbcType: 12,
+                jdbcTypeName: 'VARCHAR',
+                label: 'name',
+                name: 'name',
+                nullability: 'nullable',
+                ordinal: 1,
+                valueType: 'text',
+              }],
+              columnsTruncated: false,
+              sampleRows: [{ values: [{ type: 'text', value: 'order-1' }] }],
+              sampleTruncated: true,
+            },
+          },
+        },
+      },
+      {
+        runId: 'run/1',
+        sequence: '10',
+        occurredAtMs: '1740000000022',
+        event: { type: 'completed', messageId: 'message-2' },
+      },
+    ];
+    let input = '';
+    let request: RequestInit | undefined;
+    const client = new HttpBackendClient({
+      fetch: async (nextInput, init) => {
+        input = String(nextInput);
+        request = init;
+        return agentEventStream(events);
+      },
+    });
+    const received: AgentEventEnvelope[] = [];
+    let closeStream: (() => void) | undefined;
+    const closed = new Promise<void>((resolve) => { closeStream = resolve; });
+
+    await client.subscribeAgentRun('run/1', {
+      afterSequence: '7',
+      onEvent: (event) => received.push(event),
+      onClose: () => closeStream?.(),
+    });
+    await closed;
+
+    expect(input).toBe('/api/v1/agent/runs/run%2F1/events');
+    expect(new Headers(request?.headers).get('Last-Event-ID')).toBe('7');
+    expect(received.map((event) => event.sequence)).toEqual(['8', '9', '10']);
+    expect(received[1]?.event).toMatchObject({
+      type: 'tool_completed',
+      output: { type: 'result', handle: { rowCount: '18446744073709551615' } },
+    });
   });
 
   it('reports an out-of-order event instead of delivering it', async () => {

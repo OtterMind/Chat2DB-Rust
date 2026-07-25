@@ -175,6 +175,7 @@ mod tests {
         fs,
         net::{IpAddr, Ipv4Addr, SocketAddr},
         sync::Arc,
+        time::Duration,
     };
 
     use axum::{
@@ -189,8 +190,9 @@ mod tests {
         router_with_policy_and_assets,
     };
     use chat2db_contract::{
-        AgentMessageContent, AgentMessageList, AgentSession, AgentSessionList, ApiError,
-        ApiErrorDetails, Datasource, DatasourceList, HealthResponse, ProviderProfile,
+        AgentMessageContent, AgentMessageList, AgentRunAccepted, AgentRunSnapshot, AgentRunStatus,
+        AgentSession, AgentSessionList, ApiError, ApiErrorDetails, CancelAgentRunResponse,
+        CancelDisposition, Datasource, DatasourceList, HealthResponse, ProviderProfile,
         ProviderProfileList, RuntimeStatus,
     };
     use chat2db_core::Application;
@@ -281,24 +283,30 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_last_event_id_is_rejected_before_subscribing() {
-        let response = router(Application::new())
-            .oneshot(
-                Request::builder()
-                    .method(Method::GET)
-                    .uri("/api/v1/operations/operation-1/events")
-                    .header("last-event-id", "not-a-sequence")
-                    .body(Body::empty())
-                    .expect("request must build"),
-            )
-            .await
-            .expect("router must respond");
+        for path in [
+            "/api/v1/operations/operation-1/events",
+            "/api/v1/agent/runs/run-1/events",
+        ] {
+            let response = router(Application::new())
+                .oneshot(
+                    Request::builder()
+                        .method(Method::GET)
+                        .uri(path)
+                        .header("last-event-id", "not-a-sequence")
+                        .body(Body::empty())
+                        .expect("request must build"),
+                )
+                .await
+                .expect("router must respond");
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let error: ApiError = response_json(response).await;
-        assert_eq!(error.code, "invalid_last_event_id");
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let error: ApiError = response_json(response).await;
+            assert_eq!(error.code, "invalid_last_event_id");
+        }
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn openapi_document_is_generated_from_registered_handlers() {
         let response = router(Application::new())
             .oneshot(request(Method::GET, "/api/v1/openapi.json"))
@@ -324,6 +332,11 @@ mod tests {
             "/api/v1/agent/sessions",
             "/api/v1/agent/sessions/{session_id}",
             "/api/v1/agent/sessions/{session_id}/messages",
+            "/api/v1/agent/runs",
+            "/api/v1/agent/runs/{run_id}",
+            "/api/v1/agent/runs/{run_id}/cancel",
+            "/api/v1/agent/runs/{run_id}/events",
+            "/api/v1/agent/runs/{run_id}/permissions/{permission_id}/decision",
             "/api/v1/queries",
             "/api/v1/operations/{operation_id}",
             "/api/v1/operations/{operation_id}/cancel",
@@ -355,6 +368,23 @@ mod tests {
         );
         assert!(paths["/api/v1/agent/sessions"].get("get").is_some());
         assert!(paths["/api/v1/agent/sessions"].get("post").is_some());
+        assert!(paths["/api/v1/agent/runs"].get("post").is_some());
+        assert!(paths["/api/v1/agent/runs/{run_id}"].get("get").is_some());
+        assert!(
+            paths["/api/v1/agent/runs/{run_id}/cancel"]
+                .get("post")
+                .is_some()
+        );
+        assert!(
+            paths["/api/v1/agent/runs/{run_id}/events"]
+                .get("get")
+                .is_some()
+        );
+        assert!(
+            paths["/api/v1/agent/runs/{run_id}/permissions/{permission_id}/decision"]
+                .get("post")
+                .is_some()
+        );
         assert!(
             paths["/api/v1/agent/sessions/{session_id}"]
                 .get("put")
@@ -373,13 +403,28 @@ mod tests {
             "AgentMessage",
             "AgentMessageContent",
             "AgentMessageList",
+            "AgentEvent",
+            "AgentEventEnvelope",
+            "AgentPermissionDecision",
+            "AgentPermissionRequest",
+            "AgentPermissionResponse",
+            "AgentPermissionStatus",
+            "AgentRunAccepted",
+            "AgentRunSnapshot",
+            "AgentRunStatus",
             "AgentSession",
             "AgentSessionList",
+            "AgentUsage",
+            "CancelAgentRunResponse",
+            "ContextCompactionStrategy",
             "CreateAgentSessionRequest",
             "CreateProviderProfileRequest",
+            "DecideAgentPermissionRequest",
             "ProviderCredentials",
             "ProviderProfile",
             "ProviderProfileList",
+            "SqlPermissionMode",
+            "StartAgentRunRequest",
             "UpdateAgentSessionRequest",
             "UpdateProviderProfileRequest",
         ] {
@@ -714,6 +759,161 @@ mod tests {
         assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
         let error: ApiError = response_json(missing_response).await;
         assert_eq!(error.code, "agent_session_not_found");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn agent_run_routes_cover_acceptance_snapshot_replay_and_cancellation() {
+        let directory = TempDir::new().expect("temp directory");
+        let storage =
+            Storage::open(directory.path(), Arc::new(TestVault)).expect("test storage must open");
+        let application = router(Application::with_storage(storage));
+
+        let provider_response = application
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/v1/agent/providers",
+                &serde_json::json!({
+                    "name": "Missing credentials",
+                    "kind": "open_ai_compatible",
+                    "baseUrl": "https://provider.example/v1",
+                    "model": "model-1",
+                    "contextWindowTokens": "4096",
+                    "maxOutputTokens": "1024"
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        assert_eq!(provider_response.status(), StatusCode::CREATED);
+        let provider: ProviderProfile = response_json(provider_response).await;
+
+        let session_response = application
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/v1/agent/sessions",
+                &serde_json::json!({
+                    "title": "Web run transport",
+                    "providerId": provider.id
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        assert_eq!(session_response.status(), StatusCode::CREATED);
+        let session: AgentSession = response_json(session_response).await;
+
+        let start_response = application
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/v1/agent/runs",
+                &serde_json::json!({
+                    "sessionId": session.id,
+                    "message": "Keep this bounded",
+                    "sqlPermissionMode": "read_only"
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        assert_eq!(start_response.status(), StatusCode::ACCEPTED);
+        let accepted: AgentRunAccepted = response_json(start_response).await;
+        assert_eq!(accepted.session_id, session.id);
+
+        let events_path = format!("/api/v1/agent/runs/{}/events", accepted.run_id);
+        let events_response = application
+            .clone()
+            .oneshot(dynamic_request(Method::GET, &events_path))
+            .await
+            .expect("router must respond");
+        assert_eq!(events_response.status(), StatusCode::OK);
+        assert!(
+            events_response.headers()[header::CONTENT_TYPE]
+                .to_str()
+                .expect("content type must be ASCII")
+                .starts_with("text/event-stream")
+        );
+        let events_body = tokio::time::timeout(
+            Duration::from_secs(3),
+            events_response.into_body().collect(),
+        )
+        .await
+        .expect("terminal agent SSE must close")
+        .expect("agent SSE body must collect")
+        .to_bytes();
+        let events_body = std::str::from_utf8(&events_body).expect("SSE body must be UTF-8");
+        assert!(events_body.contains("id: 1"));
+        assert!(events_body.contains("event: started"));
+        assert!(events_body.contains("event: failed"));
+        assert!(events_body.contains(&format!("\"runId\":\"{}\"", accepted.run_id)));
+
+        let snapshot_path = format!("/api/v1/agent/runs/{}", accepted.run_id);
+        let snapshot_response = application
+            .clone()
+            .oneshot(dynamic_request(Method::GET, &snapshot_path))
+            .await
+            .expect("router must respond");
+        assert_eq!(snapshot_response.status(), StatusCode::OK);
+        let snapshot: AgentRunSnapshot = response_json(snapshot_response).await;
+        assert_eq!(snapshot.status, AgentRunStatus::Failed);
+        assert_eq!(snapshot.run_id, accepted.run_id);
+        assert!(snapshot.error.is_some());
+
+        let replay_response = application
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(&events_path)
+                    .header("last-event-id", "1")
+                    .body(Body::empty())
+                    .expect("request must build"),
+            )
+            .await
+            .expect("router must respond");
+        assert_eq!(replay_response.status(), StatusCode::OK);
+        let replay_body = tokio::time::timeout(
+            Duration::from_secs(3),
+            replay_response.into_body().collect(),
+        )
+        .await
+        .expect("terminal replay must close")
+        .expect("replay body must collect")
+        .to_bytes();
+        let replay_body = std::str::from_utf8(&replay_body).expect("SSE body must be UTF-8");
+        assert!(!replay_body.contains("event: started"));
+        assert!(replay_body.contains("event: failed"));
+
+        let cancel_path = format!("/api/v1/agent/runs/{}/cancel", accepted.run_id);
+        let cancel_response = application
+            .oneshot(dynamic_request(Method::POST, &cancel_path))
+            .await
+            .expect("router must respond");
+        assert_eq!(cancel_response.status(), StatusCode::OK);
+        let cancelled: CancelAgentRunResponse = response_json(cancel_response).await;
+        assert_eq!(cancelled.run_id, accepted.run_id);
+        assert_eq!(cancelled.disposition, CancelDisposition::AlreadyTerminal);
+    }
+
+    #[tokio::test]
+    async fn permission_decision_rejects_a_path_and_body_run_mismatch() {
+        let response = router(Application::new())
+            .oneshot(json_request(
+                Method::POST,
+                "/api/v1/agent/runs/path-run/permissions/permission-1/decision",
+                &serde_json::json!({
+                    "runId": "body-run",
+                    "toolCallId": "tool-call-1",
+                    "decision": "deny",
+                    "argumentsSha256": "00".repeat(32)
+                }),
+            ))
+            .await
+            .expect("router must respond");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let error: ApiError = response_json(response).await;
+        assert_eq!(error.code, "agent_run_id_mismatch");
     }
 
     #[tokio::test]

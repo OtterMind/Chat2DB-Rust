@@ -407,6 +407,7 @@ impl AgentRunner {
                         round,
                         call_id: call.id().to_owned(),
                         name: call.name().to_owned(),
+                        arguments_sha256: ToolInvocation::from(&call).arguments_sha256(),
                     },
                     run_token,
                     deadline,
@@ -440,12 +441,15 @@ impl AgentRunner {
                             round,
                             call_id: call.id().to_owned(),
                             name: call.name().to_owned(),
-                            inline_bytes: output.inline_bytes(),
-                            handle_id: output.output_handle().map(|handle| handle.id().to_owned()),
+                            output: output.clone(),
                         };
                         turn_messages.push(Message::new(
                             Role::Tool,
-                            vec![MessageBlock::ToolResult(ToolResult::new(call.id(), output))],
+                            vec![MessageBlock::ToolResult(ToolResult::named(
+                                call.id(),
+                                call.name(),
+                                output,
+                            ))],
                         ));
                         if let Err(error) =
                             emit_after_settlement(events, completed, run_token, deadline).await
@@ -454,6 +458,18 @@ impl AgentRunner {
                         }
                     }
                     Err(source) if source.outcome() == ExecutionOutcome::Unknown => {
+                        emit_with_settlement_grace(
+                            events,
+                            RunEvent::ToolFailed {
+                                round,
+                                call_id: call.id().to_owned(),
+                                name: call.name().to_owned(),
+                                code: source.code().to_owned(),
+                                message: source.message().to_owned(),
+                                outcome: source.outcome(),
+                            },
+                        )
+                        .await;
                         turn_messages.push(terminal_tool_message(&call, ExecutionOutcome::Unknown));
                         terminal_error = Some(AgentError::Tool {
                             tool: call.name().to_owned(),
@@ -462,6 +478,18 @@ impl AgentRunner {
                     }
                     Err(source) => {
                         let outcome = source.outcome();
+                        emit_with_settlement_grace(
+                            events,
+                            RunEvent::ToolFailed {
+                                round,
+                                call_id: call.id().to_owned(),
+                                name: call.name().to_owned(),
+                                code: source.code().to_owned(),
+                                message: source.message().to_owned(),
+                                outcome,
+                            },
+                        )
+                        .await;
                         turn_messages.push(terminal_tool_message(&call, outcome));
                         terminal_error = Some(match ensure_active(run_token, deadline) {
                             Err(interrupted) => interrupted,
@@ -647,7 +675,11 @@ fn terminal_tool_message(call: &crate::ToolCall, outcome: ExecutionOutcome) -> M
     let output = ToolOutput::content(content).expect("static terminal tool output is bounded");
     Message::new(
         Role::Tool,
-        vec![MessageBlock::ToolResult(ToolResult::new(call.id(), output))],
+        vec![MessageBlock::ToolResult(ToolResult::named(
+            call.id(),
+            call.name(),
+            output,
+        ))],
     )
 }
 
@@ -1135,6 +1167,46 @@ mod tests {
             matches!(error, AgentError::Tool { source, .. } if source.outcome() == ExecutionOutcome::Unknown)
         );
         assert_eq!(executor.calls.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_tool_settlement_emits_bounded_failure_details() {
+        let provider = Arc::new(ScriptedProvider::new(vec![vec![
+            Ok(ProviderEvent::ToolCall(call("a"))),
+            Ok(ProviderEvent::Completed(StopReason::ToolCalls)),
+        ]]));
+        let (sender, mut receiver) = mpsc::channel(32);
+        let error = AgentRunner::new(provider, Arc::new(RecordingExecutor::new(true)))
+            .run_with_events(
+                AgentInput::new(vec![Message::user("go")], vec![tool()]),
+                CancellationToken::new(),
+                sender,
+            )
+            .await
+            .expect_err("unknown settlement stops the run");
+        assert!(matches!(error, AgentError::Tool { .. }));
+
+        let events = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            crate::RunEvent::ToolStarted {
+                call_id,
+                arguments_sha256,
+                ..
+            } if call_id == "a" && *arguments_sha256 == ToolInvocation::from(&call("a")).arguments_sha256()
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            crate::RunEvent::ToolFailed {
+                call_id,
+                code,
+                message,
+                outcome: ExecutionOutcome::Unknown,
+                ..
+            } if call_id == "a"
+                && code == "write_unknown"
+                && message == "delivery outcome is unknown"
+        )));
     }
 
     #[tokio::test]

@@ -31,6 +31,26 @@ export type UpdateAgentSessionRequest = Schema<'UpdateAgentSessionRequest'>;
 export type UpdateDatasourceRequest = Schema<'UpdateDatasourceRequest'>;
 export type UpdateProviderProfileRequest = Schema<'UpdateProviderProfileRequest'>;
 
+export type AgentEvent = Schema<'AgentEvent'>;
+export type AgentEventEnvelope = Schema<'AgentEventEnvelope'>;
+export type AgentPermissionDecision = Schema<'AgentPermissionDecision'>;
+export type AgentPermissionRequest = Schema<'AgentPermissionRequest'>;
+export type AgentPermissionResponse = Schema<'AgentPermissionResponse'>;
+export type AgentPermissionStatus = Schema<'AgentPermissionStatus'>;
+export type AgentResultHandle = Schema<'AgentResultHandle'>;
+export type AgentRunAccepted = Schema<'AgentRunAccepted'>;
+export type AgentRunSnapshot = Schema<'AgentRunSnapshot'>;
+export type AgentRunStatus = Schema<'AgentRunStatus'>;
+export type AgentStreamMessage = Schema<'AgentStreamMessage'>;
+export type AgentSubscriptionAccepted = Schema<'AgentSubscriptionAccepted'>;
+export type AgentToolOutput = Schema<'AgentToolOutput'>;
+export type AgentUsage = Schema<'AgentUsage'>;
+export type CancelAgentRunResponse = Schema<'CancelAgentRunResponse'>;
+export type ContextCompactionStrategy = Schema<'ContextCompactionStrategy'>;
+export type DecideAgentPermissionRequest = Schema<'DecideAgentPermissionRequest'>;
+export type SqlPermissionMode = Schema<'SqlPermissionMode'>;
+export type StartAgentRunRequest = Schema<'StartAgentRunRequest'>;
+
 export interface OperationSubscriptionOptions {
   afterSequence?: string;
   signal?: AbortSignal;
@@ -40,6 +60,18 @@ export interface OperationSubscriptionOptions {
 }
 
 export interface OperationSubscription {
+  close(): void;
+}
+
+export interface AgentSubscriptionOptions {
+  afterSequence?: string;
+  signal?: AbortSignal;
+  onEvent: (event: AgentEventEnvelope) => void;
+  onError?: (error: Error) => void;
+  onClose?: () => void;
+}
+
+export interface AgentSubscription {
   close(): void;
 }
 
@@ -100,6 +132,21 @@ export interface BackendClient {
     limit: string,
     signal?: AbortSignal,
   ): Promise<AgentMessageList>;
+  startAgentRun(
+    request: StartAgentRunRequest,
+    signal?: AbortSignal,
+  ): Promise<AgentRunAccepted>;
+  agentRunSnapshot(runId: string, signal?: AbortSignal): Promise<AgentRunSnapshot>;
+  cancelAgentRun(runId: string, signal?: AbortSignal): Promise<CancelAgentRunResponse>;
+  decideAgentPermission(
+    permissionId: string,
+    request: DecideAgentPermissionRequest,
+    signal?: AbortSignal,
+  ): Promise<AgentPermissionResponse>;
+  subscribeAgentRun(
+    runId: string,
+    options: AgentSubscriptionOptions,
+  ): Promise<AgentSubscription>;
   startQuery(request: StartQueryRequest, signal?: AbortSignal): Promise<QueryAccepted>;
   operationSnapshot(operationId: string, signal?: AbortSignal): Promise<OperationSnapshot>;
   cancelOperation(operationId: string, signal?: AbortSignal): Promise<CancelOperationResponse>;
@@ -145,6 +192,10 @@ export function parseOperationCursor(value: string): bigint {
     });
   }
   return sequence;
+}
+
+export function parseAgentCursor(value: string): bigint {
+  return parseOperationCursor(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -204,6 +255,261 @@ export function normalizeApiError(value: unknown): ApiRequestError {
 
 function isDecimalInteger(value: unknown): value is string {
   return typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value);
+}
+
+function isOptionalNullableString(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'string';
+}
+
+function isI32(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isInteger(value)
+    && value >= -2_147_483_648
+    && value <= 2_147_483_647;
+}
+
+function isU32(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isInteger(value)
+    && value >= 0
+    && value <= 4_294_967_295;
+}
+
+function isOptionalNullableI32(value: unknown): boolean {
+  return value === undefined || value === null || isI32(value);
+}
+
+function isOptionalNullableU32(value: unknown): boolean {
+  return value === undefined || value === null || isU32(value);
+}
+
+function isOptionalNullableBoolean(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'boolean';
+}
+
+function isJdbcValue(value: unknown): value is JdbcValue {
+  if (!isRecord(value) || typeof value.type !== 'string') return false;
+  if (value.type === 'null') return true;
+  if (value.type === 'boolean') return typeof value.value === 'boolean';
+  if (value.type === 'opaque') {
+    return typeof value.typeName === 'string' && typeof value.displayValue === 'string';
+  }
+  return [
+    'signed_integer',
+    'unsigned_integer',
+    'float32',
+    'float64',
+    'decimal',
+    'text',
+    'binary',
+    'date',
+    'time',
+    'timestamp',
+    'timestamp_with_time_zone',
+    'json',
+    'uuid',
+  ].includes(value.type) && typeof value.value === 'string';
+}
+
+function isResultColumn(value: unknown): value is Schema<'ResultColumn'> {
+  return isRecord(value)
+    && isOptionalNullableString(value.catalogName)
+    && isOptionalNullableU32(value.displaySize)
+    && isI32(value.jdbcType)
+    && typeof value.jdbcTypeName === 'string'
+    && typeof value.label === 'string'
+    && typeof value.name === 'string'
+    && typeof value.nullability === 'string'
+    && ['unknown', 'no_nulls', 'nullable'].includes(value.nullability)
+    && isU32(value.ordinal)
+    && isOptionalNullableU32(value.precision)
+    && isOptionalNullableI32(value.scale)
+    && isOptionalNullableString(value.schemaName)
+    && isOptionalNullableBoolean(value.signed)
+    && isOptionalNullableString(value.tableName)
+    && typeof value.valueType === 'string'
+    && [
+      'boolean',
+      'signed_integer',
+      'unsigned_integer',
+      'float32',
+      'float64',
+      'decimal',
+      'text',
+      'binary',
+      'date',
+      'time',
+      'timestamp',
+      'timestamp_with_time_zone',
+      'json',
+      'uuid',
+      'opaque',
+    ].includes(value.valueType);
+}
+
+function isResultRow(value: unknown): value is Schema<'ResultRow'> {
+  return isRecord(value)
+    && Array.isArray(value.values)
+    && value.values.every(isJdbcValue);
+}
+
+function isAgentRunStatus(value: unknown): value is AgentRunStatus {
+  return typeof value === 'string'
+    && ['running', 'waiting_for_permission', 'completed', 'failed', 'cancelled'].includes(value);
+}
+
+function isAgentPermissionStatus(value: unknown): value is AgentPermissionStatus {
+  return typeof value === 'string'
+    && ['pending', 'approved', 'denied', 'consumed', 'expired', 'revoked'].includes(value);
+}
+
+export function isAgentUsage(value: unknown): value is AgentUsage {
+  return isRecord(value)
+    && isDecimalInteger(value.inputTokens)
+    && isDecimalInteger(value.outputTokens)
+    && isDecimalInteger(value.totalTokens);
+}
+
+export function isAgentPermissionRequest(value: unknown): value is AgentPermissionRequest {
+  return isRecord(value)
+    && typeof value.permissionId === 'string'
+    && typeof value.runId === 'string'
+    && typeof value.toolCallId === 'string'
+    && typeof value.toolName === 'string'
+    && typeof value.argumentsSha256 === 'string'
+    && typeof value.summary === 'string'
+    && isDecimalInteger(value.requestedAtMs)
+    && isDecimalInteger(value.expiresAtMs);
+}
+
+export function isAgentPermissionResponse(value: unknown): value is AgentPermissionResponse {
+  return isRecord(value)
+    && typeof value.permissionId === 'string'
+    && isAgentPermissionStatus(value.status);
+}
+
+export function isAgentToolOutput(value: unknown): value is AgentToolOutput {
+  if (!isRecord(value) || typeof value.type !== 'string') return false;
+  if (value.type === 'text') {
+    return typeof value.content === 'string' && typeof value.truncated === 'boolean';
+  }
+  if (value.type !== 'result' || !isRecord(value.handle)) return false;
+  const handle = value.handle;
+  return typeof handle.handleId === 'string'
+    && isDecimalInteger(handle.rowCount)
+    && isDecimalInteger(handle.byteCount)
+    && typeof handle.truncatedByMaxRows === 'boolean'
+    && typeof handle.truncatedByMaxResultBytes === 'boolean'
+    && isDecimalInteger(handle.createdAtMs)
+    && isDecimalInteger(handle.expiresAtMs)
+    && Array.isArray(handle.columns)
+    && handle.columns.every(isResultColumn)
+    && typeof handle.columnsTruncated === 'boolean'
+    && Array.isArray(handle.sampleRows)
+    && handle.sampleRows.every(isResultRow)
+    && typeof handle.sampleTruncated === 'boolean';
+}
+
+function isAgentEvent(value: unknown): value is AgentEvent {
+  if (!isRecord(value) || typeof value.type !== 'string') return false;
+  switch (value.type) {
+    case 'started':
+      return true;
+    case 'text_delta':
+      return typeof value.delta === 'string';
+    case 'tool_started':
+      return typeof value.toolCallId === 'string'
+        && typeof value.name === 'string'
+        && typeof value.argumentsSha256 === 'string';
+    case 'tool_completed':
+      return typeof value.toolCallId === 'string'
+        && typeof value.name === 'string'
+        && isAgentToolOutput(value.output);
+    case 'tool_failed':
+      return typeof value.toolCallId === 'string'
+        && typeof value.name === 'string'
+        && isApiError(value.error);
+    case 'permission_requested':
+      return isAgentPermissionRequest(value.permission);
+    case 'permission_resolved':
+      return typeof value.permissionId === 'string'
+        && isAgentPermissionStatus(value.status);
+    case 'context_compacted':
+      return (value.strategy === 'summary' || value.strategy === 'deterministic_trim')
+        && isDecimalInteger(value.droppedTurns);
+    case 'usage':
+      return isAgentUsage(value.usage);
+    case 'completed':
+      return typeof value.messageId === 'string';
+    case 'failed':
+      return isApiError(value.error);
+    case 'cancelled':
+      return isOptionalNullableString(value.reason);
+    default:
+      return false;
+  }
+}
+
+export function isAgentEventEnvelope(value: unknown): value is AgentEventEnvelope {
+  return isRecord(value)
+    && typeof value.runId === 'string'
+    && isDecimalInteger(value.sequence)
+    && isDecimalInteger(value.occurredAtMs)
+    && isAgentEvent(value.event);
+}
+
+export function isAgentStreamMessage(value: unknown): value is AgentStreamMessage {
+  if (!isRecord(value) || typeof value.type !== 'string') return false;
+  switch (value.type) {
+    case 'event':
+      return isAgentEventEnvelope(value.event);
+    case 'error':
+      return isApiError(value.error);
+    case 'end':
+      return true;
+    default:
+      return false;
+  }
+}
+
+export function isAgentSubscriptionAccepted(
+  value: unknown,
+): value is AgentSubscriptionAccepted {
+  return isRecord(value)
+    && typeof value.subscriptionId === 'string'
+    && value.subscriptionId.length > 0;
+}
+
+export function isAgentRunAccepted(value: unknown): value is AgentRunAccepted {
+  return isRecord(value)
+    && typeof value.runId === 'string'
+    && typeof value.sessionId === 'string';
+}
+
+export function isAgentRunSnapshot(value: unknown): value is AgentRunSnapshot {
+  return isRecord(value)
+    && typeof value.runId === 'string'
+    && typeof value.sessionId === 'string'
+    && isAgentRunStatus(value.status)
+    && isDecimalInteger(value.lastSequence)
+    && isDecimalInteger(value.startedAtMs)
+    && isDecimalInteger(value.updatedAtMs)
+    && isDecimalInteger(value.modelRounds)
+    && isDecimalInteger(value.toolCalls)
+    && isAgentUsage(value.usage)
+    && (value.pendingPermission === undefined
+      || value.pendingPermission === null
+      || isAgentPermissionRequest(value.pendingPermission))
+    && isOptionalNullableString(value.messageId)
+    && (value.error === undefined || value.error === null || isApiError(value.error));
+}
+
+export function isCancelAgentRunResponse(value: unknown): value is CancelAgentRunResponse {
+  return isRecord(value)
+    && typeof value.runId === 'string'
+    && (value.disposition === 'accepted'
+      || value.disposition === 'already_terminal'
+      || value.disposition === 'unknown_operation');
 }
 
 function isOperationEvent(value: unknown): boolean {

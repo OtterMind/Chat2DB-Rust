@@ -562,6 +562,20 @@ pub struct RequestToolPermission {
     pub summary: String,
     /// Event sequence for the permission-requested snapshot.
     pub last_sequence: u64,
+    /// Completed model rounds at the permission boundary.
+    pub model_rounds: u64,
+    /// Started tool calls including this request.
+    pub tool_calls: u64,
+    /// Accumulated provider input tokens.
+    pub input_tokens: u64,
+    /// Accumulated provider output tokens.
+    pub output_tokens: u64,
+    /// Accumulated provider total tokens.
+    pub total_tokens: u64,
+    /// Completed compaction passes.
+    pub compaction_count: u64,
+    /// Latest message ordinal represented by compacted context.
+    pub compacted_through_ordinal: Option<u64>,
     /// Maximum time this approval can remain executable.
     pub retention: Duration,
 }
@@ -810,6 +824,13 @@ impl Debug for RequestToolPermission {
             .field("arguments_sha256", &self.arguments_sha256)
             .field("summary_bytes", &self.summary.len())
             .field("last_sequence", &self.last_sequence)
+            .field("model_rounds", &self.model_rounds)
+            .field("tool_calls", &self.tool_calls)
+            .field("input_tokens", &self.input_tokens)
+            .field("output_tokens", &self.output_tokens)
+            .field("total_tokens", &self.total_tokens)
+            .field("compaction_count", &self.compaction_count)
+            .field("compacted_through_ordinal", &self.compacted_through_ordinal)
             .field("retention", &self.retention)
             .finish()
     }
@@ -1944,7 +1965,9 @@ impl Storage {
         let timestamp = now_millis()?;
         let changed = transaction.execute(
             "UPDATE agent_runs
-             SET cancel_requested = 1, updated_at_ms = ?1
+             SET status = CASE WHEN status = 'waiting_permission'
+                               THEN 'running' ELSE status END,
+                 cancel_requested = 1, updated_at_ms = ?1
              WHERE id = ?2 AND status = ?3",
             params![timestamp, id, current.status.as_str()],
         )?;
@@ -2132,7 +2155,7 @@ impl Storage {
         self.create_tool_permission_at(run_id, input, timestamp, expires_at_ms)
     }
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
     fn create_tool_permission_at(
         &self,
         run_id: &str,
@@ -2176,6 +2199,23 @@ impl Storage {
                 "permission event sequence must advance the run snapshot",
             ));
         }
+        validate_compaction_unchanged(
+            &run,
+            input.compaction_count,
+            input.compacted_through_ordinal,
+        )?;
+        validate_run_progress(
+            &run,
+            input.last_sequence,
+            input.model_rounds,
+            input.tool_calls,
+            input.input_tokens,
+            input.output_tokens,
+            input.total_tokens,
+            input.compaction_count,
+            input.compacted_through_ordinal,
+        )?;
+        validate_run_compaction_boundary(&transaction, run_id, input.compacted_through_ordinal)?;
         let id = Uuid::new_v4().to_string();
         transaction.execute(
             "INSERT INTO tool_permissions (
@@ -2195,13 +2235,27 @@ impl Storage {
         )?;
         let changed = transaction.execute(
             "UPDATE agent_runs
-             SET status = 'waiting_permission', last_sequence = ?1, updated_at_ms = ?2
-             WHERE id = ?3 AND status = 'running' AND cancel_requested = 0
+             SET status = 'waiting_permission', last_sequence = ?1,
+                 model_rounds = ?2, tool_calls = ?3, input_tokens = ?4,
+                 output_tokens = ?5, total_tokens = ?6,
+                 compaction_count = ?7, compacted_through_ordinal = ?8,
+                 updated_at_ms = ?9
+             WHERE id = ?10 AND status = 'running' AND cancel_requested = 0
                AND write_in_flight_tool_call_id IS NULL",
             params![
                 to_sql_i64(input.last_sequence, "agent event sequence")?,
+                to_sql_i64(input.model_rounds, "agent model rounds")?,
+                to_sql_i64(input.tool_calls, "agent tool calls")?,
+                to_sql_i64(input.input_tokens, "agent input tokens")?,
+                to_sql_i64(input.output_tokens, "agent output tokens")?,
+                to_sql_i64(input.total_tokens, "agent total tokens")?,
+                to_sql_i64(input.compaction_count, "agent compaction count")?,
+                input
+                    .compacted_through_ordinal
+                    .map(|value| to_sql_i64(value, "compacted message ordinal"))
+                    .transpose()?,
                 timestamp,
-                run_id
+                run_id,
             ],
         )?;
         if changed != 1 {
@@ -2315,15 +2369,28 @@ impl Storage {
         let timestamp = now_millis()?;
         if current.expires_at_ms <= timestamp {
             expire_permission(&transaction, &current, timestamp)?;
-            transaction.execute(
-                "UPDATE agent_runs SET status = 'running', updated_at_ms = ?1
-                 WHERE id = ?2 AND status = 'waiting_permission'",
-                params![timestamp, run_id],
+            let run_changed = transaction.execute(
+                "UPDATE agent_runs
+                 SET status = 'running', last_sequence = ?1, updated_at_ms = ?2
+                 WHERE id = ?3 AND status = 'waiting_permission'
+                   AND cancel_requested = 0 AND last_sequence < ?1
+                   AND write_in_flight_tool_call_id IS NULL",
+                params![
+                    to_sql_i64(last_sequence, "agent event sequence")?,
+                    timestamp,
+                    run_id,
+                ],
             )?;
+            if run_changed != 1 {
+                return Err(StorageError::PermissionNotExecutable {
+                    id: id.to_owned(),
+                    reason: "owning run changed while permission expired",
+                });
+            }
             transaction.commit()?;
-            return Err(StorageError::PermissionNotExecutable {
+            return load_permission(&connection, id)?.ok_or_else(|| StorageError::OutcomeUnknown {
+                operation: "expire tool permission during decision",
                 id: id.to_owned(),
-                reason: "permission expired",
             });
         }
         let status = match decision {
@@ -2382,6 +2449,171 @@ impl Storage {
         transaction.commit()?;
         load_permission(&connection, id)?.ok_or_else(|| StorageError::OutcomeUnknown {
             operation: "decide tool permission",
+            id: id.to_owned(),
+        })
+    }
+
+    /// Expires one pending or approved permission and resumes its run.
+    ///
+    /// # Errors
+    ///
+    /// Returns binding, revision, timing, run-state, or `SQLite` failures.
+    #[allow(clippy::too_many_arguments)]
+    pub fn expire_tool_permission(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        run_id: &str,
+        tool_call_id: &str,
+        arguments_sha256: [u8; 32],
+        last_sequence: u64,
+    ) -> Result<ToolPermissionRecord, StorageError> {
+        self.abandon_tool_permission(
+            id,
+            expected_revision,
+            run_id,
+            tool_call_id,
+            arguments_sha256,
+            last_sequence,
+            ToolPermissionStatus::Expired,
+        )
+    }
+
+    /// Revokes one pending or approved permission and resumes its run.
+    ///
+    /// # Errors
+    ///
+    /// Returns binding, revision, run-state, or `SQLite` failures.
+    #[allow(clippy::too_many_arguments)]
+    pub fn revoke_tool_permission(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        run_id: &str,
+        tool_call_id: &str,
+        arguments_sha256: [u8; 32],
+        last_sequence: u64,
+    ) -> Result<ToolPermissionRecord, StorageError> {
+        self.abandon_tool_permission(
+            id,
+            expected_revision,
+            run_id,
+            tool_call_id,
+            arguments_sha256,
+            last_sequence,
+            ToolPermissionStatus::Revoked,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn abandon_tool_permission(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        run_id: &str,
+        tool_call_id: &str,
+        arguments_sha256: [u8; 32],
+        last_sequence: u64,
+        status: ToolPermissionStatus,
+    ) -> Result<ToolPermissionRecord, StorageError> {
+        if !matches!(
+            status,
+            ToolPermissionStatus::Expired | ToolPermissionStatus::Revoked
+        ) {
+            return Err(StorageError::InvalidAgent(
+                "permission abandonment status is invalid",
+            ));
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = load_permission(&transaction, id)?
+            .ok_or_else(|| StorageError::PermissionNotFound(id.to_owned()))?;
+        if current.revision != expected_revision {
+            return Err(permission_revision_conflict(
+                id,
+                expected_revision,
+                Some(current.revision),
+            ));
+        }
+        if current.run_id != run_id
+            || current.tool_call_id != tool_call_id
+            || current.arguments_sha256 != arguments_sha256
+        {
+            return Err(StorageError::PermissionNotExecutable {
+                id: id.to_owned(),
+                reason: "permission binding does not match",
+            });
+        }
+        if !matches!(
+            current.status,
+            ToolPermissionStatus::Pending | ToolPermissionStatus::Approved
+        ) {
+            return Err(StorageError::PermissionNotExecutable {
+                id: id.to_owned(),
+                reason: "permission is no longer active",
+            });
+        }
+        let run = load_run(&transaction, run_id)?
+            .ok_or_else(|| StorageError::AgentRunNotFound(run_id.to_owned()))?;
+        if run.cancel_requested
+            || run.status != AgentRunStatus::WaitingPermission
+            || run.write_in_flight_tool_call_id.is_some()
+            || last_sequence <= run.last_sequence
+        {
+            return Err(StorageError::PermissionNotExecutable {
+                id: id.to_owned(),
+                reason: "owning run is not waiting for this permission",
+            });
+        }
+        let timestamp = now_millis()?;
+        if status == ToolPermissionStatus::Expired && current.expires_at_ms > timestamp {
+            return Err(StorageError::PermissionNotExecutable {
+                id: id.to_owned(),
+                reason: "permission has not expired",
+            });
+        }
+        let next_revision = current
+            .revision
+            .checked_add(1)
+            .ok_or(StorageError::NumericRange("tool permission revision"))?;
+        let permission_changed = transaction.execute(
+            "UPDATE tool_permissions
+             SET status = ?1, revision = ?2, updated_at_ms = ?3
+             WHERE id = ?4 AND revision = ?5
+               AND status IN ('pending', 'approved')
+               AND run_id = ?6 AND tool_call_id = ?7 AND arguments_sha256 = ?8",
+            params![
+                status.as_str(),
+                to_sql_i64(next_revision, "tool permission revision")?,
+                timestamp,
+                id,
+                to_sql_i64(expected_revision, "tool permission revision")?,
+                run_id,
+                tool_call_id,
+                arguments_sha256.as_slice(),
+            ],
+        )?;
+        let run_changed = transaction.execute(
+            "UPDATE agent_runs
+             SET status = 'running', last_sequence = ?1, updated_at_ms = ?2
+             WHERE id = ?3 AND status = 'waiting_permission'
+               AND cancel_requested = 0 AND last_sequence < ?1
+               AND write_in_flight_tool_call_id IS NULL",
+            params![
+                to_sql_i64(last_sequence, "agent event sequence")?,
+                timestamp,
+                run_id,
+            ],
+        )?;
+        if permission_changed != 1 || run_changed != 1 {
+            return Err(StorageError::PermissionNotExecutable {
+                id: id.to_owned(),
+                reason: "permission abandonment CAS failed",
+            });
+        }
+        transaction.commit()?;
+        load_permission(&connection, id)?.ok_or_else(|| StorageError::OutcomeUnknown {
+            operation: "abandon tool permission",
             id: id.to_owned(),
         })
     }
@@ -4053,6 +4285,13 @@ mod tests {
             arguments_sha256: digest,
             summary: "Execute one SQL write".to_owned(),
             last_sequence,
+            model_rounds: 0,
+            tool_calls: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            compaction_count: 0,
+            compacted_through_ordinal: None,
             retention: Duration::from_secs(60),
         }
     }

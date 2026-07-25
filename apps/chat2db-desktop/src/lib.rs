@@ -13,12 +13,15 @@ use std::{
 };
 
 use chat2db_contract::{
-    AgentMessageList, AgentSession, AgentSessionList, ApiError, CancelOperationResponse,
+    AgentEventEnvelope, AgentMessageList, AgentPermissionResponse, AgentRunAccepted,
+    AgentRunSnapshot, AgentSession, AgentSessionList, AgentStreamMessage,
+    AgentSubscriptionAccepted, ApiError, CancelAgentRunResponse, CancelOperationResponse,
     CreateAgentSessionRequest, CreateDatasourceRequest, CreateProviderProfileRequest, Datasource,
-    DatasourceList, HealthResponse, OperationEventEnvelope, OperationSnapshot,
-    OperationStreamMessage, OperationSubscriptionAccepted, ProviderProfile, ProviderProfileList,
-    QueryAccepted, ResultPage, ResultPageRequest, StartQueryRequest, UpdateAgentSessionRequest,
-    UpdateDatasourceRequest, UpdateProviderProfileRequest,
+    DatasourceList, DecideAgentPermissionRequest, HealthResponse, OperationEventEnvelope,
+    OperationSnapshot, OperationStreamMessage, OperationSubscriptionAccepted, ProviderProfile,
+    ProviderProfileList, QueryAccepted, ResultPage, ResultPageRequest, StartAgentRunRequest,
+    StartQueryRequest, UpdateAgentSessionRequest, UpdateDatasourceRequest,
+    UpdateProviderProfileRequest,
 };
 use chat2db_core::{AppError, Application, RuntimeConfig, RuntimeHost};
 use chat2db_java_bridge::{EngineCommand, EngineConfig};
@@ -221,6 +224,12 @@ pub fn run() -> Result<i32, DesktopError> {
             update_agent_session,
             delete_agent_session,
             list_agent_messages,
+            start_agent_run,
+            agent_run_snapshot,
+            cancel_agent_run,
+            decide_agent_permission,
+            subscribe_agent_run,
+            unsubscribe_agent_run,
             start_query,
             operation_snapshot,
             cancel_operation,
@@ -503,6 +512,149 @@ async fn list_agent_messages(
 }
 
 #[tauri::command]
+async fn start_agent_run(
+    state: State<'_, Arc<DesktopState>>,
+    request: StartAgentRunRequest,
+) -> Result<AgentRunAccepted, ApiError> {
+    state
+        .application
+        .start_agent_run(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn agent_run_snapshot(
+    state: State<'_, Arc<DesktopState>>,
+    run_id: String,
+) -> Result<AgentRunSnapshot, ApiError> {
+    state
+        .application
+        .agent_run_snapshot(&run_id)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn cancel_agent_run(
+    state: State<'_, Arc<DesktopState>>,
+    run_id: String,
+) -> Result<CancelAgentRunResponse, ApiError> {
+    state
+        .application
+        .cancel_agent_run(&run_id)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn decide_agent_permission(
+    state: State<'_, Arc<DesktopState>>,
+    permission_id: String,
+    request: DecideAgentPermissionRequest,
+) -> Result<AgentPermissionResponse, ApiError> {
+    state
+        .application
+        .decide_agent_permission(&permission_id, request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn subscribe_agent_run(
+    state: State<'_, Arc<DesktopState>>,
+    run_id: String,
+    after_sequence: Option<String>,
+    on_event: Channel<AgentStreamMessage>,
+) -> Result<AgentSubscriptionAccepted, ApiError> {
+    let after_sequence = parse_after_sequence(after_sequence).map_err(|error| *error)?;
+    let subscription = state
+        .application
+        .subscribe_agent_run(&run_id, after_sequence)
+        .await
+        .map_err(|error| api_error(&error))?;
+    let state = Arc::clone(state.inner());
+    let subscription_id = state
+        .next_subscription_id
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .map(|id| format!("subscription-{id}"))
+        .map_err(|_| {
+            ApiError::new(
+                "subscription_capacity_exhausted",
+                "No subscription ids remain",
+            )
+        })?;
+    let (stop, stopped) = oneshot::channel();
+    let (finished, completion) = oneshot::channel();
+    state
+        .subscriptions
+        .insert(subscription_id.clone(), stop, completion)
+        .await;
+    let task_subscription_id = subscription_id.clone();
+    tauri::async_runtime::spawn(async move {
+        forward_agent_subscription(
+            state,
+            task_subscription_id,
+            subscription,
+            stopped,
+            finished,
+            on_event,
+        )
+        .await;
+    });
+    Ok(AgentSubscriptionAccepted { subscription_id })
+}
+
+#[tauri::command]
+async fn unsubscribe_agent_run(
+    state: State<'_, Arc<DesktopState>>,
+    subscription_id: String,
+) -> Result<(), ApiError> {
+    state.subscriptions.unsubscribe(&subscription_id).await;
+    Ok(())
+}
+
+async fn forward_agent_subscription(
+    state: Arc<DesktopState>,
+    subscription_id: String,
+    mut subscription: chat2db_core::AgentRunSubscription,
+    mut stopped: oneshot::Receiver<()>,
+    finished: oneshot::Sender<()>,
+    on_event: Channel<AgentStreamMessage>,
+) {
+    loop {
+        let next = tokio::select! {
+            biased;
+            _ = &mut stopped => break,
+            next = subscription.next_event() => next,
+        };
+        let (message, finished) = agent_stream_message(next);
+        if on_event.send(message).is_err() || finished {
+            break;
+        }
+    }
+    state.subscriptions.remove(&subscription_id).await;
+    let _ = finished.send(());
+}
+
+fn agent_stream_message(
+    next: Result<Option<AgentEventEnvelope>, AppError>,
+) -> (AgentStreamMessage, bool) {
+    match next {
+        Ok(Some(event)) => (AgentStreamMessage::Event { event }, false),
+        Ok(None) => (AgentStreamMessage::End, true),
+        Err(error) => (
+            AgentStreamMessage::Error {
+                error: error.api_error(),
+            },
+            true,
+        ),
+    }
+}
+
+#[tauri::command]
 async fn start_query(
     state: State<'_, Arc<DesktopState>>,
     request: StartQueryRequest,
@@ -645,13 +797,16 @@ async fn result_page(
 mod tests {
     use std::{fs::File, sync::Arc};
 
-    use chat2db_contract::{OperationEvent, OperationEventEnvelope, OperationStreamMessage};
+    use chat2db_contract::{
+        AgentEvent, AgentEventEnvelope, AgentStreamMessage, OperationEvent, OperationEventEnvelope,
+        OperationStreamMessage,
+    };
     use chat2db_core::AppError;
     use tokio::sync::oneshot;
 
     use super::{
-        DesktopError, SubscriptionRegistry, operation_stream_message, parse_after_sequence,
-        validate_java_engine_jar,
+        DesktopError, SubscriptionRegistry, agent_stream_message, operation_stream_message,
+        parse_after_sequence, validate_java_engine_jar,
     };
 
     #[test]
@@ -710,6 +865,35 @@ mod tests {
             message,
             OperationStreamMessage::Error { error }
                 if error.code == "operation_replay_window_expired"
+        ));
+    }
+
+    #[test]
+    fn agent_stream_result_maps_events_errors_and_clean_end() {
+        let event = AgentEventEnvelope {
+            run_id: "run-1".to_owned(),
+            sequence: "1".to_owned(),
+            occurred_at_ms: "1784900000000".to_owned(),
+            event: AgentEvent::Started,
+        };
+        assert_eq!(
+            agent_stream_message(Ok(Some(event.clone()))),
+            (AgentStreamMessage::Event { event }, false)
+        );
+        assert_eq!(
+            agent_stream_message(Ok(None)),
+            (AgentStreamMessage::End, true)
+        );
+
+        let (message, finished) = agent_stream_message(Err(AppError::invalid(
+            "agent_replay_window_expired",
+            "The requested agent event is no longer retained",
+        )));
+        assert!(finished);
+        assert!(matches!(
+            message,
+            AgentStreamMessage::Error { error }
+                if error.code == "agent_replay_window_expired"
         ));
     }
 

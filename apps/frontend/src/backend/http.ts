@@ -1,16 +1,24 @@
 import { createParser } from 'eventsource-parser';
 
 import type {
+  AgentEventEnvelope,
   AgentMessageList,
+  AgentPermissionResponse,
+  AgentRunAccepted,
+  AgentRunSnapshot,
   AgentSession,
   AgentSessionList,
+  AgentSubscription,
+  AgentSubscriptionOptions,
   BackendClient,
+  CancelAgentRunResponse,
   CancelOperationResponse,
   CreateAgentSessionRequest,
   CreateDatasourceRequest,
   CreateProviderProfileRequest,
   Datasource,
   DatasourceList,
+  DecideAgentPermissionRequest,
   HealthResponse,
   OperationSnapshot,
   OperationSubscription,
@@ -20,6 +28,7 @@ import type {
   QueryAccepted,
   ResultPage,
   ResultPageRequest,
+  StartAgentRunRequest,
   StartQueryRequest,
   UpdateAgentSessionRequest,
   UpdateDatasourceRequest,
@@ -27,8 +36,14 @@ import type {
 } from './client';
 import {
   ApiRequestError,
+  isAgentEventEnvelope,
+  isAgentPermissionResponse,
+  isAgentRunAccepted,
+  isAgentRunSnapshot,
   isApiError,
+  isCancelAgentRunResponse,
   isOperationEventEnvelope,
+  parseAgentCursor,
   parseOperationCursor,
   protocolError,
 } from './client';
@@ -245,6 +260,165 @@ export class HttpBackendClient implements BackendClient {
       { method: 'GET', signal },
       [200],
     );
+  }
+
+  async startAgentRun(
+    request: StartAgentRunRequest,
+    signal?: AbortSignal,
+  ): Promise<AgentRunAccepted> {
+    const payload = await this.#json<unknown>(
+      '/api/v1/agent/runs',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [202],
+    );
+    if (!isAgentRunAccepted(payload)) {
+      throw protocolError('The runtime returned an invalid agent run acknowledgement');
+    }
+    return payload;
+  }
+
+  async agentRunSnapshot(runId: string, signal?: AbortSignal): Promise<AgentRunSnapshot> {
+    const payload = await this.#json<unknown>(
+      `/api/v1/agent/runs/${encodeURIComponent(runId)}`,
+      { method: 'GET', signal },
+      [200],
+    );
+    if (!isAgentRunSnapshot(payload)) {
+      throw protocolError('The runtime returned an invalid agent run snapshot');
+    }
+    return payload;
+  }
+
+  async cancelAgentRun(runId: string, signal?: AbortSignal): Promise<CancelAgentRunResponse> {
+    const payload = await this.#json<unknown>(
+      `/api/v1/agent/runs/${encodeURIComponent(runId)}/cancel`,
+      { method: 'POST', signal },
+      [200],
+    );
+    if (!isCancelAgentRunResponse(payload)) {
+      throw protocolError('The runtime returned an invalid agent run cancellation response');
+    }
+    return payload;
+  }
+
+  async decideAgentPermission(
+    permissionId: string,
+    request: DecideAgentPermissionRequest,
+    signal?: AbortSignal,
+  ): Promise<AgentPermissionResponse> {
+    const payload = await this.#json<unknown>(
+      `/api/v1/agent/runs/${encodeURIComponent(request.runId)}/permissions/${encodeURIComponent(permissionId)}/decision`,
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+    if (!isAgentPermissionResponse(payload)) {
+      throw protocolError('The runtime returned an invalid agent permission response');
+    }
+    return payload;
+  }
+
+  async subscribeAgentRun(
+    runId: string,
+    options: AgentSubscriptionOptions,
+  ): Promise<AgentSubscription> {
+    const initialSequence = options.afterSequence === undefined
+      ? undefined
+      : parseAgentCursor(options.afterSequence);
+    const controller = new AbortController();
+    const callerAbort = () => controller.abort(options.signal?.reason);
+    if (options.signal?.aborted) callerAbort();
+    else options.signal?.addEventListener('abort', callerAbort, { once: true });
+
+    const headers = new Headers({ Accept: 'text/event-stream' });
+    if (options.afterSequence !== undefined) {
+      headers.set('Last-Event-ID', options.afterSequence);
+    }
+
+    let response: Response;
+    try {
+      response = await this.#fetch(
+        `${this.#baseUrl}/api/v1/agent/runs/${encodeURIComponent(runId)}/events`,
+        { method: 'GET', headers, signal: controller.signal },
+      );
+    } catch (error) {
+      options.signal?.removeEventListener('abort', callerAbort);
+      throw error;
+    }
+    if (response.status !== 200) {
+      options.signal?.removeEventListener('abort', callerAbort);
+      throw await apiFailure(response);
+    }
+    const body = response.body;
+    if (!body) {
+      options.signal?.removeEventListener('abort', callerAbort);
+      throw protocolError('The runtime opened an agent event stream without a body', response.status);
+    }
+
+    let active = true;
+    let lastSequence = initialSequence;
+    const parser = createParser({
+      onEvent: (message) => {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(message.data);
+        } catch {
+          throw protocolError('The runtime emitted malformed agent event JSON');
+        }
+        if (message.event === 'error') {
+          if (!isApiError(payload)) {
+            throw protocolError('The runtime emitted an invalid agent stream error');
+          }
+          throw new ApiRequestError(payload);
+        }
+        if (!isAgentEventEnvelope(payload) || payload.runId !== runId) {
+          throw protocolError('The runtime emitted an invalid agent event');
+        }
+        if ((message.id && message.id !== payload.sequence)
+          || (message.event && message.event !== payload.event.type)) {
+          throw protocolError('The runtime emitted inconsistent agent event metadata');
+        }
+        const sequence = BigInt(payload.sequence);
+        if (lastSequence !== undefined && sequence <= lastSequence) {
+          throw protocolError('The runtime emitted an out-of-order agent event');
+        }
+        lastSequence = sequence;
+        if (active) options.onEvent(payload);
+      },
+    });
+
+    void (async () => {
+      const reader = body.getReader();
+      const decoder = new TextDecoder();
+      try {
+        while (active) {
+          const { done, value } = await reader.read();
+          if (done) {
+            parser.reset({ consume: true });
+            break;
+          }
+          parser.feed(decoder.decode(value, { stream: true }));
+        }
+      } catch (error) {
+        if (active && !isAbortError(error)) {
+          options.onError?.(error instanceof Error ? error : protocolError('Agent stream failed'));
+          controller.abort();
+        }
+      } finally {
+        active = false;
+        options.signal?.removeEventListener('abort', callerAbort);
+        reader.releaseLock();
+        options.onClose?.();
+      }
+    })();
+
+    return {
+      close: () => {
+        if (!active) return;
+        active = false;
+        options.signal?.removeEventListener('abort', callerAbort);
+        controller.abort();
+      },
+    };
   }
 
   startQuery(request: StartQueryRequest, signal?: AbortSignal): Promise<QueryAccepted> {

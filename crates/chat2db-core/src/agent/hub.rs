@@ -448,6 +448,13 @@ impl AgentRunHub {
         }
         let DurableAgentTransition { snapshot, event } = durable;
         let terminal = is_terminal(snapshot.status);
+        let permission_resolution = match &event {
+            AgentEvent::PermissionResolved {
+                permission_id,
+                status,
+            } => Some((permission_id.clone(), *status)),
+            _ => None,
+        };
         let envelope = AgentEventEnvelope {
             run_id: run_id.to_owned(),
             sequence: next_sequence.to_string(),
@@ -475,21 +482,38 @@ impl AgentRunHub {
             return Err(AppError::internal());
         }
 
+        if let Some((permission_id, status)) = permission_resolution
+            && let Err(error) = settle_permission(
+                &entry,
+                &permission_id,
+                PermissionSignalState::Resolved(status),
+            )
+            .await
+        {
+            self.invalidate_entry(run_id, &entry, false);
+            in_flight.disarm();
+            return Err(error);
+        }
+
         if terminal {
-            cancel_current_permission(&entry).await;
-            let order = self
-                .inner
-                .next_terminal_order
-                .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |current| {
-                    current.checked_add(1)
-                })
-                .unwrap_or(u64::MAX);
-            entry
-                .terminal_order
-                .store(order.max(1), AtomicOrdering::Release);
+            self.mark_terminal(&entry).await;
         }
         in_flight.disarm();
         Ok(snapshot)
+    }
+
+    async fn mark_terminal(&self, entry: &AgentRunEntry) {
+        cancel_current_permission(entry).await;
+        let order = self
+            .inner
+            .next_terminal_order
+            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |current| {
+                current.checked_add(1)
+            })
+            .unwrap_or(u64::MAX);
+        entry
+            .terminal_order
+            .store(order.max(1), AtomicOrdering::Release);
     }
 
     /// Returns a clone of the cooperative cancellation token for one live run.

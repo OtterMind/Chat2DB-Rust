@@ -15,6 +15,7 @@ mod provider;
     reason = "the next staged agent-run worker consumes this durable event bridge"
 )]
 mod runtime;
+mod sql_tools;
 #[allow(
     dead_code,
     reason = "the next staged agent-run transport slice consumes this foundation"
