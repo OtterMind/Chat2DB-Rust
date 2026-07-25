@@ -25,16 +25,16 @@ use windows_sys::Win32::{
             GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT, SetSecurityInfo,
         },
         CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, GetAce, GetAclInformation,
-        GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetTokenInformation, IsValidAcl,
-        IsValidSid, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
-        SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
+        GetTokenInformation, IsValidAcl, IsValidSid, OBJECT_INHERIT_ACE,
+        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
     Storage::FileSystem::{
         CREATE_NEW, CreateFileW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT,
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
         FILE_SHARE_READ, FILE_SHARE_WRITE, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-        MoveFileExW, OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
+        MoveFileExW, OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
     },
     System::{
         Pipes::GetNamedPipeServerProcessId,
@@ -142,19 +142,23 @@ pub fn create_owner_only_named_pipe(
     result
 }
 
-/// Replaces a directory's DACL with a protected current-user-only DACL.
+/// Replaces a directory's owner and DACL with current-user-only security.
 ///
 /// Child files and directories inherit the owner-only rule.
 ///
 /// # Errors
 ///
-/// Returns an error when the path is not a real directory owned by the current
-/// user or Windows cannot apply and verify the protected DACL.
+/// Returns an error when the path is not a real directory or Windows cannot
+/// apply and verify the current-user owner and protected DACL.
 pub fn secure_owner_only_directory(path: &Path) -> io::Result<()> {
-    let directory = open_path(path, READ_CONTROL | WRITE_DAC, OPEN_EXISTING, None)?;
+    let directory = open_path(
+        path,
+        READ_CONTROL | WRITE_DAC | WRITE_OWNER,
+        OPEN_EXISTING,
+        None,
+    )?;
     verify_object_kind(&directory, OwnerOnlyObject::Directory)?;
-    verify_current_user_owner(&directory)?;
-    apply_owner_only_dacl(&directory, OwnerOnlyObject::Directory)?;
+    apply_owner_only_security(&directory, OwnerOnlyObject::Directory)?;
     verify_owner_only_security(&directory, OwnerOnlyObject::Directory)
 }
 
@@ -190,25 +194,23 @@ pub fn create_new_owner_only_file(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-/// Opens or creates a regular file, then replaces its DACL with an owner-only DACL.
+/// Opens or creates a regular file, then applies current-user-only security.
 ///
 /// # Errors
 ///
-/// Returns an error when the path is a reparse point, the existing file is not
-/// owned by the current user, or the protected DACL cannot be applied and
-/// verified.
+/// Returns an error when the path is a reparse point or the current-user owner
+/// and protected DACL cannot be applied and verified.
 pub fn open_or_create_owner_only_file(path: &Path) -> io::Result<File> {
     let descriptor = SecurityDescriptor::for_current_user(OwnerOnlyObject::File)?;
     let attributes = descriptor.attributes()?;
     let file = open_path(
         path,
-        GENERIC_READ | GENERIC_WRITE | READ_CONTROL | WRITE_DAC,
+        GENERIC_READ | GENERIC_WRITE | READ_CONTROL | WRITE_DAC | WRITE_OWNER,
         OPEN_ALWAYS,
         Some(&attributes),
     )?;
     verify_object_kind(&file, OwnerOnlyObject::File)?;
-    verify_current_user_owner(&file)?;
-    apply_owner_only_dacl(&file, OwnerOnlyObject::File)?;
+    apply_owner_only_security(&file, OwnerOnlyObject::File)?;
     verify_owner_only_security(&file, OwnerOnlyObject::File)?;
     Ok(file)
 }
@@ -301,29 +303,21 @@ fn verify_object_kind(file: &File, expected: OwnerOnlyObject) -> io::Result<()> 
     Ok(())
 }
 
-fn verify_current_user_owner(file: &File) -> io::Result<()> {
-    let (_descriptor, owner, _dacl) = query_security(file)?;
-    let current_user = current_user_sid_string()?;
-    if !sid_matches(&current_user, owner)? {
-        return Err(permission_denied(
-            "owner-only IPC object is not owned by the current user",
-        ));
-    }
-    Ok(())
-}
-
-fn apply_owner_only_dacl(file: &File, object: OwnerOnlyObject) -> io::Result<()> {
+fn apply_owner_only_security(file: &File, object: OwnerOnlyObject) -> io::Result<()> {
     let descriptor = SecurityDescriptor::for_current_user(object)?;
+    let owner = descriptor.owner()?;
     let dacl = descriptor.dacl()?;
-    let security_information = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
-    // SAFETY: the file handle is open, the DACL belongs to `descriptor`, and
-    // the descriptor remains alive for the synchronous call.
+    let security_information = OWNER_SECURITY_INFORMATION
+        | DACL_SECURITY_INFORMATION
+        | PROTECTED_DACL_SECURITY_INFORMATION;
+    // SAFETY: the file handle has owner/DACL write access; both security
+    // pointers belong to `descriptor`, which remains alive for this call.
     let status = unsafe {
         SetSecurityInfo(
             file.as_raw_handle().cast::<c_void>(),
             SE_FILE_OBJECT,
             security_information,
-            null_mut(),
+            owner,
             null_mut(),
             dacl.cast_const(),
             null_mut(),
@@ -764,6 +758,24 @@ impl SecurityDescriptor {
             ));
         }
         Ok(dacl)
+    }
+
+    fn owner(&self) -> io::Result<PSID> {
+        let mut owner = null_mut();
+        let mut defaulted = 0;
+        // SAFETY: this descriptor is valid and both output pointers refer to
+        // initialized writable storage.
+        if unsafe { GetSecurityDescriptorOwner(self.as_ptr(), &raw mut owner, &raw mut defaulted) }
+            == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if owner.is_null() {
+            return Err(invalid_data(
+                "owner-only security descriptor does not contain an owner",
+            ));
+        }
+        Ok(owner)
     }
 
     const fn as_ptr(&self) -> PSECURITY_DESCRIPTOR {
