@@ -650,8 +650,8 @@ mod tests {
 
     use super::{CreateProviderProfile, ProviderKind};
     use crate::{
-        CreateAgentSession, SecretChange, SecretRef, SecretValue, SecretVault, SecretVaultError,
-        Storage, StorageError,
+        CreateAgentSession, LOCK_FILE, SecretChange, SecretRef, SecretValue, SecretVault,
+        SecretVaultError, Storage, StorageError,
     };
 
     #[derive(Default)]
@@ -723,7 +723,7 @@ mod tests {
 
         for entry in fs::read_dir(directory.path()).expect("data dir reads") {
             let path = entry.expect("directory entry").path();
-            if path.is_file() {
+            if path.is_file() && path.file_name().is_some_and(|name| name != LOCK_FILE) {
                 let bytes = fs::read(path).expect("storage file reads");
                 assert!(
                     !bytes
