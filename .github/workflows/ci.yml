@@ -172,6 +172,8 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
         with:
           shared-key: desktop-${{ matrix.os }}
+      - name: Test local storage
+        run: cargo test -p chat2db-storage --locked
       - name: Test local attachment
         run: cargo test -p chat2db-local --locked
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

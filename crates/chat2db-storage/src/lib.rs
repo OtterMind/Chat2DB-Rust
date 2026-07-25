@@ -11,6 +11,7 @@ mod vault;
 use std::{
     collections::HashSet,
     fs::{self, File, OpenOptions},
+    io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
@@ -234,7 +235,7 @@ impl Storage {
             .map_err(|error| StorageError::io(&lock_path, error))?;
         secure_file(&lock_path)?;
         if let Err(error) = FileExt::try_lock_exclusive(&directory_lock) {
-            if error.kind() == std::io::ErrorKind::WouldBlock {
+            if lock_is_contended(&error) {
                 return Err(StorageError::AlreadyOpen(data_dir));
             }
             return Err(StorageError::io(lock_path, error));
@@ -380,6 +381,14 @@ fn apply_migration(connection: &Connection, sql: &str) -> Result<(), StorageErro
         return Err(error.into());
     }
     Ok(())
+}
+
+fn lock_is_contended(error: &io::Error) -> bool {
+    let expected = fs2::lock_contended_error();
+    match (error.raw_os_error(), expected.raw_os_error()) {
+        (Some(actual), Some(expected)) => actual == expected,
+        _ => error.kind() == expected.kind(),
+    }
 }
 
 fn verify_integrity(connection: &Connection) -> Result<(), StorageError> {
