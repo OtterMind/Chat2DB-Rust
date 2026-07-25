@@ -4,8 +4,7 @@ Private implementation of the Chat2DB Community hybrid runtime.
 
 ## Current state
 
-The repository has completed the first five buildable stages and now provides
-an independently reviewable Stage 6 slice:
+The repository has completed the first six buildable stages:
 
 - canonical Rust API contracts;
 - a transport-neutral Rust application service root;
@@ -46,25 +45,31 @@ an independently reviewable Stage 6 slice:
   unknown-outcome handling; and
 - durable Agent run start, snapshot, cancellation, permission decision, and
   replay/live streaming through Axum SSE, Tauri channels, and matching
-  frontend HTTP/Tauri observers.
+  frontend HTTP/Tauri observers;
+- an authenticated owner-only local attachment started by both product hosts,
+  plus a JSON CLI for datasource discovery, forced-read-only query lifecycle,
+  cancellation, and retained-result paging; and
+- an `rmcp` 2.2 stdio server with five bounded datasource/query tools backed by
+  that same running `Application`.
 
-Stage 6 remains in progress: the built-in Agent execution path and product
-transports are implemented, while `rmcp` integration and local CLI/MCP
-attachment remain staged work in [`docs/stages.md`](docs/stages.md). Signed
-driver packs and the existing Chat2DB plugin/ANTLR estate also remain staged.
-Web and desktop compose the complete Stage 5 runtime plus the implemented Stage
-6 slice; the current CLI remains a status-only adapter. Driver loading is
-proven through the internal H2 product fixture, while user-facing driver-pack
-provisioning remains Stage 7.
+Stage 6 is complete. Web and desktop own the product runtime and publish its
+owner-only local endpoint; CLI and MCP attach to that host and never contact
+Java directly. The current MCP surface is deliberately read-only and does not
+accept JDBC bind parameters. A complete end-user Agent workspace and
+CLI-started headless host remain follow-on product work. Signed driver packs and
+the existing Chat2DB plugin/ANTLR estate remain Stage 7; driver loading is
+currently proven through the internal H2 product fixture.
 
 ## Architecture
 
 The final runtime is intentionally hybrid:
 
 ```text
-React / TypeScript
-  -> Tauri IPC or Axum HTTP
-  -> Rust product runtime
+React / TypeScript              CLI / MCP client
+  -> Tauri IPC or Axum HTTP       -> JSON CLI or MCP stdio
+                                  -> owner-only local attachment
+                    \            /
+                     -> Rust product runtime
   -> framed Protobuf IPC
   -> private Java compatibility engine
   -> Chat2DB plugins + JDBC + Java ANTLR
@@ -126,12 +131,27 @@ listens on `127.0.0.1:4210` and proxies `/api` to the Rust runtime.
 `CHAT2DB_VAULT_MASTER_KEY` selects the OS credential store. Any non-loopback
 `CHAT2DB_BIND` also requires `CHAT2DB_ACCESS_TOKEN` with at least 32 bytes.
 
+The running Web or desktop host also publishes the owner-only local endpoint
+used by CLI and MCP. Point either adapter at the same profile explicitly when
+the default data directory is not used:
+
+```bash
+cargo run -p chat2db-cli -- --data-dir /path/to/profile datasources
+cargo run -p chat2db-mcp -- --data-dir /path/to/profile
+```
+
+MCP clients launch `chat2db-mcp` as a stdio server. Its stdout is reserved for
+JSON-RPC; diagnostics use stderr. `CHAT2DB_MCP_LOG` can raise logging for the
+Chat2DB target only, while dependency logs remain capped at `WARN` so SQL and
+result payloads are not emitted by `rmcp` debug tracing.
+
 ## Repository layout
 
 ```text
 apps/
   chat2db-cli/       Rust command-line adapter
   chat2db-desktop/   Tauri 2 desktop adapter
+  chat2db-mcp/       bounded stdio MCP adapter
   chat2db-web/       Axum Web adapter
   frontend/          shared React application
 contracts/openapi/   generated external HTTP contract
@@ -141,6 +161,8 @@ crates/
   chat2db-core/      transport-neutral product services
   chat2db-engine-protocol/ generated internal wire types and frame codec
   chat2db-java-bridge/ supervised Java process client
+  chat2db-local/     owner-only CLI/MCP attachment protocol
+  chat2db-local-ipc-windows/ Windows named-pipe and ACL implementation
   chat2db-storage/   SQLite state, secret references, and retained results
 proto/               canonical Rust-Java process schema
 java/

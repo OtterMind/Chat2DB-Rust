@@ -2,26 +2,27 @@
 
 ## Status
 
-The repository has completed the buildable baseline, the versioned Rust-to-Java
-process protocol, the JDBC vertical slice, the local storage foundation, and
-the Web/desktop product transports. Stage 6 is in progress: provider adapters,
-the bounded durable Agent runtime, SQL read/write tools, explicit write
-permissions, and Web/Tauri run transports are implemented. `rmcp` and local
-CLI/MCP attachment are not implemented yet. In addition to lifecycle
-supervision, the implemented bridge loads external driver JARs, owns sessions
-and local transactions, executes updates, and streams typed query batches with
-credits, cancellation, deadlines, hard limits, and explicit unknown outcomes.
-The complete storage-to-Java-to-retained-result path is cross-language tested
-against H2 without embedding H2 in the compatibility-engine JAR.
+The repository has completed the buildable baseline, versioned Rust-to-Java
+process protocol, JDBC vertical slice, local storage foundation, Web/desktop
+product transports, and Stage 6 Agent/CLI/MCP delivery. Stage 6 includes direct
+provider adapters, the bounded durable Agent runtime, SQL read/write tools,
+explicit write permissions, Web/Tauri run transports, an owner-only local
+attachment, a read-query CLI, and an `rmcp` stdio server. The implemented Java
+bridge loads external driver JARs, owns sessions and local transactions,
+executes updates, and streams typed query batches with credits, cancellation,
+deadlines, hard limits, and explicit unknown outcomes. The complete
+storage-to-Java-to-retained-result path is cross-language tested against H2
+without embedding H2 in the compatibility-engine JAR.
 
-The Web and Tauri hosts now open the production vault, SQLite storage, and Java
+The Web and Tauri hosts open the production vault, SQLite storage, and Java
 supervisor before exposing a shared `Application`. Axum serves JSON, SSE, and
 the React SPA; Tauri exposes commands and per-subscription channels without a
-localhost product server. That same `Application` owns durable Agent run
-execution, replay, cancellation, and write-permission decisions. MCP, managed
-driver packs, the existing Chat2DB plugin/parser estate, and packaging remain
-target components. The status-only CLI does not compose the product runtime and
-therefore still reports optional components as disabled.
+localhost product server. Both hosts also publish an owner-only local endpoint
+for the CLI and MCP process. That same `Application` owns query and Agent run
+execution, replay, cancellation, and write-permission decisions. Managed driver
+packs, the existing Chat2DB plugin/parser estate, and packaging remain target
+components. CLI and MCP attach to a running host rather than composing a second
+product runtime.
 
 ## Ownership
 
@@ -47,8 +48,10 @@ React in system WebView         React in browser
   -> Rust host                    -> Axum Rust host
           \                       /
            -> Rust application services
+              <- owner-only local attachment <- CLI
+              <- owner-only local attachment <- rmcp stdio server <- MCP client
               -> SQLite and result store
-              -> AI / MCP / CLI adapters
+              -> AI agent runtime
               -> Java process supervisor
                  -> Protobuf stdin/stdout
                  -> Java database compatibility engine
@@ -216,12 +219,42 @@ Stage 5 proves this product path with an internally preloaded H2 fixture. It
 does not expose driver installation or driver-pack management; signed core and
 long-tail driver provisioning remains Stage 7.
 
+## Local attachment and MCP boundary
+
+Web and desktop start `LocalServer` with the same `Application` used by their
+primary transport and fail startup if the local endpoint cannot be secured.
+Unix uses an owner-only Unix-domain socket and peer credentials. Windows uses
+an owner-only named pipe plus owner-validated endpoint metadata. Both platforms
+publish a versioned endpoint record in the process-owned data directory,
+authenticate each request with a random 32-byte token, and enforce bounded
+length-prefixed JSON frames and I/O deadlines.
+
+The local protocol exposes health, secret-free datasource listing,
+forced-read-only query start, operation snapshot, idempotent cancellation, and
+row/byte-bounded result paging. The CLI maps these operations to structured JSON
+commands. It does not start another product runtime or contact Java directly.
+
+`chat2db-mcp` uses `rmcp` 2.2 over standard stdio and maps five tools onto the
+same `LocalClient`: `list_datasources`, `query_database`,
+`inspect_query_operation`, `cancel_database_query`, and
+`inspect_query_result`. Query start returns only an operation id. Query
+retention is capped at 10,000 rows, 16 MiB, and 900 seconds; each result page is
+capped at 1,000 rows and 512 KiB. Product `ApiError` values retain their stable
+codes, while local paths and transport details are redacted. Stdout is
+protocol-only, and dependency logging cannot be raised above `WARN` through the
+MCP log setting.
+
+This MCP slice has no write tool, Agent-run tool, or JDBC bind-parameter input.
+Those capabilities are not implied by the built-in Agent's broader SQL tool
+set.
+
 ## Security baseline
 
 - Community binds to loopback by default.
 - Non-loopback Web mode requires an explicit access token.
-- Local CLI/MCP attachment must use an owner-only Unix-domain socket or Windows
-  named pipe when it is implemented.
+- Local CLI/MCP attachment uses an owner-only Unix-domain socket or Windows
+  named pipe, owner-only endpoint metadata, per-start random authentication,
+  bounded frames, and timeouts.
 - Storage requires an injected, readiness-checked credential vault and never
   persists connection descriptors in SQLite or Java. Interactive hosts use an
   OS-keyring-rooted encrypted file vault; headless mode requires an explicit
