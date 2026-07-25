@@ -9,6 +9,11 @@ mod hub;
     reason = "the next staged agent-run transport slice consumes this foundation"
 )]
 mod provider;
+#[allow(
+    dead_code,
+    reason = "the next staged agent-run transport slice consumes this foundation"
+)]
+mod transcript;
 
 pub(crate) use hub::AgentRunHub;
 pub use hub::AgentRunSubscription;

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fmt};
+use std::{collections::BTreeMap, fmt, ops::Range};
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -749,6 +749,8 @@ pub struct CompactionEvent {
     pub after: ContextUsage,
     #[serde(skip)]
     pub(crate) replacement_summary: Option<String>,
+    #[serde(skip)]
+    pub(crate) compacted_message_range: Option<Range<usize>>,
 }
 
 impl CompactionEvent {
@@ -758,10 +760,18 @@ impl CompactionEvent {
     pub fn replacement_summary(&self) -> Option<&str> {
         self.replacement_summary.as_deref()
     }
+
+    /// Returns the pre-compaction message range for exact durable-ordinal mapping.
+    /// This value is omitted from serialization and from `Debug`.
+    #[must_use]
+    pub fn compacted_message_range(&self) -> Option<Range<usize>> {
+        self.compacted_message_range.clone()
+    }
 }
 
 impl std::fmt::Debug for CompactionEvent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let _ = &self.compacted_message_range;
         formatter
             .debug_struct("CompactionEvent")
             .field("cause", &self.cause)

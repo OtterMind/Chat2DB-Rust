@@ -1082,6 +1082,39 @@ impl Storage {
             .collect()
     }
 
+    /// Returns the greatest durable message ordinal covered by compaction in one session.
+    ///
+    /// Coverage includes deterministic trimming recorded on runs and summaries
+    /// recorded as canonical messages.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, persisted-data, or `SQLite` failures.
+    pub fn get_agent_session_compaction_coverage(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<u64>, StorageError> {
+        let connection = self.connection()?;
+        let (exists, maximum): (bool, Option<i64>) = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_sessions WHERE id = ?1), MAX(coverage)
+             FROM (
+                SELECT compacted_through_ordinal AS coverage
+                FROM agent_runs WHERE session_id = ?1
+                UNION ALL
+                SELECT summary_through_ordinal AS coverage
+                FROM agent_messages WHERE session_id = ?1
+             )",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if !exists {
+            return Err(StorageError::AgentSessionNotFound(session_id.to_owned()));
+        }
+        maximum
+            .map(|value| from_sql_u64(value, "compacted message ordinal"))
+            .transpose()
+    }
+
     /// Atomically persists a running run and its initiating user message.
     ///
     /// # Errors
@@ -1214,6 +1247,7 @@ impl Storage {
             update.compaction_count,
             update.compacted_through_ordinal,
         )?;
+        validate_run_compaction_boundary(&transaction, id, update.compacted_through_ordinal)?;
         let timestamp = now_millis()?;
         let changed = transaction.execute(
             "UPDATE agent_runs
@@ -1294,6 +1328,7 @@ impl Storage {
             input.compaction_count,
             input.compacted_through_ordinal,
         )?;
+        validate_run_compaction_boundary(&transaction, id, input.compacted_through_ordinal)?;
         let timestamp = now_millis()?;
         let mut messages = Vec::with_capacity(normalized.len());
         for message in normalized {
@@ -1399,6 +1434,7 @@ impl Storage {
             input.compaction_count,
             input.compacted_through_ordinal,
         )?;
+        validate_run_compaction_boundary(&transaction, id, input.compacted_through_ordinal)?;
         let timestamp = now_millis()?;
         let mut messages = Vec::with_capacity(normalized.len());
         for message in normalized {
@@ -1531,6 +1567,7 @@ impl Storage {
             input.compaction_count,
             input.compacted_through_ordinal,
         )?;
+        validate_run_compaction_boundary(&transaction, id, input.compacted_through_ordinal)?;
         let timestamp = now_millis()?;
         let mut messages = Vec::with_capacity(normalized.len());
         for message in normalized {
@@ -2106,6 +2143,7 @@ impl Storage {
             input.compaction_count,
             input.compacted_through_ordinal,
         )?;
+        validate_run_compaction_boundary(&transaction, run_id, input.compacted_through_ordinal)?;
         let timestamp = now_millis()?;
         let mut messages = Vec::with_capacity(normalized.len());
         for message in normalized {
@@ -3011,6 +3049,38 @@ fn validate_run_progress(
     Ok(())
 }
 
+fn validate_run_compaction_boundary(
+    connection: &Connection,
+    run_id: &str,
+    compacted_through_ordinal: Option<u64>,
+) -> Result<(), StorageError> {
+    let Some(compacted_through_ordinal) = compacted_through_ordinal else {
+        return Ok(());
+    };
+    let (count, initiating_ordinal): (i64, Option<i64>) = connection.query_row(
+        "SELECT COUNT(*), MIN(ordinal)
+         FROM agent_messages WHERE run_id = ?1 AND role = 'user'",
+        [run_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if count != 1 {
+        return Err(StorageError::InvalidAgent(
+            "persisted agent run initiating message is invalid",
+        ));
+    }
+    let initiating_ordinal = initiating_ordinal
+        .ok_or(StorageError::InvalidAgent(
+            "persisted agent run initiating message is invalid",
+        ))
+        .and_then(|value| from_sql_u64(value, "agent message ordinal"))?;
+    if compacted_through_ordinal >= initiating_ordinal {
+        return Err(StorageError::InvalidAgent(
+            "agent compaction coverage must precede its initiating user message",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_safe_error(code: &str, message: Option<&str>) -> Result<(), StorageError> {
     if code.trim().is_empty()
         || code.len() > MAX_RUN_ERROR_CODE_BYTES
@@ -3240,11 +3310,11 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        AgentMessageRole, AgentRunMessage, AgentRunStatus, AppendAgentMessage, CancelAgentRun,
-        CompleteAgentRun, CreateAgentSession, FailAgentRun, MAX_AGENT_MESSAGE_BYTES,
-        MAX_AGENT_MESSAGE_BYTES_PER_SESSION, RequestToolPermission, SqlPermissionMode,
-        StartAgentRun, ToolPermissionDecision, ToolPermissionStatus, UnknownAgentWrite,
-        UpdateAgentSession,
+        AgentMessageRole, AgentRunMessage, AgentRunStatus, AgentRunUpdate, AppendAgentMessage,
+        CancelAgentRun, CompleteAgentRun, CreateAgentSession, FailAgentRun,
+        MAX_AGENT_MESSAGE_BYTES, MAX_AGENT_MESSAGE_BYTES_PER_SESSION, RequestToolPermission,
+        SqlPermissionMode, StartAgentRun, ToolPermissionDecision, ToolPermissionStatus,
+        UnknownAgentWrite, UpdateAgentSession,
     };
     use crate::{
         CreateDatasource, CreateProviderProfile, PageRequest, ProviderKind, SecretChange,
@@ -4155,6 +4225,174 @@ mod tests {
                 Err(StorageError::InvalidAgent(_))
             ));
         }
+    }
+
+    #[test]
+    fn session_compaction_coverage_uses_run_and_summary_maxima() {
+        let directory = TempDir::new().expect("temp dir");
+        let (storage, provider_id) = setup(&directory);
+        let session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("session creates");
+        assert_eq!(
+            storage
+                .get_agent_session_compaction_coverage(&session.id)
+                .expect("empty coverage loads"),
+            None
+        );
+        assert!(matches!(
+            storage.get_agent_session_compaction_coverage("missing"),
+            Err(StorageError::AgentSessionNotFound(id)) if id == "missing"
+        ));
+
+        for (role, text) in [
+            (AgentMessageRole::User, "original question"),
+            (AgentMessageRole::Assistant, "original answer"),
+        ] {
+            storage
+                .append_agent_message(
+                    &session.id,
+                    AppendAgentMessage {
+                        role,
+                        summary_through_ordinal: None,
+                        content_json: message_json(text),
+                    },
+                )
+                .expect("original message appends");
+        }
+        storage
+            .append_agent_message(
+                &session.id,
+                AppendAgentMessage {
+                    role: AgentMessageRole::Summary,
+                    summary_through_ordinal: Some(1),
+                    content_json: message_json("first summary"),
+                },
+            )
+            .expect("summary appends");
+        assert_eq!(
+            storage
+                .get_agent_session_compaction_coverage(&session.id)
+                .expect("summary coverage loads"),
+            Some(1)
+        );
+
+        let started = storage
+            .start_agent_run(
+                &session.id,
+                StartAgentRun {
+                    user_message: "next question".to_owned(),
+                    sql_permission_mode: SqlPermissionMode::ReadOnly,
+                },
+            )
+            .expect("run starts");
+        storage
+            .complete_agent_run(
+                &started.run.id,
+                AgentRunStatus::Running,
+                CompleteAgentRun {
+                    last_sequence: 2,
+                    model_rounds: 1,
+                    tool_calls: 0,
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    total_tokens: 2,
+                    messages: vec![AgentRunMessage {
+                        role: AgentMessageRole::Assistant,
+                        summary_through_ordinal: None,
+                        content_json: message_json("next answer"),
+                    }],
+                    compaction_count: 1,
+                    compacted_through_ordinal: Some(2),
+                },
+            )
+            .expect("run completes");
+        assert_eq!(
+            storage
+                .get_agent_session_compaction_coverage(&session.id)
+                .expect("run coverage loads"),
+            Some(2)
+        );
+
+        storage
+            .append_agent_message(
+                &session.id,
+                AppendAgentMessage {
+                    role: AgentMessageRole::Summary,
+                    summary_through_ordinal: Some(4),
+                    content_json: message_json("later summary"),
+                },
+            )
+            .expect("later summary appends");
+        assert_eq!(
+            storage
+                .get_agent_session_compaction_coverage(&session.id)
+                .expect("maximum coverage loads"),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn run_compaction_coverage_must_precede_its_initiating_user() {
+        let directory = TempDir::new().expect("temp dir");
+        let (storage, provider_id) = setup(&directory);
+        let session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("session creates");
+        for (role, text) in [
+            (AgentMessageRole::User, "previous question"),
+            (AgentMessageRole::Assistant, "previous answer"),
+        ] {
+            storage
+                .append_agent_message(
+                    &session.id,
+                    AppendAgentMessage {
+                        role,
+                        summary_through_ordinal: None,
+                        content_json: message_json(text),
+                    },
+                )
+                .expect("previous message appends");
+        }
+        let started = storage
+            .start_agent_run(
+                &session.id,
+                StartAgentRun {
+                    user_message: "current question".to_owned(),
+                    sql_permission_mode: SqlPermissionMode::ReadOnly,
+                },
+            )
+            .expect("run starts");
+        assert_eq!(started.user_message.ordinal, 2);
+
+        let update = |coverage| AgentRunUpdate {
+            status: AgentRunStatus::Running,
+            last_sequence: 2,
+            model_rounds: 0,
+            tool_calls: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            compaction_count: 1,
+            compacted_through_ordinal: Some(coverage),
+        };
+        let error = storage
+            .update_agent_run(
+                &started.run.id,
+                AgentRunStatus::Running,
+                update(started.user_message.ordinal),
+            )
+            .expect_err("coverage cannot include the initiating user");
+        assert!(matches!(error, StorageError::InvalidAgent(_)));
+
+        let updated = storage
+            .update_agent_run(
+                &started.run.id,
+                AgentRunStatus::Running,
+                update(started.user_message.ordinal - 1),
+            )
+            .expect("the same sequence remains reusable after validation failure");
+        assert_eq!(updated.compacted_through_ordinal, Some(1));
     }
 
     #[test]

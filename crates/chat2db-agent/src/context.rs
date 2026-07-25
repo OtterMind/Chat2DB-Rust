@@ -104,6 +104,7 @@ impl ContextManager {
                 before,
                 after: before,
                 replacement_summary: None,
+                compacted_message_range: None,
             }));
         }
 
@@ -123,7 +124,7 @@ impl ContextManager {
             match summary {
                 Ok(summary) if !summary.trim().is_empty() && summary.len() <= MAX_SUMMARY_BYTES => {
                     messages.splice(
-                        span,
+                        span.clone(),
                         [Message::system(format!("Conversation summary:\n{summary}"))],
                     );
                     let after = estimate(provider, messages, tools)?;
@@ -136,6 +137,7 @@ impl ContextManager {
                             before,
                             after,
                             replacement_summary: Some(summary),
+                            compacted_message_range: Some(span),
                         }));
                     }
                     messages.clone_from(&original);
@@ -146,6 +148,8 @@ impl ContextManager {
         }
 
         let mut removed_turns = 0;
+        let compacted_start = ranges.first().map(|range| range.start);
+        let mut removed_messages = 0_usize;
         loop {
             let usage = estimate(provider, messages, tools)?;
             if !budget.threshold_reached(usage) {
@@ -154,6 +158,9 @@ impl ContextManager {
             let Some(range) = compactable_turns(messages).into_iter().next() else {
                 break;
             };
+            removed_messages = removed_messages
+                .checked_add(range.len())
+                .ok_or(AgentError::ContextBudgetExceeded)?;
             messages.drain(range);
             removed_turns += 1;
         }
@@ -169,6 +176,9 @@ impl ContextManager {
             before,
             after,
             replacement_summary: None,
+            compacted_message_range: compacted_start
+                .filter(|_| removed_messages > 0)
+                .map(|start| start..start + removed_messages),
         }))
     }
 }
@@ -357,9 +367,13 @@ mod tests {
         assert_eq!(event.strategy, crate::CompactionStrategy::Summary);
         assert_eq!(event.removed_turns, 1);
         assert_eq!(event.replacement_summary(), Some("short"));
+        assert_eq!(event.compacted_message_range(), Some(1..3));
         let serialized = serde_json::to_string(&event).expect("compaction event serializes");
         assert!(!serialized.contains("short"));
-        assert!(!format!("{event:?}").contains("short"));
+        assert!(!serialized.contains("compactedMessageRange"));
+        let debug = format!("{event:?}");
+        assert!(!debug.contains("short"));
+        assert!(!debug.contains("compacted_message_range"));
         assert!(matches!(&messages[0].blocks()[0], MessageBlock::Text(text) if text == "system"));
         assert!(
             matches!(&messages[1].blocks()[0], MessageBlock::Text(text) if text.contains("short"))
@@ -386,11 +400,54 @@ mod tests {
 
         assert!(event.summary_failed);
         assert_eq!(event.removed_turns, 1);
+        assert_eq!(event.compacted_message_range(), Some(1..3));
         assert_eq!(messages[0].role(), Role::System);
         assert_eq!(messages[1].role(), Role::User);
         assert!(
             matches!(&messages[1].blocks()[0], MessageBlock::Text(text) if text.starts_with('b'))
         );
+    }
+
+    #[tokio::test]
+    async fn deterministic_trim_reports_one_original_range_for_multiple_turns() {
+        let mut messages = vec![
+            Message::system("s"),
+            Message::user("a".repeat(50)),
+            Message::text(Role::Assistant, "a".repeat(10)),
+            Message::user("b".repeat(50)),
+            Message::text(Role::Assistant, "b".repeat(10)),
+            Message::user("l".repeat(20)),
+        ];
+
+        let event = ContextManager::new()
+            .prepare(&ByteProvider, &mut messages, &[], CancellationToken::new())
+            .await
+            .expect("compaction succeeds")
+            .expect("event emitted");
+
+        assert_eq!(event.removed_turns, 2);
+        assert_eq!(event.compacted_message_range(), Some(1..5));
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role(), Role::System);
+        assert_eq!(messages[1].role(), Role::User);
+    }
+
+    #[tokio::test]
+    async fn threshold_without_a_complete_turn_has_no_compaction_range() {
+        let mut messages = vec![
+            Message::system("s".repeat(10)),
+            Message::user("u".repeat(70)),
+        ];
+
+        let event = ContextManager::new()
+            .prepare(&ByteProvider, &mut messages, &[], CancellationToken::new())
+            .await
+            .expect("threshold observation succeeds")
+            .expect("event emitted");
+
+        assert_eq!(event.removed_turns, 0);
+        assert_eq!(event.compacted_message_range(), None);
+        assert_eq!(messages.len(), 2);
     }
 
     #[tokio::test]
