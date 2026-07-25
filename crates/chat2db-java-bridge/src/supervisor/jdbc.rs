@@ -1707,6 +1707,10 @@ mod tests {
         }
     }
 
+    fn temporary_artifact(file_name: impl AsRef<Path>) -> DriverArtifact {
+        artifact(std::env::temp_dir().join(file_name))
+    }
+
     fn null_parameter(position: u32) -> JdbcParameter {
         JdbcParameter {
             position,
@@ -1825,7 +1829,7 @@ mod tests {
 
     #[test]
     fn driver_validation_enforces_class_artifact_and_path_limits() {
-        let valid_artifact = artifact("/tmp/chat2db-driver.jar");
+        let valid_artifact = temporary_artifact("chat2db-driver.jar");
         DriverSpec {
             driver_class: "org.example.Driver".to_owned(),
             artifacts: vec![valid_artifact.clone()],
@@ -1858,7 +1862,7 @@ mod tests {
             "driver artifacts",
         );
         assert_invalid(
-            artifact(format!("/{}", "x".repeat(MAX_PATH_BYTES))).validate(),
+            temporary_artifact("x".repeat(MAX_PATH_BYTES)).validate(),
             "driver artifact path",
         );
         assert_invalid(
@@ -1866,7 +1870,7 @@ mod tests {
             "must be absolute",
         );
 
-        let mut oversized_artifact = artifact("/tmp/oversized-driver.jar");
+        let mut oversized_artifact = temporary_artifact("oversized-driver.jar");
         oversized_artifact.byte_len = MAX_DRIVER_ARTIFACT_BYTES + 1;
         assert_invalid(
             DriverSpec {
@@ -1877,7 +1881,7 @@ mod tests {
             "driver artifact cannot exceed",
         );
 
-        let mut maximum_artifact = artifact("/tmp/maximum-driver.jar");
+        let mut maximum_artifact = temporary_artifact("maximum-driver.jar");
         maximum_artifact.byte_len = MAX_DRIVER_ARTIFACT_BYTES;
         assert_invalid(
             DriverSpec {
@@ -1891,8 +1895,8 @@ mod tests {
 
     #[test]
     fn driver_identity_depends_on_class_and_ordered_digests() {
-        let first = artifact("/tmp/first.jar");
-        let mut second = artifact("/tmp/second.jar");
+        let first = temporary_artifact("first.jar");
+        let mut second = temporary_artifact("second.jar");
         second.sha256 = [8; 32];
 
         let identity = |driver_class: &str, artifacts: Vec<DriverArtifact>| {
