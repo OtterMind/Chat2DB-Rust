@@ -1,8 +1,8 @@
 use chat2db_storage::{
-    AgentMessageRole, AgentRunStatus, AgentRunUpdate, AppendAgentMessage, CreateAgentSession,
-    CreateProviderProfile, MAX_AGENT_MESSAGE_BYTES, MAX_RESULT_PAGE_BYTES, MAX_RESULT_PAGE_ROWS,
-    MIN_RESULT_PAGE_BYTES, PageRequest, ProviderKind, PurgeReport, ToolPermissionDecision,
-    UpdateAgentSession,
+    AgentCompaction, AgentMessageRole, AgentRunStatus, AgentRunUpdate, AppendAgentMessage,
+    CompactAgentRun, CreateAgentSession, CreateProviderProfile, MAX_AGENT_MESSAGE_BYTES,
+    MAX_RESULT_PAGE_BYTES, MAX_RESULT_PAGE_ROWS, MIN_RESULT_PAGE_BYTES, PageRequest, ProviderKind,
+    PurgeReport, ToolPermissionDecision, UpdateAgentSession,
 };
 
 #[test]
@@ -56,12 +56,29 @@ fn provider_and_agent_contracts_are_nameable_outside_the_crate() {
         compaction_count: 0,
         compacted_through_ordinal: None,
     };
+    let compaction = CompactAgentRun {
+        last_sequence: 2,
+        model_rounds: 0,
+        tool_calls: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        compaction: AgentCompaction::DeterministicTrim {
+            compacted_through_ordinal: 1,
+        },
+    };
 
     assert_eq!(provider.max_output_tokens, 8_192);
     assert!(session.system_prompt.is_some());
     assert!(update.datasource_id.is_some());
     assert_eq!(message.role, AgentMessageRole::User);
     assert_eq!(run.status, AgentRunStatus::Running);
+    assert!(matches!(
+        compaction.compaction,
+        AgentCompaction::DeterministicTrim {
+            compacted_through_ordinal: 1
+        }
+    ));
     assert_eq!(
         ToolPermissionDecision::Approve,
         ToolPermissionDecision::Approve

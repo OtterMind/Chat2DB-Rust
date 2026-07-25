@@ -11,6 +11,11 @@ mod hub;
 mod provider;
 #[allow(
     dead_code,
+    reason = "the next staged agent-run worker consumes this durable event bridge"
+)]
+mod runtime;
+#[allow(
+    dead_code,
     reason = "the next staged agent-run transport slice consumes this foundation"
 )]
 mod transcript;

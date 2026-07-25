@@ -287,18 +287,65 @@ pub struct AgentRunUpdate {
     pub output_tokens: u64,
     /// Accumulated provider total tokens.
     pub total_tokens: u64,
-    /// Completed compaction passes.
+    /// Already-durable compaction count; ordinary progress cannot change it.
     pub compaction_count: u64,
-    /// Latest message ordinal represented by the compacted context.
+    /// Already-durable compaction coverage; ordinary progress cannot change it.
     pub compacted_through_ordinal: Option<u64>,
+}
+
+/// Exact durable effect of one context-compaction event.
+#[derive(Clone, PartialEq, Eq)]
+pub enum AgentCompaction {
+    /// The threshold fired but no complete historical turn was removable.
+    NoOp,
+    /// Complete historical turns were discarded without a replacement message.
+    DeterministicTrim {
+        /// Greatest durable ordinal removed by this pass.
+        compacted_through_ordinal: u64,
+    },
+    /// Complete historical turns were replaced by one bounded summary.
+    Summary {
+        /// Greatest durable ordinal represented by the summary.
+        compacted_through_ordinal: u64,
+        /// Canonical visible summary content.
+        content_json: String,
+    },
+}
+
+/// One context-compaction event persisted with its exact durable effect.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CompactAgentRun {
+    /// Exact next event sequence represented by this compaction.
+    pub last_sequence: u64,
+    /// Completed model rounds.
+    pub model_rounds: u64,
+    /// Started tool calls.
+    pub tool_calls: u64,
+    /// Accumulated provider input tokens.
+    pub input_tokens: u64,
+    /// Accumulated provider output tokens.
+    pub output_tokens: u64,
+    /// Accumulated provider total tokens.
+    pub total_tokens: u64,
+    /// Exact no-op, deterministic-trim, or summary effect.
+    pub compaction: AgentCompaction,
+}
+
+/// Durable compaction progress and its optional atomically inserted summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactedAgentRun {
+    /// Updated durable run snapshot.
+    pub run: AgentRunRecord,
+    /// Summary appended by the same transaction, if summary compaction won.
+    pub summary_message: Option<AgentMessageRecord>,
 }
 
 /// One complete provider-neutral message appended as part of a run transaction.
 #[derive(Clone, PartialEq, Eq)]
 pub struct AgentRunMessage {
-    /// Assistant, tool, or summary role.
+    /// Assistant or tool role. Summary messages use [`CompactAgentRun`].
     pub role: AgentMessageRole,
-    /// Last original message represented by a summary.
+    /// Reserved for the role contract and required to be absent here.
     pub summary_through_ordinal: Option<u64>,
     /// Canonical provider-neutral message-content JSON array.
     pub content_json: String,
@@ -404,7 +451,7 @@ pub struct FailAgentRun {
     pub error_code: String,
     /// Optional safe, bounded user-visible failure text.
     pub error_message: Option<String>,
-    /// Complete assistant/tool/summary messages available before failure.
+    /// Complete assistant/tool messages available before failure.
     pub messages: Vec<AgentRunMessage>,
     /// Completed compaction passes.
     pub compaction_count: u64,
@@ -436,7 +483,7 @@ pub struct CancelAgentRun {
     pub output_tokens: u64,
     /// Accumulated provider total tokens.
     pub total_tokens: u64,
-    /// Complete assistant/tool/summary messages available before cancellation.
+    /// Complete assistant/tool messages available before cancellation.
     pub messages: Vec<AgentRunMessage>,
     /// Completed compaction passes.
     pub compaction_count: u64,
@@ -468,7 +515,7 @@ pub struct UnknownAgentWrite {
     pub output_tokens: u64,
     /// Accumulated provider total tokens.
     pub total_tokens: u64,
-    /// Complete assistant/tool/summary messages available before the unknown outcome.
+    /// Complete assistant/tool messages available before the unknown outcome.
     pub messages: Vec<AgentRunMessage>,
     /// Completed compaction passes.
     pub compaction_count: u64,
@@ -653,6 +700,43 @@ impl Debug for AgentRunMessage {
             .field("summary_through_ordinal", &self.summary_through_ordinal)
             .field("content_json_bytes", &self.content_json.len())
             .finish()
+    }
+}
+
+impl Debug for CompactAgentRun {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CompactAgentRun")
+            .field("last_sequence", &self.last_sequence)
+            .field("model_rounds", &self.model_rounds)
+            .field("tool_calls", &self.tool_calls)
+            .field("input_tokens", &self.input_tokens)
+            .field("output_tokens", &self.output_tokens)
+            .field("total_tokens", &self.total_tokens)
+            .field("compaction", &self.compaction)
+            .finish()
+    }
+}
+
+impl Debug for AgentCompaction {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoOp => formatter.write_str("NoOp"),
+            Self::DeterministicTrim {
+                compacted_through_ordinal,
+            } => formatter
+                .debug_struct("DeterministicTrim")
+                .field("compacted_through_ordinal", compacted_through_ordinal)
+                .finish(),
+            Self::Summary {
+                compacted_through_ordinal,
+                content_json,
+            } => formatter
+                .debug_struct("Summary")
+                .field("compacted_through_ordinal", compacted_through_ordinal)
+                .field("content_json_bytes", &content_json.len())
+                .finish(),
+        }
     }
 }
 
@@ -1010,6 +1094,11 @@ impl Storage {
             summary_through_ordinal,
             content_json,
         } = input;
+        if role == AgentMessageRole::Summary {
+            return Err(StorageError::InvalidAgent(
+                "summary messages require the dedicated atomic compaction API",
+            ));
+        }
         let mut connection = self.connection()?;
         let (canonical, canonical_bytes) = normalize_message_json(&connection, &content_json)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1095,24 +1184,7 @@ impl Storage {
         session_id: &str,
     ) -> Result<Option<u64>, StorageError> {
         let connection = self.connection()?;
-        let (exists, maximum): (bool, Option<i64>) = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM agent_sessions WHERE id = ?1), MAX(coverage)
-             FROM (
-                SELECT compacted_through_ordinal AS coverage
-                FROM agent_runs WHERE session_id = ?1
-                UNION ALL
-                SELECT summary_through_ordinal AS coverage
-                FROM agent_messages WHERE session_id = ?1
-             )",
-            [session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        if !exists {
-            return Err(StorageError::AgentSessionNotFound(session_id.to_owned()));
-        }
-        maximum
-            .map(|value| from_sql_u64(value, "compacted message ordinal"))
-            .transpose()
+        load_session_compaction_coverage(&connection, session_id)
     }
 
     /// Atomically persists a running run and its initiating user message.
@@ -1236,6 +1308,11 @@ impl Storage {
                 "run status transitions require their dedicated atomic API",
             ));
         }
+        validate_compaction_unchanged(
+            &current,
+            update.compaction_count,
+            update.compacted_through_ordinal,
+        )?;
         validate_run_progress(
             &current,
             update.last_sequence,
@@ -1288,6 +1365,239 @@ impl Storage {
         })
     }
 
+    /// Atomically persists one context-compaction event and its optional summary.
+    ///
+    /// Summary compaction appends the canonical summary and advances run
+    /// sequence, count, and coverage in one `IMMEDIATE` transaction.
+    /// Deterministic trim advances the same run fields without a message. A
+    /// no-op advances only the sequence and ordinary counters.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, state-conflict, cancellation/write-fence, validation,
+    /// quota, numeric-range, unknown-outcome, or `SQLite` failures.
+    #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+    pub fn compact_agent_run(
+        &self,
+        id: &str,
+        expected_status: AgentRunStatus,
+        input: CompactAgentRun,
+    ) -> Result<CompactedAgentRun, StorageError> {
+        if expected_status != AgentRunStatus::Running {
+            return Err(StorageError::InvalidAgent(
+                "agent context compaction requires a running run",
+            ));
+        }
+
+        let (requested_coverage, summary_content_json) = match &input.compaction {
+            AgentCompaction::NoOp => (None, None),
+            AgentCompaction::DeterministicTrim {
+                compacted_through_ordinal,
+            } => (Some(*compacted_through_ordinal), None),
+            AgentCompaction::Summary {
+                compacted_through_ordinal,
+                content_json,
+            } => (
+                Some(*compacted_through_ordinal),
+                Some(content_json.as_str()),
+            ),
+        };
+
+        let mut connection = self.connection()?;
+        let normalized_summary = summary_content_json
+            .map(|content_json| {
+                let (content_json, content_bytes) =
+                    normalize_message_json(&connection, content_json)?;
+                validate_message_role(AgentMessageRole::Summary, &content_json)?;
+                Ok::<_, StorageError>(NormalizedAgentRunMessage {
+                    role: AgentMessageRole::Summary,
+                    summary_through_ordinal: requested_coverage,
+                    content_json,
+                    content_bytes,
+                })
+            })
+            .transpose()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = load_run(&transaction, id)?
+            .ok_or_else(|| StorageError::AgentRunNotFound(id.to_owned()))?;
+        if current.status != expected_status {
+            return Err(run_state_conflict(id, expected_status, current.status));
+        }
+        if current.cancel_requested {
+            return Err(StorageError::InvalidAgent(
+                "agent context cannot compact after cancellation is requested",
+            ));
+        }
+        if current.write_in_flight_tool_call_id.is_some() {
+            return Err(StorageError::InvalidAgent(
+                "agent context cannot compact while a database write is in flight",
+            ));
+        }
+        if current.last_sequence.checked_add(1) != Some(input.last_sequence) {
+            return Err(StorageError::InvalidAgent(
+                "agent compaction sequence must be the next event",
+            ));
+        }
+
+        let (compaction_count, compacted_through_ordinal) =
+            if let Some(coverage) = requested_coverage {
+                if load_session_compaction_coverage(&transaction, &current.session_id)?
+                    .is_some_and(|current_coverage| coverage <= current_coverage)
+                {
+                    return Err(StorageError::InvalidAgent(
+                        "agent compaction coverage must advance the session",
+                    ));
+                }
+                (
+                    current
+                        .compaction_count
+                        .checked_add(1)
+                        .ok_or(StorageError::NumericRange("agent compaction count"))?,
+                    Some(coverage),
+                )
+            } else {
+                (current.compaction_count, current.compacted_through_ordinal)
+            };
+        validate_run_progress(
+            &current,
+            input.last_sequence,
+            input.model_rounds,
+            input.tool_calls,
+            input.input_tokens,
+            input.output_tokens,
+            input.total_tokens,
+            compaction_count,
+            compacted_through_ordinal,
+        )?;
+        validate_run_compaction_boundary(&transaction, id, requested_coverage)?;
+
+        let timestamp = now_millis()?;
+        let summary_message = normalized_summary
+            .map(|summary| {
+                append_message_in_transaction(
+                    &transaction,
+                    &current.session_id,
+                    Some(id),
+                    summary.role,
+                    summary.summary_through_ordinal,
+                    &summary.content_json,
+                    summary.content_bytes,
+                    timestamp,
+                )
+            })
+            .transpose()?;
+        let changed = transaction.execute(
+            "UPDATE agent_runs
+             SET last_sequence = ?1, model_rounds = ?2, tool_calls = ?3,
+                 input_tokens = ?4, output_tokens = ?5, total_tokens = ?6,
+                 compaction_count = ?7, compacted_through_ordinal = ?8,
+                 updated_at_ms = ?9
+             WHERE id = ?10 AND status = 'running' AND cancel_requested = 0
+                   AND write_in_flight_tool_call_id IS NULL",
+            params![
+                to_sql_i64(input.last_sequence, "agent event sequence")?,
+                to_sql_i64(input.model_rounds, "agent model rounds")?,
+                to_sql_i64(input.tool_calls, "agent tool calls")?,
+                to_sql_i64(input.input_tokens, "agent input tokens")?,
+                to_sql_i64(input.output_tokens, "agent output tokens")?,
+                to_sql_i64(input.total_tokens, "agent total tokens")?,
+                to_sql_i64(compaction_count, "agent compaction count")?,
+                compacted_through_ordinal
+                    .map(|value| to_sql_i64(value, "compacted message ordinal"))
+                    .transpose()?,
+                timestamp,
+                id,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(run_state_conflict(id, expected_status, current.status));
+        }
+        let prior_run = current.clone();
+        let mut expected_run = current;
+        expected_run.last_sequence = input.last_sequence;
+        expected_run.model_rounds = input.model_rounds;
+        expected_run.tool_calls = input.tool_calls;
+        expected_run.input_tokens = input.input_tokens;
+        expected_run.output_tokens = input.output_tokens;
+        expected_run.total_tokens = input.total_tokens;
+        expected_run.compaction_count = compaction_count;
+        expected_run.compacted_through_ordinal = compacted_through_ordinal;
+        expected_run.updated_at_ms = timestamp;
+        #[cfg(test)]
+        if crate::take_fault(crate::FaultPoint::AgentCompactionBeforeCommit) {
+            return Err(crate::injected_commit_error());
+        }
+        #[cfg(test)]
+        let commit_failure = crate::take_fault(crate::FaultPoint::AgentCompactionCommitFailure);
+        #[cfg(test)]
+        let commit_error = if commit_failure {
+            drop(transaction);
+            Some(crate::injected_commit_error())
+        } else {
+            transaction.commit().err().map(StorageError::Sqlite)
+        };
+        #[cfg(not(test))]
+        let commit_error = transaction.commit().err().map(StorageError::Sqlite);
+        #[cfg(test)]
+        let post_commit_failure = crate::take_fault(crate::FaultPoint::AgentCompactionAfterCommit);
+        #[cfg(not(test))]
+        let post_commit_failure = false;
+        if commit_error.is_some() || post_commit_failure {
+            return self.reconcile_agent_compaction_commit(
+                id,
+                &prior_run,
+                &expected_run,
+                summary_message.as_ref(),
+                commit_error.unwrap_or_else(|| StorageError::OutcomeUnknown {
+                    operation: "compact agent run",
+                    id: id.to_owned(),
+                }),
+            );
+        }
+        Ok(CompactedAgentRun {
+            run: expected_run,
+            summary_message,
+        })
+    }
+
+    fn reconcile_agent_compaction_commit(
+        &self,
+        id: &str,
+        prior_run: &AgentRunRecord,
+        expected_run: &AgentRunRecord,
+        expected_summary: Option<&AgentMessageRecord>,
+        original_error: StorageError,
+    ) -> Result<CompactedAgentRun, StorageError> {
+        let unknown = || StorageError::OutcomeUnknown {
+            operation: "compact agent run",
+            id: id.to_owned(),
+        };
+        #[cfg(test)]
+        if crate::take_fault(crate::FaultPoint::AgentCompactionReadback) {
+            return Err(unknown());
+        }
+        let connection = self.connection().map_err(|_| unknown())?;
+        let actual_run = load_run(&connection, id).map_err(|_| unknown())?;
+        let actual_summary = if let Some(expected) = expected_summary {
+            load_message(&connection, &expected.id).map_err(|_| unknown())?
+        } else {
+            None
+        };
+        let summary_applied =
+            expected_summary.is_none() || actual_summary.as_ref() == expected_summary;
+        if actual_run.as_ref() == Some(expected_run) && summary_applied {
+            return Ok(CompactedAgentRun {
+                run: expected_run.clone(),
+                summary_message: actual_summary,
+            });
+        }
+        let summary_absent = expected_summary.is_none() || actual_summary.is_none();
+        if actual_run.as_ref() == Some(prior_run) && summary_absent {
+            return Err(original_error);
+        }
+        Err(unknown())
+    }
+
     /// Atomically appends the final assistant message and completes its run.
     ///
     /// # Errors
@@ -1317,6 +1627,11 @@ impl Storage {
                 "agent run cannot complete from its current state",
             ));
         }
+        validate_compaction_unchanged(
+            &current,
+            input.compaction_count,
+            input.compacted_through_ordinal,
+        )?;
         validate_run_progress(
             &current,
             input.last_sequence,
@@ -1423,6 +1738,11 @@ impl Storage {
                 "agent run cannot fail from its current state",
             ));
         }
+        validate_compaction_unchanged(
+            &current,
+            input.compaction_count,
+            input.compacted_through_ordinal,
+        )?;
         validate_run_progress(
             &current,
             input.last_sequence,
@@ -1556,6 +1876,11 @@ impl Storage {
                 "agent run cancellation cannot finish from its current state",
             ));
         }
+        validate_compaction_unchanged(
+            &current,
+            input.compaction_count,
+            input.compacted_through_ordinal,
+        )?;
         validate_run_progress(
             &current,
             input.last_sequence,
@@ -2132,6 +2457,11 @@ impl Storage {
                 reason: "database write dispatch fence does not match",
             });
         }
+        validate_compaction_unchanged(
+            &current,
+            input.compaction_count,
+            input.compacted_through_ordinal,
+        )?;
         validate_run_progress(
             &current,
             input.last_sequence,
@@ -2542,6 +2872,22 @@ fn decode_message(raw: RawMessage) -> Result<AgentMessageRecord, StorageError> {
     })
 }
 
+fn load_message(
+    connection: &Connection,
+    id: &str,
+) -> Result<Option<AgentMessageRecord>, StorageError> {
+    let raw = connection
+        .query_row(
+            "SELECT id, session_id, run_id, ordinal, role, summary_through_ordinal,
+                    content_json, content_bytes, created_at_ms
+             FROM agent_messages WHERE id = ?1",
+            [id],
+            raw_message,
+        )
+        .optional()?;
+    raw.map(decode_message).transpose()
+}
+
 fn raw_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawRun> {
     Ok((
         row.get(0)?,
@@ -2875,10 +3221,10 @@ fn normalize_agent_run_messages(
         .map(|message| {
             if matches!(
                 message.role,
-                AgentMessageRole::System | AgentMessageRole::User
+                AgentMessageRole::System | AgentMessageRole::User | AgentMessageRole::Summary
             ) {
                 return Err(StorageError::InvalidAgent(
-                    "run message batches may contain only assistant, tool, or summary messages",
+                    "run message batches may contain only assistant or tool messages",
                 ));
             }
             let (content_json, content_bytes) =
@@ -3049,6 +3395,45 @@ fn validate_run_progress(
     Ok(())
 }
 
+fn validate_compaction_unchanged(
+    current: &AgentRunRecord,
+    compaction_count: u64,
+    compacted_through_ordinal: Option<u64>,
+) -> Result<(), StorageError> {
+    if compaction_count != current.compaction_count
+        || compacted_through_ordinal != current.compacted_through_ordinal
+    {
+        return Err(StorageError::InvalidAgent(
+            "agent compaction state requires the dedicated atomic API",
+        ));
+    }
+    Ok(())
+}
+
+fn load_session_compaction_coverage(
+    connection: &Connection,
+    session_id: &str,
+) -> Result<Option<u64>, StorageError> {
+    let (exists, maximum): (bool, Option<i64>) = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_sessions WHERE id = ?1), MAX(coverage)
+         FROM (
+            SELECT compacted_through_ordinal AS coverage
+            FROM agent_runs WHERE session_id = ?1
+            UNION ALL
+            SELECT summary_through_ordinal AS coverage
+            FROM agent_messages WHERE session_id = ?1
+         )",
+        [session_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if !exists {
+        return Err(StorageError::AgentSessionNotFound(session_id.to_owned()));
+    }
+    maximum
+        .map(|value| from_sql_u64(value, "compacted message ordinal"))
+        .transpose()
+}
+
 fn validate_run_compaction_boundary(
     connection: &Connection,
     run_id: &str,
@@ -3193,12 +3578,15 @@ fn validate_message_role(role: AgentMessageRole, content_json: &str) -> Result<(
     let blocks: Vec<ContractMessageContent> = serde_json::from_str(content_json).map_err(|_| {
         StorageError::InvalidAgent("message content does not match the canonical contract")
     })?;
-    let valid = match role {
-        AgentMessageRole::System | AgentMessageRole::User | AgentMessageRole::Summary => {
+    let valid = !blocks.is_empty() && match role {
+        AgentMessageRole::System | AgentMessageRole::User => {
             blocks.iter().all(
                 |block| matches!(block, ContractMessageContent::Text { text } if !text.is_empty()),
             )
         }
+        AgentMessageRole::Summary => blocks.iter().all(
+            |block| matches!(block, ContractMessageContent::Text { text } if !text.trim().is_empty()),
+        ),
         AgentMessageRole::Assistant => blocks.iter().all(|block| match block {
             ContractMessageContent::Text { text } => !text.is_empty(),
             ContractMessageContent::ToolCalls { calls } => {
@@ -3310,11 +3698,11 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        AgentMessageRole, AgentRunMessage, AgentRunStatus, AgentRunUpdate, AppendAgentMessage,
-        CancelAgentRun, CompleteAgentRun, CreateAgentSession, FailAgentRun,
-        MAX_AGENT_MESSAGE_BYTES, MAX_AGENT_MESSAGE_BYTES_PER_SESSION, RequestToolPermission,
-        SqlPermissionMode, StartAgentRun, ToolPermissionDecision, ToolPermissionStatus,
-        UnknownAgentWrite, UpdateAgentSession,
+        AgentCompaction, AgentMessageRole, AgentRunMessage, AgentRunStatus, AgentRunUpdate,
+        AppendAgentMessage, CancelAgentRun, CompactAgentRun, CompleteAgentRun, CreateAgentSession,
+        FailAgentRun, MAX_AGENT_MESSAGE_BYTES, MAX_AGENT_MESSAGE_BYTES_PER_SESSION,
+        MAX_AGENT_MESSAGES_PER_SESSION, RequestToolPermission, SqlPermissionMode, StartAgentRun,
+        ToolPermissionDecision, ToolPermissionStatus, UnknownAgentWrite, UpdateAgentSession,
     };
     use crate::{
         CreateDatasource, CreateProviderProfile, PageRequest, ProviderKind, SecretChange,
@@ -3388,6 +3776,33 @@ mod tests {
             .run
     }
 
+    fn create_compactable_run(storage: &Storage, session_id: &str) -> super::StartedAgentRun {
+        for (role, text) in [
+            (AgentMessageRole::User, "previous question"),
+            (AgentMessageRole::Assistant, "previous answer"),
+        ] {
+            storage
+                .append_agent_message(
+                    session_id,
+                    AppendAgentMessage {
+                        role,
+                        summary_through_ordinal: None,
+                        content_json: message_json(text),
+                    },
+                )
+                .expect("historical message appends");
+        }
+        storage
+            .start_agent_run(
+                session_id,
+                StartAgentRun {
+                    user_message: "current question".to_owned(),
+                    sql_permission_mode: SqlPermissionMode::AskBeforeWrite,
+                },
+            )
+            .expect("run starts")
+    }
+
     fn permission_input(
         tool_call_id: &str,
         digest: [u8; 32],
@@ -3405,6 +3820,33 @@ mod tests {
 
     fn message_json(text: &str) -> String {
         format!(r#"[{{"type":"text","text":"{text}"}}]"#)
+    }
+
+    fn compaction_input(
+        last_sequence: u64,
+        coverage: Option<u64>,
+        summary: Option<&str>,
+    ) -> CompactAgentRun {
+        let compaction = match (coverage, summary) {
+            (None, None) => AgentCompaction::NoOp,
+            (Some(compacted_through_ordinal), None) => AgentCompaction::DeterministicTrim {
+                compacted_through_ordinal,
+            },
+            (Some(compacted_through_ordinal), Some(summary)) => AgentCompaction::Summary {
+                compacted_through_ordinal,
+                content_json: message_json(summary),
+            },
+            (None, Some(_)) => panic!("summary compaction requires coverage"),
+        };
+        CompactAgentRun {
+            last_sequence,
+            model_rounds: 0,
+            tool_calls: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            compaction,
+        }
     }
 
     fn result_schema() -> wire::QueryStarted {
@@ -4181,7 +4623,7 @@ mod tests {
     }
 
     #[test]
-    fn summary_messages_require_lossless_coverage_metadata() {
+    fn session_message_append_cannot_bypass_compaction_transaction() {
         let directory = TempDir::new().expect("temp dir");
         let (storage, provider_id) = setup(&directory);
         let session = storage
@@ -4206,28 +4648,30 @@ mod tests {
                     content_json: message_json("summary"),
                 },
             )
-            .expect("summary appends");
-        assert_eq!(summary.summary_through_ordinal, Some(0));
-        for input in [
-            AppendAgentMessage {
-                role: AgentMessageRole::Summary,
-                summary_through_ordinal: None,
-                content_json: message_json("missing coverage"),
-            },
-            AppendAgentMessage {
-                role: AgentMessageRole::User,
-                summary_through_ordinal: Some(0),
-                content_json: message_json("invalid coverage"),
-            },
-        ] {
-            assert!(matches!(
-                storage.append_agent_message(&session.id, input),
-                Err(StorageError::InvalidAgent(_))
-            ));
-        }
+            .expect_err("standalone summary is rejected");
+        assert!(matches!(summary, StorageError::InvalidAgent(_)));
+        assert!(matches!(
+            storage.append_agent_message(
+                &session.id,
+                AppendAgentMessage {
+                    role: AgentMessageRole::User,
+                    summary_through_ordinal: Some(0),
+                    content_json: message_json("invalid coverage"),
+                },
+            ),
+            Err(StorageError::InvalidAgent(_))
+        ));
+        assert_eq!(
+            storage
+                .list_agent_messages(&session.id, 0, 10)
+                .expect("messages list")
+                .len(),
+            1
+        );
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn session_compaction_coverage_uses_run_and_summary_maxima() {
         let directory = TempDir::new().expect("temp dir");
         let (storage, provider_id) = setup(&directory);
@@ -4260,16 +4704,22 @@ mod tests {
                 )
                 .expect("original message appends");
         }
+        let first_summary = message_json("first historical summary");
         storage
-            .append_agent_message(
-                &session.id,
-                AppendAgentMessage {
-                    role: AgentMessageRole::Summary,
-                    summary_through_ordinal: Some(1),
-                    content_json: message_json("first summary"),
-                },
+            .connection()
+            .expect("connection opens")
+            .execute(
+                "INSERT INTO agent_messages (
+                    id, session_id, ordinal, role, summary_through_ordinal,
+                    content_json, content_bytes, created_at_ms
+                 ) VALUES ('historical-summary-1', ?1, 2, 'summary', 1, ?2, ?3, 1)",
+                rusqlite::params![
+                    session.id,
+                    first_summary,
+                    i64::try_from(first_summary.len()).expect("summary length fits")
+                ],
             )
-            .expect("summary appends");
+            .expect("historical summary inserts");
         assert_eq!(
             storage
                 .get_agent_session_compaction_coverage(&session.id)
@@ -4286,12 +4736,21 @@ mod tests {
                 },
             )
             .expect("run starts");
+        let compacted = storage
+            .compact_agent_run(
+                &started.run.id,
+                AgentRunStatus::Running,
+                compaction_input(2, Some(2), None),
+            )
+            .expect("deterministic trim persists");
+        assert_eq!(compacted.run.compaction_count, 1);
+        assert!(compacted.summary_message.is_none());
         storage
             .complete_agent_run(
                 &started.run.id,
                 AgentRunStatus::Running,
                 CompleteAgentRun {
-                    last_sequence: 2,
+                    last_sequence: 3,
                     model_rounds: 1,
                     tool_calls: 0,
                     input_tokens: 1,
@@ -4314,16 +4773,22 @@ mod tests {
             Some(2)
         );
 
+        let later_summary = message_json("later historical summary");
         storage
-            .append_agent_message(
-                &session.id,
-                AppendAgentMessage {
-                    role: AgentMessageRole::Summary,
-                    summary_through_ordinal: Some(4),
-                    content_json: message_json("later summary"),
-                },
+            .connection()
+            .expect("connection opens")
+            .execute(
+                "INSERT INTO agent_messages (
+                    id, session_id, ordinal, role, summary_through_ordinal,
+                    content_json, content_bytes, created_at_ms
+                 ) VALUES ('historical-summary-2', ?1, 5, 'summary', 4, ?2, ?3, 2)",
+                rusqlite::params![
+                    session.id,
+                    later_summary,
+                    i64::try_from(later_summary.len()).expect("summary length fits")
+                ],
             )
-            .expect("later summary appends");
+            .expect("later historical summary inserts");
         assert_eq!(
             storage
                 .get_agent_session_compaction_coverage(&session.id)
@@ -4365,7 +4830,615 @@ mod tests {
             .expect("run starts");
         assert_eq!(started.user_message.ordinal, 2);
 
-        let update = |coverage| AgentRunUpdate {
+        let error = storage
+            .compact_agent_run(
+                &started.run.id,
+                AgentRunStatus::Running,
+                compaction_input(2, Some(started.user_message.ordinal), None),
+            )
+            .expect_err("coverage cannot include the initiating user");
+        assert!(matches!(error, StorageError::InvalidAgent(_)));
+
+        let updated = storage
+            .compact_agent_run(
+                &started.run.id,
+                AgentRunStatus::Running,
+                compaction_input(2, Some(started.user_message.ordinal - 1), None),
+            )
+            .expect("the same sequence remains reusable after validation failure");
+        assert_eq!(updated.run.compacted_through_ordinal, Some(1));
+        assert!(updated.summary_message.is_none());
+    }
+
+    #[test]
+    fn summary_compaction_is_atomic_and_no_op_does_not_fabricate_coverage() {
+        let directory = TempDir::new().expect("temp dir");
+        let (storage, provider_id) = setup(&directory);
+        let session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("session creates");
+        for (role, text) in [
+            (AgentMessageRole::User, "previous question"),
+            (AgentMessageRole::Assistant, "previous answer"),
+        ] {
+            storage
+                .append_agent_message(
+                    &session.id,
+                    AppendAgentMessage {
+                        role,
+                        summary_through_ordinal: None,
+                        content_json: message_json(text),
+                    },
+                )
+                .expect("historical message appends");
+        }
+        let started = storage
+            .start_agent_run(
+                &session.id,
+                StartAgentRun {
+                    user_message: "current question".to_owned(),
+                    sql_permission_mode: SqlPermissionMode::ReadOnly,
+                },
+            )
+            .expect("run starts");
+
+        let compacted = storage
+            .compact_agent_run(
+                &started.run.id,
+                AgentRunStatus::Running,
+                compaction_input(2, Some(1), Some("bounded summary")),
+            )
+            .expect("summary compaction commits");
+        assert_eq!(compacted.run.last_sequence, 2);
+        assert_eq!(compacted.run.compaction_count, 1);
+        assert_eq!(compacted.run.compacted_through_ordinal, Some(1));
+        let summary = compacted.summary_message.expect("summary is returned");
+        assert_eq!(summary.run_id.as_deref(), Some(started.run.id.as_str()));
+        assert_eq!(summary.role, AgentMessageRole::Summary);
+        assert_eq!(summary.summary_through_ordinal, Some(1));
+        assert_eq!(summary.content_json, message_json("bounded summary"));
+
+        let no_op = storage
+            .compact_agent_run(
+                &started.run.id,
+                AgentRunStatus::Running,
+                compaction_input(3, None, None),
+            )
+            .expect("no-op compaction persists its event sequence");
+        assert_eq!(no_op.run.last_sequence, 3);
+        assert_eq!(no_op.run.compaction_count, 1);
+        assert_eq!(no_op.run.compacted_through_ordinal, Some(1));
+        assert!(no_op.summary_message.is_none());
+        let messages = storage
+            .list_agent_messages(&session.id, 0, 10)
+            .expect("messages list");
+        assert_eq!(messages.len(), 4);
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.ordinal)
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn compaction_requires_exact_sequence_and_session_wide_forward_coverage() {
+        let directory = TempDir::new().expect("temp dir");
+        let (storage, provider_id) = setup(&directory);
+        let session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("session creates");
+        let started = create_compactable_run(&storage, &session.id);
+
+        for sequence in [1, 3] {
+            assert!(matches!(
+                storage.compact_agent_run(
+                    &started.run.id,
+                    AgentRunStatus::Running,
+                    compaction_input(sequence, Some(1), None),
+                ),
+                Err(StorageError::InvalidAgent(_))
+            ));
+        }
+        assert_eq!(
+            storage
+                .get_agent_run(&started.run.id)
+                .expect("run reloads")
+                .expect("run exists"),
+            started.run
+        );
+
+        let compacted = storage
+            .compact_agent_run(
+                &started.run.id,
+                AgentRunStatus::Running,
+                compaction_input(2, Some(1), None),
+            )
+            .expect("exact next sequence compacts");
+        assert_eq!(compacted.run.compaction_count, 1);
+        for coverage in [0, 1] {
+            assert!(matches!(
+                storage.compact_agent_run(
+                    &started.run.id,
+                    AgentRunStatus::Running,
+                    compaction_input(3, Some(coverage), None),
+                ),
+                Err(StorageError::InvalidAgent(_))
+            ));
+        }
+        let no_op = storage
+            .compact_agent_run(
+                &started.run.id,
+                AgentRunStatus::Running,
+                compaction_input(3, None, None),
+            )
+            .expect("failed coverage attempts do not consume the sequence");
+        assert_eq!(no_op.run.compaction_count, 1);
+        storage
+            .complete_agent_run(
+                &started.run.id,
+                AgentRunStatus::Running,
+                CompleteAgentRun {
+                    last_sequence: 4,
+                    model_rounds: 1,
+                    tool_calls: 0,
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    total_tokens: 2,
+                    messages: vec![AgentRunMessage {
+                        role: AgentMessageRole::Assistant,
+                        summary_through_ordinal: None,
+                        content_json: message_json("first run answer"),
+                    }],
+                    compaction_count: 1,
+                    compacted_through_ordinal: Some(1),
+                },
+            )
+            .expect("first run completes");
+
+        let second = storage
+            .start_agent_run(
+                &session.id,
+                StartAgentRun {
+                    user_message: "second run".to_owned(),
+                    sql_permission_mode: SqlPermissionMode::ReadOnly,
+                },
+            )
+            .expect("second run starts");
+        assert!(matches!(
+            storage.compact_agent_run(
+                &second.run.id,
+                AgentRunStatus::Running,
+                compaction_input(2, Some(1), None),
+            ),
+            Err(StorageError::InvalidAgent(_))
+        ));
+        let advanced = storage
+            .compact_agent_run(
+                &second.run.id,
+                AgentRunStatus::Running,
+                compaction_input(2, Some(second.user_message.ordinal - 1), None),
+            )
+            .expect("new run advances session-wide coverage");
+        assert_eq!(
+            advanced.run.compacted_through_ordinal,
+            Some(second.user_message.ordinal - 1)
+        );
+    }
+
+    #[test]
+    fn compaction_rejects_waiting_cancelled_and_write_fenced_runs() {
+        let directory = TempDir::new().expect("temp dir");
+        let (storage, provider_id) = setup(&directory);
+
+        let waiting_session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("waiting session creates");
+        let waiting = create_running_run(&storage, &waiting_session.id);
+        storage
+            .create_tool_permission(&waiting.id, permission_input("waiting", [1; 32], 2))
+            .expect("permission creates");
+        assert!(matches!(
+            storage.compact_agent_run(
+                &waiting.id,
+                AgentRunStatus::Running,
+                compaction_input(3, None, None),
+            ),
+            Err(StorageError::AgentStateConflict { .. })
+        ));
+
+        let cancelled_session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("cancelled session creates");
+        let cancelled = create_running_run(&storage, &cancelled_session.id);
+        let cancelled = storage
+            .request_agent_run_cancellation(&cancelled.id)
+            .expect("cancellation requests");
+        assert!(matches!(
+            storage.compact_agent_run(
+                &cancelled.id,
+                AgentRunStatus::Running,
+                compaction_input(2, None, None),
+            ),
+            Err(StorageError::InvalidAgent(_))
+        ));
+        assert_eq!(
+            storage
+                .get_agent_run(&cancelled.id)
+                .expect("cancelled run reloads")
+                .expect("cancelled run exists"),
+            cancelled
+        );
+
+        let fenced_session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("fenced session creates");
+        let fenced = create_running_run(&storage, &fenced_session.id);
+        let digest = [2; 32];
+        let permission = storage
+            .create_tool_permission(&fenced.id, permission_input("write", digest, 2))
+            .expect("permission creates");
+        let permission = storage
+            .decide_tool_permission(
+                &permission.id,
+                permission.revision,
+                &fenced.id,
+                "write",
+                digest,
+                3,
+                ToolPermissionDecision::Approve,
+            )
+            .expect("permission approves");
+        storage
+            .consume_tool_permission(
+                &permission.id,
+                permission.revision,
+                &fenced.id,
+                "write",
+                digest,
+                4,
+            )
+            .expect("permission installs write fence");
+        let before = storage
+            .get_agent_run(&fenced.id)
+            .expect("fenced run reloads")
+            .expect("fenced run exists");
+        assert!(matches!(
+            storage.compact_agent_run(
+                &fenced.id,
+                AgentRunStatus::Running,
+                compaction_input(5, None, None),
+            ),
+            Err(StorageError::InvalidAgent(_))
+        ));
+        assert_eq!(
+            storage
+                .get_agent_run(&fenced.id)
+                .expect("fenced run reloads")
+                .expect("fenced run exists"),
+            before
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn invalid_or_quota_blocked_summary_leaves_progress_reusable_for_trim() {
+        let directory = TempDir::new().expect("temp dir");
+        let (storage, provider_id) = setup(&directory);
+        let session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("session creates");
+        let started = create_compactable_run(&storage, &session.id);
+        let oversized = message_json(
+            &"x".repeat(usize::try_from(MAX_AGENT_MESSAGE_BYTES).expect("limit fits usize")),
+        );
+        for content_json in [
+            "[]".to_owned(),
+            message_json(""),
+            message_json("   "),
+            r#"[{"type":"tool_calls","calls":[{"id":"call-1","name":"sql_read","argumentsJson":"{}"}]}]"#.to_owned(),
+            r#"[{"type":"text","text":"visible","hiddenReasoning":"secret"}]"#.to_owned(),
+            oversized,
+        ] {
+            let input = CompactAgentRun {
+                last_sequence: 2,
+                model_rounds: 0,
+                tool_calls: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                compaction: AgentCompaction::Summary {
+                    compacted_through_ordinal: 1,
+                    content_json,
+                },
+            };
+            assert!(storage
+                .compact_agent_run(&started.run.id, AgentRunStatus::Running, input)
+                .is_err());
+            assert_eq!(
+                storage
+                    .get_agent_run(&started.run.id)
+                    .expect("run reloads")
+                    .expect("run exists"),
+                started.run
+            );
+        }
+        let trimmed = storage
+            .compact_agent_run(
+                &started.run.id,
+                AgentRunStatus::Running,
+                compaction_input(2, Some(1), None),
+            )
+            .expect("invalid summaries leave sequence reusable for trim");
+        assert_eq!(trimmed.run.compaction_count, 1);
+        assert!(trimmed.summary_message.is_none());
+        assert_eq!(
+            storage
+                .list_agent_messages(&session.id, 0, 10)
+                .expect("messages list")
+                .len(),
+            3
+        );
+
+        let full_session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("full session creates");
+        let full_started = create_compactable_run(&storage, &full_session.id);
+        storage
+            .connection()
+            .expect("connection opens")
+            .execute(
+                "WITH RECURSIVE sequence(value) AS (
+                    SELECT 3 UNION ALL SELECT value + 1 FROM sequence WHERE value + 1 < ?2
+                 )
+                 INSERT INTO agent_messages (
+                    id, session_id, ordinal, role, content_json, content_bytes, created_at_ms
+                 ) SELECT printf('%s-fill-%d', ?1, value), ?1, value, 'assistant',
+                          '[{\"type\":\"text\",\"text\":\"x\"}]',
+                          length(CAST('[{\"type\":\"text\",\"text\":\"x\"}]' AS BLOB)), 0
+                   FROM sequence",
+                rusqlite::params![
+                    full_session.id,
+                    i64::try_from(MAX_AGENT_MESSAGES_PER_SESSION).expect("limit fits i64")
+                ],
+            )
+            .expect("message-limit fixture inserts");
+        let quota_error = storage
+            .compact_agent_run(
+                &full_started.run.id,
+                AgentRunStatus::Running,
+                compaction_input(2, Some(1), Some("cannot append")),
+            )
+            .expect_err("summary respects the session message quota");
+        assert!(matches!(
+            quota_error,
+            StorageError::AgentQuotaExceeded {
+                resource: "session message count",
+                ..
+            }
+        ));
+        assert_eq!(
+            storage
+                .get_agent_run(&full_started.run.id)
+                .expect("full run reloads")
+                .expect("full run exists"),
+            full_started.run
+        );
+        let trimmed = storage
+            .compact_agent_run(
+                &full_started.run.id,
+                AgentRunStatus::Running,
+                compaction_input(2, Some(1), None),
+            )
+            .expect("trim succeeds without inserting into a full session");
+        assert_eq!(trimmed.run.compaction_count, 1);
+        assert!(trimmed.summary_message.is_none());
+        assert_eq!(
+            storage
+                .list_agent_messages(&full_session.id, MAX_AGENT_MESSAGES_PER_SESSION - 1, 1,)
+                .expect("last message remains")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn compaction_rolls_back_and_reconciles_or_reports_post_commit_outcomes() {
+        let directory = TempDir::new().expect("temp dir");
+        let (storage, provider_id) = setup(&directory);
+
+        let create_run_with_history = |title: &str| {
+            let session = storage
+                .create_agent_session(CreateAgentSession {
+                    title: title.to_owned(),
+                    provider_id: provider_id.clone(),
+                    datasource_id: None,
+                    system_prompt: None,
+                })
+                .expect("session creates");
+            for (role, text) in [
+                (AgentMessageRole::User, "previous question"),
+                (AgentMessageRole::Assistant, "previous answer"),
+            ] {
+                storage
+                    .append_agent_message(
+                        &session.id,
+                        AppendAgentMessage {
+                            role,
+                            summary_through_ordinal: None,
+                            content_json: message_json(text),
+                        },
+                    )
+                    .expect("historical message appends");
+            }
+            let started = storage
+                .start_agent_run(
+                    &session.id,
+                    StartAgentRun {
+                        user_message: "current question".to_owned(),
+                        sql_permission_mode: SqlPermissionMode::ReadOnly,
+                    },
+                )
+                .expect("run starts");
+            (session, started)
+        };
+
+        let (rollback_session, rollback_started) = create_run_with_history("rollback");
+        crate::inject_faults(&[crate::FaultPoint::AgentCompactionBeforeCommit]);
+        let error = storage
+            .compact_agent_run(
+                &rollback_started.run.id,
+                AgentRunStatus::Running,
+                compaction_input(2, Some(1), Some("must roll back")),
+            )
+            .expect_err("pre-commit fault fails");
+        assert!(matches!(error, StorageError::Integrity(_)));
+        let rolled_back = storage
+            .get_agent_run(&rollback_started.run.id)
+            .expect("run reloads")
+            .expect("run exists");
+        assert_eq!(rolled_back.last_sequence, 1);
+        assert_eq!(rolled_back.compaction_count, 0);
+        assert_eq!(rolled_back.compacted_through_ordinal, None);
+        assert_eq!(
+            storage
+                .list_agent_messages(&rollback_session.id, 0, 10)
+                .expect("messages list")
+                .len(),
+            3
+        );
+        crate::inject_faults(&[crate::FaultPoint::AgentCompactionCommitFailure]);
+        let error = storage
+            .compact_agent_run(
+                &rollback_started.run.id,
+                AgentRunStatus::Running,
+                compaction_input(2, Some(1), Some("commit failure rolls back")),
+            )
+            .expect_err("commit failure reconciles as not applied");
+        assert!(matches!(error, StorageError::Integrity(_)));
+        assert_eq!(
+            storage
+                .get_agent_run(&rollback_started.run.id)
+                .expect("run reloads")
+                .expect("run exists")
+                .last_sequence,
+            1
+        );
+        assert_eq!(
+            storage
+                .list_agent_messages(&rollback_session.id, 0, 10)
+                .expect("messages list")
+                .len(),
+            3
+        );
+        storage
+            .compact_agent_run(
+                &rollback_started.run.id,
+                AgentRunStatus::Running,
+                compaction_input(2, Some(1), None),
+            )
+            .expect("the rolled-back sequence remains reusable");
+
+        let (reconciled_session, reconciled_started) = create_run_with_history("reconciled");
+        crate::inject_faults(&[crate::FaultPoint::AgentCompactionAfterCommit]);
+        let reconciled = storage
+            .compact_agent_run(
+                &reconciled_started.run.id,
+                AgentRunStatus::Running,
+                compaction_input(2, Some(1), Some("durable and reconciled")),
+            )
+            .expect("exact readback reconciles the post-commit failure");
+        assert_eq!(reconciled.run.last_sequence, 2);
+        assert!(reconciled.summary_message.is_some());
+        assert_eq!(
+            storage
+                .list_agent_messages(&reconciled_session.id, 0, 10)
+                .expect("messages list")
+                .iter()
+                .filter(|message| message.role == AgentMessageRole::Summary)
+                .count(),
+            1
+        );
+
+        let (unknown_session, unknown_started) = create_run_with_history("unknown");
+        crate::inject_faults(&[
+            crate::FaultPoint::AgentCompactionAfterCommit,
+            crate::FaultPoint::AgentCompactionReadback,
+        ]);
+        let error = storage
+            .compact_agent_run(
+                &unknown_started.run.id,
+                AgentRunStatus::Running,
+                compaction_input(2, Some(1), Some("durable but unreadable")),
+            )
+            .expect_err("unavailable readback leaves an unknown outcome");
+        assert!(matches!(
+            error,
+            StorageError::OutcomeUnknown {
+                operation: "compact agent run",
+                ..
+            }
+        ));
+        let durable = storage
+            .get_agent_run(&unknown_started.run.id)
+            .expect("run reloads")
+            .expect("run exists");
+        assert_eq!(durable.last_sequence, 2);
+        assert_eq!(durable.compaction_count, 1);
+        assert_eq!(durable.compacted_through_ordinal, Some(1));
+        assert_eq!(
+            storage
+                .list_agent_messages(&unknown_session.id, 0, 10)
+                .expect("messages list")
+                .iter()
+                .filter(|message| message.role == AgentMessageRole::Summary)
+                .count(),
+            1
+        );
+        assert!(matches!(
+            storage.compact_agent_run(
+                &unknown_started.run.id,
+                AgentRunStatus::Running,
+                compaction_input(2, Some(1), Some("must not duplicate")),
+            ),
+            Err(StorageError::InvalidAgent(_))
+        ));
+    }
+
+    #[test]
+    fn compaction_state_cannot_bypass_the_dedicated_transaction() {
+        let directory = TempDir::new().expect("temp dir");
+        let (storage, provider_id) = setup(&directory);
+        let session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("session creates");
+        for (role, text) in [
+            (AgentMessageRole::User, "previous question"),
+            (AgentMessageRole::Assistant, "previous answer"),
+        ] {
+            storage
+                .append_agent_message(
+                    &session.id,
+                    AppendAgentMessage {
+                        role,
+                        summary_through_ordinal: None,
+                        content_json: message_json(text),
+                    },
+                )
+                .expect("historical message appends");
+        }
+        let started = storage
+            .start_agent_run(
+                &session.id,
+                StartAgentRun {
+                    user_message: "current question".to_owned(),
+                    sql_permission_mode: SqlPermissionMode::ReadOnly,
+                },
+            )
+            .expect("run starts");
+        let update = AgentRunUpdate {
             status: AgentRunStatus::Running,
             last_sequence: 2,
             model_rounds: 0,
@@ -4374,25 +5447,197 @@ mod tests {
             output_tokens: 0,
             total_tokens: 0,
             compaction_count: 1,
-            compacted_through_ordinal: Some(coverage),
+            compacted_through_ordinal: Some(1),
         };
-        let error = storage
-            .update_agent_run(
+        assert!(matches!(
+            storage.update_agent_run(&started.run.id, AgentRunStatus::Running, update),
+            Err(StorageError::InvalidAgent(_))
+        ));
+        assert!(matches!(
+            storage.complete_agent_run(
                 &started.run.id,
                 AgentRunStatus::Running,
-                update(started.user_message.ordinal),
-            )
-            .expect_err("coverage cannot include the initiating user");
-        assert!(matches!(error, StorageError::InvalidAgent(_)));
+                CompleteAgentRun {
+                    last_sequence: 2,
+                    model_rounds: 1,
+                    tool_calls: 0,
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    total_tokens: 2,
+                    messages: vec![AgentRunMessage {
+                        role: AgentMessageRole::Assistant,
+                        summary_through_ordinal: None,
+                        content_json: message_json("answer"),
+                    }],
+                    compaction_count: 1,
+                    compacted_through_ordinal: Some(1),
+                },
+            ),
+            Err(StorageError::InvalidAgent(_))
+        ));
+        let current = storage
+            .get_agent_run(&started.run.id)
+            .expect("run reloads")
+            .expect("run exists");
+        assert_eq!(current.last_sequence, 1);
+        assert_eq!(current.compaction_count, 0);
+        assert_eq!(
+            storage
+                .list_agent_messages(&session.id, 0, 10)
+                .expect("messages list")
+                .len(),
+            3
+        );
+    }
 
-        let updated = storage
-            .update_agent_run(
-                &started.run.id,
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn terminal_apis_and_message_batches_cannot_bypass_compaction_transaction() {
+        let directory = TempDir::new().expect("temp dir");
+        let (storage, provider_id) = setup(&directory);
+
+        let failed_session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("failed session creates");
+        let failed = create_compactable_run(&storage, &failed_session.id);
+        let summary_batch = FailAgentRun {
+            last_sequence: 2,
+            model_rounds: 0,
+            tool_calls: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            error_code: "provider_failed".to_owned(),
+            error_message: None,
+            messages: vec![AgentRunMessage {
+                role: AgentMessageRole::Summary,
+                summary_through_ordinal: Some(1),
+                content_json: message_json("bypass"),
+            }],
+            compaction_count: 0,
+            compacted_through_ordinal: None,
+        };
+        assert!(matches!(
+            storage.fail_agent_run(&failed.run.id, AgentRunStatus::Running, summary_batch,),
+            Err(StorageError::InvalidAgent(_))
+        ));
+        let forged_failure = FailAgentRun {
+            last_sequence: 2,
+            model_rounds: 0,
+            tool_calls: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            error_code: "provider_failed".to_owned(),
+            error_message: None,
+            messages: Vec::new(),
+            compaction_count: 1,
+            compacted_through_ordinal: Some(1),
+        };
+        assert!(matches!(
+            storage.fail_agent_run(&failed.run.id, AgentRunStatus::Running, forged_failure,),
+            Err(StorageError::InvalidAgent(_))
+        ));
+        assert_eq!(
+            storage
+                .get_agent_run(&failed.run.id)
+                .expect("failed run reloads")
+                .expect("failed run exists"),
+            failed.run
+        );
+
+        let cancelled_session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("cancelled session creates");
+        let cancelled = create_compactable_run(&storage, &cancelled_session.id);
+        let cancelled = storage
+            .request_agent_run_cancellation(&cancelled.run.id)
+            .expect("cancellation requests");
+        assert!(matches!(
+            storage.finish_cancelled_agent_run(
+                &cancelled.id,
                 AgentRunStatus::Running,
-                update(started.user_message.ordinal - 1),
+                CancelAgentRun {
+                    last_sequence: 2,
+                    model_rounds: 0,
+                    tool_calls: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    messages: Vec::new(),
+                    compaction_count: 1,
+                    compacted_through_ordinal: Some(1),
+                },
+            ),
+            Err(StorageError::InvalidAgent(_))
+        ));
+        assert_eq!(
+            storage
+                .get_agent_run(&cancelled.id)
+                .expect("cancelled run reloads")
+                .expect("cancelled run exists"),
+            cancelled
+        );
+
+        let unknown_session = storage
+            .create_agent_session(session_input(&provider_id))
+            .expect("unknown session creates");
+        let unknown = create_compactable_run(&storage, &unknown_session.id);
+        let digest = [3; 32];
+        let permission = storage
+            .create_tool_permission(&unknown.run.id, permission_input("write", digest, 2))
+            .expect("permission creates");
+        let permission = storage
+            .decide_tool_permission(
+                &permission.id,
+                permission.revision,
+                &unknown.run.id,
+                "write",
+                digest,
+                3,
+                ToolPermissionDecision::Approve,
             )
-            .expect("the same sequence remains reusable after validation failure");
-        assert_eq!(updated.compacted_through_ordinal, Some(1));
+            .expect("permission approves");
+        storage
+            .consume_tool_permission(
+                &permission.id,
+                permission.revision,
+                &unknown.run.id,
+                "write",
+                digest,
+                4,
+            )
+            .expect("permission installs write fence");
+        let before_unknown = storage
+            .get_agent_run(&unknown.run.id)
+            .expect("unknown run reloads")
+            .expect("unknown run exists");
+        assert!(matches!(
+            storage.fail_agent_write_outcome_unknown(
+                &unknown.run.id,
+                "write",
+                digest,
+                UnknownAgentWrite {
+                    last_sequence: 5,
+                    model_rounds: 0,
+                    tool_calls: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    messages: Vec::new(),
+                    compaction_count: 1,
+                    compacted_through_ordinal: Some(1),
+                },
+            ),
+            Err(StorageError::InvalidAgent(_))
+        ));
+        assert_eq!(
+            storage
+                .get_agent_run(&unknown.run.id)
+                .expect("unknown run reloads")
+                .expect("unknown run exists"),
+            before_unknown
+        );
     }
 
     #[test]

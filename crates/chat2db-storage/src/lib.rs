@@ -21,14 +21,14 @@ use fs2::FileExt;
 use rusqlite::{Connection, OpenFlags};
 
 pub use agent::{
-    AgentMessageRecord, AgentMessageRole, AgentRecoveryReport, AgentResultHandle, AgentRunMessage,
-    AgentRunRecord, AgentRunStatus, AgentRunUpdate, AgentSessionRecord, AppendAgentMessage,
-    CancelAgentRun, CancelledAgentRun, CompleteAgentRun, CompletedAgentRun, CreateAgentSession,
-    FailAgentRun, FailedAgentRun, MAX_AGENT_MESSAGE_BYTES, MAX_AGENT_MESSAGE_BYTES_PER_SESSION,
-    MAX_AGENT_MESSAGE_PAGE_SIZE, MAX_AGENT_MESSAGES_PER_SESSION, MAX_AGENT_SESSION_TITLE_BYTES,
-    RequestToolPermission, SqlPermissionMode, StartAgentRun, StartedAgentRun,
-    ToolPermissionDecision, ToolPermissionRecord, ToolPermissionStatus, UnknownAgentWrite,
-    UpdateAgentSession,
+    AgentCompaction, AgentMessageRecord, AgentMessageRole, AgentRecoveryReport, AgentResultHandle,
+    AgentRunMessage, AgentRunRecord, AgentRunStatus, AgentRunUpdate, AgentSessionRecord,
+    AppendAgentMessage, CancelAgentRun, CancelledAgentRun, CompactAgentRun, CompactedAgentRun,
+    CompleteAgentRun, CompletedAgentRun, CreateAgentSession, FailAgentRun, FailedAgentRun,
+    MAX_AGENT_MESSAGE_BYTES, MAX_AGENT_MESSAGE_BYTES_PER_SESSION, MAX_AGENT_MESSAGE_PAGE_SIZE,
+    MAX_AGENT_MESSAGES_PER_SESSION, MAX_AGENT_SESSION_TITLE_BYTES, RequestToolPermission,
+    SqlPermissionMode, StartAgentRun, StartedAgentRun, ToolPermissionDecision,
+    ToolPermissionRecord, ToolPermissionStatus, UnknownAgentWrite, UpdateAgentSession,
 };
 pub use datasource::{
     CreateDatasource, DatasourceRecord, SecretChange, SecretCleanupReport, UpdateDatasource,
@@ -67,6 +67,10 @@ pub(crate) enum FaultPoint {
     ProviderCreateAfterCommit = 1 << 9,
     ProviderUpdateAfterCommit = 1 << 10,
     ProviderDeleteAfterCommit = 1 << 11,
+    AgentCompactionBeforeCommit = 1 << 12,
+    AgentCompactionAfterCommit = 1 << 13,
+    AgentCompactionReadback = 1 << 14,
+    AgentCompactionCommitFailure = 1 << 15,
 }
 
 #[cfg(test)]
