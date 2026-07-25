@@ -25,6 +25,8 @@ use chat2db_storage::{
 };
 use tokio::{sync::Mutex, task::JoinHandle};
 
+use agent::AgentRunHub;
+pub use agent::AgentRunSubscription;
 pub use error::{AppError, AppErrorKind};
 pub use operation::OperationSubscription;
 
@@ -43,8 +45,9 @@ pub(crate) struct ApplicationInner {
     runtime_status: RuntimeStatus,
     storage: Option<Storage>,
     engine: Option<EngineClient>,
+    agent_runs: AgentRunHub,
     operations: OperationHub,
-    accepting_queries: Mutex<bool>,
+    accepting_work: Mutex<bool>,
     tasks: Mutex<HashMap<String, JoinHandle<()>>>,
 }
 
@@ -161,8 +164,9 @@ impl Application {
                 runtime_status,
                 storage,
                 engine,
+                agent_runs: AgentRunHub::new(),
                 operations: OperationHub::new(),
-                accepting_queries: Mutex::new(true),
+                accepting_work: Mutex::new(true),
                 tasks: Mutex::new(HashMap::new()),
             }),
         }
@@ -416,20 +420,27 @@ impl Application {
         convert::result_page(page)
     }
 
-    /// Stops query admission and requests cancellation of every active operation.
+    /// Stops work admission and requests cancellation of active queries and agent runs.
     pub async fn begin_shutdown(&self) {
-        let mut accepting_queries = self.inner.accepting_queries.lock().await;
-        if !*accepting_queries {
+        let mut accepting_work = self.inner.accepting_work.lock().await;
+        if !*accepting_work {
             return;
         }
-        *accepting_queries = false;
+        *accepting_work = false;
         self.inner
             .operations
             .cancel_all("Chat2DB runtime is shutting down")
             .await;
+        self.inner.agent_runs.cancel_all().await;
     }
 
     async fn join_tasks(&self) {
+        let query_tasks = self.join_query_tasks();
+        let agent_tasks = self.inner.agent_runs.join_tasks(TASK_SHUTDOWN_TIMEOUT);
+        tokio::join!(query_tasks, agent_tasks);
+    }
+
+    async fn join_query_tasks(&self) {
         let tasks = std::mem::take(&mut *self.inner.tasks.lock().await);
         let deadline = tokio::time::Instant::now() + TASK_SHUTDOWN_TIMEOUT;
         for (operation_id, mut task) in tasks {
@@ -444,7 +455,7 @@ impl Application {
                 }
                 Err(_) => {
                     task.abort();
-                    let _ = task.await;
+                    // Abort is cooperative, so awaiting again would defeat the hard deadline.
                     let _ = self
                         .inner
                         .operations

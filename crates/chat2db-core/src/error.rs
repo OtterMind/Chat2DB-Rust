@@ -1,5 +1,6 @@
 use std::fmt::{Display, Formatter};
 
+use chat2db_agent::{AgentError, ConfigError, ExecutionOutcome, ProviderError};
 use chat2db_contract::{ApiError, ApiErrorDetails};
 use chat2db_engine_protocol::wire;
 use chat2db_java_bridge::{BridgeError, DeliveryOutcome};
@@ -112,6 +113,138 @@ impl Display for AppError {
 }
 
 impl std::error::Error for AppError {}
+
+impl From<ConfigError> for AppError {
+    fn from(error: ConfigError) -> Self {
+        match error {
+            ConfigError::HttpClient(_) => Self::internal(),
+            ConfigError::InvalidBaseUrl(_)
+            | ConfigError::UnsupportedBaseUrlScheme
+            | ConfigError::BaseUrlCredentials
+            | ConfigError::BaseUrlHost
+            | ConfigError::BaseUrlQuery
+            | ConfigError::BaseUrlFragment
+            | ConfigError::EmptyModel
+            | ConfigError::EmptyApiKey
+            | ConfigError::InvalidHeaderName(_)
+            | ConfigError::InvalidHeaderValue(_)
+            | ConfigError::ZeroTimeout
+            | ConfigError::ZeroOutputTokens
+            | ConfigError::InvalidContextBudget => Self::invalid(
+                "invalid_provider_config",
+                "The provider configuration is invalid",
+            ),
+        }
+    }
+}
+
+impl From<ProviderError> for AppError {
+    fn from(error: ProviderError) -> Self {
+        match error {
+            ProviderError::Cancelled => Self::new(
+                AppErrorKind::Conflict,
+                ApiError::new("agent_cancelled", "The agent run was cancelled"),
+            ),
+            ProviderError::Transport { .. }
+            | ProviderError::HttpStatus {
+                status: 408 | 429 | 500..=599,
+                ..
+            } => Self::new(
+                AppErrorKind::Unavailable,
+                ApiError::new(
+                    "provider_unavailable",
+                    "The AI provider is temporarily unavailable",
+                ),
+            ),
+            ProviderError::HttpStatus {
+                status: 400..=499, ..
+            } => Self::invalid(
+                "provider_rejected_request",
+                "The AI provider rejected the request",
+            ),
+            ProviderError::HttpStatus { .. }
+            | ProviderError::Remote { .. }
+            | ProviderError::Protocol { .. } => Self::new(
+                AppErrorKind::Unavailable,
+                ApiError::new(
+                    "provider_protocol_error",
+                    "The AI provider response could not be processed",
+                ),
+            ),
+            ProviderError::ResponseTooLarge { .. } => Self::new(
+                AppErrorKind::ResourceExhausted,
+                ApiError::new(
+                    "agent_resource_limit_exceeded",
+                    "The agent run exceeded a configured resource limit",
+                ),
+            ),
+            ProviderError::Serialization { .. } => Self::internal(),
+        }
+    }
+}
+
+impl From<ExecutionOutcome> for AppError {
+    fn from(outcome: ExecutionOutcome) -> Self {
+        match outcome {
+            ExecutionOutcome::Unknown => Self::new(
+                AppErrorKind::Unavailable,
+                ApiError::new(
+                    "tool_outcome_unknown",
+                    "The tool execution outcome is unknown and was not retried",
+                ),
+            ),
+            ExecutionOutcome::NotStarted | ExecutionOutcome::Failed => Self::new(
+                AppErrorKind::Unavailable,
+                ApiError::new("agent_tool_failed", "The agent tool execution failed"),
+            ),
+        }
+    }
+}
+
+impl From<AgentError> for AppError {
+    fn from(error: AgentError) -> Self {
+        match error {
+            AgentError::Cancelled => Self::new(
+                AppErrorKind::Conflict,
+                ApiError::new("agent_cancelled", "The agent run was cancelled"),
+            ),
+            AgentError::DeadlineExceeded => Self::new(
+                AppErrorKind::Unavailable,
+                ApiError::new(
+                    "agent_deadline_exceeded",
+                    "The agent run deadline was exceeded",
+                ),
+            ),
+            AgentError::Provider(source) => source.into(),
+            AgentError::UnknownTool(_)
+            | AgentError::DuplicateToolCall(_)
+            | AgentError::InvalidToolArguments { .. }
+            | AgentError::IncompleteProviderStream
+            | AgentError::DuplicateProviderCompletion
+            | AgentError::InconsistentProviderCompletion => Self::new(
+                AppErrorKind::Unavailable,
+                ApiError::new(
+                    "provider_protocol_error",
+                    "The AI provider response could not be processed",
+                ),
+            ),
+            AgentError::ToolArgumentsTooLarge { .. }
+            | AgentError::ModelTextTooLarge { .. }
+            | AgentError::RoundToolLimit { .. }
+            | AgentError::TotalToolLimit(_)
+            | AgentError::ModelRoundLimit(_)
+            | AgentError::ContextBudgetExceeded => Self::new(
+                AppErrorKind::ResourceExhausted,
+                ApiError::new(
+                    "agent_resource_limit_exceeded",
+                    "The agent run exceeded a configured resource limit",
+                ),
+            ),
+            AgentError::Tool { source, .. } => source.outcome().into(),
+            AgentError::InvalidInput(_) => Self::internal(),
+        }
+    }
+}
 
 impl From<StorageError> for AppError {
     #[allow(clippy::too_many_lines)]
@@ -366,15 +499,271 @@ impl From<BridgeError> for AppError {
 
 #[cfg(test)]
 mod tests {
+    use chat2db_agent::{
+        AgentError, ConfigError, ExecutionOutcome, ProviderError, ProviderKind, ToolExecutionError,
+    };
     use chat2db_contract::ApiErrorDetails;
     use chat2db_storage::StorageError;
 
     use super::{AppError, AppErrorKind};
 
+    const SENTINEL: &str = "PRIVATE_AGENT_ERROR_7c2d91";
+
     fn assert_mapping(error: StorageError, expected_kind: AppErrorKind, expected_code: &str) {
         let mapped = AppError::from(error);
         assert_eq!(mapped.kind(), expected_kind);
         assert_eq!(mapped.api_error().code, expected_code);
+    }
+
+    fn assert_agent_mapping(
+        error: impl Into<AppError>,
+        expected_kind: AppErrorKind,
+        expected_code: &str,
+        expected_retryable: bool,
+    ) -> AppError {
+        let mapped = error.into();
+        assert_eq!(mapped.kind(), expected_kind);
+        let api = mapped.api_error();
+        assert_eq!(api.code, expected_code);
+        assert_eq!(api.retryable, expected_retryable);
+        mapped
+    }
+
+    fn assert_no_sentinel(mapped: &AppError) {
+        let outputs = [
+            mapped.to_string(),
+            format!("{mapped:?}"),
+            serde_json::to_string(&mapped.api_error()).expect("API error should serialize"),
+        ];
+        for output in outputs {
+            assert!(
+                !output.contains(SENTINEL),
+                "mapped error exposed sensitive input: {output}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_config_errors_use_safe_stable_categories() {
+        for error in [
+            ConfigError::EmptyApiKey,
+            ConfigError::InvalidHeaderName(SENTINEL.to_owned()),
+            ConfigError::InvalidHeaderValue(SENTINEL.to_owned()),
+            ConfigError::InvalidContextBudget,
+        ] {
+            let mapped = assert_agent_mapping(
+                error,
+                AppErrorKind::InvalidRequest,
+                "invalid_provider_config",
+                false,
+            );
+            assert_no_sentinel(&mapped);
+        }
+
+        let mapped = assert_agent_mapping(
+            ConfigError::HttpClient(SENTINEL.to_owned()),
+            AppErrorKind::Internal,
+            "internal_error",
+            false,
+        );
+        assert_no_sentinel(&mapped);
+    }
+
+    #[test]
+    fn cancellations_are_non_retryable_conflicts() {
+        for mapped in [
+            assert_agent_mapping(
+                AgentError::Cancelled,
+                AppErrorKind::Conflict,
+                "agent_cancelled",
+                false,
+            ),
+            assert_agent_mapping(
+                ProviderError::Cancelled,
+                AppErrorKind::Conflict,
+                "agent_cancelled",
+                false,
+            ),
+        ] {
+            assert_no_sentinel(&mapped);
+        }
+    }
+
+    #[test]
+    fn transient_provider_failures_and_deadline_do_not_make_the_run_retryable() {
+        let mapped = assert_agent_mapping(
+            ProviderError::Transport {
+                provider: ProviderKind::OpenAi,
+                message: SENTINEL.to_owned(),
+            },
+            AppErrorKind::Unavailable,
+            "provider_unavailable",
+            false,
+        );
+        assert_no_sentinel(&mapped);
+
+        for status in [408, 429, 500, 503, 599] {
+            assert_agent_mapping(
+                ProviderError::HttpStatus {
+                    provider: ProviderKind::OpenAi,
+                    status,
+                },
+                AppErrorKind::Unavailable,
+                "provider_unavailable",
+                false,
+            );
+        }
+
+        assert_agent_mapping(
+            AgentError::DeadlineExceeded,
+            AppErrorKind::Unavailable,
+            "agent_deadline_exceeded",
+            false,
+        );
+    }
+
+    #[test]
+    fn provider_client_errors_do_not_expose_the_status() {
+        for status in [400, 401, 404, 422, 499] {
+            let mapped = assert_agent_mapping(
+                ProviderError::HttpStatus {
+                    provider: ProviderKind::OpenAi,
+                    status,
+                },
+                AppErrorKind::InvalidRequest,
+                "provider_rejected_request",
+                false,
+            );
+            let serialized =
+                serde_json::to_string(&mapped.api_error()).expect("API error should serialize");
+            assert!(!serialized.contains(&status.to_string()));
+        }
+    }
+
+    #[test]
+    fn provider_and_agent_limits_share_one_resource_category() {
+        let provider_limit = ProviderError::ResponseTooLarge {
+            provider: ProviderKind::OpenAi,
+            limit: 7,
+        };
+        assert_agent_mapping(
+            provider_limit,
+            AppErrorKind::ResourceExhausted,
+            "agent_resource_limit_exceeded",
+            false,
+        );
+
+        for error in [
+            AgentError::ToolArgumentsTooLarge {
+                call_id: SENTINEL.to_owned(),
+                limit: 7,
+            },
+            AgentError::ModelTextTooLarge { round: 8, limit: 7 },
+            AgentError::RoundToolLimit { round: 8, limit: 7 },
+            AgentError::TotalToolLimit(7),
+            AgentError::ModelRoundLimit(7),
+            AgentError::ContextBudgetExceeded,
+        ] {
+            let mapped = assert_agent_mapping(
+                error,
+                AppErrorKind::ResourceExhausted,
+                "agent_resource_limit_exceeded",
+                false,
+            );
+            assert_no_sentinel(&mapped);
+        }
+    }
+
+    #[test]
+    fn provider_protocol_failures_never_expose_remote_content() {
+        for error in [
+            AgentError::Provider(ProviderError::Remote {
+                provider: ProviderKind::OpenAi,
+                code: SENTINEL.to_owned(),
+                message: SENTINEL.to_owned(),
+            }),
+            AgentError::Provider(ProviderError::Protocol {
+                provider: ProviderKind::OpenAi,
+                message: SENTINEL.to_owned(),
+            }),
+            AgentError::UnknownTool(SENTINEL.to_owned()),
+            AgentError::DuplicateToolCall(SENTINEL.to_owned()),
+            AgentError::InvalidToolArguments {
+                call_id: SENTINEL.to_owned(),
+                message: SENTINEL.to_owned(),
+            },
+            AgentError::IncompleteProviderStream,
+            AgentError::DuplicateProviderCompletion,
+            AgentError::InconsistentProviderCompletion,
+        ] {
+            let mapped = assert_agent_mapping(
+                error,
+                AppErrorKind::Unavailable,
+                "provider_protocol_error",
+                false,
+            );
+            assert_no_sentinel(&mapped);
+        }
+
+        assert_agent_mapping(
+            ProviderError::HttpStatus {
+                provider: ProviderKind::OpenAi,
+                status: 302,
+            },
+            AppErrorKind::Unavailable,
+            "provider_protocol_error",
+            false,
+        );
+    }
+
+    #[test]
+    fn serialization_and_invalid_agent_input_are_internal() {
+        for error in [
+            AgentError::Provider(ProviderError::Serialization {
+                provider: ProviderKind::OpenAi,
+                message: SENTINEL.to_owned(),
+            }),
+            AgentError::InvalidInput(SENTINEL.to_owned()),
+        ] {
+            let mapped =
+                assert_agent_mapping(error, AppErrorKind::Internal, "internal_error", false);
+            assert_no_sentinel(&mapped);
+        }
+    }
+
+    #[test]
+    fn tool_outcomes_never_make_the_whole_run_retryable() {
+        for outcome in [ExecutionOutcome::NotStarted, ExecutionOutcome::Failed] {
+            assert_agent_mapping(
+                outcome,
+                AppErrorKind::Unavailable,
+                "agent_tool_failed",
+                false,
+            );
+        }
+        assert_agent_mapping(
+            ExecutionOutcome::Unknown,
+            AppErrorKind::Unavailable,
+            "tool_outcome_unknown",
+            false,
+        );
+
+        for (outcome, expected_code, retryable) in [
+            (ExecutionOutcome::NotStarted, "agent_tool_failed", false),
+            (ExecutionOutcome::Failed, "agent_tool_failed", false),
+            (ExecutionOutcome::Unknown, "tool_outcome_unknown", false),
+        ] {
+            let mapped = assert_agent_mapping(
+                AgentError::Tool {
+                    tool: SENTINEL.to_owned(),
+                    source: ToolExecutionError::new(SENTINEL, SENTINEL, outcome),
+                },
+                AppErrorKind::Unavailable,
+                expected_code,
+                retryable,
+            );
+            assert_no_sentinel(&mapped);
+        }
     }
 
     #[test]

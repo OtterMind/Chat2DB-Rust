@@ -44,8 +44,8 @@ impl Application {
         let prepared = PreparedQuery::try_from(request)?;
         let storage = self.require_storage()?;
         let engine = self.require_engine()?;
-        let accepting_queries = self.inner.accepting_queries.lock().await;
-        if !*accepting_queries {
+        let accepting_work = self.inner.accepting_work.lock().await;
+        if !*accepting_work {
             return Err(AppError::unavailable(
                 "runtime_shutting_down",
                 "The Chat2DB runtime is shutting down",
@@ -94,7 +94,7 @@ impl Application {
                 .await?;
             return Err(AppError::internal());
         }
-        drop(accepting_queries);
+        drop(accepting_work);
         Ok(QueryAccepted { operation_id })
     }
 
