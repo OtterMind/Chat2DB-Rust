@@ -1,0 +1,31 @@
+[package]
+name = "chat2db-mcp"
+description = "Local stdio MCP server for Chat2DB Rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "chat2db-mcp"
+path = "src/main.rs"
+
+[dependencies]
+chat2db-contract = { path = "../../crates/chat2db-contract" }
+chat2db-local = { path = "../../crates/chat2db-local" }
+clap.workspace = true
+rmcp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+chat2db-core = { path = "../../crates/chat2db-core" }
+chat2db-storage = { path = "../../crates/chat2db-storage" }
+tempfile = "3"
+
+[lints]
+workspace = true
