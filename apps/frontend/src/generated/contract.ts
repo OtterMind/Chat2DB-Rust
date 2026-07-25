@@ -196,6 +196,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/drivers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_drivers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/openapi.json": {
         parameters: {
             query?: never;
@@ -841,6 +857,31 @@ export interface components {
              *     This remains a JSON number for compatibility with the Stage 1 contract.
              */
             uptimeSeconds: number;
+        };
+        /** @description One hash-verified JDBC driver pack loaded by the compatibility engine. */
+        JdbcDriver: {
+            /** @description Total verified artifact bytes encoded as an unsigned decimal integer. */
+            artifactBytes: string;
+            /**
+             * Format: int32
+             * @description Number of ordered JAR artifacts in this pack.
+             */
+            artifactCount: number;
+            /** @description JDBC driver implementation class. */
+            driverClass: string;
+            /** @description Engine-derived identifier stored by datasource records. */
+            driverId: string;
+            /** @description User-visible driver name. */
+            name: string;
+            /** @description Stable package identifier declared by the local manifest. */
+            packId: string;
+            /** @description Driver-pack version declared by the manifest. */
+            version: string;
+        };
+        /** @description Stable inventory of drivers loaded during runtime startup. */
+        JdbcDriverList: {
+            /** @description Drivers in deterministic manifest-directory order. */
+            items: components["schemas"]["JdbcDriver"][];
         };
         /**
          * @description Lossless JSON representation of one JDBC scalar value.
@@ -2545,6 +2586,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    list_drivers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Loaded JDBC driver inventory */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JdbcDriverList"];
                 };
             };
         };

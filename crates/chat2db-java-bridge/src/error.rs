@@ -152,6 +152,13 @@ pub enum BridgeError {
         #[source]
         source: io::Error,
     },
+    #[error("unable to {operation} JDBC snapshot directory {path}: {source}")]
+    DriverSnapshotDirectory {
+        operation: &'static str,
+        path: std::path::PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("driver artifact path is not valid UTF-8: {0}")]
     NonUtf8DriverArtifact(std::path::PathBuf),
     #[error("JDBC handle belongs to another engine generation or instance: {0}")]

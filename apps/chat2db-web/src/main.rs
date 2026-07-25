@@ -93,6 +93,9 @@ fn runtime_config_from_env() -> Result<RuntimeConfig, Box<dyn std::error::Error>
     if let Some(data_dir) = optional_nonempty_os_env("CHAT2DB_DATA_DIR")? {
         config = config.with_data_dir(PathBuf::from(data_dir));
     }
+    if let Some(driver_pack_dir) = optional_nonempty_os_env("CHAT2DB_DRIVER_PACK_DIR")? {
+        config = config.with_driver_pack_dir(PathBuf::from(driver_pack_dir));
+    }
     if let Some(master_key) = optional_unicode_env("CHAT2DB_VAULT_MASTER_KEY")? {
         config = config.with_vault_master_key_base64(master_key);
     }

@@ -1,4 +1,5 @@
 use std::{
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{
         Arc,
@@ -36,7 +37,8 @@ mod pending;
 pub use jdbc::{
     CancelDisposition, ColumnNullability, ConnectionProperty, DRIVER_EXTERNAL_JAR_CAPABILITY,
     DatabaseProduct, DriverArtifact, DriverClient, DriverSpec, FLOW_CREDIT_CAPABILITY, JdbcColumn,
-    JdbcParameter, JdbcRow, JdbcValue, JdbcValueType, LoadedDriver, OPERATION_CANCEL_CAPABILITY,
+    JdbcParameter, JdbcRow, JdbcValue, JdbcValueType, LoadedDriver, MAX_DRIVER_ARTIFACT_BYTES,
+    MAX_DRIVER_ARTIFACTS, MAX_DRIVER_TOTAL_BYTES, OPERATION_CANCEL_CAPABILITY,
     QUERY_TYPED_BATCHES_CAPABILITY, QueryCompleted, QueryEvent, QueryOptions, QueryRequest,
     QueryStarted, QueryStream, RowBatch, SESSION_JDBC_CAPABILITY, Session, SessionConfig,
     TRANSACTION_LOCAL_CAPABILITY, Transaction, TransactionIsolation, TransactionOptions,
@@ -52,6 +54,7 @@ const DEFAULT_MAX_IN_FLIGHT: usize = 256;
 const DEFAULT_STDERR_TAIL_BYTES: usize = 64 * 1024;
 const DEFAULT_CONTROL_LANE_CAPACITY: usize = 16;
 const DEFAULT_STREAM_EVENT_CAPACITY: usize = 34;
+const JDBC_SNAPSHOT_ROOT_ENV: &str = "CHAT2DB_JDBC_SNAPSHOT_ROOT";
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// Process, protocol, and resource limits for one engine generation.
@@ -68,6 +71,7 @@ pub struct EngineConfig {
     stream_event_capacity: usize,
     stderr_tail_bytes: usize,
     registration_ack_delay: Duration,
+    driver_snapshot_parent: Option<PathBuf>,
 }
 
 impl EngineConfig {
@@ -86,6 +90,7 @@ impl EngineConfig {
             stream_event_capacity: DEFAULT_STREAM_EVENT_CAPACITY,
             stderr_tail_bytes: DEFAULT_STDERR_TAIL_BYTES,
             registration_ack_delay: Duration::ZERO,
+            driver_snapshot_parent: None,
         }
     }
 
@@ -135,6 +140,13 @@ impl EngineConfig {
     #[must_use]
     pub const fn with_max_receive_frame_bytes(mut self, maximum: u32) -> Self {
         self.max_receive_frame_bytes = maximum;
+        self
+    }
+
+    /// Places generation-owned JDBC snapshots below an application-private directory.
+    #[must_use]
+    pub fn with_driver_snapshot_parent(mut self, parent: impl Into<PathBuf>) -> Self {
+        self.driver_snapshot_parent = Some(parent.into());
         self
     }
 
@@ -193,7 +205,62 @@ impl EngineConfig {
 pub struct EngineSupervisor {
     client: EngineClient,
     control: mpsc::UnboundedSender<ActorControl>,
-    actor_task: Mutex<Option<JoinHandle<()>>>,
+    actor_task: Mutex<Option<JoinHandle<Result<(), BridgeError>>>>,
+}
+
+struct DriverSnapshotRoot {
+    directory: tempfile::TempDir,
+    canonical_path: PathBuf,
+    wire_path: String,
+}
+
+impl DriverSnapshotRoot {
+    fn create(parent: Option<&Path>, generation: u64) -> Result<Self, BridgeError> {
+        let mut builder = tempfile::Builder::new();
+        let prefix = format!("engine-{generation}-");
+        builder.prefix(&prefix);
+        let directory = parent
+            .map_or_else(|| builder.tempdir(), |path| builder.tempdir_in(path))
+            .map_err(|source| BridgeError::DriverSnapshotDirectory {
+                operation: "create",
+                path: parent.map_or_else(std::env::temp_dir, Path::to_path_buf),
+                source,
+            })?;
+        let canonical_path = std::fs::canonicalize(directory.path()).map_err(|source| {
+            BridgeError::DriverSnapshotDirectory {
+                operation: "resolve",
+                path: directory.path().to_path_buf(),
+                source,
+            }
+        })?;
+        let canonical_text =
+            canonical_path
+                .to_str()
+                .ok_or_else(|| BridgeError::DriverSnapshotDirectory {
+                    operation: "encode",
+                    path: canonical_path.clone(),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "snapshot path is not valid UTF-8",
+                    ),
+                })?;
+        let wire_path = jdbc::driver_artifact_wire_path(canonical_text)?;
+        Ok(Self {
+            directory,
+            canonical_path,
+            wire_path,
+        })
+    }
+
+    fn close(self) -> Result<(), BridgeError> {
+        self.directory
+            .close()
+            .map_err(|source| BridgeError::DriverSnapshotDirectory {
+                operation: "clean",
+                path: self.canonical_path,
+                source,
+            })
+    }
 }
 
 impl EngineSupervisor {
@@ -206,9 +273,12 @@ impl EngineSupervisor {
     pub async fn spawn(config: EngineConfig) -> Result<Self, BridgeError> {
         config.validate()?;
         let generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
+        let snapshot_root =
+            DriverSnapshotRoot::create(config.driver_snapshot_parent.as_deref(), generation)?;
 
         let mut command = config.command.build();
         command
+            .env(JDBC_SNAPSHOT_ROOT_ENV, &snapshot_root.wire_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -237,24 +307,29 @@ impl EngineSupervisor {
         let (control_command_sender, control_command_receiver) =
             mpsc::channel(DEFAULT_CONTROL_LANE_CAPACITY);
         let (control_sender, control_receiver) = mpsc::unbounded_channel();
+        let actor_stderr_tail = stderr_tail.clone();
 
-        let actor_task = tokio::spawn(run_actor(ActorContext {
-            generation,
-            child,
-            stdin,
-            stdout,
-            stderr_task,
-            stderr_tail: stderr_tail.clone(),
-            state: state_sender,
-            commands: command_receiver,
-            control_commands: control_command_receiver,
-            controls: control_receiver,
-            max_in_flight: config.max_in_flight,
-            control_lane_capacity: DEFAULT_CONTROL_LANE_CAPACITY,
-            registration_ack_delay: config.registration_ack_delay,
-            max_receive_frame_bytes: usize::try_from(config.max_receive_frame_bytes)
-                .unwrap_or(MAX_FRAME_BYTES),
-        }));
+        let actor_task = tokio::spawn(async move {
+            run_actor(ActorContext {
+                generation,
+                child,
+                stdin,
+                stdout,
+                stderr_task,
+                stderr_tail: actor_stderr_tail,
+                state: state_sender,
+                commands: command_receiver,
+                control_commands: control_command_receiver,
+                controls: control_receiver,
+                max_in_flight: config.max_in_flight,
+                control_lane_capacity: DEFAULT_CONTROL_LANE_CAPACITY,
+                registration_ack_delay: config.registration_ack_delay,
+                max_receive_frame_bytes: usize::try_from(config.max_receive_frame_bytes)
+                    .unwrap_or(MAX_FRAME_BYTES),
+            })
+            .await;
+            snapshot_root.close()
+        });
 
         let inner = Arc::new(EngineInner {
             generation,
@@ -347,7 +422,7 @@ impl EngineSupervisor {
             return Ok(());
         };
         task.await
-            .map_err(|error| BridgeError::SupervisorTask(error.to_string()))
+            .map_err(|error| BridgeError::SupervisorTask(error.to_string()))?
     }
 }
 

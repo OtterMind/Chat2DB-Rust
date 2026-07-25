@@ -1,10 +1,17 @@
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    fmt::Write as _,
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chat2db_contract::{
     CancelDisposition, CreateDatasourceRequest, DatasourceConnection, JdbcValue, OperationEvent,
     OperationStatus, QueryLimits, ResultPageRequest, StartQueryRequest,
 };
-use chat2db_core::{Application, RuntimeHost};
+use chat2db_core::{Application, RuntimeConfig, RuntimeHost};
 use chat2db_java_bridge::{
     DriverArtifact, DriverClient, DriverSpec, EngineCommand, EngineConfig, EngineSupervisor,
 };
@@ -81,6 +88,155 @@ impl H2ProductHarness {
             .await
             .expect("runtime host must shut down cleanly");
     }
+}
+
+#[tokio::test]
+async fn runtime_host_preloads_a_manifested_h2_driver_pack() {
+    let engine_jar = required_jar("CHAT2DB_JAVA_ENGINE_JAR");
+    let h2_jar = required_jar("CHAT2DB_H2_DRIVER_JAR");
+    let directory = TempDir::new().expect("temporary runtime directory");
+    let driver_pack_root = directory.path().join("driver-packs");
+    let pack_directory = driver_pack_root.join("01-h2");
+    fs::create_dir_all(&pack_directory).expect("driver pack directory must be created");
+    let managed_h2_jar = pack_directory.join("h2-2.3.232.jar");
+    fs::copy(h2_jar, &managed_h2_jar).expect("H2 must be copied into the managed pack");
+    let artifact = DriverArtifact::from_path(&managed_h2_jar).expect("managed H2 must hash");
+    let mut sha256 = String::with_capacity(64);
+    for byte in artifact.sha256() {
+        write!(&mut sha256, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    fs::write(
+        pack_directory.join("driver-pack.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schemaVersion": 1,
+            "id": "h2",
+            "name": "H2",
+            "version": "2.3.232",
+            "driverClass": H2_DRIVER_CLASS,
+            "artifacts": [{
+                "path": "h2-2.3.232.jar",
+                "sha256": sha256
+            }]
+        }))
+        .expect("driver manifest must serialize"),
+    )
+    .expect("driver manifest must be written");
+
+    let engine = EngineConfig::new(EngineCommand::java_jar("java", engine_jar)).with_timeouts(
+        Duration::from_secs(10),
+        Duration::from_secs(10),
+        Duration::from_secs(5),
+    );
+    let data_dir = directory.path().join("data");
+    let driver_runtime_directory = data_dir.join("jdbc-driver-runtime");
+    let config = RuntimeConfig::new(engine)
+        .with_data_dir(&data_dir)
+        .with_driver_pack_dir(&driver_pack_root)
+        .with_vault_master_key_base64(STANDARD.encode([0x5a; 32]));
+    let mut host = RuntimeHost::open(config)
+        .await
+        .expect("runtime host must preload the H2 pack");
+    let application = host.application();
+    let inventory = application.list_drivers();
+    assert_eq!(inventory.items.len(), 1);
+    let installed = &inventory.items[0];
+    assert_eq!(installed.pack_id, "h2");
+    assert_eq!(installed.version, "2.3.232");
+    assert_eq!(installed.driver_class, H2_DRIVER_CLASS);
+    assert_eq!(installed.artifact_count, 1);
+    assert_eq!(
+        installed.artifact_bytes,
+        fs::metadata(&managed_h2_jar)
+            .expect("managed H2 metadata")
+            .len()
+            .to_string()
+    );
+
+    let datasource = application
+        .create_datasource(CreateDatasourceRequest {
+            name: "Stage 7 managed H2".to_owned(),
+            driver_id: installed.driver_id.clone(),
+            connection: Some(DatasourceConnection {
+                jdbc_url: "jdbc:h2:mem:stage7_managed;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=TRUE"
+                    .to_owned(),
+                properties: Vec::new(),
+                read_only: true,
+            }),
+        })
+        .await
+        .expect("managed-driver datasource must be created");
+    let accepted = application
+        .start_query(StartQueryRequest {
+            datasource_id: datasource.id,
+            sql: "SELECT X AS id, CAST('row-' || X AS VARCHAR(16)) AS label, \
+                  MOD(X, 2) = 0 AS active, \
+                  CAST(X + 0.25 AS DECIMAL(10, 2)) AS amount \
+                  FROM SYSTEM_RANGE(1, 5) ORDER BY X"
+                .to_owned(),
+            parameters: Vec::new(),
+            limits: QueryLimits {
+                max_rows: "0".to_owned(),
+                max_result_bytes: (1024_u64 * 1024).to_string(),
+                batch_rows: 2,
+                batch_bytes: 1024,
+                result_ttl_seconds: 60,
+            },
+        })
+        .await
+        .expect("managed H2 query must be accepted");
+    let result_id = wait_for_result(&application, &accepted.operation_id).await;
+    assert_result_page(&application, &result_id).await;
+
+    host.shutdown()
+        .await
+        .expect("runtime host must shut down with the managed driver");
+    assert_directory_empty(&driver_runtime_directory);
+}
+
+#[tokio::test]
+async fn partial_managed_driver_preload_cleans_generation_and_releases_storage() {
+    let engine_jar = required_jar("CHAT2DB_JAVA_ENGINE_JAR");
+    let h2_jar = required_jar("CHAT2DB_H2_DRIVER_JAR");
+    let directory = TempDir::new().expect("temporary runtime directory");
+    let driver_pack_root = directory.path().join("driver-packs");
+    write_driver_pack(&driver_pack_root, "01-h2", "h2", H2_DRIVER_CLASS, &h2_jar);
+    write_driver_pack(
+        &driver_pack_root,
+        "02-invalid",
+        "invalid",
+        "example.MissingDriver",
+        &h2_jar,
+    );
+    let data_dir = directory.path().join("data");
+    let driver_runtime_directory = data_dir.join("jdbc-driver-runtime");
+    let master_key = STANDARD.encode([0x5a; 32]);
+
+    let error = RuntimeHost::open(managed_runtime_config(
+        &engine_jar,
+        &data_dir,
+        &driver_pack_root,
+        &master_key,
+    ))
+    .await
+    .expect_err("invalid second pack must fail the complete preload");
+    assert_eq!(error.api_error().code, "driver.load_failed");
+    assert_directory_empty(&driver_runtime_directory);
+
+    fs::remove_dir_all(driver_pack_root.join("02-invalid"))
+        .expect("invalid pack must be removable after failed preload");
+    let mut host = RuntimeHost::open(managed_runtime_config(
+        &engine_jar,
+        &data_dir,
+        &driver_pack_root,
+        &master_key,
+    ))
+    .await
+    .expect("storage and Java generation must reopen immediately");
+    assert_eq!(host.application().list_drivers().items.len(), 1);
+    host.shutdown()
+        .await
+        .expect("reopened runtime must shut down cleanly");
+    assert_directory_empty(&driver_runtime_directory);
 }
 
 #[tokio::test]
@@ -333,6 +489,61 @@ async fn assert_result_page(application: &Application, result_id: &str) {
             JdbcValue::Decimal { value: amount },
         ] if id == "1" && label == "row-1" && amount == "1.25"
     ));
+}
+
+fn managed_runtime_config(
+    engine_jar: &Path,
+    data_dir: &Path,
+    driver_pack_root: &Path,
+    master_key: &str,
+) -> RuntimeConfig {
+    let engine = EngineConfig::new(EngineCommand::java_jar("java", engine_jar)).with_timeouts(
+        Duration::from_secs(10),
+        Duration::from_secs(10),
+        Duration::from_secs(5),
+    );
+    RuntimeConfig::new(engine)
+        .with_data_dir(data_dir)
+        .with_driver_pack_dir(driver_pack_root)
+        .with_vault_master_key_base64(master_key)
+}
+
+fn write_driver_pack(
+    root: &Path,
+    directory: &str,
+    id: &str,
+    driver_class: &str,
+    source_jar: &Path,
+) {
+    let pack = root.join(directory);
+    fs::create_dir_all(&pack).expect("driver pack directory must be created");
+    let artifact_path = pack.join("driver.jar");
+    fs::copy(source_jar, &artifact_path).expect("driver artifact must be copied into its pack");
+    let artifact = DriverArtifact::from_path(&artifact_path).expect("driver artifact must hash");
+    let mut sha256 = String::with_capacity(64);
+    for byte in artifact.sha256() {
+        write!(&mut sha256, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    fs::write(
+        pack.join("driver-pack.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schemaVersion": 1,
+            "id": id,
+            "name": id,
+            "version": "test",
+            "driverClass": driver_class,
+            "artifacts": [{"path": "driver.jar", "sha256": sha256}]
+        }))
+        .expect("driver manifest must serialize"),
+    )
+    .expect("driver manifest must be written");
+}
+
+fn assert_directory_empty(path: &Path) {
+    let count = fs::read_dir(path)
+        .expect("JDBC runtime directory must exist")
+        .count();
+    assert_eq!(count, 0, "JDBC runtime directory must be empty");
 }
 
 fn required_jar(variable: &str) -> PathBuf {

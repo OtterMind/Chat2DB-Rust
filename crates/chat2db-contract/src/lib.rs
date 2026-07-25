@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod datasource;
+pub mod driver;
 pub mod error;
 pub mod operation;
 pub mod query;
@@ -23,6 +24,7 @@ pub use datasource::{
     CreateDatasourceRequest, Datasource, DatasourceConnection, DatasourceConnectionProperty,
     DatasourceList, DatasourceSecretChange, UpdateDatasourceRequest,
 };
+pub use driver::{JdbcDriver, JdbcDriverList};
 pub use error::{ApiError, ApiErrorDetails};
 pub use operation::{
     CancelDisposition, CancelOperationResponse, OperationEvent, OperationEventEnvelope,
@@ -50,13 +52,14 @@ mod tests {
         ColumnNullability, ComponentHealth, ComponentState, ContextCompactionStrategy,
         CreateAgentSessionRequest, CreateDatasourceRequest, CreateProviderProfileRequest,
         Datasource, DatasourceConnection, DatasourceConnectionProperty, DatasourceList,
-        DatasourceSecretChange, DecideAgentPermissionRequest, HealthResponse, JdbcValue,
-        JdbcValueType, OperationEvent, OperationEventEnvelope, OperationSnapshot, OperationStatus,
-        OperationStreamMessage, OperationSubscriptionAccepted, ProductInfo, ProviderCredentials,
-        ProviderKind, ProviderProfile, ProviderProfileList, ProviderSecretChange, QueryAccepted,
-        QueryLimits, QueryParameter, ResultColumn, ResultMetadata, ResultPage, ResultPageRequest,
-        ResultRow, RuntimeStatus, SqlPermissionMode, StartAgentRunRequest, StartQueryRequest,
-        UpdateAgentSessionRequest, UpdateDatasourceRequest, UpdateProviderProfileRequest,
+        DatasourceSecretChange, DecideAgentPermissionRequest, HealthResponse, JdbcDriver,
+        JdbcDriverList, JdbcValue, JdbcValueType, OperationEvent, OperationEventEnvelope,
+        OperationSnapshot, OperationStatus, OperationStreamMessage, OperationSubscriptionAccepted,
+        ProductInfo, ProviderCredentials, ProviderKind, ProviderProfile, ProviderProfileList,
+        ProviderSecretChange, QueryAccepted, QueryLimits, QueryParameter, ResultColumn,
+        ResultMetadata, ResultPage, ResultPageRequest, ResultRow, RuntimeStatus, SqlPermissionMode,
+        StartAgentRunRequest, StartQueryRequest, UpdateAgentSessionRequest,
+        UpdateDatasourceRequest, UpdateProviderProfileRequest,
     };
 
     #[derive(OpenApi)]
@@ -101,6 +104,8 @@ mod tests {
         DatasourceSecretChange,
         DecideAgentPermissionRequest,
         HealthResponse,
+        JdbcDriver,
+        JdbcDriverList,
         JdbcValue,
         JdbcValueType,
         OperationEvent,
@@ -148,6 +153,7 @@ mod tests {
             "AgentEventEnvelope",
             "AgentRunSnapshot",
             "Datasource",
+            "JdbcDriverList",
             "JdbcValue",
             "OperationEventEnvelope",
             "OperationStreamMessage",

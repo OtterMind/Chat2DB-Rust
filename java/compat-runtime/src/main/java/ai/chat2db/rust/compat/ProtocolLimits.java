@@ -25,6 +25,10 @@ final class ProtocolLimits {
     static final int MAX_SQL_BYTES = value(JdbcProtocolLimit.JDBC_PROTOCOL_LIMIT_MAX_SQL_BYTES);
     static final int MAX_SCALAR_BYTES = value(JdbcProtocolLimit.JDBC_PROTOCOL_LIMIT_MAX_SCALAR_BYTES);
     static final int MAX_BATCH_BYTES = value(JdbcProtocolLimit.JDBC_PROTOCOL_LIMIT_MAX_BATCH_BYTES);
+    static final int MAX_DRIVER_ARTIFACT_BYTES =
+            value(JdbcProtocolLimit.JDBC_PROTOCOL_LIMIT_MAX_DRIVER_ARTIFACT_BYTES);
+    static final int MAX_DRIVER_TOTAL_BYTES =
+            value(JdbcProtocolLimit.JDBC_PROTOCOL_LIMIT_MAX_DRIVER_TOTAL_BYTES);
     static final long DEFAULT_RESULT_BYTES = JdbcResultByteLimit
             .JDBC_RESULT_BYTE_LIMIT_DEFAULT_RESULT_BYTES
             .getNumber();

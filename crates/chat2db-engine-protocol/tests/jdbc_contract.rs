@@ -294,6 +294,8 @@ fn jdbc_hard_limits_are_generated_from_the_shared_schema() {
         (wire::JdbcProtocolLimit::MaxSqlBytes, 1_048_576),
         (wire::JdbcProtocolLimit::MaxScalarBytes, 4_194_304),
         (wire::JdbcProtocolLimit::MaxBatchBytes, 8_388_608),
+        (wire::JdbcProtocolLimit::MaxDriverArtifactBytes, 268_435_456),
+        (wire::JdbcProtocolLimit::MaxDriverTotalBytes, 1_073_741_824),
     ];
 
     for (limit, expected) in limits {

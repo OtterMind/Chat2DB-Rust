@@ -17,11 +17,11 @@ use chat2db_contract::{
     AgentRunSnapshot, AgentSession, AgentSessionList, AgentStreamMessage,
     AgentSubscriptionAccepted, ApiError, CancelAgentRunResponse, CancelOperationResponse,
     CreateAgentSessionRequest, CreateDatasourceRequest, CreateProviderProfileRequest, Datasource,
-    DatasourceList, DecideAgentPermissionRequest, HealthResponse, OperationEventEnvelope,
-    OperationSnapshot, OperationStreamMessage, OperationSubscriptionAccepted, ProviderProfile,
-    ProviderProfileList, QueryAccepted, ResultPage, ResultPageRequest, StartAgentRunRequest,
-    StartQueryRequest, UpdateAgentSessionRequest, UpdateDatasourceRequest,
-    UpdateProviderProfileRequest,
+    DatasourceList, DecideAgentPermissionRequest, HealthResponse, JdbcDriverList,
+    OperationEventEnvelope, OperationSnapshot, OperationStreamMessage,
+    OperationSubscriptionAccepted, ProviderProfile, ProviderProfileList, QueryAccepted, ResultPage,
+    ResultPageRequest, StartAgentRunRequest, StartQueryRequest, UpdateAgentSessionRequest,
+    UpdateDatasourceRequest, UpdateProviderProfileRequest,
 };
 use chat2db_core::{AppError, Application, RuntimeConfig, RuntimeHost};
 use chat2db_java_bridge::{EngineCommand, EngineConfig};
@@ -30,6 +30,7 @@ use tauri::{State, ipc::Channel};
 use tokio::sync::{Mutex, oneshot};
 
 const DATA_DIR_ENV: &str = "CHAT2DB_DATA_DIR";
+const DRIVER_PACK_DIR_ENV: &str = "CHAT2DB_DRIVER_PACK_DIR";
 const JAVA_BIN_ENV: &str = "CHAT2DB_JAVA_BIN";
 const JAVA_ENGINE_JAR_ENV: &str = "CHAT2DB_JAVA_ENGINE_JAR";
 const VAULT_MASTER_KEY_ENV: &str = "CHAT2DB_VAULT_MASTER_KEY";
@@ -154,6 +155,7 @@ impl DesktopState {
 #[derive(Debug)]
 pub enum DesktopError {
     MissingJavaEngineJar,
+    EmptyEnvironmentVariable(&'static str),
     InvalidJavaEngineJar(PathBuf),
     JavaEngineJarMetadata {
         path: PathBuf,
@@ -186,6 +188,9 @@ impl std::fmt::Display for DesktopError {
                 formatter,
                 "{JAVA_ENGINE_JAR_ENV} is required and must point to the compatibility-engine JAR"
             ),
+            Self::EmptyEnvironmentVariable(name) => {
+                write!(formatter, "{name} must not be empty when configured")
+            }
             Self::InvalidJavaEngineJar(path) => write!(
                 formatter,
                 "{JAVA_ENGINE_JAR_ENV} does not point to a regular file: {}",
@@ -215,6 +220,7 @@ impl std::error::Error for DesktopError {
             Self::Runtime(error) => Some(error.as_ref()),
             Self::Tauri(error) => Some(error.as_ref()),
             Self::MissingJavaEngineJar
+            | Self::EmptyEnvironmentVariable(_)
             | Self::InvalidJavaEngineJar(_)
             | Self::InvalidVaultMasterKeyEncoding => None,
         }
@@ -236,6 +242,7 @@ pub fn run() -> Result<i32, DesktopError> {
         .manage(managed_state)
         .invoke_handler(tauri::generate_handler![
             health,
+            list_drivers,
             list_datasources,
             create_datasource,
             get_datasource,
@@ -281,12 +288,15 @@ pub fn run() -> Result<i32, DesktopError> {
 
 fn runtime_config_from_environment() -> Result<RuntimeConfig, DesktopError> {
     let engine_jar = required_java_engine_jar()?;
-    let java = env::var_os(JAVA_BIN_ENV).unwrap_or_else(|| OsString::from("java"));
+    let java = optional_nonempty_os_env(JAVA_BIN_ENV)?.unwrap_or_else(|| OsString::from("java"));
     let engine = EngineConfig::new(EngineCommand::java_jar(java, engine_jar));
     let mut config = RuntimeConfig::new(engine);
 
-    if let Some(data_dir) = env::var_os(DATA_DIR_ENV).filter(|value| !value.is_empty()) {
+    if let Some(data_dir) = optional_nonempty_os_env(DATA_DIR_ENV)? {
         config = config.with_data_dir(PathBuf::from(data_dir));
+    }
+    if let Some(driver_pack_dir) = optional_nonempty_os_env(DRIVER_PACK_DIR_ENV)? {
+        config = config.with_driver_pack_dir(PathBuf::from(driver_pack_dir));
     }
     match env::var(VAULT_MASTER_KEY_ENV) {
         Ok(master_key) => config = config.with_vault_master_key_base64(master_key),
@@ -299,12 +309,25 @@ fn runtime_config_from_environment() -> Result<RuntimeConfig, DesktopError> {
 }
 
 fn required_java_engine_jar() -> Result<PathBuf, DesktopError> {
-    let path = env::var_os(JAVA_ENGINE_JAR_ENV)
-        .filter(|value| !value.is_empty())
+    let path = optional_nonempty_os_env(JAVA_ENGINE_JAR_ENV)?
         .map(PathBuf::from)
         .ok_or(DesktopError::MissingJavaEngineJar)?;
     validate_java_engine_jar(&path)?;
     Ok(path)
+}
+
+fn optional_nonempty_os_env(name: &'static str) -> Result<Option<OsString>, DesktopError> {
+    validate_optional_os_env(name, env::var_os(name))
+}
+
+fn validate_optional_os_env(
+    name: &'static str,
+    value: Option<OsString>,
+) -> Result<Option<OsString>, DesktopError> {
+    match value {
+        Some(value) if value.is_empty() => Err(DesktopError::EmptyEnvironmentVariable(name)),
+        value => Ok(value),
+    }
 }
 
 fn validate_java_engine_jar(path: &Path) -> Result<(), DesktopError> {
@@ -342,6 +365,12 @@ fn parse_after_sequence(value: Option<String>) -> Result<Option<u64>, Box<ApiErr
 #[allow(clippy::needless_pass_by_value)]
 fn health(state: State<'_, Arc<DesktopState>>) -> HealthResponse {
     state.application.health()
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn list_drivers(state: State<'_, Arc<DesktopState>>) -> JdbcDriverList {
+    state.application.list_drivers()
 }
 
 #[tauri::command]
@@ -823,7 +852,7 @@ async fn result_page(
 
 #[cfg(test)]
 mod tests {
-    use std::{fs::File, sync::Arc};
+    use std::{ffi::OsString, fs::File, sync::Arc};
 
     use chat2db_contract::{
         AgentEvent, AgentEventEnvelope, AgentStreamMessage, OperationEvent, OperationEventEnvelope,
@@ -834,7 +863,7 @@ mod tests {
 
     use super::{
         DesktopError, SubscriptionRegistry, agent_stream_message, operation_stream_message,
-        parse_after_sequence, validate_java_engine_jar,
+        parse_after_sequence, validate_java_engine_jar, validate_optional_os_env,
     };
 
     #[test]
@@ -865,6 +894,21 @@ mod tests {
             validate_java_engine_jar(&directory.path().join("missing-engine.jar")),
             Err(DesktopError::InvalidJavaEngineJar(_))
         ));
+    }
+
+    #[test]
+    fn optional_path_environment_rejects_explicit_empty_values() {
+        assert!(matches!(
+            validate_optional_os_env("CHAT2DB_DRIVER_PACK_DIR", Some(OsString::new())),
+            Err(DesktopError::EmptyEnvironmentVariable(
+                "CHAT2DB_DRIVER_PACK_DIR"
+            ))
+        ));
+        assert_eq!(
+            validate_optional_os_env("CHAT2DB_DRIVER_PACK_DIR", None)
+                .expect("missing optional variable must be accepted"),
+            None
+        );
     }
 
     #[test]

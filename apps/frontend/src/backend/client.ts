@@ -16,6 +16,8 @@ export type DatasourceConnectionProperty = Schema<'DatasourceConnectionProperty'
 export type DatasourceList = Schema<'DatasourceList'>;
 export type DatasourceSecretChange = Schema<'DatasourceSecretChange'>;
 export type HealthResponse = Schema<'HealthResponse'>;
+export type JdbcDriver = Schema<'JdbcDriver'>;
+export type JdbcDriverList = Schema<'JdbcDriverList'>;
 export type JdbcValue = Schema<'JdbcValue'>;
 export type OperationEventEnvelope = Schema<'OperationEventEnvelope'>;
 export type OperationSnapshot = Schema<'OperationSnapshot'>;
@@ -78,6 +80,7 @@ export interface AgentSubscription {
 export interface BackendClient {
   readonly transport: 'http' | 'tauri';
   health(signal?: AbortSignal): Promise<HealthResponse>;
+  listDrivers(signal?: AbortSignal): Promise<JdbcDriverList>;
   listDatasources(signal?: AbortSignal): Promise<DatasourceList>;
   createDatasource(
     request: CreateDatasourceRequest,

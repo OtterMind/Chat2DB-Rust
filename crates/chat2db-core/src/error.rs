@@ -484,6 +484,7 @@ impl From<BridgeError> for AppError {
             | BridgeError::Spawn(_)
             | BridgeError::MissingPipe(_)
             | BridgeError::DriverArtifact { .. }
+            | BridgeError::DriverSnapshotDirectory { .. }
             | BridgeError::NonUtf8DriverArtifact(_)
             | BridgeError::StaleHandle(_)
             | BridgeError::Protocol(_)

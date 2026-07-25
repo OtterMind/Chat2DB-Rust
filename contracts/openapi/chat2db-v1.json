@@ -1523,6 +1523,26 @@
         }
       }
     },
+    "/api/v1/drivers": {
+      "get": {
+        "tags": [
+          "drivers"
+        ],
+        "operationId": "list_drivers",
+        "responses": {
+          "200": {
+            "description": "Loaded JDBC driver inventory",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JdbcDriverList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/openapi.json": {
       "get": {
         "tags": [
@@ -3470,6 +3490,67 @@
           }
         }
       },
+      "JdbcDriver": {
+        "type": "object",
+        "description": "One hash-verified JDBC driver pack loaded by the compatibility engine.",
+        "required": [
+          "packId",
+          "name",
+          "version",
+          "driverId",
+          "driverClass",
+          "artifactCount",
+          "artifactBytes"
+        ],
+        "properties": {
+          "artifactBytes": {
+            "type": "string",
+            "description": "Total verified artifact bytes encoded as an unsigned decimal integer."
+          },
+          "artifactCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of ordered JAR artifacts in this pack.",
+            "minimum": 0
+          },
+          "driverClass": {
+            "type": "string",
+            "description": "JDBC driver implementation class."
+          },
+          "driverId": {
+            "type": "string",
+            "description": "Engine-derived identifier stored by datasource records."
+          },
+          "name": {
+            "type": "string",
+            "description": "User-visible driver name."
+          },
+          "packId": {
+            "type": "string",
+            "description": "Stable package identifier declared by the local manifest."
+          },
+          "version": {
+            "type": "string",
+            "description": "Driver-pack version declared by the manifest."
+          }
+        }
+      },
+      "JdbcDriverList": {
+        "type": "object",
+        "description": "Stable inventory of drivers loaded during runtime startup.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JdbcDriver"
+            },
+            "description": "Drivers in deterministic manifest-directory order."
+          }
+        }
+      },
       "JdbcValue": {
         "oneOf": [
           {
@@ -4755,6 +4836,10 @@
     {
       "name": "system",
       "description": "Runtime identity and readiness"
+    },
+    {
+      "name": "drivers",
+      "description": "Hash-verified JDBC driver inventory"
     },
     {
       "name": "datasources",

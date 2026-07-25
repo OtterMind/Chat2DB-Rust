@@ -29,7 +29,9 @@ pub const OPERATION_CANCEL_CAPABILITY: &str = "operation.cancel.v1";
 pub const UPDATE_JDBC_CAPABILITY: &str = "update.jdbc.v1";
 pub const TRANSACTION_LOCAL_CAPABILITY: &str = "transaction.local.v1";
 
-const MAX_DRIVER_ARTIFACTS: usize = wire::JdbcProtocolLimit::MaxDriverArtifacts as usize;
+pub const MAX_DRIVER_ARTIFACTS: usize = wire::JdbcProtocolLimit::MaxDriverArtifacts as usize;
+pub const MAX_DRIVER_ARTIFACT_BYTES: u64 = wire::JdbcProtocolLimit::MaxDriverArtifactBytes as u64;
+pub const MAX_DRIVER_TOTAL_BYTES: u64 = wire::JdbcProtocolLimit::MaxDriverTotalBytes as u64;
 const MAX_CONNECTION_PROPERTIES: usize = wire::JdbcProtocolLimit::MaxConnectionProperties as usize;
 const MAX_DRIVER_ID_BYTES: usize = wire::JdbcProtocolLimit::MaxDriverIdBytes as usize;
 const MAX_PROPERTY_KEY_BYTES: usize = wire::JdbcProtocolLimit::MaxPropertyKeyBytes as usize;
@@ -86,7 +88,9 @@ fn validate_count(actual: usize, maximum: usize, field: &str) -> Result<(), Brid
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DriverArtifact {
     canonical_path: PathBuf,
+    wire_path: String,
     sha256: [u8; 32],
+    byte_len: u64,
 }
 
 impl DriverArtifact {
@@ -95,8 +99,23 @@ impl DriverArtifact {
     /// # Errors
     ///
     /// Returns an error when the path cannot be canonicalized, is not a file,
-    /// cannot be read, or cannot be represented by the UTF-8 wire contract.
+    /// cannot be read, exceeds the protocol artifact limit, or cannot be
+    /// represented by the UTF-8 wire contract.
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, BridgeError> {
+        Self::from_path_with_max_bytes(path, MAX_DRIVER_ARTIFACT_BYTES)
+    }
+
+    /// Resolves and hashes an external JAR without reading past `maximum_bytes`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::from_path`], and rejects a file that
+    /// exceeds the caller's smaller remaining byte budget.
+    pub fn from_path_with_max_bytes(
+        path: impl AsRef<Path>,
+        maximum_bytes: u64,
+    ) -> Result<Self, BridgeError> {
+        let maximum_bytes = maximum_bytes.min(MAX_DRIVER_ARTIFACT_BYTES);
         let input_path = path.as_ref();
         let canonical_path =
             std::fs::canonicalize(input_path).map_err(|source| BridgeError::DriverArtifact {
@@ -114,10 +133,17 @@ impl DriverArtifact {
                 canonical_path.display()
             )));
         }
+        if metadata.len() > maximum_bytes {
+            return Err(invalid_request(format!(
+                "driver artifact {} exceeds the byte limit of {maximum_bytes}",
+                canonical_path.display()
+            )));
+        }
         let Some(canonical_path_text) = canonical_path.to_str() else {
             return Err(BridgeError::NonUtf8DriverArtifact(canonical_path));
         };
-        validate_non_blank_utf8(canonical_path_text, MAX_PATH_BYTES, "driver artifact path")?;
+        let wire_path = driver_artifact_wire_path(canonical_path_text)?;
+        validate_non_blank_utf8(&wire_path, MAX_PATH_BYTES, "driver artifact path")?;
 
         let mut file =
             File::open(&canonical_path).map_err(|source| BridgeError::DriverArtifact {
@@ -126,6 +152,7 @@ impl DriverArtifact {
             })?;
         let mut hasher = Sha256::new();
         let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
+        let mut byte_len = 0_u64;
         loop {
             let count = file
                 .read(&mut buffer)
@@ -136,12 +163,23 @@ impl DriverArtifact {
             if count == 0 {
                 break;
             }
+            let count_u64 = u64::try_from(count)
+                .map_err(|_| invalid_request("driver artifact read size is not representable"))?;
+            if count_u64 > maximum_bytes.saturating_sub(byte_len) {
+                return Err(invalid_request(format!(
+                    "driver artifact {} exceeds the byte limit of {maximum_bytes}",
+                    canonical_path.display()
+                )));
+            }
             hasher.update(&buffer[..count]);
+            byte_len += count_u64;
         }
 
         Ok(Self {
             canonical_path,
+            wire_path,
             sha256: hasher.finalize().into(),
+            byte_len,
         })
     }
 
@@ -155,25 +193,26 @@ impl DriverArtifact {
         &self.sha256
     }
 
+    #[must_use]
+    pub const fn byte_len(&self) -> u64 {
+        self.byte_len
+    }
+
     fn validate(&self) -> Result<(), BridgeError> {
         if !self.canonical_path.is_absolute() {
             return Err(invalid_request("driver artifact path must be absolute"));
         }
-        let Some(path) = self.canonical_path.to_str() else {
-            return Err(BridgeError::NonUtf8DriverArtifact(
-                self.canonical_path.clone(),
-            ));
-        };
-        validate_non_blank_utf8(path, MAX_PATH_BYTES, "driver artifact path")
+        if self.byte_len > MAX_DRIVER_ARTIFACT_BYTES {
+            return Err(invalid_request(format!(
+                "driver artifact cannot exceed {MAX_DRIVER_ARTIFACT_BYTES} bytes"
+            )));
+        }
+        validate_non_blank_utf8(&self.wire_path, MAX_PATH_BYTES, "driver artifact path")
     }
 
     fn to_wire(&self) -> wire::DriverArtifact {
         wire::DriverArtifact {
-            path: self
-                .canonical_path
-                .to_str()
-                .expect("driver artifact paths are validated at construction")
-                .to_owned(),
+            path: self.wire_path.clone(),
             sha256: self.sha256.to_vec(),
         }
     }
@@ -186,6 +225,12 @@ pub struct DriverSpec {
 }
 
 impl DriverSpec {
+    /// Derives the generation-independent identity verified by the Java engine.
+    #[must_use]
+    pub fn driver_id(&self) -> String {
+        derive_driver_id(&self.driver_class, &self.artifacts)
+    }
+
     fn validate(&self) -> Result<(), BridgeError> {
         validate_non_blank_utf8(&self.driver_class, MAX_DRIVER_CLASS_BYTES, "driver_class")?;
         if self.artifacts.is_empty() {
@@ -198,7 +243,18 @@ impl DriverSpec {
             MAX_DRIVER_ARTIFACTS,
             "driver artifacts",
         )?;
-        self.artifacts.iter().try_for_each(DriverArtifact::validate)
+        let total_bytes = self.artifacts.iter().try_fold(0_u64, |total, artifact| {
+            artifact.validate()?;
+            total
+                .checked_add(artifact.byte_len)
+                .ok_or_else(|| invalid_request("driver artifact byte count overflowed"))
+        })?;
+        if total_bytes > MAX_DRIVER_TOTAL_BYTES {
+            return Err(invalid_request(format!(
+                "driver artifacts together cannot exceed {MAX_DRIVER_TOTAL_BYTES} bytes"
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -868,7 +924,7 @@ impl DriverClient {
     pub async fn load_driver(&self, driver: DriverSpec) -> Result<LoadedDriver, BridgeError> {
         driver.validate()?;
         let requested_class = driver.driver_class.clone();
-        let expected_driver_id = derive_driver_id(&requested_class, &driver.artifacts);
+        let expected_driver_id = driver.driver_id();
         let expected_artifact_count = u32::try_from(driver.artifacts.len()).map_err(|_| {
             BridgeError::InvalidRequest(
                 "driver artifact count does not fit the protocol".to_owned(),
@@ -1614,14 +1670,40 @@ fn derive_driver_id(driver_class: &str, artifacts: &[DriverArtifact]) -> String 
     driver_id
 }
 
+pub(super) fn driver_artifact_wire_path(canonical_path: &str) -> Result<String, BridgeError> {
+    const VERBATIM_PREFIX: &str = r"\\?\";
+    const VERBATIM_UNC_PREFIX: &str = r"\\?\UNC\";
+
+    if let Some(network_path) = canonical_path.strip_prefix(VERBATIM_UNC_PREFIX) {
+        return Ok(format!(r"\\{network_path}"));
+    }
+    if let Some(dos_path) = canonical_path.strip_prefix(VERBATIM_PREFIX) {
+        let bytes = dos_path.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'\\' | b'/')
+        {
+            return Ok(dos_path.to_owned());
+        }
+        return Err(invalid_request(
+            "driver artifact uses an unsupported Windows verbatim path",
+        ));
+    }
+    Ok(canonical_path.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn artifact(path: impl Into<PathBuf>) -> DriverArtifact {
+        let canonical_path = path.into();
         DriverArtifact {
-            canonical_path: path.into(),
+            wire_path: canonical_path.to_string_lossy().into_owned(),
+            canonical_path,
             sha256: [7; 32],
+            byte_len: 0,
         }
     }
 
@@ -1783,6 +1865,99 @@ mod tests {
             artifact("relative-driver.jar").validate(),
             "must be absolute",
         );
+
+        let mut oversized_artifact = artifact("/tmp/oversized-driver.jar");
+        oversized_artifact.byte_len = MAX_DRIVER_ARTIFACT_BYTES + 1;
+        assert_invalid(
+            DriverSpec {
+                driver_class: "org.example.Driver".to_owned(),
+                artifacts: vec![oversized_artifact],
+            }
+            .validate(),
+            "driver artifact cannot exceed",
+        );
+
+        let mut maximum_artifact = artifact("/tmp/maximum-driver.jar");
+        maximum_artifact.byte_len = MAX_DRIVER_ARTIFACT_BYTES;
+        assert_invalid(
+            DriverSpec {
+                driver_class: "org.example.Driver".to_owned(),
+                artifacts: vec![maximum_artifact; 5],
+            }
+            .validate(),
+            "driver artifacts together",
+        );
+    }
+
+    #[test]
+    fn driver_identity_depends_on_class_and_ordered_digests() {
+        let first = artifact("/tmp/first.jar");
+        let mut second = artifact("/tmp/second.jar");
+        second.sha256 = [8; 32];
+
+        let identity = |driver_class: &str, artifacts: Vec<DriverArtifact>| {
+            DriverSpec {
+                driver_class: driver_class.to_owned(),
+                artifacts,
+            }
+            .driver_id()
+        };
+
+        assert_ne!(
+            identity("org.example.Driver", vec![first.clone(), second.clone()]),
+            identity("org.example.Driver", vec![second, first.clone()])
+        );
+        assert_ne!(
+            identity("org.example.Driver", vec![first.clone()]),
+            identity("org.example.OtherDriver", vec![first])
+        );
+    }
+
+    #[test]
+    fn windows_verbatim_paths_are_normalized_for_the_java_wire_contract() {
+        assert_eq!(
+            driver_artifact_wire_path(r"\\?\C:\Users\dawn\driver.jar")
+                .expect("DOS verbatim path must normalize"),
+            r"C:\Users\dawn\driver.jar"
+        );
+        assert_eq!(
+            driver_artifact_wire_path(r"\\?\UNC\server\share\driver.jar")
+                .expect("UNC verbatim path must normalize"),
+            r"\\server\share\driver.jar"
+        );
+        assert!(matches!(
+            driver_artifact_wire_path(r"\\?\Volume{1234}\driver.jar"),
+            Err(BridgeError::InvalidRequest(message))
+                if message.contains("unsupported Windows verbatim path")
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_windows_artifact_keeps_a_java_compatible_wire_path() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock must follow the Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "chat2db-driver-path-{}-{nonce}.jar",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"test-jar").expect("temporary driver must be written");
+
+        let artifact = DriverArtifact::from_path(&path).expect("temporary driver must hash");
+
+        assert!(
+            artifact
+                .canonical_path
+                .to_string_lossy()
+                .starts_with(r"\\?\")
+        );
+        assert!(!artifact.wire_path.starts_with(r"\\?\"));
+        assert!(Path::new(&artifact.wire_path).is_absolute());
+        std::fs::remove_file(path).expect("temporary driver must be removed");
     }
 
     #[test]

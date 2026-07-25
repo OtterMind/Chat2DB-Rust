@@ -56,9 +56,10 @@ Stage 6 is complete. Web and desktop own the product runtime and publish its
 owner-only local endpoint; CLI and MCP attach to that host and never contact
 Java directly. The current MCP surface is deliberately read-only and does not
 accept JDBC bind parameters. A complete end-user Agent workspace and
-CLI-started headless host remain follow-on product work. Signed driver packs and
-the existing Chat2DB plugin/ANTLR estate remain Stage 7; driver loading is
-currently proven through the internal H2 product fixture.
+CLI-started headless host remain follow-on product work. The first Stage 7
+slice adds strict local driver-pack manifests, bounded hash verification,
+startup preload, and Core/Axum/Tauri inventory. Signing, downloading, updating,
+rollback, and the existing Chat2DB plugin/ANTLR estate remain Stage 7 work.
 
 ## Architecture
 
@@ -76,9 +77,10 @@ React / TypeScript              CLI / MCP client
   -> database
 ```
 
-See [`docs/architecture.md`](docs/architecture.md) for ownership and protocol
-decisions and [`docs/protocol.md`](docs/protocol.md) for the implemented 1.0
-process contract.
+See [`docs/architecture.md`](docs/architecture.md) for ownership,
+[`docs/protocol.md`](docs/protocol.md) for the implemented 1.0 process contract,
+and [`docs/driver-packs.md`](docs/driver-packs.md) for the local manifest and
+startup contract.
 
 ## Build
 

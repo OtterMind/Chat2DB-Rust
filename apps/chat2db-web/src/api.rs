@@ -16,12 +16,12 @@ use chat2db_contract::{
     ContextCompactionStrategy, CreateAgentSessionRequest, CreateDatasourceRequest,
     CreateProviderProfileRequest, Datasource, DatasourceConnection, DatasourceConnectionProperty,
     DatasourceList, DatasourceSecretChange, DecideAgentPermissionRequest, HealthResponse,
-    JdbcValue, JdbcValueType, OperationEvent, OperationEventEnvelope, OperationSnapshot,
-    OperationStatus, OperationStreamMessage, OperationSubscriptionAccepted, ProductInfo,
-    ProviderCredentials, ProviderKind, ProviderProfile, ProviderProfileList, ProviderSecretChange,
-    QueryAccepted, QueryLimits, QueryParameter, ResultColumn, ResultMetadata, ResultPage,
-    ResultPageRequest, ResultRow, RuntimeStatus, SqlPermissionMode, StartAgentRunRequest,
-    StartQueryRequest, UpdateAgentSessionRequest, UpdateDatasourceRequest,
+    JdbcDriver, JdbcDriverList, JdbcValue, JdbcValueType, OperationEvent, OperationEventEnvelope,
+    OperationSnapshot, OperationStatus, OperationStreamMessage, OperationSubscriptionAccepted,
+    ProductInfo, ProviderCredentials, ProviderKind, ProviderProfile, ProviderProfileList,
+    ProviderSecretChange, QueryAccepted, QueryLimits, QueryParameter, ResultColumn, ResultMetadata,
+    ResultPage, ResultPageRequest, ResultRow, RuntimeStatus, SqlPermissionMode,
+    StartAgentRunRequest, StartQueryRequest, UpdateAgentSessionRequest, UpdateDatasourceRequest,
     UpdateProviderProfileRequest,
 };
 use chat2db_core::{AppError, Application};
@@ -46,6 +46,7 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
     ),
     tags(
         (name = "system", description = "Runtime identity and readiness"),
+        (name = "drivers", description = "Hash-verified JDBC driver inventory"),
         (name = "datasources", description = "Secret-safe datasource lifecycle"),
         (name = "queries", description = "Asynchronous query submission"),
         (name = "operations", description = "Query progress, replay, and cancellation"),
@@ -93,6 +94,8 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         DatasourceSecretChange,
         DecideAgentPermissionRequest,
         HealthResponse,
+        JdbcDriver,
+        JdbcDriverList,
         JdbcValue,
         JdbcValueType,
         OperationEvent,
@@ -143,6 +146,7 @@ fn documented_router() -> OpenApiRouter<Application> {
     OpenApiRouter::<Application>::with_openapi(ApiDocument::openapi())
         .routes(routes!(health))
         .routes(routes!(info))
+        .routes(routes!(list_drivers))
         .routes(routes!(list_datasources, create_datasource))
         .routes(routes!(
             get_datasource,
@@ -214,6 +218,16 @@ async fn health(State(application): State<Application>) -> Response {
 )]
 async fn info(State(application): State<Application>) -> Json<ProductInfo> {
     Json(application.health().product)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/drivers",
+    tag = "drivers",
+    responses((status = 200, description = "Loaded JDBC driver inventory", body = JdbcDriverList))
+)]
+async fn list_drivers(State(application): State<Application>) -> Json<JdbcDriverList> {
+    Json(application.list_drivers())
 }
 
 #[utoipa::path(

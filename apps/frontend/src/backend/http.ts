@@ -20,6 +20,7 @@ import type {
   DatasourceList,
   DecideAgentPermissionRequest,
   HealthResponse,
+  JdbcDriverList,
   OperationSnapshot,
   OperationSubscription,
   OperationSubscriptionOptions,
@@ -105,6 +106,10 @@ export class HttpBackendClient implements BackendClient {
 
   health(signal?: AbortSignal): Promise<HealthResponse> {
     return this.#json('/api/v1/system/health', { method: 'GET', signal }, [200, 503]);
+  }
+
+  listDrivers(signal?: AbortSignal): Promise<JdbcDriverList> {
+    return this.#json('/api/v1/drivers', { method: 'GET', signal }, [200]);
   }
 
   listDatasources(signal?: AbortSignal): Promise<DatasourceList> {

@@ -19,10 +19,11 @@ supervisor before exposing a shared `Application`. Axum serves JSON, SSE, and
 the React SPA; Tauri exposes commands and per-subscription channels without a
 localhost product server. Both hosts also publish an owner-only local endpoint
 for the CLI and MCP process. That same `Application` owns query and Agent run
-execution, replay, cancellation, and write-permission decisions. Managed driver
-packs, the existing Chat2DB plugin/parser estate, and packaging remain target
-components. CLI and MCP attach to a running host rather than composing a second
-product runtime.
+execution, replay, cancellation, and write-permission decisions. Strict local
+managed driver packs and immutable inventory are implemented; signing,
+distribution, the existing Chat2DB plugin/parser estate, and packaging remain
+target components. CLI and MCP attach to a running host rather than composing a
+second product runtime.
 
 ## Ownership
 
@@ -215,9 +216,12 @@ terminal event. Query batches are durably appended before progress is emitted
 or the next Java credit is granted. Failures and cancellations abort incomplete
 writers and close the Java session.
 
-Stage 5 proves this product path with an internally preloaded H2 fixture. It
-does not expose driver installation or driver-pack management; signed core and
-long-tail driver provisioning remains Stage 7.
+The first Stage 7 compatibility slice discovers strict local driver-pack
+manifests, verifies bounded artifacts in Rust, preloads them sequentially into
+Java, and exposes immutable inventory through Core, Axum, Tauri, and generated
+frontend contracts. A real H2 pack proves the complete product query path.
+Signing, installation, hot reload, downloading, compatibility selection,
+updates, and rollback are not implemented.
 
 ## Local attachment and MCP boundary
 
@@ -261,9 +265,13 @@ set.
   master key when no OS credential store is available.
 - SQL write access is enforced outside prompts and scoped to the active run.
 - User-provided driver JARs are treated as native-trust code.
-- Java copies each supplied driver artifact into a private snapshot, verifies
-  its SHA-256, rejects manifest `Class-Path`, and deletes the snapshot only
-  after the driver has no remaining session lease.
+- Rust copies each no-follow-opened regular driver artifact into private,
+  bounded staging and verifies its SHA-256 before Java sees it.
+- Java copies each staged artifact into a generation-owned private snapshot,
+  verifies its SHA-256, rejects manifest `Class-Path`, and keeps it until the
+  driver has no remaining session lease. Rust removes the generation root only
+  after the Java child is fully reaped and clears stale roots on the next
+  storage-locked startup.
 
 ## Packaging target
 

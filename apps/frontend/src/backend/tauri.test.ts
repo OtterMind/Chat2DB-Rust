@@ -75,6 +75,19 @@ const permissionDecisionRequest = {
 } satisfies DecideAgentPermissionRequest;
 
 describe('TauriBackendClient', () => {
+  it('loads the managed driver inventory through the Tauri contract', async () => {
+    const inventory = { items: [] };
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const invoke = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
+      calls.push({ command, args });
+      return inventory as T;
+    };
+    const client = new TauriBackendClient({ invoke });
+
+    await expect(client.listDrivers()).resolves.toEqual(inventory);
+    expect(calls).toEqual([{ command: 'list_drivers', args: undefined }]);
+  });
+
   it('maps datasource calls to camel-case Tauri arguments', async () => {
     const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
     const invoke = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {

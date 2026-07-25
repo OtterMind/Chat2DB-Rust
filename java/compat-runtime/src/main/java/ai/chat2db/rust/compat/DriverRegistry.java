@@ -32,16 +32,46 @@ import java.util.jar.Manifest;
 /** Isolated registry for explicitly supplied JDBC driver artifacts. */
 final class DriverRegistry implements AutoCloseable {
 
+    private static final String SNAPSHOT_ROOT_ENV = "CHAT2DB_JDBC_SNAPSHOT_ROOT";
+
     private final Map<String, LoadedDriver> drivers = new HashMap<>();
     private final Path snapshotRoot;
     private boolean closed;
 
     DriverRegistry() {
-        this(null);
+        this(configuredSnapshotRoot());
     }
 
     DriverRegistry(Path snapshotRoot) {
         this.snapshotRoot = snapshotRoot;
+    }
+
+    private static Path configuredSnapshotRoot() {
+        String configured = System.getenv(SNAPSHOT_ROOT_ENV);
+        if (configured == null || configured.isBlank()) {
+            return null;
+        }
+        try {
+            Path supplied = Path.of(configured);
+            if (!supplied.isAbsolute()) {
+                throw new IllegalStateException("JDBC snapshot root must be absolute");
+            }
+            Path canonical = supplied.toRealPath(LinkOption.NOFOLLOW_LINKS);
+            if (!supplied.normalize().equals(canonical)
+                    || Files.isSymbolicLink(canonical)
+                    || !Files.isDirectory(canonical, LinkOption.NOFOLLOW_LINKS)
+                    || !Files.isReadable(canonical)
+                    || !Files.isWritable(canonical)) {
+                throw new IllegalStateException(
+                        "JDBC snapshot root must be a readable, writable canonical directory");
+            }
+            return canonical;
+        } catch (IOException | RuntimeException failure) {
+            if (failure instanceof IllegalStateException illegalState) {
+                throw illegalState;
+            }
+            throw new IllegalStateException("JDBC snapshot root is invalid", failure);
+        }
     }
 
     synchronized DriverDescriptor load(LoadDriverRequest request) throws RuntimeFailure {
@@ -178,57 +208,68 @@ final class DriverRegistry implements AutoCloseable {
         }
         List<SnapshotArtifact> verified = new ArrayList<>(requested.size());
         Set<Path> uniquePaths = new HashSet<>();
+        long totalBytes = 0;
         try {
             for (int index = 0; index < requested.size(); index++) {
                 DriverArtifact artifact = requested.get(index);
-            ProtocolLimits.requireNonBlankUtf8(
-                    artifact.getPath(), ProtocolLimits.MAX_PATH_BYTES, "driver_artifact_path");
-            if (artifact.getSha256().size() != 32) {
-                throw RuntimeFailure.validation(
-                        "driver.invalid_sha256", "driver artifact sha256 must contain exactly 32 bytes");
-            }
+                ProtocolLimits.requireNonBlankUtf8(
+                        artifact.getPath(), ProtocolLimits.MAX_PATH_BYTES, "driver_artifact_path");
+                if (artifact.getSha256().size() != 32) {
+                    throw RuntimeFailure.validation(
+                            "driver.invalid_sha256",
+                            "driver artifact sha256 must contain exactly 32 bytes");
+                }
 
-            Path supplied;
-            try {
-                supplied = Path.of(artifact.getPath());
-            } catch (RuntimeException failure) {
-                throw RuntimeFailure.validation(
-                        "driver.invalid_artifact_path", "driver artifact path is invalid");
-            }
-            if (!supplied.isAbsolute()) {
-                throw RuntimeFailure.validation(
-                        "driver.non_canonical_artifact", "driver artifact path must be absolute and canonical");
-            }
-
+                Path supplied;
                 try {
-                Path normalized = supplied.normalize();
-                Path canonical = supplied.toRealPath(LinkOption.NOFOLLOW_LINKS);
-                if (!normalized.equals(canonical)
-                        || Files.isSymbolicLink(canonical)
-                        || !Files.isRegularFile(canonical, LinkOption.NOFOLLOW_LINKS)
-                        || !Files.isReadable(canonical)
-                        || !canonical.getFileName().toString().toLowerCase().endsWith(".jar")) {
+                    supplied = Path.of(artifact.getPath());
+                } catch (RuntimeException failure) {
+                    throw RuntimeFailure.validation(
+                            "driver.invalid_artifact_path", "driver artifact path is invalid");
+                }
+                if (!supplied.isAbsolute()) {
                     throw RuntimeFailure.validation(
                             "driver.non_canonical_artifact",
-                            "driver artifact must be a readable canonical JAR path");
+                            "driver artifact path must be absolute and canonical");
                 }
-                if (!uniquePaths.add(canonical)) {
-                    throw RuntimeFailure.validation(
-                            "driver.duplicate_artifact", "driver artifact paths must be unique");
-                }
-                byte[] expected = artifact.getSha256().toByteArray();
-                Path snapshotPath = snapshotDirectory.resolve("artifact-%02d.jar".formatted(index));
-                byte[] actual = copyAndHash(canonical, snapshotPath);
-                if (!MessageDigest.isEqual(expected, actual)) {
-                    throw RuntimeFailure.validation(
-                            "driver.sha256_mismatch", "driver artifact digest does not match sha256");
-                }
-                rejectManifestClassPath(snapshotPath);
-                verified.add(new SnapshotArtifact(
-                        snapshotPath, Arrays.copyOf(actual, actual.length)));
+
+                try {
+                    Path normalized = supplied.normalize();
+                    Path canonical = supplied.toRealPath(LinkOption.NOFOLLOW_LINKS);
+                    if (!normalized.equals(canonical)
+                            || Files.isSymbolicLink(canonical)
+                            || !Files.isRegularFile(canonical, LinkOption.NOFOLLOW_LINKS)
+                            || !Files.isReadable(canonical)
+                            || !canonical.getFileName().toString().toLowerCase().endsWith(".jar")) {
+                        throw RuntimeFailure.validation(
+                                "driver.non_canonical_artifact",
+                                "driver artifact must be a readable canonical JAR path");
+                    }
+                    if (!uniquePaths.add(canonical)) {
+                        throw RuntimeFailure.validation(
+                                "driver.duplicate_artifact", "driver artifact paths must be unique");
+                    }
+                    byte[] expected = artifact.getSha256().toByteArray();
+                    Path snapshotPath =
+                            snapshotDirectory.resolve("artifact-%02d.jar".formatted(index));
+                    long remainingBytes = ProtocolLimits.MAX_DRIVER_TOTAL_BYTES - totalBytes;
+                    long artifactLimit = Math.min(
+                            ProtocolLimits.MAX_DRIVER_ARTIFACT_BYTES, remainingBytes);
+                    byte[] actual = copyAndHash(canonical, snapshotPath, artifactLimit);
+                    totalBytes += Files.size(snapshotPath);
+                    if (!MessageDigest.isEqual(expected, actual)) {
+                        throw RuntimeFailure.validation(
+                                "driver.sha256_mismatch",
+                                "driver artifact digest does not match sha256");
+                    }
+                    rejectManifestClassPath(snapshotPath);
+                    verified.add(new SnapshotArtifact(
+                            snapshotPath, Arrays.copyOf(actual, actual.length)));
                 } catch (IOException failure) {
                     throw RuntimeFailure.internal(
-                            "driver.artifact_unavailable", "driver artifact could not be snapshotted", failure);
+                            "driver.artifact_unavailable",
+                            "driver artifact could not be snapshotted",
+                            failure);
                 }
             }
             return new DriverSnapshot(snapshotDirectory, List.copyOf(verified));
@@ -238,15 +279,22 @@ final class DriverRegistry implements AutoCloseable {
         }
     }
 
-    private static byte[] copyAndHash(Path source, Path target) throws IOException {
+    static byte[] copyAndHash(Path source, Path target, long maximumBytes)
+            throws IOException, RuntimeFailure {
         MessageDigest digest = newSha256();
+        long copiedBytes = 0;
         try (InputStream input = Files.newInputStream(source);
                 OutputStream output = Files.newOutputStream(target)) {
             byte[] buffer = new byte[64 * 1024];
             int count;
             while ((count = input.read(buffer)) != -1) {
+                if (count > maximumBytes - copiedBytes) {
+                    throw RuntimeFailure.limit(
+                            "driver_snapshot_bytes", Math.toIntExact(maximumBytes));
+                }
                 digest.update(buffer, 0, count);
                 output.write(buffer, 0, count);
+                copiedBytes += count;
             }
         }
         return digest.digest();

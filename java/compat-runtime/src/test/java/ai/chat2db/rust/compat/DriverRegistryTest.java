@@ -66,6 +66,21 @@ class DriverRegistryTest {
         }
     }
 
+    @Test
+    void boundsArtifactSnapshotsBeforeWritingPastTheLimit(@TempDir Path temporaryDirectory)
+            throws Exception {
+        Path source = temporaryDirectory.resolve("large-driver.jar");
+        Path snapshot = temporaryDirectory.resolve("snapshot.jar");
+        Files.write(source, new byte[] {1, 2, 3, 4, 5});
+
+        RuntimeFailure failure = assertThrows(
+                RuntimeFailure.class,
+                () -> DriverRegistry.copyAndHash(source, snapshot, 4));
+
+        assertEquals("protocol.limit_exceeded", failure.code());
+        assertEquals(0, Files.size(snapshot));
+    }
+
     private static LoadDriverRequest request(Path jar, byte[] digest) throws Exception {
         return LoadDriverRequest.newBuilder()
                 .setDriverClass("example.Driver")

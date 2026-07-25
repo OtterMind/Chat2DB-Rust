@@ -13,6 +13,7 @@ publish = false
 chat2db-engine-protocol = { path = "../chat2db-engine-protocol" }
 prost.workspace = true
 sha2 = "0.10"
+tempfile = "3"
 thiserror.workspace = true
 tokio.workspace = true
 

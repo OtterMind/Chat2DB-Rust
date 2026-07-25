@@ -22,6 +22,7 @@ import type {
   DatasourceList,
   DecideAgentPermissionRequest,
   HealthResponse,
+  JdbcDriverList,
   OperationEventEnvelope,
   OperationSnapshot,
   OperationStreamMessage,
@@ -88,6 +89,10 @@ export class TauriBackendClient implements BackendClient {
 
   health(signal?: AbortSignal): Promise<HealthResponse> {
     return this.#request('health', undefined, signal);
+  }
+
+  listDrivers(signal?: AbortSignal): Promise<JdbcDriverList> {
+    return this.#request('list_drivers', undefined, signal);
   }
 
   listDatasources(signal?: AbortSignal): Promise<DatasourceList> {

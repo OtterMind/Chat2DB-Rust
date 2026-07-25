@@ -192,8 +192,8 @@ mod tests {
     use chat2db_contract::{
         AgentMessageContent, AgentMessageList, AgentRunAccepted, AgentRunSnapshot, AgentRunStatus,
         AgentSession, AgentSessionList, ApiError, ApiErrorDetails, CancelAgentRunResponse,
-        CancelDisposition, Datasource, DatasourceList, HealthResponse, ProviderProfile,
-        ProviderProfileList, RuntimeStatus,
+        CancelDisposition, Datasource, DatasourceList, HealthResponse, JdbcDriverList,
+        ProviderProfile, ProviderProfileList, RuntimeStatus,
     };
     use chat2db_core::Application;
     use chat2db_storage::{
@@ -224,6 +224,18 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let health: HealthResponse = response_json(response).await;
         assert_eq!(health.status, RuntimeStatus::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn driver_inventory_route_uses_the_shared_contract() {
+        let response = router(Application::new())
+            .oneshot(request(Method::GET, "/api/v1/drivers"))
+            .await
+            .expect("router must respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let inventory: JdbcDriverList = response_json(response).await;
+        assert!(inventory.items.is_empty());
     }
 
     #[tokio::test]
@@ -325,6 +337,7 @@ mod tests {
 
         for path in [
             "/api/v1/system/health",
+            "/api/v1/drivers",
             "/api/v1/datasources",
             "/api/v1/datasources/{datasource_id}",
             "/api/v1/agent/providers",

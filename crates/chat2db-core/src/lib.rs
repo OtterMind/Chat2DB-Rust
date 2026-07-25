@@ -2,12 +2,13 @@
 
 mod agent;
 mod convert;
+mod driver_pack;
 mod error;
 mod operation;
 mod query;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -15,8 +16,9 @@ use std::{
 
 use chat2db_contract::{
     CancelOperationResponse, ComponentHealth, ComponentState, CreateDatasourceRequest, Datasource,
-    DatasourceList, DatasourceSecretChange, HealthResponse, OperationSnapshot, ProductInfo,
-    ResultPage, ResultPageRequest, RuntimeStatus, UpdateDatasourceRequest,
+    DatasourceList, DatasourceSecretChange, HealthResponse, JdbcDriver, JdbcDriverList,
+    OperationSnapshot, ProductInfo, ResultPage, ResultPageRequest, RuntimeStatus,
+    UpdateDatasourceRequest,
 };
 use chat2db_java_bridge::{EngineClient, EngineConfig, EngineState, EngineSupervisor};
 use chat2db_storage::{
@@ -45,6 +47,8 @@ pub(crate) struct ApplicationInner {
     runtime_status: RuntimeStatus,
     storage: Option<Storage>,
     engine: Option<EngineClient>,
+    drivers: Vec<JdbcDriver>,
+    managed_driver_ids: Option<HashSet<String>>,
     agent_runs: AgentRunHub,
     operations: OperationHub,
     accepting_work: Mutex<bool>,
@@ -61,6 +65,7 @@ pub struct RuntimeHost {
 /// Inputs required to open durable storage and start one Java engine generation.
 pub struct RuntimeConfig {
     data_dir: Option<PathBuf>,
+    driver_pack_dir: Option<PathBuf>,
     vault_master_key_base64: Option<String>,
     engine: EngineConfig,
 }
@@ -70,6 +75,7 @@ impl RuntimeConfig {
     pub const fn new(engine: EngineConfig) -> Self {
         Self {
             data_dir: None,
+            driver_pack_dir: None,
             vault_master_key_base64: None,
             engine,
         }
@@ -78,6 +84,13 @@ impl RuntimeConfig {
     #[must_use]
     pub fn with_data_dir(mut self, data_dir: impl Into<PathBuf>) -> Self {
         self.data_dir = Some(data_dir.into());
+        self
+    }
+
+    /// Overrides the directory scanned for managed local JDBC driver packs.
+    #[must_use]
+    pub fn with_driver_pack_dir(mut self, driver_pack_dir: impl Into<PathBuf>) -> Self {
+        self.driver_pack_dir = Some(driver_pack_dir.into());
         self
     }
 
@@ -93,6 +106,7 @@ impl std::fmt::Debug for RuntimeConfig {
         formatter
             .debug_struct("RuntimeConfig")
             .field("data_dir", &self.data_dir)
+            .field("driver_pack_dir", &self.driver_pack_dir)
             .field(
                 "vault_master_key_base64",
                 &self.vault_master_key_base64.as_ref().map(|_| "[REDACTED]"),
@@ -133,38 +147,61 @@ impl Application {
     /// Creates a product service root with optional components disabled.
     #[must_use]
     pub fn new() -> Self {
-        Self::compose(RuntimeStatus::Ready, None, None)
+        Self::compose(RuntimeStatus::Ready, None, None, None)
     }
 
     /// Creates a service root with an explicit readiness state.
     #[must_use]
     pub fn with_runtime_status(runtime_status: RuntimeStatus) -> Self {
-        Self::compose(runtime_status, None, None)
+        Self::compose(runtime_status, None, None, None)
     }
 
     /// Creates a ready service root around fully opened local storage.
     #[must_use]
     pub fn with_storage(storage: Storage) -> Self {
-        Self::compose(RuntimeStatus::Ready, Some(storage), None)
+        Self::compose(RuntimeStatus::Ready, Some(storage), None, None)
     }
 
     /// Creates the complete product service root around storage and one engine generation.
     #[must_use]
     pub fn with_services(storage: Storage, engine: EngineClient) -> Self {
-        Self::compose(RuntimeStatus::Ready, Some(storage), Some(engine))
+        Self::compose(RuntimeStatus::Ready, Some(storage), Some(engine), None)
+    }
+
+    fn with_services_and_drivers(
+        storage: Storage,
+        engine: EngineClient,
+        drivers: Vec<JdbcDriver>,
+    ) -> Self {
+        Self::compose(
+            RuntimeStatus::Ready,
+            Some(storage),
+            Some(engine),
+            Some(drivers),
+        )
     }
 
     fn compose(
         runtime_status: RuntimeStatus,
         storage: Option<Storage>,
         engine: Option<EngineClient>,
+        drivers: Option<Vec<JdbcDriver>>,
     ) -> Self {
+        let managed_driver_ids = drivers.as_ref().map(|drivers| {
+            drivers
+                .iter()
+                .map(|driver| driver.driver_id.clone())
+                .collect()
+        });
+        let drivers = drivers.unwrap_or_default();
         Self {
             inner: Arc::new(ApplicationInner {
                 started_at: Instant::now(),
                 runtime_status,
                 storage,
                 engine,
+                drivers,
+                managed_driver_ids,
                 agent_runs: AgentRunHub::new(),
                 operations: OperationHub::new(),
                 accepting_work: Mutex::new(true),
@@ -248,6 +285,21 @@ impl Application {
                     detail: "Ready".to_owned(),
                 },
                 engine_component,
+                if self.inner.drivers.is_empty() {
+                    ComponentHealth {
+                        id: "jdbc-drivers".to_owned(),
+                        label: "JDBC drivers".to_owned(),
+                        state: ComponentState::Disabled,
+                        detail: "No managed driver packs loaded".to_owned(),
+                    }
+                } else {
+                    ComponentHealth {
+                        id: "jdbc-drivers".to_owned(),
+                        label: "JDBC drivers".to_owned(),
+                        state: ComponentState::Ready,
+                        detail: format!("{} managed driver packs loaded", self.inner.drivers.len()),
+                    }
+                },
                 self.inner.storage.as_ref().map_or_else(
                     || ComponentHealth {
                         id: "local-storage".to_owned(),
@@ -269,6 +321,14 @@ impl Application {
                     detail: "Not enabled in Stage 5".to_owned(),
                 },
             ],
+        }
+    }
+
+    /// Returns the immutable driver inventory loaded during host startup.
+    #[must_use]
+    pub fn list_drivers(&self) -> JdbcDriverList {
+        JdbcDriverList {
+            items: self.inner.drivers.clone(),
         }
     }
 
@@ -294,6 +354,7 @@ impl Application {
         &self,
         request: CreateDatasourceRequest,
     ) -> Result<Datasource, AppError> {
+        self.require_managed_driver(&request.driver_id)?;
         let storage = self.require_storage()?;
         let secret = request
             .connection
@@ -337,6 +398,8 @@ impl Application {
         request: UpdateDatasourceRequest,
     ) -> Result<Datasource, AppError> {
         let storage = self.require_storage()?;
+        self.require_managed_driver_for_update(&storage, id, &request.driver_id)
+            .await?;
         let id = id.to_owned();
         let expected_revision = parse_u64(&request.expected_revision, "expectedRevision")?;
         let secret_change = match request.secret_change {
@@ -357,6 +420,39 @@ impl Application {
         })
         .await
         .map(convert::datasource)
+    }
+
+    fn require_managed_driver(&self, driver_id: &str) -> Result<(), AppError> {
+        match &self.inner.managed_driver_ids {
+            Some(driver_ids) if !driver_ids.contains(driver_id) => Err(driver_not_installed()),
+            _ => Ok(()),
+        }
+    }
+
+    async fn require_managed_driver_for_update(
+        &self,
+        storage: &Storage,
+        datasource_id: &str,
+        driver_id: &str,
+    ) -> Result<(), AppError> {
+        let Some(driver_ids) = &self.inner.managed_driver_ids else {
+            return Ok(());
+        };
+        if driver_ids.contains(driver_id) {
+            return Ok(());
+        }
+
+        let storage = storage.clone();
+        let datasource_id = datasource_id.to_owned();
+        let existing = storage_call(move || storage.get_datasource(&datasource_id)).await?;
+        match existing {
+            Some(existing) if existing.driver_id == driver_id => Ok(()),
+            Some(_) => Err(driver_not_installed()),
+            None => Err(AppError::not_found(
+                "datasource_not_found",
+                "The datasource does not exist",
+            )),
+        }
     }
 
     /// Deletes a datasource using revision CAS.
@@ -498,6 +594,7 @@ impl RuntimeHost {
     pub async fn open(config: RuntimeConfig) -> Result<Self, AppError> {
         let RuntimeConfig {
             data_dir,
+            driver_pack_dir,
             vault_master_key_base64,
             engine,
         } = config;
@@ -514,7 +611,22 @@ impl RuntimeHost {
         })
         .await
         .map_err(|_| AppError::internal())??;
-        Self::spawn(storage, engine).await
+        let driver_pack_dir = driver_pack_dir.unwrap_or_else(|| {
+            storage
+                .data_dir()
+                .join(driver_pack::DEFAULT_DRIVER_PACK_DIRECTORY)
+        });
+        let data_dir = storage.data_dir().to_path_buf();
+        let (driver_runtime_directory, prepared_packs) = tokio::task::spawn_blocking(move || {
+            let runtime_directory = driver_pack::reset_runtime_directory(&data_dir)?;
+            let packs = driver_pack::discover(&driver_pack_dir, &runtime_directory)?;
+            Ok::<_, driver_pack::DriverPackError>((runtime_directory, packs))
+        })
+        .await
+        .map_err(|_| AppError::internal())?
+        .map_err(driver_pack::DriverPackError::into_app_error)?;
+        let engine = engine.with_driver_snapshot_parent(driver_runtime_directory);
+        Self::spawn_with_driver_packs(storage, engine, prepared_packs).await
     }
 
     /// Spawns and owns a validated Java engine generation.
@@ -523,10 +635,44 @@ impl RuntimeHost {
     ///
     /// Returns an engine startup, handshake, or configuration error.
     pub async fn spawn(storage: Storage, config: EngineConfig) -> Result<Self, AppError> {
+        let data_dir = storage.data_dir().to_path_buf();
+        let driver_runtime_directory =
+            tokio::task::spawn_blocking(move || driver_pack::reset_runtime_directory(&data_dir))
+                .await
+                .map_err(|_| AppError::internal())?
+                .map_err(driver_pack::DriverPackError::into_app_error)?;
+        let config = config.with_driver_snapshot_parent(driver_runtime_directory);
         let supervisor = EngineSupervisor::spawn(config)
             .await
             .map_err(AppError::from)?;
         Ok(Self::from_supervisor(storage, supervisor))
+    }
+
+    async fn spawn_with_driver_packs(
+        storage: Storage,
+        config: EngineConfig,
+        packs: driver_pack::PreparedDriverPacks,
+    ) -> Result<Self, AppError> {
+        let supervisor = EngineSupervisor::spawn(config)
+            .await
+            .map_err(AppError::from)?;
+        let drivers = match driver_pack::preload(&supervisor, packs).await {
+            Ok(drivers) => drivers,
+            Err(error) => {
+                tracing::error!(%error, "managed JDBC driver preload failed");
+                let application_error = error.into_app_error();
+                if let Err(shutdown_error) = supervisor.shutdown().await {
+                    tracing::error!(%shutdown_error, "Java cleanup failed after driver preload error");
+                }
+                return Err(application_error);
+            }
+        };
+        let application =
+            Application::with_services_and_drivers(storage, supervisor.client(), drivers);
+        Ok(Self {
+            application,
+            supervisor: Some(supervisor),
+        })
     }
 
     /// Composes a host around an already-started supervisor.
@@ -587,6 +733,13 @@ fn vault_unavailable() -> AppError {
     )
 }
 
+fn driver_not_installed() -> AppError {
+    AppError::invalid(
+        "driver_not_installed",
+        "The requested JDBC driver is not installed in the managed driver inventory",
+    )
+}
+
 fn parse_u64(value: &str, field: &str) -> Result<u64, AppError> {
     value.parse().map_err(|_| {
         AppError::invalid(
@@ -627,7 +780,10 @@ pub(crate) fn now_millis() -> Result<i64, AppError> {
 mod tests {
     use std::sync::Arc;
 
-    use chat2db_contract::{ComponentState, RuntimeStatus};
+    use chat2db_contract::{
+        ComponentState, CreateDatasourceRequest, DatasourceSecretChange, RuntimeStatus,
+        UpdateDatasourceRequest,
+    };
     use chat2db_storage::{SecretRef, SecretValue, SecretVault, SecretVaultError, Storage};
     use tempfile::TempDir;
 
@@ -700,5 +856,62 @@ mod tests {
             ComponentState::Disabled
         );
         assert!(application.storage().is_some());
+    }
+
+    #[tokio::test]
+    async fn managed_inventory_rejects_unknown_driver_changes_but_preserves_stale_ids() {
+        let directory = TempDir::new().expect("temp dir");
+        let storage =
+            Storage::open(directory.path(), Arc::new(TestVault)).expect("local storage must open");
+        let unmanaged = Application::with_storage(storage.clone());
+        let datasource = unmanaged
+            .create_datasource(CreateDatasourceRequest {
+                name: "Legacy datasource".to_owned(),
+                driver_id: "sha256:legacy".to_owned(),
+                connection: None,
+            })
+            .await
+            .expect("non-managed composition must preserve external driver compatibility");
+        let managed =
+            Application::compose(RuntimeStatus::Ready, Some(storage), None, Some(Vec::new()));
+
+        let create_error = managed
+            .create_datasource(CreateDatasourceRequest {
+                name: "Unknown driver".to_owned(),
+                driver_id: "sha256:unknown".to_owned(),
+                connection: None,
+            })
+            .await
+            .expect_err("managed create must reject an unknown driver");
+        assert_eq!(create_error.api_error().code, "driver_not_installed");
+
+        let update_error = managed
+            .update_datasource(
+                &datasource.id,
+                UpdateDatasourceRequest {
+                    expected_revision: datasource.revision.clone(),
+                    name: datasource.name.clone(),
+                    driver_id: "sha256:unknown".to_owned(),
+                    secret_change: DatasourceSecretChange::Keep,
+                },
+            )
+            .await
+            .expect_err("managed update must reject switching to an unknown driver");
+        assert_eq!(update_error.api_error().code, "driver_not_installed");
+
+        let retained = managed
+            .update_datasource(
+                &datasource.id,
+                UpdateDatasourceRequest {
+                    expected_revision: datasource.revision,
+                    name: "Renamed legacy datasource".to_owned(),
+                    driver_id: datasource.driver_id,
+                    secret_change: DatasourceSecretChange::Keep,
+                },
+            )
+            .await
+            .expect("managed update must allow retaining an existing stale driver id");
+        assert_eq!(retained.name, "Renamed legacy datasource");
+        assert_eq!(retained.driver_id, "sha256:legacy");
     }
 }

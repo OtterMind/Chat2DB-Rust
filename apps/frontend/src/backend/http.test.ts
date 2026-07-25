@@ -150,6 +150,28 @@ function agentEventStream(events: AgentEventEnvelope[]): Response {
 }
 
 describe('HttpBackendClient', () => {
+  it('loads the managed driver inventory from the HTTP contract', async () => {
+    const inventory = {
+      items: [{
+        packId: 'h2',
+        name: 'H2',
+        version: '2.3.232',
+        driverId: 'sha256:driver',
+        driverClass: 'org.h2.Driver',
+        artifactCount: 1,
+        artifactBytes: '2614933',
+      }],
+    };
+    const fetch = vi.fn(async () => jsonResponse(inventory, 200));
+    const client = new HttpBackendClient({ baseUrl: 'http://127.0.0.1:10825/', fetch });
+
+    await expect(client.listDrivers()).resolves.toEqual(inventory);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:10825/api/v1/drivers',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
   it('maps every agent catalog method to its HTTP contract without narrowing integers', async () => {
     const updatedProvider = {
       ...providerProfile,

@@ -8,11 +8,11 @@ external JDBC driver loading, sessions, local transactions, prepared queries
 and updates, typed row streams, credit flow control, cancellation, deadlines,
 bounded errors, and conservative delivery outcomes.
 
-Not implemented: Chat2DB plugin and driver-pack inventory, generic database
-metadata operations, script execution, import/export, SQL parser or completion
-operations, retained result handles, or product transport wiring. Database
-product information returned while opening a session is the only metadata in
-the Stage 3 subset.
+Not implemented in the compatibility protocol: Chat2DB plugin inventory,
+generic database metadata operations, script execution, import/export, SQL
+parser or completion operations, or retained result handles. Driver-pack
+discovery and inventory are product-level Rust contracts; the process protocol
+continues to receive only ordered canonical JAR paths and expected digests.
 
 ## Source of truth
 
@@ -91,12 +91,18 @@ therefore still move its session to `ROLLBACK_REQUIRED` or `BROKEN`.
 
 ## JDBC drivers and sessions
 
-Rust sends an ordered list of external JAR paths and expected SHA-256 digests.
-Java copies each artifact into a private snapshot while hashing it, rejects a
-digest mismatch and any manifest `Class-Path`, then loads the requested
+Rust sends an ordered list of private, host-staged JAR paths and expected
+SHA-256 digests. Java copies each artifact into a generation-owned private
+snapshot while hashing it, rejects a digest mismatch and any manifest
+`Class-Path`, then loads the requested
 `java.sql.Driver` through a `URLClassLoader` whose parent is the platform
 classloader. The requested class must come from that loader. Java does not
 download a driver and the shaded engine JAR contains no H2 classes.
+
+The generated hard limits allow at most 32 artifacts, 256 MiB per artifact,
+and 1 GiB across one load request. Java counts copied bytes while writing the
+snapshot, so a source that grows after Rust validation is still bounded and
+rejected.
 
 The engine owns the stable driver id:
 
@@ -175,10 +181,12 @@ not restart the process automatically.
 
 ## Verification
 
-`make verify` runs the Rust workspace checks, 12 protocol contract tests, 22
-bridge unit tests, 36 process-supervisor tests, 54 Java unit tests, two packaged
-Java integration tests, three Rust-to-Java lifecycle/crash tests, three real H2
-JDBC tests, and the frontend production build. The H2 tests cover external
-driver loading, typed multi-batch streaming, zero-credit backpressure,
-transactions, rollback on close, and cancellation recovery. CI runs the same
-cross-language H2 gate without a conditional skip.
+`make verify` runs strict Rust workspace formatting and Clippy, all Rust unit,
+contract, process-supervisor, and documentation tests, the full Java test
+suite, packaged Rust-to-Java lifecycle and JDBC integration, real H2 product
+tests, generated-contract drift checks, frontend typechecking/tests/build, and
+desktop checks. The H2 tests cover external driver loading, managed-pack
+preload and cleanup, typed multi-batch streaming, zero-credit backpressure,
+transactions, rollback on close, cancellation recovery, and retained results.
+CI runs the same cross-language H2 gates without conditional skips and adds a
+Windows managed-pack runtime test.
