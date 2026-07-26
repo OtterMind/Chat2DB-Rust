@@ -17,16 +17,21 @@ use chat2db_contract::{
     AgentRunSnapshot, AgentSession, AgentSessionList, AgentStreamMessage,
     AgentSubscriptionAccepted, ApiError, BuildCommunityCreateSchemaRequest, CancelAgentRunResponse,
     CancelOperationResponse, CommunityBuiltSql, CommunityDatabaseList, CommunityForeignKeyList,
-    CommunityPluginCatalog, CommunityPrimaryKeyList, CommunitySchemaList, CommunitySqlAnalysis,
-    CommunityTableColumnList, CommunityTableIndexList, CommunityTableList, CommunityViewList,
-    CreateAgentSessionRequest, CreateDatasourceRequest, CreateProviderProfileRequest, Datasource,
-    DatasourceList, DecideAgentPermissionRequest, HealthResponse, JdbcDriverList,
-    ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityIndexesRequest,
+    CommunityFunction, CommunityFunctionList, CommunityFunctionParameterList,
+    CommunityPluginCatalog, CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
+    CommunityProcedureParameterList, CommunitySchemaList, CommunitySqlAnalysis,
+    CommunityTableColumnList, CommunityTableIndexList, CommunityTableList, CommunityTrigger,
+    CommunityTriggerList, CommunityViewList, CreateAgentSessionRequest, CreateDatasourceRequest,
+    CreateProviderProfileRequest, Datasource, DatasourceList, DecideAgentPermissionRequest,
+    GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
+    HealthResponse, JdbcDriverList, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
+    ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
     ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
-    ListCommunityViewsRequest, OperationEventEnvelope, OperationSnapshot, OperationStreamMessage,
-    OperationSubscriptionAccepted, ParseCommunitySqlRequest, ProviderProfile, ProviderProfileList,
-    QueryAccepted, ResultPage, ResultPageRequest, StartAgentRunRequest, StartQueryRequest,
-    UpdateAgentSessionRequest, UpdateDatasourceRequest, UpdateProviderProfileRequest,
+    ListCommunityTriggersRequest, ListCommunityViewsRequest, OperationEventEnvelope,
+    OperationSnapshot, OperationStreamMessage, OperationSubscriptionAccepted,
+    ParseCommunitySqlRequest, ProviderProfile, ProviderProfileList, QueryAccepted, ResultPage,
+    ResultPageRequest, StartAgentRunRequest, StartQueryRequest, UpdateAgentSessionRequest,
+    UpdateDatasourceRequest, UpdateProviderProfileRequest,
 };
 use chat2db_core::{
     AppError, Application, RuntimeConfig, RuntimeHost, load_fixed_community_classpath,
@@ -269,6 +274,14 @@ pub fn run() -> Result<i32, DesktopError> {
             list_community_imported_keys,
             list_community_exported_keys,
             list_community_primary_keys,
+            list_community_functions,
+            get_community_function,
+            list_community_function_parameters,
+            list_community_procedures,
+            get_community_procedure,
+            list_community_procedure_parameters,
+            list_community_triggers,
+            get_community_trigger,
             build_community_create_schema,
             parse_community_sql,
             list_datasources,
@@ -521,6 +534,102 @@ async fn list_community_primary_keys(
     state
         .application
         .list_community_primary_keys(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn list_community_functions(
+    state: State<'_, Arc<DesktopState>>,
+    request: ListCommunityFunctionsRequest,
+) -> Result<CommunityFunctionList, ApiError> {
+    state
+        .application
+        .list_community_functions(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn get_community_function(
+    state: State<'_, Arc<DesktopState>>,
+    request: GetCommunityFunctionRequest,
+) -> Result<CommunityFunction, ApiError> {
+    state
+        .application
+        .get_community_function(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn list_community_function_parameters(
+    state: State<'_, Arc<DesktopState>>,
+    request: GetCommunityFunctionRequest,
+) -> Result<CommunityFunctionParameterList, ApiError> {
+    state
+        .application
+        .list_community_function_parameters(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn list_community_procedures(
+    state: State<'_, Arc<DesktopState>>,
+    request: ListCommunityProceduresRequest,
+) -> Result<CommunityProcedureList, ApiError> {
+    state
+        .application
+        .list_community_procedures(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn get_community_procedure(
+    state: State<'_, Arc<DesktopState>>,
+    request: GetCommunityProcedureRequest,
+) -> Result<CommunityProcedure, ApiError> {
+    state
+        .application
+        .get_community_procedure(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn list_community_procedure_parameters(
+    state: State<'_, Arc<DesktopState>>,
+    request: GetCommunityProcedureRequest,
+) -> Result<CommunityProcedureParameterList, ApiError> {
+    state
+        .application
+        .list_community_procedure_parameters(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn list_community_triggers(
+    state: State<'_, Arc<DesktopState>>,
+    request: ListCommunityTriggersRequest,
+) -> Result<CommunityTriggerList, ApiError> {
+    state
+        .application
+        .list_community_triggers(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn get_community_trigger(
+    state: State<'_, Arc<DesktopState>>,
+    request: GetCommunityTriggerRequest,
+) -> Result<CommunityTrigger, ApiError> {
+    state
+        .application
+        .get_community_trigger(request)
         .await
         .map_err(|error| api_error(&error))
 }

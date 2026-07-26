@@ -61,6 +61,14 @@ message ClientEnvelope {
     ListCommunityTableKeysRequest list_community_imported_keys = 209;
     ListCommunityTableKeysRequest list_community_exported_keys = 210;
     ListCommunityTableKeysRequest list_community_primary_keys = 211;
+    ListCommunityFunctionsRequest list_community_functions = 212;
+    GetCommunityFunctionRequest get_community_function = 213;
+    GetCommunityFunctionRequest list_community_function_parameters = 214;
+    ListCommunityProceduresRequest list_community_procedures = 215;
+    GetCommunityProcedureRequest get_community_procedure = 216;
+    GetCommunityProcedureRequest list_community_procedure_parameters = 217;
+    ListCommunityTriggersRequest list_community_triggers = 218;
+    GetCommunityTriggerRequest get_community_trigger = 219;
   }
 }
 
@@ -97,6 +105,14 @@ message ServerEnvelope {
     CommunityForeignKeyList community_imported_key_list = 209;
     CommunityForeignKeyList community_exported_key_list = 210;
     CommunityPrimaryKeyList community_primary_key_list = 211;
+    CommunityFunctionList community_function_list = 212;
+    CommunityFunction community_function = 213;
+    CommunityFunctionParameterList community_function_parameter_list = 214;
+    CommunityProcedureList community_procedure_list = 215;
+    CommunityProcedure community_procedure = 216;
+    CommunityProcedureParameterList community_procedure_parameter_list = 217;
+    CommunityTriggerList community_trigger_list = 218;
+    CommunityTrigger community_trigger = 219;
   }
 }
 

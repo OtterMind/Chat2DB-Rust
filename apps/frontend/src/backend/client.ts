@@ -11,13 +11,21 @@ export type BuildCommunityCreateSchemaRequest = Schema<'BuildCommunityCreateSche
 export type CommunityBuiltSql = Schema<'CommunityBuiltSql'>;
 export type CommunityDatabaseList = Schema<'CommunityDatabaseList'>;
 export type CommunityForeignKeyList = Schema<'CommunityForeignKeyList'>;
+export type CommunityFunction = Schema<'CommunityFunction'>;
+export type CommunityFunctionList = Schema<'CommunityFunctionList'>;
+export type CommunityFunctionParameterList = Schema<'CommunityFunctionParameterList'>;
 export type CommunityPluginCatalog = Schema<'CommunityPluginCatalog'>;
 export type CommunityPrimaryKeyList = Schema<'CommunityPrimaryKeyList'>;
+export type CommunityProcedure = Schema<'CommunityProcedure'>;
+export type CommunityProcedureList = Schema<'CommunityProcedureList'>;
+export type CommunityProcedureParameterList = Schema<'CommunityProcedureParameterList'>;
 export type CommunitySchemaList = Schema<'CommunitySchemaList'>;
 export type CommunitySqlAnalysis = Schema<'CommunitySqlAnalysis'>;
 export type CommunityTableColumnList = Schema<'CommunityTableColumnList'>;
 export type CommunityTableIndexList = Schema<'CommunityTableIndexList'>;
 export type CommunityTableList = Schema<'CommunityTableList'>;
+export type CommunityTrigger = Schema<'CommunityTrigger'>;
+export type CommunityTriggerList = Schema<'CommunityTriggerList'>;
 export type CommunityViewList = Schema<'CommunityViewList'>;
 export type CreateAgentSessionRequest = Schema<'CreateAgentSessionRequest'>;
 export type CreateDatasourceRequest = Schema<'CreateDatasourceRequest'>;
@@ -28,6 +36,9 @@ export type DatasourceConnectionProperty = Schema<'DatasourceConnectionProperty'
 export type DatasourceList = Schema<'DatasourceList'>;
 export type DatasourceSecretChange = Schema<'DatasourceSecretChange'>;
 export type HealthResponse = Schema<'HealthResponse'>;
+export type GetCommunityFunctionRequest = Schema<'GetCommunityFunctionRequest'>;
+export type GetCommunityProcedureRequest = Schema<'GetCommunityProcedureRequest'>;
+export type GetCommunityTriggerRequest = Schema<'GetCommunityTriggerRequest'>;
 export type JdbcDriver = Schema<'JdbcDriver'>;
 export type JdbcDriverList = Schema<'JdbcDriverList'>;
 export type JdbcValue = Schema<'JdbcValue'>;
@@ -36,7 +47,10 @@ export type ListCommunityTableKeysRequest = Schema<'ListCommunityTableKeysReques
 export type ListCommunityColumnsRequest = Schema<'ListCommunityColumnsRequest'>;
 export type ListCommunityDatabasesRequest = Schema<'ListCommunityDatabasesRequest'>;
 export type ListCommunityIndexesRequest = Schema<'ListCommunityIndexesRequest'>;
+export type ListCommunityFunctionsRequest = Schema<'ListCommunityFunctionsRequest'>;
+export type ListCommunityProceduresRequest = Schema<'ListCommunityProceduresRequest'>;
 export type ListCommunityTablesRequest = Schema<'ListCommunityTablesRequest'>;
+export type ListCommunityTriggersRequest = Schema<'ListCommunityTriggersRequest'>;
 export type ListCommunityViewsRequest = Schema<'ListCommunityViewsRequest'>;
 export type OperationEventEnvelope = Schema<'OperationEventEnvelope'>;
 export type OperationSnapshot = Schema<'OperationSnapshot'>;
@@ -138,6 +152,38 @@ export interface BackendClient {
     request: ListCommunityTableKeysRequest,
     signal?: AbortSignal,
   ): Promise<CommunityPrimaryKeyList>;
+  listCommunityFunctions(
+    request: ListCommunityFunctionsRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityFunctionList>;
+  getCommunityFunction(
+    request: GetCommunityFunctionRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityFunction>;
+  listCommunityFunctionParameters(
+    request: GetCommunityFunctionRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityFunctionParameterList>;
+  listCommunityProcedures(
+    request: ListCommunityProceduresRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityProcedureList>;
+  getCommunityProcedure(
+    request: GetCommunityProcedureRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityProcedure>;
+  listCommunityProcedureParameters(
+    request: GetCommunityProcedureRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityProcedureParameterList>;
+  listCommunityTriggers(
+    request: ListCommunityTriggersRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTriggerList>;
+  getCommunityTrigger(
+    request: GetCommunityTriggerRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTrigger>;
   buildCommunityCreateSchema(
     request: BuildCommunityCreateSchemaRequest,
     signal?: AbortSignal,

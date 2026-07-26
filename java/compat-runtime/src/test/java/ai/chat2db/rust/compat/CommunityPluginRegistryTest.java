@@ -25,7 +25,10 @@ import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
+import javax.tools.JavaCompiler;
+import javax.tools.ToolProvider;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.api.io.TempDir;
 
 class CommunityPluginRegistryTest {
@@ -169,6 +172,200 @@ class CommunityPluginRegistryTest {
             assertEquals("PARENT_TABLE", primaryKey.getTableName());
             assertEquals("PARENT_ID", primaryKey.getColumnName());
         }
+    }
+
+    @Test
+    void realCommunityH2SpiProjectsProgrammabilityMetadata(
+            @TempDir Path temporaryDirectory) throws Exception {
+        Path communityClasspath = communityClasspathDirectory();
+        assumeTrue(
+                Files.isDirectory(communityClasspath),
+                "the fixed Community H2 classpath is built by the extended integration lane");
+
+        try (URLClassLoader driverLoader = h2DriverWithTrigger(temporaryDirectory);
+                CommunityPluginRegistry registry = openRegistry(communityClasspath);
+                Connection connection = h2Connection(driverLoader)) {
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate(
+                        "CREATE ALIAS add_one AS "
+                                + "'int addOne(int value) { return value + 1; }'");
+                statement.executeUpdate(
+                        "CREATE ALIAS record_event AS "
+                                + "'void recordEvent(int value) { }'");
+                statement.executeUpdate(
+                        "CREATE TABLE programmability_events (event_id BIGINT PRIMARY KEY)");
+                statement.executeUpdate(
+                        "CREATE TRIGGER audit_trigger BEFORE INSERT ON programmability_events "
+                                + "CALL 'ai.chat2db.rust.compat.fixture.AuditTrigger'");
+            }
+
+            String databaseName = connection.getCatalog();
+            String schemaName = "PUBLIC";
+            // H2 exposes Java aliases only through JDBC procedure metadata, even when the
+            // information schema classifies an alias as a function.
+            assertEquals(
+                    0,
+                    registry.functions("H2", connection, databaseName, schemaName)
+                            .getFunctionsCount());
+            var function = registry.function(
+                    "H2", connection, databaseName, schemaName, "ADD_ONE");
+            assertEquals(databaseName, function.getDatabaseName());
+            assertEquals(schemaName, function.getSchemaName());
+            assertEquals("ADD_ONE", function.getName());
+            assertTrue(function.getBody().contains("addOne"));
+            assertEquals(
+                    0,
+                    registry.functionParameters(
+                                    "H2", connection, databaseName, schemaName, "ADD_ONE")
+                            .getParametersCount());
+
+            assertTrue(registry
+                    .procedures("H2", connection, databaseName, schemaName)
+                    .getProceduresList()
+                    .stream()
+                    .anyMatch(procedure -> procedure.getName().equalsIgnoreCase("record_event")));
+            var procedure = registry.procedure(
+                    "H2", connection, databaseName, schemaName, "RECORD_EVENT");
+            assertEquals(databaseName, procedure.getDatabaseName());
+            assertEquals(schemaName, procedure.getSchemaName());
+            assertEquals("RECORD_EVENT", procedure.getName());
+            assertTrue(procedure.getBody().contains("recordEvent"));
+            assertTrue(registry
+                    .procedureParameters(
+                            "H2", connection, databaseName, schemaName, "RECORD_EVENT")
+                    .getParametersList()
+                    .stream()
+                    .anyMatch(parameter ->
+                            parameter.getProcedureName().equalsIgnoreCase("record_event")));
+
+            assertTrue(registry
+                    .triggers("H2", connection, databaseName, schemaName)
+                    .getTriggersList()
+                    .stream()
+                    .anyMatch(trigger -> trigger.getName().equalsIgnoreCase("audit_trigger")));
+            var trigger = registry.trigger(
+                    "H2", connection, databaseName, schemaName, "AUDIT_TRIGGER");
+            assertEquals(databaseName, trigger.getDatabaseName());
+            assertEquals(schemaName, trigger.getSchemaName());
+            assertEquals("AUDIT_TRIGGER", trigger.getName());
+            assertTrue(trigger.getBody().contains("AuditTrigger"));
+
+            assertFailureCode(
+                    "community.function_not_found",
+                    () -> registry.function(
+                            "H2", connection, databaseName, schemaName, "MISSING_FUNCTION"));
+            assertFailureCode(
+                    "community.procedure_not_found",
+                    () -> registry.procedure(
+                            "H2", connection, databaseName, schemaName, "MISSING_PROCEDURE"));
+            assertFailureCode(
+                    "community.trigger_not_found",
+                    () -> registry.trigger(
+                            "H2", connection, databaseName, schemaName, "MISSING_TRIGGER"));
+
+            assertFailureCode(
+                    "community.function_not_found",
+                    () -> registry.function(
+                            "H2",
+                            connection,
+                            databaseName,
+                            schemaName,
+                            "ADD_ONE' OR '1'='1"));
+            assertFailureCode(
+                    "community.procedure_not_found",
+                    () -> registry.procedure(
+                            "H2",
+                            connection,
+                            databaseName,
+                            schemaName,
+                            "RECORD_EVENT' OR '1'='1"));
+            assertFailureCode(
+                    "community.trigger_not_found",
+                    () -> registry.trigger(
+                            "H2",
+                            connection,
+                            databaseName,
+                            schemaName,
+                            "AUDIT_TRIGGER' OR '1'='1"));
+            assertEquals(
+                    0,
+                    registry.triggers(
+                                    "H2",
+                                    connection,
+                                    databaseName,
+                                    "PUBLIC'; DROP TABLE programmability_events; --")
+                            .getTriggersCount());
+            try (var sentinelStatement = connection.createStatement();
+                    var result = sentinelStatement.executeQuery(
+                            "SELECT COUNT(*) FROM programmability_events")) {
+                assertTrue(result.next(), "the injection sentinel table must still exist");
+            }
+
+            assertFailureCode(
+                    "community.catalog_mismatch",
+                    () -> registry.function(
+                            "H2", connection, "WRONG_CATALOG", schemaName, "ADD_ONE"));
+            assertFailureCode(
+                    "community.catalog_mismatch",
+                    () -> registry.procedure(
+                            "H2", connection, "WRONG_CATALOG", schemaName, "RECORD_EVENT"));
+            assertFailureCode(
+                    "community.catalog_mismatch",
+                    () -> registry.trigger(
+                            "H2", connection, "WRONG_CATALOG", schemaName, "AUDIT_TRIGGER"));
+        }
+    }
+
+    private static URLClassLoader h2DriverWithTrigger(Path temporaryDirectory)
+            throws Exception {
+        Path h2Jar = h2DriverJar();
+        Path source = temporaryDirectory
+                .resolve("src/ai/chat2db/rust/compat/fixture/AuditTrigger.java");
+        Files.createDirectories(source.getParent());
+        Files.writeString(
+                source,
+                "package ai.chat2db.rust.compat.fixture;\n"
+                        + "public final class AuditTrigger implements org.h2.api.Trigger {\n"
+                        + "  public void fire(java.sql.Connection connection, "
+                        + "Object[] oldRow, Object[] newRow) { }\n"
+                        + "}\n",
+                StandardCharsets.UTF_8);
+        Path classes = Files.createDirectory(temporaryDirectory.resolve("classes"));
+        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+        assertNotNull(compiler, "tests require a full JDK");
+        assertEquals(
+                0,
+                compiler.run(
+                        null,
+                        null,
+                        null,
+                        "-classpath",
+                        h2Jar.toString(),
+                        "-d",
+                        classes.toString(),
+                        source.toString()));
+        return new URLClassLoader(
+                new URL[] {h2Jar.toUri().toURL(), classes.toUri().toURL()},
+                ClassLoader.getPlatformClassLoader());
+    }
+
+    @Test
+    void nullProgrammabilityDetailsReturnStableNotFoundErrors() {
+        assertMissingDetail("community.function_not_found", "function");
+        assertMissingDetail("community.procedure_not_found", "procedure");
+        assertMissingDetail("community.trigger_not_found", "trigger");
+    }
+
+    private static void assertMissingDetail(String code, String field) {
+        RuntimeFailure failure = assertFailureCode(
+                code, () -> CommunityPluginRegistry.requireDetail(null, code, field));
+        assertTrue(failure.getMessage().contains("was not found"));
+    }
+
+    private static RuntimeFailure assertFailureCode(String code, Executable executable) {
+        RuntimeFailure failure = assertThrows(RuntimeFailure.class, executable);
+        assertEquals(code, failure.code());
+        return failure;
     }
 
     private static CommunityPluginRegistry openRegistry(Path directory) throws Exception {

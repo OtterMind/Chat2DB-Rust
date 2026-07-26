@@ -20,11 +20,12 @@ const JDBC_CAPABILITIES: [&str; 7] = [
     "update.jdbc.v1",
     "transaction.local.v1",
 ];
-const COMMUNITY_CAPABILITIES: [&str; 6] = [
+const COMMUNITY_CAPABILITIES: [&str; 7] = [
     "community.plugin-catalog.v1",
     "community.metadata.schemas.v1",
     "community.metadata.objects.v1",
     "community.metadata.relations.v1",
+    "community.metadata.programmability.v1",
     "community.sql-builder.v1",
     "community.sql-parser.v1",
 ];
@@ -476,6 +477,14 @@ async fn run(options: Options) -> Result<u8, Box<dyn std::error::Error>> {
                 | wire::client_envelope::Payload::ListCommunityImportedKeys(_)
                 | wire::client_envelope::Payload::ListCommunityExportedKeys(_)
                 | wire::client_envelope::Payload::ListCommunityPrimaryKeys(_)
+                | wire::client_envelope::Payload::ListCommunityFunctions(_)
+                | wire::client_envelope::Payload::GetCommunityFunction(_)
+                | wire::client_envelope::Payload::ListCommunityFunctionParameters(_)
+                | wire::client_envelope::Payload::ListCommunityProcedures(_)
+                | wire::client_envelope::Payload::GetCommunityProcedure(_)
+                | wire::client_envelope::Payload::ListCommunityProcedureParameters(_)
+                | wire::client_envelope::Payload::ListCommunityTriggers(_)
+                | wire::client_envelope::Payload::GetCommunityTrigger(_)
                 | wire::client_envelope::Payload::BuildCommunityCreateSchema(_)
                 | wire::client_envelope::Payload::ParseCommunitySql(_),
             ) => {

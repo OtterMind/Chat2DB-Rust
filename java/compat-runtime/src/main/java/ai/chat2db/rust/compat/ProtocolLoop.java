@@ -43,6 +43,8 @@ final class ProtocolLoop {
     static final String COMMUNITY_SCHEMA_METADATA_CAPABILITY = "community.metadata.schemas.v1";
     static final String COMMUNITY_OBJECT_METADATA_CAPABILITY = "community.metadata.objects.v1";
     static final String COMMUNITY_RELATION_METADATA_CAPABILITY = "community.metadata.relations.v1";
+    static final String COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY =
+            "community.metadata.programmability.v1";
     static final String COMMUNITY_SQL_BUILDER_CAPABILITY = "community.sql-builder.v1";
     static final String COMMUNITY_SQL_PARSER_CAPABILITY = "community.sql-parser.v1";
 
@@ -61,6 +63,7 @@ final class ProtocolLoop {
             COMMUNITY_SCHEMA_METADATA_CAPABILITY,
             COMMUNITY_OBJECT_METADATA_CAPABILITY,
             COMMUNITY_RELATION_METADATA_CAPABILITY,
+            COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
             COMMUNITY_SQL_BUILDER_CAPABILITY,
             COMMUNITY_SQL_PARSER_CAPABILITY);
     private static final List<ProtocolVersion> SUPPORTED_VERSIONS = List.of(version(1, 0));
@@ -277,6 +280,62 @@ final class ProtocolLoop {
                             meta,
                             () -> jdbcRuntime.listCommunityPrimaryKeys(
                                     meta, envelope.getListCommunityPrimaryKeys()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case LIST_COMMUNITY_FUNCTIONS -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.listCommunityFunctions(
+                                    meta, envelope.getListCommunityFunctions()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case GET_COMMUNITY_FUNCTION -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.getCommunityFunction(
+                                    meta, envelope.getGetCommunityFunction()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case LIST_COMMUNITY_FUNCTION_PARAMETERS -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.listCommunityFunctionParameters(
+                                    meta, envelope.getListCommunityFunctionParameters()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case LIST_COMMUNITY_PROCEDURES -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.listCommunityProcedures(
+                                    meta, envelope.getListCommunityProcedures()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case GET_COMMUNITY_PROCEDURE -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.getCommunityProcedure(
+                                    meta, envelope.getGetCommunityProcedure()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case LIST_COMMUNITY_PROCEDURE_PARAMETERS -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.listCommunityProcedureParameters(
+                                    meta, envelope.getListCommunityProcedureParameters()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case LIST_COMMUNITY_TRIGGERS -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.listCommunityTriggers(
+                                    meta, envelope.getListCommunityTriggers()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case GET_COMMUNITY_TRIGGER -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.getCommunityTrigger(
+                                    meta, envelope.getGetCommunityTrigger()));
                     yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
                 }
                 case BUILD_COMMUNITY_CREATE_SCHEMA -> {

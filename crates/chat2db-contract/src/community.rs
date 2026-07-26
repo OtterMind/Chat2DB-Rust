@@ -369,6 +369,191 @@ pub struct ListCommunityTableKeysRequest {
     pub table_name: String,
 }
 
+/// Secret-free Community function metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityFunction {
+    pub database_name: String,
+    pub schema_name: String,
+    pub name: String,
+    pub remarks: String,
+    pub function_type: Option<i32>,
+    pub specific_name: String,
+    pub body: String,
+    pub template: String,
+}
+
+/// Stable function collection returned by Community metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityFunctionList {
+    pub items: Vec<CommunityFunction>,
+}
+
+/// Request to list functions through one datasource connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListCommunityFunctionsRequest {
+    pub datasource_id: String,
+    pub database_type: String,
+    pub database_name: String,
+    pub schema_name: String,
+}
+
+/// Request to read one function or its parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GetCommunityFunctionRequest {
+    pub datasource_id: String,
+    pub database_type: String,
+    pub database_name: String,
+    pub schema_name: String,
+    pub function_name: String,
+}
+
+/// Secret-free Community function-parameter metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityFunctionParameter {
+    pub function_database: String,
+    pub function_schema: String,
+    pub function_name: String,
+    pub column_name: String,
+    pub column_type: Option<i32>,
+    pub data_type: Option<i32>,
+    pub type_name: String,
+    pub precision: Option<i32>,
+    pub length: Option<i32>,
+    pub scale: Option<i32>,
+    pub radix: Option<i32>,
+    pub nullable: Option<i32>,
+    pub remarks: String,
+    pub char_octet_length: Option<i32>,
+    pub ordinal_position: Option<i32>,
+    pub is_nullable: String,
+    pub specific_name: String,
+}
+
+/// Stable function-parameter collection returned by Community metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityFunctionParameterList {
+    pub items: Vec<CommunityFunctionParameter>,
+}
+
+/// Secret-free Community stored-procedure metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityProcedure {
+    pub database_name: String,
+    pub schema_name: String,
+    pub name: String,
+    pub remarks: String,
+    pub procedure_type: Option<i32>,
+    pub specific_name: String,
+    pub body: String,
+}
+
+/// Stable procedure collection returned by Community metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityProcedureList {
+    pub items: Vec<CommunityProcedure>,
+}
+
+/// Request to list stored procedures through one datasource connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListCommunityProceduresRequest {
+    pub datasource_id: String,
+    pub database_type: String,
+    pub database_name: String,
+    pub schema_name: String,
+}
+
+/// Request to read one stored procedure or its parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GetCommunityProcedureRequest {
+    pub datasource_id: String,
+    pub database_type: String,
+    pub database_name: String,
+    pub schema_name: String,
+    pub procedure_name: String,
+}
+
+/// Secret-free Community procedure-parameter metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityProcedureParameter {
+    pub procedure_database: String,
+    pub procedure_schema: String,
+    pub procedure_name: String,
+    pub column_name: String,
+    pub column_type: Option<i32>,
+    pub data_type: Option<i32>,
+    pub type_name: String,
+    pub precision: Option<i32>,
+    pub length: Option<i32>,
+    pub scale: Option<i32>,
+    pub radix: Option<i32>,
+    pub nullable: Option<i32>,
+    pub remarks: String,
+    pub column_default: String,
+    pub sql_data_type: Option<i32>,
+    pub sql_datetime_sub: Option<i32>,
+    pub char_octet_length: Option<i32>,
+    pub ordinal_position: Option<i32>,
+    pub is_nullable: String,
+    pub specific_name: String,
+}
+
+/// Stable procedure-parameter collection returned by Community metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityProcedureParameterList {
+    pub items: Vec<CommunityProcedureParameter>,
+}
+
+/// Secret-free Community trigger metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityTrigger {
+    pub database_name: String,
+    pub schema_name: String,
+    pub name: String,
+    pub event_manipulation: String,
+    pub body: String,
+}
+
+/// Stable trigger collection returned by Community metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityTriggerList {
+    pub items: Vec<CommunityTrigger>,
+}
+
+/// Request to list triggers through one datasource connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListCommunityTriggersRequest {
+    pub datasource_id: String,
+    pub database_type: String,
+    pub database_name: String,
+    pub schema_name: String,
+}
+
+/// Request to read one trigger.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GetCommunityTriggerRequest {
+    pub datasource_id: String,
+    pub database_type: String,
+    pub database_name: String,
+    pub schema_name: String,
+    pub trigger_name: String,
+}
+
 /// Request to build dialect-specific `CREATE SCHEMA` SQL.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -426,14 +611,19 @@ mod tests {
     use super::{
         BuildCommunityCreateSchemaRequest, CommunityBuiltSql, CommunityDatabase,
         CommunityDatabaseList, CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList,
-        CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
-        CommunityPluginServices, CommunityPrimaryKey, CommunityPrimaryKeyList, CommunitySchema,
+        CommunityFunction, CommunityFunctionList, CommunityFunctionParameter,
+        CommunityFunctionParameterList, CommunityParsedStatement, CommunityPlugin,
+        CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
+        CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
+        CommunityProcedureParameter, CommunityProcedureParameterList, CommunitySchema,
         CommunitySchemaList, CommunitySqlAnalysis, CommunityTable, CommunityTableColumn,
         CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
-        CommunityTableIndexList, CommunityTableList, CommunityViewList,
-        ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityIndexesRequest,
+        CommunityTableIndexList, CommunityTableList, CommunityTrigger, CommunityTriggerList,
+        CommunityViewList, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
+        GetCommunityTriggerRequest, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
+        ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
         ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
-        ListCommunityViewsRequest, ParseCommunitySqlRequest,
+        ListCommunityTriggersRequest, ListCommunityViewsRequest, ParseCommunitySqlRequest,
     };
 
     #[test]
@@ -830,6 +1020,155 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
+    fn community_programmability_contracts_use_exact_camel_case_and_round_trip() {
+        let list_functions = ListCommunityFunctionsRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+        };
+        let get_function = GetCommunityFunctionRequest {
+            datasource_id: list_functions.datasource_id.clone(),
+            database_type: list_functions.database_type.clone(),
+            database_name: list_functions.database_name.clone(),
+            schema_name: list_functions.schema_name.clone(),
+            function_name: "double_value".to_owned(),
+        };
+        let function = CommunityFunction {
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            name: "double_value".to_owned(),
+            remarks: String::new(),
+            function_type: Some(1),
+            specific_name: "double_value_1".to_owned(),
+            body: "return value * 2".to_owned(),
+            template: String::new(),
+        };
+        let function_parameters = CommunityFunctionParameterList {
+            items: vec![CommunityFunctionParameter {
+                function_database: "inventory".to_owned(),
+                function_schema: "APP".to_owned(),
+                function_name: "double_value".to_owned(),
+                column_name: "value".to_owned(),
+                column_type: Some(1),
+                data_type: Some(4),
+                type_name: "INTEGER".to_owned(),
+                precision: Some(32),
+                length: Some(4),
+                scale: Some(0),
+                radix: Some(10),
+                nullable: Some(1),
+                remarks: String::new(),
+                char_octet_length: Some(4),
+                ordinal_position: Some(1),
+                is_nullable: "YES".to_owned(),
+                specific_name: "double_value_1".to_owned(),
+            }],
+        };
+        let list_procedures = ListCommunityProceduresRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+        };
+        let get_procedure = GetCommunityProcedureRequest {
+            datasource_id: list_procedures.datasource_id.clone(),
+            database_type: list_procedures.database_type.clone(),
+            database_name: list_procedures.database_name.clone(),
+            schema_name: list_procedures.schema_name.clone(),
+            procedure_name: "refresh_items".to_owned(),
+        };
+        let procedure = CommunityProcedure {
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            name: "refresh_items".to_owned(),
+            remarks: String::new(),
+            procedure_type: Some(1),
+            specific_name: "refresh_items_1".to_owned(),
+            body: "call refresh_items()".to_owned(),
+        };
+        let procedure_parameters = CommunityProcedureParameterList {
+            items: vec![CommunityProcedureParameter {
+                procedure_database: "inventory".to_owned(),
+                procedure_schema: "APP".to_owned(),
+                procedure_name: "refresh_items".to_owned(),
+                column_name: "limit_value".to_owned(),
+                column_type: Some(1),
+                data_type: Some(4),
+                type_name: "INTEGER".to_owned(),
+                precision: Some(32),
+                length: Some(4),
+                scale: Some(0),
+                radix: Some(10),
+                nullable: Some(1),
+                remarks: String::new(),
+                column_default: "100".to_owned(),
+                sql_data_type: Some(4),
+                sql_datetime_sub: Some(0),
+                char_octet_length: Some(4),
+                ordinal_position: Some(1),
+                is_nullable: "YES".to_owned(),
+                specific_name: "refresh_items_1".to_owned(),
+            }],
+        };
+        let list_triggers = ListCommunityTriggersRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+        };
+        let get_trigger = GetCommunityTriggerRequest {
+            datasource_id: list_triggers.datasource_id.clone(),
+            database_type: list_triggers.database_type.clone(),
+            database_name: list_triggers.database_name.clone(),
+            schema_name: list_triggers.schema_name.clone(),
+            trigger_name: "items_audit".to_owned(),
+        };
+        let trigger = CommunityTrigger {
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            name: "items_audit".to_owned(),
+            event_manipulation: "INSERT".to_owned(),
+            body: "audit.ItemsTrigger".to_owned(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(&get_function).expect("function request must serialize"),
+            json!({
+                "datasourceId": "datasource-1", "databaseType": "H2",
+                "databaseName": "inventory", "schemaName": "APP",
+                "functionName": "double_value"
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&trigger).expect("trigger must serialize")["eventManipulation"],
+            "INSERT"
+        );
+
+        assert_round_trip(&list_functions);
+        assert_round_trip(&get_function);
+        assert_round_trip(&CommunityFunctionList {
+            items: vec![function.clone()],
+        });
+        assert_round_trip(&function);
+        assert_round_trip(&function_parameters);
+        assert_round_trip(&list_procedures);
+        assert_round_trip(&get_procedure);
+        assert_round_trip(&CommunityProcedureList {
+            items: vec![procedure.clone()],
+        });
+        assert_round_trip(&procedure);
+        assert_round_trip(&procedure_parameters);
+        assert_round_trip(&list_triggers);
+        assert_round_trip(&get_trigger);
+        assert_round_trip(&CommunityTriggerList {
+            items: vec![trigger.clone()],
+        });
+        assert_round_trip(&trigger);
+    }
+
+    #[test]
     fn community_metadata_contracts_never_expose_connection_secrets() {
         let responses = json!([
             CommunitySchemaList {
@@ -865,7 +1204,25 @@ mod tests {
             },
             CommunityPrimaryKeyList {
                 items: vec![primary_key_fixture()],
-            }
+            },
+            CommunityFunctionList {
+                items: vec![CommunityFunction {
+                    name: "double_value".to_owned(),
+                    ..CommunityFunction::default()
+                }],
+            },
+            CommunityProcedureList {
+                items: vec![CommunityProcedure {
+                    name: "refresh_items".to_owned(),
+                    ..CommunityProcedure::default()
+                }],
+            },
+            CommunityTriggerList {
+                items: vec![CommunityTrigger {
+                    name: "items_audit".to_owned(),
+                    ..CommunityTrigger::default()
+                }],
+            },
         ]);
 
         let encoded = serde_json::to_string(&responses).expect("metadata lists must serialize");

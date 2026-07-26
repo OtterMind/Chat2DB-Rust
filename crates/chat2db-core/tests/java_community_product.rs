@@ -1,12 +1,22 @@
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Arc,
+    time::Duration,
+};
 
 use chat2db_contract::{
     BuildCommunityCreateSchemaRequest, ComponentState, CreateDatasourceRequest,
-    DatasourceConnection, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
-    ListCommunityIndexesRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
-    ListCommunityTablesRequest, ListCommunityViewsRequest, ParseCommunitySqlRequest,
+    DatasourceConnection, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
+    GetCommunityTriggerRequest, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
+    ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
+    ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
+    ListCommunityTriggersRequest, ListCommunityViewsRequest, ParseCommunitySqlRequest,
 };
-use chat2db_core::{Application, RuntimeHost, load_fixed_community_classpath};
+use chat2db_core::{
+    AppError, AppErrorKind, Application, RuntimeHost, load_fixed_community_classpath,
+};
 use chat2db_java_bridge::{
     DriverArtifact, DriverClient, DriverSpec, EngineCommand, EngineConfig, EngineSupervisor,
     SessionConfig, UpdateRequest,
@@ -124,6 +134,10 @@ async fn create_metadata_fixture(
         "CREATE TABLE APP.parents (id BIGINT NOT NULL, CONSTRAINT pk_parents PRIMARY KEY (id))",
         "CREATE TABLE APP.children (id BIGINT NOT NULL, parent_id BIGINT NOT NULL, CONSTRAINT pk_children PRIMARY KEY (id), CONSTRAINT fk_children_parent FOREIGN KEY (parent_id) REFERENCES APP.parents(id))",
         "CREATE VIEW APP.item_view AS SELECT id, label FROM APP.items",
+        "CREATE ALIAS APP.add_one AS 'int addOne(int value) { return value + 1; }'",
+        "CREATE ALIAS APP.record_event AS 'void recordEvent(int value) { }'",
+        "CREATE TABLE APP.programmability_events (event_id BIGINT PRIMARY KEY)",
+        "CREATE TRIGGER APP.audit_trigger BEFORE INSERT ON APP.programmability_events CALL 'ai.chat2db.rust.compat.fixture.AuditTrigger'",
     ] {
         setup_session
             .execute_update(UpdateRequest {
@@ -235,6 +249,216 @@ async fn verify_object_metadata(application: &Application, datasource_id: &str) 
     }));
 
     verify_relation_metadata(application, datasource_id, &database.name).await;
+    verify_programmability_metadata(application, datasource_id, &database.name).await;
+}
+
+async fn verify_programmability_metadata(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+) {
+    verify_function_metadata(application, datasource_id, database_name).await;
+    verify_procedure_metadata(application, datasource_id, database_name).await;
+    verify_trigger_metadata(application, datasource_id, database_name).await;
+}
+
+async fn verify_function_metadata(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+) {
+    let function_list = application
+        .list_community_functions(ListCommunityFunctionsRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: "APP".to_owned(),
+        })
+        .await
+        .expect("Core must expose Community function metadata");
+    assert!(
+        function_list.items.is_empty(),
+        "H2 exposes Java aliases only through JDBC procedure-list metadata"
+    );
+
+    let function_request = GetCommunityFunctionRequest {
+        datasource_id: datasource_id.to_owned(),
+        database_type: "H2".to_owned(),
+        database_name: database_name.to_owned(),
+        schema_name: "APP".to_owned(),
+        function_name: "ADD_ONE".to_owned(),
+    };
+    let function = application
+        .get_community_function(function_request.clone())
+        .await
+        .expect("Core must expose Community function detail");
+    assert_eq!(function.database_name, database_name);
+    assert_eq!(function.schema_name, "APP");
+    assert!(function.name.eq_ignore_ascii_case("add_one"));
+    assert!(function.body.contains("addOne"));
+    let function_parameters = application
+        .list_community_function_parameters(function_request)
+        .await
+        .expect("Core must expose Community function parameters");
+    assert!(
+        function_parameters.items.is_empty(),
+        "H2 does not expose Java-alias parameters as JDBC function parameters"
+    );
+
+    for function_name in ["MISSING_FUNCTION", "ADD_ONE' OR '1'='1"] {
+        let error = application
+            .get_community_function(GetCommunityFunctionRequest {
+                datasource_id: datasource_id.to_owned(),
+                database_type: "H2".to_owned(),
+                database_name: database_name.to_owned(),
+                schema_name: "APP".to_owned(),
+                function_name: function_name.to_owned(),
+            })
+            .await
+            .expect_err("missing or injected H2 function detail must fail");
+        assert_community_error(&error, "community.function_not_found");
+    }
+    let error = application
+        .get_community_function(GetCommunityFunctionRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: "WRONG_CATALOG".to_owned(),
+            schema_name: "APP".to_owned(),
+            function_name: "ADD_ONE".to_owned(),
+        })
+        .await
+        .expect_err("H2 function detail must reject a mismatched catalog");
+    assert_community_error(&error, "community.catalog_mismatch");
+}
+
+async fn verify_procedure_metadata(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+) {
+    let procedure_list = application
+        .list_community_procedures(ListCommunityProceduresRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: "APP".to_owned(),
+        })
+        .await
+        .expect("Core must expose Community procedure metadata");
+    let procedure = procedure_list
+        .items
+        .iter()
+        .find(|procedure| procedure.name.eq_ignore_ascii_case("record_event"))
+        .expect("created H2 procedure alias must be listed");
+    assert_eq!(procedure.database_name, database_name);
+    assert_eq!(procedure.schema_name, "APP");
+
+    let procedure_request = GetCommunityProcedureRequest {
+        datasource_id: datasource_id.to_owned(),
+        database_type: "H2".to_owned(),
+        database_name: database_name.to_owned(),
+        schema_name: "APP".to_owned(),
+        procedure_name: "RECORD_EVENT".to_owned(),
+    };
+    let procedure = application
+        .get_community_procedure(procedure_request.clone())
+        .await
+        .expect("Core must expose Community procedure detail");
+    assert_eq!(procedure.database_name, database_name);
+    assert_eq!(procedure.schema_name, "APP");
+    assert!(procedure.name.eq_ignore_ascii_case("record_event"));
+    assert!(procedure.body.contains("recordEvent"));
+    let procedure_parameters = application
+        .list_community_procedure_parameters(procedure_request)
+        .await
+        .expect("Core must expose Community procedure parameters");
+    assert!(procedure_parameters.items.iter().any(|parameter| {
+        parameter
+            .procedure_name
+            .eq_ignore_ascii_case("record_event")
+            && parameter.procedure_schema.eq_ignore_ascii_case("APP")
+    }));
+
+    for procedure_name in ["MISSING_PROCEDURE", "RECORD_EVENT' OR '1'='1"] {
+        let error = application
+            .get_community_procedure(GetCommunityProcedureRequest {
+                datasource_id: datasource_id.to_owned(),
+                database_type: "H2".to_owned(),
+                database_name: database_name.to_owned(),
+                schema_name: "APP".to_owned(),
+                procedure_name: procedure_name.to_owned(),
+            })
+            .await
+            .expect_err("missing or injected H2 procedure detail must fail");
+        assert_community_error(&error, "community.procedure_not_found");
+    }
+}
+
+async fn verify_trigger_metadata(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+) {
+    let trigger_list = application
+        .list_community_triggers(ListCommunityTriggersRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: "APP".to_owned(),
+        })
+        .await
+        .expect("Core must expose Community trigger metadata");
+    let trigger = trigger_list
+        .items
+        .iter()
+        .find(|trigger| trigger.name.eq_ignore_ascii_case("audit_trigger"))
+        .expect("created H2 trigger must be listed");
+    assert_eq!(trigger.database_name, database_name);
+    assert_eq!(trigger.schema_name, "APP");
+
+    let trigger = application
+        .get_community_trigger(GetCommunityTriggerRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: "APP".to_owned(),
+            trigger_name: "AUDIT_TRIGGER".to_owned(),
+        })
+        .await
+        .expect("Core must expose Community trigger detail");
+    assert_eq!(trigger.database_name, database_name);
+    assert_eq!(trigger.schema_name, "APP");
+    assert!(trigger.name.eq_ignore_ascii_case("audit_trigger"));
+    assert!(trigger.body.contains("AuditTrigger"));
+
+    let injected_list = application
+        .list_community_triggers(ListCommunityTriggersRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: "APP'; DROP TABLE APP.programmability_events; --".to_owned(),
+        })
+        .await
+        .expect("escaped H2 trigger-list identifiers must remain a safe metadata query");
+    assert!(injected_list.items.is_empty());
+    for trigger_name in ["MISSING_TRIGGER", "AUDIT_TRIGGER' OR '1'='1"] {
+        let error = application
+            .get_community_trigger(GetCommunityTriggerRequest {
+                datasource_id: datasource_id.to_owned(),
+                database_type: "H2".to_owned(),
+                database_name: database_name.to_owned(),
+                schema_name: "APP".to_owned(),
+                trigger_name: trigger_name.to_owned(),
+            })
+            .await
+            .expect_err("missing or injected H2 trigger detail must fail");
+        assert_community_error(&error, "community.trigger_not_found");
+    }
+}
+
+fn assert_community_error(error: &AppError, expected_code: &str) {
+    assert_eq!(error.kind(), AppErrorKind::InvalidRequest);
+    assert_eq!(error.api_error().code, expected_code);
 }
 
 async fn verify_relation_metadata(
@@ -314,6 +538,7 @@ async fn start_product() -> (TempDir, RuntimeHost, DriverClient, String, &'stati
     let classpath = load_fixed_community_classpath(&community_directory)
         .expect("Community distribution must exactly match the embedded lock");
     let directory = TempDir::new().expect("temporary product data directory");
+    let trigger_jar = build_h2_trigger_jar(directory.path(), &h2_jar);
     let vault = Arc::new(
         EncryptedFileVault::new(directory.path(), [0x6b; 32])
             .expect("encrypted product vault must open"),
@@ -339,6 +564,8 @@ async fn start_product() -> (TempDir, RuntimeHost, DriverClient, String, &'stati
             driver_class: H2_DRIVER_CLASS.to_owned(),
             artifacts: vec![
                 DriverArtifact::from_path(h2_jar).expect("external H2 driver must be valid"),
+                DriverArtifact::from_path(trigger_jar)
+                    .expect("test H2 trigger artifact must be valid"),
             ],
         })
         .await
@@ -346,6 +573,57 @@ async fn start_product() -> (TempDir, RuntimeHost, DriverClient, String, &'stati
     let jdbc_url = "jdbc:h2:mem:community_product;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=TRUE";
     let host = RuntimeHost::from_supervisor(storage, supervisor);
     (directory, host, driver, loaded.driver_id, jdbc_url)
+}
+
+fn build_h2_trigger_jar(directory: &Path, h2_jar: &Path) -> PathBuf {
+    let source = directory.join("trigger-src/ai/chat2db/rust/compat/fixture/AuditTrigger.java");
+    fs::create_dir_all(source.parent().expect("trigger source must have a parent"))
+        .expect("trigger source directory must be created");
+    fs::write(
+        &source,
+        concat!(
+            "package ai.chat2db.rust.compat.fixture;\n",
+            "public final class AuditTrigger implements org.h2.api.Trigger {\n",
+            "  public void fire(java.sql.Connection connection, ",
+            "Object[] oldRow, Object[] newRow) { }\n",
+            "}\n"
+        ),
+    )
+    .expect("trigger source must be written");
+    let classes = directory.join("trigger-classes");
+    fs::create_dir(&classes).expect("trigger classes directory must be created");
+    run_fixture_tool(
+        Command::new("javac")
+            .arg("-cp")
+            .arg(h2_jar)
+            .arg("-d")
+            .arg(&classes)
+            .arg(&source),
+        "javac",
+    );
+    let trigger_jar = directory.join("h2-trigger-fixture.jar");
+    run_fixture_tool(
+        Command::new("jar")
+            .arg("--create")
+            .arg("--file")
+            .arg(&trigger_jar)
+            .arg("-C")
+            .arg(&classes)
+            .arg("."),
+        "jar",
+    );
+    trigger_jar
+}
+
+fn run_fixture_tool(command: &mut Command, name: &str) {
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("{name} must start: {error}"));
+    assert!(
+        output.status.success(),
+        "{name} must succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn required_path(name: &str) -> PathBuf {

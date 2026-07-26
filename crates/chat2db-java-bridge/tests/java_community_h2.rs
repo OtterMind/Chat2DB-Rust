@@ -1,13 +1,19 @@
-use std::{path::PathBuf, time::Duration};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    time::Duration,
+};
 
 use chat2db_java_bridge::{
     COMMUNITY_OBJECT_METADATA_CAPABILITY, COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
-    COMMUNITY_RELATION_METADATA_CAPABILITY, COMMUNITY_SCHEMA_METADATA_CAPABILITY,
-    COMMUNITY_SQL_BUILDER_CAPABILITY, COMMUNITY_SQL_PARSER_CAPABILITY, CommunityClasspath,
-    CommunityClient, CommunityPluginCatalog, CommunitySchema, DriverArtifact, DriverSpec,
-    EngineCommand, EngineConfig, EngineState, EngineSupervisor, Session, SessionConfig,
-    UpdateRequest,
+    COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY, COMMUNITY_RELATION_METADATA_CAPABILITY,
+    COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
+    COMMUNITY_SQL_PARSER_CAPABILITY, CommunityClasspath, CommunityClient, CommunityPluginCatalog,
+    CommunitySchema, DriverArtifact, DriverSpec, EngineCommand, EngineConfig, EngineState,
+    EngineSupervisor, Session, SessionConfig, UpdateRequest,
 };
+use tempfile::TempDir;
 
 const COMMUNITY_COMMIT: &str = "f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7";
 const H2_DRIVER_CLASS: &str = "org.h2.Driver";
@@ -42,6 +48,7 @@ async fn invokes_real_community_h2_spi_metadata_builder_and_parser() {
         COMMUNITY_SCHEMA_METADATA_CAPABILITY,
         COMMUNITY_OBJECT_METADATA_CAPABILITY,
         COMMUNITY_RELATION_METADATA_CAPABILITY,
+        COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
         COMMUNITY_SQL_BUILDER_CAPABILITY,
         COMMUNITY_SQL_PARSER_CAPABILITY,
     ] {
@@ -67,11 +74,15 @@ async fn invokes_real_community_h2_spi_metadata_builder_and_parser() {
         .client()
         .driver_client()
         .expect("ready engine must expose a JDBC client");
+    let trigger_directory = TempDir::new().expect("temporary trigger directory must open");
+    let trigger_jar = build_h2_trigger_jar(trigger_directory.path(), &h2_jar);
     let loaded = driver_client
         .load_driver(DriverSpec {
             driver_class: H2_DRIVER_CLASS.to_owned(),
             artifacts: vec![
                 DriverArtifact::from_path(h2_jar).expect("H2 driver must satisfy artifact limits"),
+                DriverArtifact::from_path(trigger_jar)
+                    .expect("H2 trigger fixture must satisfy artifact limits"),
             ],
         })
         .await
@@ -167,6 +178,26 @@ async fn create_and_verify_schema(community: &CommunityClient, session: &Session
         "CREATE VIEW APP.item_view AS SELECT id, label FROM APP.items",
     )
     .await;
+    execute_update(
+        session,
+        "CREATE ALIAS APP.add_one AS 'int addOne(int value) { return value + 1; }'",
+    )
+    .await;
+    execute_update(
+        session,
+        "CREATE ALIAS APP.record_event AS 'void recordEvent(int value) { }'",
+    )
+    .await;
+    execute_update(
+        session,
+        "CREATE TABLE APP.programmability_events (event_id BIGINT PRIMARY KEY)",
+    )
+    .await;
+    execute_update(
+        session,
+        "CREATE TRIGGER APP.audit_trigger BEFORE INSERT ON APP.programmability_events CALL 'ai.chat2db.rust.compat.fixture.AuditTrigger'",
+    )
+    .await;
 
     let schemas = community
         .list_schemas(session, "H2", "", None)
@@ -232,6 +263,132 @@ async fn verify_object_tree(community: &CommunityClient, session: &Session) {
     }));
 
     verify_relation_metadata(community, session, &database.name).await;
+    verify_programmability_metadata(community, session, &database.name).await;
+}
+
+async fn verify_programmability_metadata(
+    community: &CommunityClient,
+    session: &Session,
+    database_name: &str,
+) {
+    let functions = community
+        .list_functions(session, "H2", database_name, "APP", None)
+        .await
+        .expect("H2Meta must list functions");
+    assert!(
+        functions.is_empty(),
+        "H2 exposes Java aliases only through JDBC procedure-list metadata"
+    );
+    let function = community
+        .get_function(session, "H2", database_name, "APP", "ADD_ONE", None)
+        .await
+        .expect("H2Meta must read the created function alias");
+    assert_eq!(function.database_name, database_name);
+    assert_eq!(function.schema_name, "APP");
+    assert!(function.name.eq_ignore_ascii_case("add_one"));
+    assert!(function.body.contains("addOne"));
+    let function_parameters = community
+        .list_function_parameters(session, "H2", database_name, "APP", "ADD_ONE", None)
+        .await
+        .expect("H2Meta must list function parameters");
+    assert!(function_parameters.is_empty());
+
+    let procedures = community
+        .list_procedures(session, "H2", database_name, "APP", None)
+        .await
+        .expect("H2Meta must list procedures");
+    assert!(
+        procedures
+            .iter()
+            .any(|procedure| procedure.name.eq_ignore_ascii_case("record_event"))
+    );
+    let procedure = community
+        .get_procedure(session, "H2", database_name, "APP", "RECORD_EVENT", None)
+        .await
+        .expect("H2Meta must read the created procedure alias");
+    assert_eq!(procedure.database_name, database_name);
+    assert_eq!(procedure.schema_name, "APP");
+    assert!(procedure.name.eq_ignore_ascii_case("record_event"));
+    assert!(procedure.body.contains("recordEvent"));
+    let procedure_parameters = community
+        .list_procedure_parameters(session, "H2", database_name, "APP", "RECORD_EVENT", None)
+        .await
+        .expect("H2Meta must list procedure parameters");
+    assert!(procedure_parameters.iter().any(|parameter| {
+        parameter
+            .procedure_name
+            .eq_ignore_ascii_case("record_event")
+            && parameter.procedure_schema.eq_ignore_ascii_case("APP")
+    }));
+
+    let triggers = community
+        .list_triggers(session, "H2", database_name, "APP", None)
+        .await
+        .expect("H2Meta must list triggers");
+    assert!(
+        triggers
+            .iter()
+            .any(|trigger| trigger.name.eq_ignore_ascii_case("audit_trigger"))
+    );
+    let trigger = community
+        .get_trigger(session, "H2", database_name, "APP", "AUDIT_TRIGGER", None)
+        .await
+        .expect("H2Meta must read the created trigger");
+    assert_eq!(trigger.database_name, database_name);
+    assert_eq!(trigger.schema_name, "APP");
+    assert!(trigger.name.eq_ignore_ascii_case("audit_trigger"));
+    assert!(trigger.body.contains("AuditTrigger"));
+}
+
+fn build_h2_trigger_jar(directory: &Path, h2_jar: &Path) -> PathBuf {
+    let source = directory.join("src/ai/chat2db/rust/compat/fixture/AuditTrigger.java");
+    fs::create_dir_all(source.parent().expect("trigger source must have a parent"))
+        .expect("trigger source directory must be created");
+    fs::write(
+        &source,
+        concat!(
+            "package ai.chat2db.rust.compat.fixture;\n",
+            "public final class AuditTrigger implements org.h2.api.Trigger {\n",
+            "  public void fire(java.sql.Connection connection, ",
+            "Object[] oldRow, Object[] newRow) { }\n",
+            "}\n"
+        ),
+    )
+    .expect("trigger source must be written");
+    let classes = directory.join("classes");
+    fs::create_dir(&classes).expect("trigger classes directory must be created");
+    run_fixture_tool(
+        Command::new("javac")
+            .arg("-cp")
+            .arg(h2_jar)
+            .arg("-d")
+            .arg(&classes)
+            .arg(&source),
+        "javac",
+    );
+    let trigger_jar = directory.join("h2-trigger-fixture.jar");
+    run_fixture_tool(
+        Command::new("jar")
+            .arg("--create")
+            .arg("--file")
+            .arg(&trigger_jar)
+            .arg("-C")
+            .arg(&classes)
+            .arg("."),
+        "jar",
+    );
+    trigger_jar
+}
+
+fn run_fixture_tool(command: &mut Command, name: &str) {
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("{name} must start: {error}"));
+    assert!(
+        output.status.success(),
+        "{name} must succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 async fn verify_relation_metadata(

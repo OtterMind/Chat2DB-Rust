@@ -19,13 +19,21 @@ import type {
   CommunityBuiltSql,
   CommunityDatabaseList,
   CommunityForeignKeyList,
+  CommunityFunction,
+  CommunityFunctionList,
+  CommunityFunctionParameterList,
   CommunityPluginCatalog,
   CommunityPrimaryKeyList,
+  CommunityProcedure,
+  CommunityProcedureList,
+  CommunityProcedureParameterList,
   CommunitySchemaList,
   CommunitySqlAnalysis,
   CommunityTableColumnList,
   CommunityTableIndexList,
   CommunityTableList,
+  CommunityTrigger,
+  CommunityTriggerList,
   CommunityViewList,
   CreateAgentSessionRequest,
   CreateDatasourceRequest,
@@ -33,14 +41,20 @@ import type {
   Datasource,
   DatasourceList,
   DecideAgentPermissionRequest,
+  GetCommunityFunctionRequest,
+  GetCommunityProcedureRequest,
+  GetCommunityTriggerRequest,
   HealthResponse,
   JdbcDriverList,
   ListCommunityColumnsRequest,
   ListCommunityDatabasesRequest,
+  ListCommunityFunctionsRequest,
   ListCommunityIndexesRequest,
+  ListCommunityProceduresRequest,
   ListCommunitySchemasRequest,
   ListCommunityTableKeysRequest,
   ListCommunityTablesRequest,
+  ListCommunityTriggersRequest,
   ListCommunityViewsRequest,
   OperationEventEnvelope,
   OperationSnapshot,
@@ -180,6 +194,62 @@ export class TauriBackendClient implements BackendClient {
     signal?: AbortSignal,
   ): Promise<CommunityPrimaryKeyList> {
     return this.#request('list_community_primary_keys', { request }, signal);
+  }
+
+  listCommunityFunctions(
+    request: ListCommunityFunctionsRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityFunctionList> {
+    return this.#request('list_community_functions', { request }, signal);
+  }
+
+  getCommunityFunction(
+    request: GetCommunityFunctionRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityFunction> {
+    return this.#request('get_community_function', { request }, signal);
+  }
+
+  listCommunityFunctionParameters(
+    request: GetCommunityFunctionRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityFunctionParameterList> {
+    return this.#request('list_community_function_parameters', { request }, signal);
+  }
+
+  listCommunityProcedures(
+    request: ListCommunityProceduresRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityProcedureList> {
+    return this.#request('list_community_procedures', { request }, signal);
+  }
+
+  getCommunityProcedure(
+    request: GetCommunityProcedureRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityProcedure> {
+    return this.#request('get_community_procedure', { request }, signal);
+  }
+
+  listCommunityProcedureParameters(
+    request: GetCommunityProcedureRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityProcedureParameterList> {
+    return this.#request('list_community_procedure_parameters', { request }, signal);
+  }
+
+  listCommunityTriggers(
+    request: ListCommunityTriggersRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTriggerList> {
+    return this.#request('list_community_triggers', { request }, signal);
+  }
+
+  getCommunityTrigger(
+    request: GetCommunityTriggerRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTrigger> {
+    return this.#request('get_community_trigger', { request }, signal);
   }
 
   buildCommunityCreateSchema(

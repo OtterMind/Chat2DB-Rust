@@ -22,12 +22,17 @@ const MAX_COMMUNITY_DATABASES: usize = wire::CommunityDatabaseCountLimit::MaxDat
 const MAX_COMMUNITY_TABLES: usize = wire::CommunityTableCountLimit::MaxTables as usize;
 const MAX_COMMUNITY_VIEWS: usize = wire::CommunityViewCountLimit::MaxViews as usize;
 const MAX_COMMUNITY_KEYS: usize = wire::CommunityKeyCountLimit::MaxKeys as usize;
+const MAX_COMMUNITY_FUNCTIONS: usize = wire::CommunityFunctionCountLimit::MaxFunctions as usize;
+const MAX_COMMUNITY_PROCEDURES: usize = wire::CommunityProcedureCountLimit::MaxProcedures as usize;
+const MAX_COMMUNITY_TRIGGERS: usize = wire::CommunityTriggerCountLimit::MaxTriggers as usize;
+const MAX_COMMUNITY_ROUTINE_PARAMETERS: usize =
+    wire::CommunityRoutineParameterCountLimit::MaxParameters as usize;
 const MAX_COMMUNITY_COLUMNS: usize = wire::CommunityColumnCountLimit::MaxColumns as usize;
 const MAX_COMMUNITY_INDEXES: usize = wire::CommunityIndexCountLimit::MaxIndexes as usize;
 const MAX_COMMUNITY_INDEX_COLUMNS: usize =
     wire::CommunityIndexColumnCountLimit::MaxIndexColumns as usize;
 const MAX_COMMUNITY_STATEMENTS: usize = wire::CommunityCountLimit::MaxStatements as usize;
-const COMMUNITY_RESPONSE_TAGS: std::ops::RangeInclusive<u32> = 200..=211;
+const COMMUNITY_RESPONSE_TAGS: std::ops::RangeInclusive<u32> = 200..=219;
 const MAX_PROTOBUF_FIELD_NUMBER: u64 = (1 << 29) - 1;
 const MAX_PROTOBUF_GROUP_DEPTH: usize = 100;
 
@@ -148,6 +153,10 @@ struct CommunityWireCounts {
     views: usize,
     foreign_keys: usize,
     primary_keys: usize,
+    functions: usize,
+    procedures: usize,
+    triggers: usize,
+    routine_parameters: usize,
     statements: usize,
 }
 
@@ -210,6 +219,34 @@ fn validate_community_response_wire_counts(
             &mut counts.primary_keys,
             MAX_COMMUNITY_KEYS,
             "primary-key",
+        ),
+        212 => scan_bounded_repeated_field(
+            payload,
+            1,
+            &mut counts.functions,
+            MAX_COMMUNITY_FUNCTIONS,
+            "function",
+        ),
+        214 | 217 => scan_bounded_repeated_field(
+            payload,
+            1,
+            &mut counts.routine_parameters,
+            MAX_COMMUNITY_ROUTINE_PARAMETERS,
+            "routine-parameter",
+        ),
+        215 => scan_bounded_repeated_field(
+            payload,
+            1,
+            &mut counts.procedures,
+            MAX_COMMUNITY_PROCEDURES,
+            "procedure",
+        ),
+        218 => scan_bounded_repeated_field(
+            payload,
+            1,
+            &mut counts.triggers,
+            MAX_COMMUNITY_TRIGGERS,
+            "trigger",
         ),
         _ => Ok(()),
     }
@@ -523,10 +560,11 @@ mod tests {
 
     use super::{
         MAX_COMMUNITY_COLUMNS, MAX_COMMUNITY_DATABASES, MAX_COMMUNITY_DOWNLOAD_URLS,
-        MAX_COMMUNITY_DRIVERS, MAX_COMMUNITY_INDEX_COLUMNS, MAX_COMMUNITY_INDEXES,
-        MAX_COMMUNITY_KEYS, MAX_COMMUNITY_PLUGINS, MAX_COMMUNITY_RESPONSE_BYTES,
-        MAX_COMMUNITY_SCHEMAS, MAX_COMMUNITY_STATEMENTS, MAX_COMMUNITY_TABLES, MAX_COMMUNITY_VIEWS,
-        ReaderEvent, WriterCommand, WriterEvent, reader_loop,
+        MAX_COMMUNITY_DRIVERS, MAX_COMMUNITY_FUNCTIONS, MAX_COMMUNITY_INDEX_COLUMNS,
+        MAX_COMMUNITY_INDEXES, MAX_COMMUNITY_KEYS, MAX_COMMUNITY_PLUGINS, MAX_COMMUNITY_PROCEDURES,
+        MAX_COMMUNITY_RESPONSE_BYTES, MAX_COMMUNITY_ROUTINE_PARAMETERS, MAX_COMMUNITY_SCHEMAS,
+        MAX_COMMUNITY_STATEMENTS, MAX_COMMUNITY_TABLES, MAX_COMMUNITY_TRIGGERS,
+        MAX_COMMUNITY_VIEWS, ReaderEvent, WriterCommand, WriterEvent, reader_loop,
         validate_community_response_wire_budget, writer_loop,
     };
 
@@ -544,7 +582,13 @@ mod tests {
     const COMMUNITY_IMPORTED_KEY_LIST_TAG: u32 = 209;
     const COMMUNITY_EXPORTED_KEY_LIST_TAG: u32 = 210;
     const COMMUNITY_PRIMARY_KEY_LIST_TAG: u32 = 211;
-    const NON_COMMUNITY_TAG: u32 = 212;
+    const COMMUNITY_PROGRAMMABILITY_METADATA_TAGS: std::ops::RangeInclusive<u32> = 212..=219;
+    const COMMUNITY_FUNCTION_LIST_TAG: u32 = 212;
+    const COMMUNITY_FUNCTION_PARAMETER_LIST_TAG: u32 = 214;
+    const COMMUNITY_PROCEDURE_LIST_TAG: u32 = 215;
+    const COMMUNITY_PROCEDURE_PARAMETER_LIST_TAG: u32 = 217;
+    const COMMUNITY_TRIGGER_LIST_TAG: u32 = 218;
+    const NON_COMMUNITY_TAG: u32 = 220;
 
     fn encode_varint(mut value: u64, output: &mut Vec<u8>) {
         loop {
@@ -678,7 +722,10 @@ mod tests {
 
     #[tokio::test]
     async fn reader_applies_the_exact_community_budget_to_all_object_metadata_tags() {
-        for field_number in COMMUNITY_OBJECT_METADATA_TAGS.chain(COMMUNITY_RELATION_METADATA_TAGS) {
+        for field_number in COMMUNITY_OBJECT_METADATA_TAGS
+            .chain(COMMUNITY_RELATION_METADATA_TAGS)
+            .chain(COMMUNITY_PROGRAMMABILITY_METADATA_TAGS)
+        {
             let mut exact = Vec::new();
             push_length_delimited_field(
                 field_number,
@@ -772,6 +819,79 @@ mod tests {
         let error = validate_community_response_wire_budget(&combined)
             .expect_err("imported and exported keys must share the raw foreign-key limit");
         assert!(error.contains(&format!("{MAX_COMMUNITY_KEYS}-foreign-key limit")));
+    }
+
+    #[test]
+    fn raw_scanner_enforces_programmability_collection_limits_before_protobuf_decode() {
+        for (response_tag, maximum, label) in [
+            (
+                COMMUNITY_FUNCTION_LIST_TAG,
+                MAX_COMMUNITY_FUNCTIONS,
+                "function",
+            ),
+            (
+                COMMUNITY_PROCEDURE_LIST_TAG,
+                MAX_COMMUNITY_PROCEDURES,
+                "procedure",
+            ),
+            (
+                COMMUNITY_TRIGGER_LIST_TAG,
+                MAX_COMMUNITY_TRIGGERS,
+                "trigger",
+            ),
+            (
+                COMMUNITY_FUNCTION_PARAMETER_LIST_TAG,
+                MAX_COMMUNITY_ROUTINE_PARAMETERS,
+                "routine-parameter",
+            ),
+            (
+                COMMUNITY_PROCEDURE_PARAMETER_LIST_TAG,
+                MAX_COMMUNITY_ROUTINE_PARAMETERS,
+                "routine-parameter",
+            ),
+        ] {
+            let exact = community_response(response_tag, &repeated_empty_fields(1, maximum));
+            validate_community_response_wire_budget(&exact)
+                .unwrap_or_else(|error| panic!("exact {label} limit must pass: {error}"));
+
+            let oversized =
+                community_response(response_tag, &repeated_empty_fields(1, maximum + 1));
+            let error = validate_community_response_wire_budget(&oversized)
+                .expect_err("limit plus one must fail before decode");
+            assert!(error.contains(&format!("{maximum}-{label} limit")));
+            assert!(error.contains("before Protobuf decode"));
+        }
+    }
+
+    #[test]
+    fn raw_scanner_accumulates_duplicate_and_cross_tag_programmability_counts() {
+        let mut duplicate_functions = community_response(
+            COMMUNITY_FUNCTION_LIST_TAG,
+            &repeated_empty_fields(1, MAX_COMMUNITY_FUNCTIONS),
+        );
+        push_length_delimited_field(
+            COMMUNITY_FUNCTION_LIST_TAG,
+            &repeated_empty_fields(1, 1),
+            &mut duplicate_functions,
+        );
+        let error = validate_community_response_wire_budget(&duplicate_functions)
+            .expect_err("duplicate function-list tags must share the function limit");
+        assert!(error.contains(&format!("{MAX_COMMUNITY_FUNCTIONS}-function limit")));
+
+        let mut cross_tag_parameters = community_response(
+            COMMUNITY_FUNCTION_PARAMETER_LIST_TAG,
+            &repeated_empty_fields(1, MAX_COMMUNITY_ROUTINE_PARAMETERS),
+        );
+        push_length_delimited_field(
+            COMMUNITY_PROCEDURE_PARAMETER_LIST_TAG,
+            &repeated_empty_fields(1, 1),
+            &mut cross_tag_parameters,
+        );
+        let error = validate_community_response_wire_budget(&cross_tag_parameters)
+            .expect_err("function and procedure parameters must share the routine limit");
+        assert!(error.contains(&format!(
+            "{MAX_COMMUNITY_ROUTINE_PARAMETERS}-routine-parameter limit"
+        )));
     }
 
     #[test]

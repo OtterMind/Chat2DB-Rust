@@ -2,27 +2,36 @@ use std::future::Future;
 
 use chat2db_contract::{
     BuildCommunityCreateSchemaRequest, CommunityBuiltSql, CommunityDatabase, CommunityDatabaseList,
-    CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList, CommunityParsedStatement,
-    CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
-    CommunityPrimaryKey, CommunityPrimaryKeyList, CommunitySchema, CommunitySchemaList,
-    CommunitySqlAnalysis, CommunityTable, CommunityTableColumn, CommunityTableColumnList,
-    CommunityTableIndex, CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList,
-    CommunityViewList, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
-    ListCommunityIndexesRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
-    ListCommunityTablesRequest, ListCommunityViewsRequest, ParseCommunitySqlRequest,
+    CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList, CommunityFunction,
+    CommunityFunctionList, CommunityFunctionParameter, CommunityFunctionParameterList,
+    CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
+    CommunityPluginServices, CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure,
+    CommunityProcedureList, CommunityProcedureParameter, CommunityProcedureParameterList,
+    CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis, CommunityTable,
+    CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
+    CommunityTableIndexList, CommunityTableList, CommunityTrigger, CommunityTriggerList,
+    CommunityViewList, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
+    GetCommunityTriggerRequest, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
+    ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
+    ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
+    ListCommunityTriggersRequest, ListCommunityViewsRequest, ParseCommunitySqlRequest,
 };
 use chat2db_java_bridge::{
     BridgeError, CommunityClasspath, CommunityDatabase as BridgeCommunityDatabase,
     CommunityDriverConfig as BridgeCommunityDriverConfig,
-    CommunityForeignKey as BridgeCommunityForeignKey,
+    CommunityForeignKey as BridgeCommunityForeignKey, CommunityFunction as BridgeCommunityFunction,
+    CommunityFunctionParameter as BridgeCommunityFunctionParameter,
     CommunityParsedStatement as BridgeCommunityParsedStatement,
     CommunityPlugin as BridgeCommunityPlugin,
     CommunityPluginCatalog as BridgeCommunityPluginCatalog,
-    CommunityPrimaryKey as BridgeCommunityPrimaryKey, CommunitySchema as BridgeCommunitySchema,
-    CommunitySqlAnalysis as BridgeCommunitySqlAnalysis, CommunityTable as BridgeCommunityTable,
-    CommunityTableColumn as BridgeCommunityTableColumn,
+    CommunityPrimaryKey as BridgeCommunityPrimaryKey,
+    CommunityProcedure as BridgeCommunityProcedure,
+    CommunityProcedureParameter as BridgeCommunityProcedureParameter,
+    CommunitySchema as BridgeCommunitySchema, CommunitySqlAnalysis as BridgeCommunitySqlAnalysis,
+    CommunityTable as BridgeCommunityTable, CommunityTableColumn as BridgeCommunityTableColumn,
     CommunityTableIndex as BridgeCommunityTableIndex,
-    CommunityTableIndexColumn as BridgeCommunityTableIndexColumn, EngineClient, Session,
+    CommunityTableIndexColumn as BridgeCommunityTableIndexColumn,
+    CommunityTrigger as BridgeCommunityTrigger, EngineClient, Session,
 };
 use chat2db_storage::Storage;
 
@@ -441,6 +450,334 @@ impl Application {
         .await
     }
 
+    /// Lists functions through Community metadata using a forced read-only session.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, metadata, or session-cleanup errors.
+    pub async fn list_community_functions(
+        &self,
+        request: ListCommunityFunctionsRequest,
+    ) -> Result<CommunityFunctionList, AppError> {
+        let storage = self.require_storage()?;
+        let engine = self.require_community_engine()?;
+        let ListCommunityFunctionsRequest {
+            datasource_id,
+            database_type,
+            database_name,
+            schema_name,
+        } = request;
+        let client = engine.community_client().map_err(AppError::from)?;
+        run_community_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_function_list_session",
+            move |session| async move {
+                client
+                    .list_functions(&session, database_type, database_name, schema_name, None)
+                    .await
+                    .map(|items| CommunityFunctionList {
+                        items: items.into_iter().map(community_function).collect(),
+                    })
+                    .map_err(AppError::from)
+            },
+        )
+        .await
+    }
+
+    /// Reads one function through Community metadata using a forced read-only session.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, metadata, or session-cleanup errors.
+    pub async fn get_community_function(
+        &self,
+        request: GetCommunityFunctionRequest,
+    ) -> Result<CommunityFunction, AppError> {
+        let storage = self.require_storage()?;
+        let engine = self.require_community_engine()?;
+        let GetCommunityFunctionRequest {
+            datasource_id,
+            database_type,
+            database_name,
+            schema_name,
+            function_name,
+        } = request;
+        let client = engine.community_client().map_err(AppError::from)?;
+        run_community_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_function_session",
+            move |session| async move {
+                client
+                    .get_function(
+                        &session,
+                        database_type,
+                        database_name,
+                        schema_name,
+                        function_name,
+                        None,
+                    )
+                    .await
+                    .map(community_function)
+                    .map_err(AppError::from)
+            },
+        )
+        .await
+    }
+
+    /// Lists one function's parameters using a forced read-only session.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, metadata, or session-cleanup errors.
+    pub async fn list_community_function_parameters(
+        &self,
+        request: GetCommunityFunctionRequest,
+    ) -> Result<CommunityFunctionParameterList, AppError> {
+        let storage = self.require_storage()?;
+        let engine = self.require_community_engine()?;
+        let GetCommunityFunctionRequest {
+            datasource_id,
+            database_type,
+            database_name,
+            schema_name,
+            function_name,
+        } = request;
+        let client = engine.community_client().map_err(AppError::from)?;
+        run_community_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_function_parameter_session",
+            move |session| async move {
+                client
+                    .list_function_parameters(
+                        &session,
+                        database_type,
+                        database_name,
+                        schema_name,
+                        function_name,
+                        None,
+                    )
+                    .await
+                    .map(|items| CommunityFunctionParameterList {
+                        items: items
+                            .into_iter()
+                            .map(community_function_parameter)
+                            .collect(),
+                    })
+                    .map_err(AppError::from)
+            },
+        )
+        .await
+    }
+
+    /// Lists procedures through Community metadata using a forced read-only session.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, metadata, or session-cleanup errors.
+    pub async fn list_community_procedures(
+        &self,
+        request: ListCommunityProceduresRequest,
+    ) -> Result<CommunityProcedureList, AppError> {
+        let storage = self.require_storage()?;
+        let engine = self.require_community_engine()?;
+        let ListCommunityProceduresRequest {
+            datasource_id,
+            database_type,
+            database_name,
+            schema_name,
+        } = request;
+        let client = engine.community_client().map_err(AppError::from)?;
+        run_community_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_procedure_list_session",
+            move |session| async move {
+                client
+                    .list_procedures(&session, database_type, database_name, schema_name, None)
+                    .await
+                    .map(|items| CommunityProcedureList {
+                        items: items.into_iter().map(community_procedure).collect(),
+                    })
+                    .map_err(AppError::from)
+            },
+        )
+        .await
+    }
+
+    /// Reads one procedure through Community metadata using a forced read-only session.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, metadata, or session-cleanup errors.
+    pub async fn get_community_procedure(
+        &self,
+        request: GetCommunityProcedureRequest,
+    ) -> Result<CommunityProcedure, AppError> {
+        let storage = self.require_storage()?;
+        let engine = self.require_community_engine()?;
+        let GetCommunityProcedureRequest {
+            datasource_id,
+            database_type,
+            database_name,
+            schema_name,
+            procedure_name,
+        } = request;
+        let client = engine.community_client().map_err(AppError::from)?;
+        run_community_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_procedure_session",
+            move |session| async move {
+                client
+                    .get_procedure(
+                        &session,
+                        database_type,
+                        database_name,
+                        schema_name,
+                        procedure_name,
+                        None,
+                    )
+                    .await
+                    .map(community_procedure)
+                    .map_err(AppError::from)
+            },
+        )
+        .await
+    }
+
+    /// Lists one procedure's parameters using a forced read-only session.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, metadata, or session-cleanup errors.
+    pub async fn list_community_procedure_parameters(
+        &self,
+        request: GetCommunityProcedureRequest,
+    ) -> Result<CommunityProcedureParameterList, AppError> {
+        let storage = self.require_storage()?;
+        let engine = self.require_community_engine()?;
+        let GetCommunityProcedureRequest {
+            datasource_id,
+            database_type,
+            database_name,
+            schema_name,
+            procedure_name,
+        } = request;
+        let client = engine.community_client().map_err(AppError::from)?;
+        run_community_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_procedure_parameter_session",
+            move |session| async move {
+                client
+                    .list_procedure_parameters(
+                        &session,
+                        database_type,
+                        database_name,
+                        schema_name,
+                        procedure_name,
+                        None,
+                    )
+                    .await
+                    .map(|items| CommunityProcedureParameterList {
+                        items: items
+                            .into_iter()
+                            .map(community_procedure_parameter)
+                            .collect(),
+                    })
+                    .map_err(AppError::from)
+            },
+        )
+        .await
+    }
+
+    /// Lists triggers through Community metadata using a forced read-only session.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, metadata, or session-cleanup errors.
+    pub async fn list_community_triggers(
+        &self,
+        request: ListCommunityTriggersRequest,
+    ) -> Result<CommunityTriggerList, AppError> {
+        let storage = self.require_storage()?;
+        let engine = self.require_community_engine()?;
+        let ListCommunityTriggersRequest {
+            datasource_id,
+            database_type,
+            database_name,
+            schema_name,
+        } = request;
+        let client = engine.community_client().map_err(AppError::from)?;
+        run_community_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_trigger_list_session",
+            move |session| async move {
+                client
+                    .list_triggers(&session, database_type, database_name, schema_name, None)
+                    .await
+                    .map(|items| CommunityTriggerList {
+                        items: items.into_iter().map(community_trigger).collect(),
+                    })
+                    .map_err(AppError::from)
+            },
+        )
+        .await
+    }
+
+    /// Reads one trigger through Community metadata using a forced read-only session.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, metadata, or session-cleanup errors.
+    pub async fn get_community_trigger(
+        &self,
+        request: GetCommunityTriggerRequest,
+    ) -> Result<CommunityTrigger, AppError> {
+        let storage = self.require_storage()?;
+        let engine = self.require_community_engine()?;
+        let GetCommunityTriggerRequest {
+            datasource_id,
+            database_type,
+            database_name,
+            schema_name,
+            trigger_name,
+        } = request;
+        let client = engine.community_client().map_err(AppError::from)?;
+        run_community_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_trigger_session",
+            move |session| async move {
+                client
+                    .get_trigger(
+                        &session,
+                        database_type,
+                        database_name,
+                        schema_name,
+                        trigger_name,
+                        None,
+                    )
+                    .await
+                    .map(community_trigger)
+                    .map_err(AppError::from)
+            },
+        )
+        .await
+    }
+
     /// Builds dialect-specific `CREATE SCHEMA` SQL through Community.
     ///
     /// # Errors
@@ -751,6 +1088,92 @@ fn community_primary_key(key: BridgeCommunityPrimaryKey) -> CommunityPrimaryKey 
     }
 }
 
+fn community_function(function: BridgeCommunityFunction) -> CommunityFunction {
+    CommunityFunction {
+        database_name: function.database_name,
+        schema_name: function.schema_name,
+        name: function.name,
+        remarks: function.remarks,
+        function_type: function.function_type,
+        specific_name: function.specific_name,
+        body: function.body,
+        template: function.template,
+    }
+}
+
+fn community_function_parameter(
+    parameter: BridgeCommunityFunctionParameter,
+) -> CommunityFunctionParameter {
+    CommunityFunctionParameter {
+        function_database: parameter.function_database,
+        function_schema: parameter.function_schema,
+        function_name: parameter.function_name,
+        column_name: parameter.column_name,
+        column_type: parameter.column_type,
+        data_type: parameter.data_type,
+        type_name: parameter.type_name,
+        precision: parameter.precision,
+        length: parameter.length,
+        scale: parameter.scale,
+        radix: parameter.radix,
+        nullable: parameter.nullable,
+        remarks: parameter.remarks,
+        char_octet_length: parameter.char_octet_length,
+        ordinal_position: parameter.ordinal_position,
+        is_nullable: parameter.is_nullable,
+        specific_name: parameter.specific_name,
+    }
+}
+
+fn community_procedure(procedure: BridgeCommunityProcedure) -> CommunityProcedure {
+    CommunityProcedure {
+        database_name: procedure.database_name,
+        schema_name: procedure.schema_name,
+        name: procedure.name,
+        remarks: procedure.remarks,
+        procedure_type: procedure.procedure_type,
+        specific_name: procedure.specific_name,
+        body: procedure.body,
+    }
+}
+
+fn community_procedure_parameter(
+    parameter: BridgeCommunityProcedureParameter,
+) -> CommunityProcedureParameter {
+    CommunityProcedureParameter {
+        procedure_database: parameter.procedure_database,
+        procedure_schema: parameter.procedure_schema,
+        procedure_name: parameter.procedure_name,
+        column_name: parameter.column_name,
+        column_type: parameter.column_type,
+        data_type: parameter.data_type,
+        type_name: parameter.type_name,
+        precision: parameter.precision,
+        length: parameter.length,
+        scale: parameter.scale,
+        radix: parameter.radix,
+        nullable: parameter.nullable,
+        remarks: parameter.remarks,
+        column_default: parameter.column_default,
+        sql_data_type: parameter.sql_data_type,
+        sql_datetime_sub: parameter.sql_datetime_sub,
+        char_octet_length: parameter.char_octet_length,
+        ordinal_position: parameter.ordinal_position,
+        is_nullable: parameter.is_nullable,
+        specific_name: parameter.specific_name,
+    }
+}
+
+fn community_trigger(trigger: BridgeCommunityTrigger) -> CommunityTrigger {
+    CommunityTrigger {
+        database_name: trigger.database_name,
+        schema_name: trigger.schema_name,
+        name: trigger.name,
+        event_manipulation: trigger.event_manipulation,
+        body: trigger.body,
+    }
+}
+
 fn bridge_schema(schema: CommunitySchema) -> BridgeCommunitySchema {
     BridgeCommunitySchema {
         database_name: schema.database_name,
@@ -806,28 +1229,35 @@ fn preserve_primary_result<T>(
 #[cfg(test)]
 mod tests {
     use chat2db_contract::{
-        CommunityDatabase, CommunityDriverConfig, CommunityForeignKey, CommunityParsedStatement,
-        CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
-        CommunityPrimaryKey, CommunitySchema, CommunitySqlAnalysis, CommunityTable,
-        CommunityTableColumn, CommunityTableIndex, CommunityTableIndexColumn,
-        ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityIndexesRequest,
-        ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
-        ListCommunityViewsRequest,
+        CommunityDatabase, CommunityDriverConfig, CommunityForeignKey, CommunityFunction,
+        CommunityFunctionParameter, CommunityParsedStatement, CommunityPlugin,
+        CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
+        CommunityPrimaryKey, CommunityProcedure, CommunityProcedureParameter, CommunitySchema,
+        CommunitySqlAnalysis, CommunityTable, CommunityTableColumn, CommunityTableIndex,
+        CommunityTableIndexColumn, CommunityTrigger, ListCommunityColumnsRequest,
+        ListCommunityDatabasesRequest, ListCommunityIndexesRequest, ListCommunitySchemasRequest,
+        ListCommunityTableKeysRequest, ListCommunityTablesRequest, ListCommunityViewsRequest,
     };
     use chat2db_java_bridge::{
         CommunityDatabase as BridgeCommunityDatabase,
         CommunityDriverConfig as BridgeCommunityDriverConfig,
         CommunityForeignKey as BridgeCommunityForeignKey,
+        CommunityFunction as BridgeCommunityFunction,
+        CommunityFunctionParameter as BridgeCommunityFunctionParameter,
         CommunityParsedStatement as BridgeCommunityParsedStatement,
         CommunityPlugin as BridgeCommunityPlugin,
         CommunityPluginBehavior as BridgeCommunityPluginBehavior,
         CommunityPluginCatalog as BridgeCommunityPluginCatalog,
         CommunityPluginServices as BridgeCommunityPluginServices,
-        CommunityPrimaryKey as BridgeCommunityPrimaryKey, CommunitySchema as BridgeCommunitySchema,
+        CommunityPrimaryKey as BridgeCommunityPrimaryKey,
+        CommunityProcedure as BridgeCommunityProcedure,
+        CommunityProcedureParameter as BridgeCommunityProcedureParameter,
+        CommunitySchema as BridgeCommunitySchema,
         CommunitySqlAnalysis as BridgeCommunitySqlAnalysis, CommunityTable as BridgeCommunityTable,
         CommunityTableColumn as BridgeCommunityTableColumn,
         CommunityTableIndex as BridgeCommunityTableIndex,
         CommunityTableIndexColumn as BridgeCommunityTableIndexColumn,
+        CommunityTrigger as BridgeCommunityTrigger,
     };
     use chat2db_storage::{EncryptedFileVault, Storage};
     use std::sync::Arc;
@@ -835,10 +1265,12 @@ mod tests {
     use tokio::{sync::oneshot, time};
 
     use super::{
-        Application, bridge_schema, community_database, community_foreign_key,
-        community_plugin_catalog, community_primary_key, community_schema, community_sql_analysis,
-        community_table, community_table_column, community_table_index, preserve_primary_result,
-        run_cancellation_safe, run_cancellation_safe_with_cleanup,
+        Application, bridge_schema, community_database, community_foreign_key, community_function,
+        community_function_parameter, community_plugin_catalog, community_primary_key,
+        community_procedure, community_procedure_parameter, community_schema,
+        community_sql_analysis, community_table, community_table_column, community_table_index,
+        community_trigger, preserve_primary_result, run_cancellation_safe,
+        run_cancellation_safe_with_cleanup,
     };
     use crate::{AppError, AppErrorKind};
 
@@ -1173,6 +1605,155 @@ mod tests {
                 table_name: "parent".to_owned(),
                 column_name: "id".to_owned(),
                 name: "pk_parent".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn programmability_metadata_mapping_preserves_every_field() {
+        assert_eq!(
+            community_function(BridgeCommunityFunction {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                name: "double_value".to_owned(),
+                remarks: "Doubles a value".to_owned(),
+                function_type: Some(1),
+                specific_name: "double_value_1".to_owned(),
+                body: "return value * 2".to_owned(),
+                template: "double_value(?)".to_owned(),
+            }),
+            CommunityFunction {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                name: "double_value".to_owned(),
+                remarks: "Doubles a value".to_owned(),
+                function_type: Some(1),
+                specific_name: "double_value_1".to_owned(),
+                body: "return value * 2".to_owned(),
+                template: "double_value(?)".to_owned(),
+            }
+        );
+        assert_eq!(
+            community_function_parameter(BridgeCommunityFunctionParameter {
+                function_database: "inventory".to_owned(),
+                function_schema: "APP".to_owned(),
+                function_name: "double_value".to_owned(),
+                column_name: "value".to_owned(),
+                column_type: Some(1),
+                data_type: Some(4),
+                type_name: "INTEGER".to_owned(),
+                precision: Some(32),
+                length: Some(4),
+                scale: Some(0),
+                radix: Some(10),
+                nullable: Some(1),
+                remarks: "Input value".to_owned(),
+                char_octet_length: Some(4),
+                ordinal_position: Some(1),
+                is_nullable: "YES".to_owned(),
+                specific_name: "double_value_1".to_owned(),
+            }),
+            CommunityFunctionParameter {
+                function_database: "inventory".to_owned(),
+                function_schema: "APP".to_owned(),
+                function_name: "double_value".to_owned(),
+                column_name: "value".to_owned(),
+                column_type: Some(1),
+                data_type: Some(4),
+                type_name: "INTEGER".to_owned(),
+                precision: Some(32),
+                length: Some(4),
+                scale: Some(0),
+                radix: Some(10),
+                nullable: Some(1),
+                remarks: "Input value".to_owned(),
+                char_octet_length: Some(4),
+                ordinal_position: Some(1),
+                is_nullable: "YES".to_owned(),
+                specific_name: "double_value_1".to_owned(),
+            }
+        );
+        assert_eq!(
+            community_procedure(BridgeCommunityProcedure {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                name: "refresh_items".to_owned(),
+                remarks: "Refreshes inventory".to_owned(),
+                procedure_type: Some(2),
+                specific_name: "refresh_items_1".to_owned(),
+                body: "call refresh_items()".to_owned(),
+            }),
+            CommunityProcedure {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                name: "refresh_items".to_owned(),
+                remarks: "Refreshes inventory".to_owned(),
+                procedure_type: Some(2),
+                specific_name: "refresh_items_1".to_owned(),
+                body: "call refresh_items()".to_owned(),
+            }
+        );
+        assert_eq!(
+            community_procedure_parameter(BridgeCommunityProcedureParameter {
+                procedure_database: "inventory".to_owned(),
+                procedure_schema: "APP".to_owned(),
+                procedure_name: "refresh_items".to_owned(),
+                column_name: "limit_value".to_owned(),
+                column_type: Some(1),
+                data_type: Some(4),
+                type_name: "INTEGER".to_owned(),
+                precision: Some(32),
+                length: Some(4),
+                scale: Some(0),
+                radix: Some(10),
+                nullable: Some(1),
+                remarks: "Row limit".to_owned(),
+                column_default: "100".to_owned(),
+                sql_data_type: Some(4),
+                sql_datetime_sub: Some(0),
+                char_octet_length: Some(4),
+                ordinal_position: Some(1),
+                is_nullable: "YES".to_owned(),
+                specific_name: "refresh_items_1".to_owned(),
+            }),
+            CommunityProcedureParameter {
+                procedure_database: "inventory".to_owned(),
+                procedure_schema: "APP".to_owned(),
+                procedure_name: "refresh_items".to_owned(),
+                column_name: "limit_value".to_owned(),
+                column_type: Some(1),
+                data_type: Some(4),
+                type_name: "INTEGER".to_owned(),
+                precision: Some(32),
+                length: Some(4),
+                scale: Some(0),
+                radix: Some(10),
+                nullable: Some(1),
+                remarks: "Row limit".to_owned(),
+                column_default: "100".to_owned(),
+                sql_data_type: Some(4),
+                sql_datetime_sub: Some(0),
+                char_octet_length: Some(4),
+                ordinal_position: Some(1),
+                is_nullable: "YES".to_owned(),
+                specific_name: "refresh_items_1".to_owned(),
+            }
+        );
+        assert_eq!(
+            community_trigger(BridgeCommunityTrigger {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                name: "items_audit".to_owned(),
+                event_manipulation: "INSERT".to_owned(),
+                body: "audit.ItemsTrigger".to_owned(),
+            }),
+            CommunityTrigger {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                name: "items_audit".to_owned(),
+                event_manipulation: "INSERT".to_owned(),
+                body: "audit.ItemsTrigger".to_owned(),
             }
         );
     }

@@ -17,13 +17,21 @@ import type {
   CommunityBuiltSql,
   CommunityDatabaseList,
   CommunityForeignKeyList,
+  CommunityFunction,
+  CommunityFunctionList,
+  CommunityFunctionParameterList,
   CommunityPluginCatalog,
   CommunityPrimaryKeyList,
+  CommunityProcedure,
+  CommunityProcedureList,
+  CommunityProcedureParameterList,
   CommunitySchemaList,
   CommunitySqlAnalysis,
   CommunityTableColumnList,
   CommunityTableIndexList,
   CommunityTableList,
+  CommunityTrigger,
+  CommunityTriggerList,
   CommunityViewList,
   CreateAgentSessionRequest,
   CreateDatasourceRequest,
@@ -31,14 +39,20 @@ import type {
   Datasource,
   DatasourceList,
   DecideAgentPermissionRequest,
+  GetCommunityFunctionRequest,
+  GetCommunityProcedureRequest,
+  GetCommunityTriggerRequest,
   HealthResponse,
   JdbcDriverList,
   ListCommunityColumnsRequest,
   ListCommunityDatabasesRequest,
+  ListCommunityFunctionsRequest,
   ListCommunityIndexesRequest,
+  ListCommunityProceduresRequest,
   ListCommunitySchemasRequest,
   ListCommunityTableKeysRequest,
   ListCommunityTablesRequest,
+  ListCommunityTriggersRequest,
   ListCommunityViewsRequest,
   OperationSnapshot,
   OperationSubscription,
@@ -230,6 +244,94 @@ export class HttpBackendClient implements BackendClient {
   ): Promise<CommunityPrimaryKeyList> {
     return this.#json(
       '/api/v1/community/metadata/primary-keys',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  listCommunityFunctions(
+    request: ListCommunityFunctionsRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityFunctionList> {
+    return this.#json(
+      '/api/v1/community/metadata/functions',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  getCommunityFunction(
+    request: GetCommunityFunctionRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityFunction> {
+    return this.#json(
+      '/api/v1/community/metadata/function',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  listCommunityFunctionParameters(
+    request: GetCommunityFunctionRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityFunctionParameterList> {
+    return this.#json(
+      '/api/v1/community/metadata/function-parameters',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  listCommunityProcedures(
+    request: ListCommunityProceduresRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityProcedureList> {
+    return this.#json(
+      '/api/v1/community/metadata/procedures',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  getCommunityProcedure(
+    request: GetCommunityProcedureRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityProcedure> {
+    return this.#json(
+      '/api/v1/community/metadata/procedure',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  listCommunityProcedureParameters(
+    request: GetCommunityProcedureRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityProcedureParameterList> {
+    return this.#json(
+      '/api/v1/community/metadata/procedure-parameters',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  listCommunityTriggers(
+    request: ListCommunityTriggersRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTriggerList> {
+    return this.#json(
+      '/api/v1/community/metadata/triggers',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  getCommunityTrigger(
+    request: GetCommunityTriggerRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTrigger> {
+    return this.#json(
+      '/api/v1/community/metadata/trigger',
       { method: 'POST', body: JSON.stringify(request), signal },
       [200],
     );

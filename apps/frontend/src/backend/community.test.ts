@@ -5,20 +5,34 @@ import type {
   CommunityBuiltSql,
   CommunityDatabaseList,
   CommunityForeignKeyList,
+  CommunityFunction,
+  CommunityFunctionList,
+  CommunityFunctionParameterList,
   CommunityPluginCatalog,
   CommunityPrimaryKeyList,
+  CommunityProcedure,
+  CommunityProcedureList,
+  CommunityProcedureParameterList,
   CommunitySchemaList,
   CommunitySqlAnalysis,
   CommunityTableColumnList,
   CommunityTableIndexList,
   CommunityTableList,
+  CommunityTrigger,
+  CommunityTriggerList,
   CommunityViewList,
+  GetCommunityFunctionRequest,
+  GetCommunityProcedureRequest,
+  GetCommunityTriggerRequest,
   ListCommunityColumnsRequest,
   ListCommunityDatabasesRequest,
+  ListCommunityFunctionsRequest,
   ListCommunityIndexesRequest,
+  ListCommunityProceduresRequest,
   ListCommunitySchemasRequest,
   ListCommunityTableKeysRequest,
   ListCommunityTablesRequest,
+  ListCommunityTriggersRequest,
   ListCommunityViewsRequest,
   ParseCommunitySqlRequest,
 } from './client';
@@ -75,6 +89,36 @@ const listViewsRequest = {
 const listKeysRequest = {
   ...listColumnsRequest,
 } satisfies ListCommunityTableKeysRequest;
+
+const listFunctionsRequest = {
+  datasourceId: 'datasource-1',
+  databaseType: 'H2',
+  databaseName: 'inventory',
+  schemaName: 'APP',
+} satisfies ListCommunityFunctionsRequest;
+
+const getFunctionRequest = {
+  ...listFunctionsRequest,
+  functionName: 'DOUBLE_VALUE',
+} satisfies GetCommunityFunctionRequest;
+
+const listProceduresRequest = {
+  ...listFunctionsRequest,
+} satisfies ListCommunityProceduresRequest;
+
+const getProcedureRequest = {
+  ...listProceduresRequest,
+  procedureName: 'REFRESH_ITEMS',
+} satisfies GetCommunityProcedureRequest;
+
+const listTriggersRequest = {
+  ...listFunctionsRequest,
+} satisfies ListCommunityTriggersRequest;
+
+const getTriggerRequest = {
+  ...listTriggersRequest,
+  triggerName: 'ITEMS_AUDIT',
+} satisfies GetCommunityTriggerRequest;
 
 const buildSchemaRequest = {
   databaseType: 'H2',
@@ -227,6 +271,86 @@ const primaryKeys = {
     name: 'CONSTRAINT_ITEMS',
   }],
 } satisfies CommunityPrimaryKeyList;
+const functions = {
+  items: [{
+    databaseName: 'inventory',
+    schemaName: 'APP',
+    name: 'DOUBLE_VALUE',
+    remarks: '',
+    functionType: 1,
+    specificName: 'DOUBLE_VALUE_1',
+    body: 'return value * 2;',
+    template: '',
+  }],
+} satisfies CommunityFunctionList;
+const functionDetail = functions.items[0] satisfies CommunityFunction;
+const functionParameters = {
+  items: [{
+    functionDatabase: 'inventory',
+    functionSchema: 'APP',
+    functionName: 'DOUBLE_VALUE',
+    columnName: 'VALUE',
+    columnType: 1,
+    dataType: 4,
+    typeName: 'INTEGER',
+    precision: 32,
+    length: 4,
+    scale: 0,
+    radix: 10,
+    nullable: 1,
+    remarks: '',
+    charOctetLength: 4,
+    ordinalPosition: 1,
+    isNullable: 'YES',
+    specificName: 'DOUBLE_VALUE_1',
+  }],
+} satisfies CommunityFunctionParameterList;
+const procedures = {
+  items: [{
+    databaseName: 'inventory',
+    schemaName: 'APP',
+    name: 'REFRESH_ITEMS',
+    remarks: '',
+    procedureType: 1,
+    specificName: 'REFRESH_ITEMS_1',
+    body: 'call refresh_items();',
+  }],
+} satisfies CommunityProcedureList;
+const procedure = procedures.items[0] satisfies CommunityProcedure;
+const procedureParameters = {
+  items: [{
+    procedureDatabase: 'inventory',
+    procedureSchema: 'APP',
+    procedureName: 'REFRESH_ITEMS',
+    columnName: 'LIMIT_VALUE',
+    columnType: 1,
+    dataType: 4,
+    typeName: 'INTEGER',
+    precision: 32,
+    length: 4,
+    scale: 0,
+    radix: 10,
+    nullable: 1,
+    remarks: '',
+    columnDefault: '100',
+    sqlDataType: 4,
+    sqlDatetimeSub: 0,
+    charOctetLength: 4,
+    ordinalPosition: 1,
+    isNullable: 'YES',
+    specificName: 'REFRESH_ITEMS_1',
+  }],
+} satisfies CommunityProcedureParameterList;
+const triggers = {
+  items: [{
+    databaseName: 'inventory',
+    schemaName: 'APP',
+    name: 'ITEMS_AUDIT',
+    eventManipulation: 'INSERT',
+    body: 'audit.ItemsTrigger',
+  }],
+} satisfies CommunityTriggerList;
+const trigger = triggers.items[0] satisfies CommunityTrigger;
 const builtSql = { sql: 'CREATE SCHEMA reporting' } satisfies CommunityBuiltSql;
 const analysis = {
   isSelect: true,
@@ -244,6 +368,14 @@ const responses = [
   foreignKeys,
   foreignKeys,
   primaryKeys,
+  functions,
+  functionDetail,
+  functionParameters,
+  procedures,
+  procedure,
+  procedureParameters,
+  triggers,
+  trigger,
   builtSql,
   analysis,
 ] as const;
@@ -281,6 +413,14 @@ describe('Community backend adapter parity', () => {
       await client.listCommunityImportedKeys(listKeysRequest),
       await client.listCommunityExportedKeys(listKeysRequest),
       await client.listCommunityPrimaryKeys(listKeysRequest),
+      await client.listCommunityFunctions(listFunctionsRequest),
+      await client.getCommunityFunction(getFunctionRequest),
+      await client.listCommunityFunctionParameters(getFunctionRequest),
+      await client.listCommunityProcedures(listProceduresRequest),
+      await client.getCommunityProcedure(getProcedureRequest),
+      await client.listCommunityProcedureParameters(getProcedureRequest),
+      await client.listCommunityTriggers(listTriggersRequest),
+      await client.getCommunityTrigger(getTriggerRequest),
       await client.buildCommunityCreateSchema(buildSchemaRequest),
       await client.parseCommunitySql(parseSqlRequest),
     ];
@@ -340,6 +480,46 @@ describe('Community backend adapter parity', () => {
         body: listKeysRequest,
       },
       {
+        path: '/api/v1/community/metadata/functions',
+        method: 'POST',
+        body: listFunctionsRequest,
+      },
+      {
+        path: '/api/v1/community/metadata/function',
+        method: 'POST',
+        body: getFunctionRequest,
+      },
+      {
+        path: '/api/v1/community/metadata/function-parameters',
+        method: 'POST',
+        body: getFunctionRequest,
+      },
+      {
+        path: '/api/v1/community/metadata/procedures',
+        method: 'POST',
+        body: listProceduresRequest,
+      },
+      {
+        path: '/api/v1/community/metadata/procedure',
+        method: 'POST',
+        body: getProcedureRequest,
+      },
+      {
+        path: '/api/v1/community/metadata/procedure-parameters',
+        method: 'POST',
+        body: getProcedureRequest,
+      },
+      {
+        path: '/api/v1/community/metadata/triggers',
+        method: 'POST',
+        body: listTriggersRequest,
+      },
+      {
+        path: '/api/v1/community/metadata/trigger',
+        method: 'POST',
+        body: getTriggerRequest,
+      },
+      {
         path: '/api/v1/community/sql/build-create-schema',
         method: 'POST',
         body: buildSchemaRequest,
@@ -370,6 +550,14 @@ describe('Community backend adapter parity', () => {
       await client.listCommunityImportedKeys(listKeysRequest),
       await client.listCommunityExportedKeys(listKeysRequest),
       await client.listCommunityPrimaryKeys(listKeysRequest),
+      await client.listCommunityFunctions(listFunctionsRequest),
+      await client.getCommunityFunction(getFunctionRequest),
+      await client.listCommunityFunctionParameters(getFunctionRequest),
+      await client.listCommunityProcedures(listProceduresRequest),
+      await client.getCommunityProcedure(getProcedureRequest),
+      await client.listCommunityProcedureParameters(getProcedureRequest),
+      await client.listCommunityTriggers(listTriggersRequest),
+      await client.getCommunityTrigger(getTriggerRequest),
       await client.buildCommunityCreateSchema(buildSchemaRequest),
       await client.parseCommunitySql(parseSqlRequest),
     ];
@@ -388,6 +576,20 @@ describe('Community backend adapter parity', () => {
       { command: 'list_community_imported_keys', args: { request: listKeysRequest } },
       { command: 'list_community_exported_keys', args: { request: listKeysRequest } },
       { command: 'list_community_primary_keys', args: { request: listKeysRequest } },
+      { command: 'list_community_functions', args: { request: listFunctionsRequest } },
+      { command: 'get_community_function', args: { request: getFunctionRequest } },
+      {
+        command: 'list_community_function_parameters',
+        args: { request: getFunctionRequest },
+      },
+      { command: 'list_community_procedures', args: { request: listProceduresRequest } },
+      { command: 'get_community_procedure', args: { request: getProcedureRequest } },
+      {
+        command: 'list_community_procedure_parameters',
+        args: { request: getProcedureRequest },
+      },
+      { command: 'list_community_triggers', args: { request: listTriggersRequest } },
+      { command: 'get_community_trigger', args: { request: getTriggerRequest } },
       { command: 'build_community_create_schema', args: { request: buildSchemaRequest } },
       { command: 'parse_community_sql', args: { request: parseSqlRequest } },
     ]);

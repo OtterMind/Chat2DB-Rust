@@ -24,6 +24,9 @@ pub const COMMUNITY_SCHEMA_METADATA_CAPABILITY: &str = "community.metadata.schem
 pub const COMMUNITY_OBJECT_METADATA_CAPABILITY: &str = "community.metadata.objects.v1";
 /// Reads views and relational key metadata through Community metadata.
 pub const COMMUNITY_RELATION_METADATA_CAPABILITY: &str = "community.metadata.relations.v1";
+/// Reads functions, procedures, triggers, and routine parameters through Community metadata.
+pub const COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY: &str =
+    "community.metadata.programmability.v1";
 /// Builds dialect SQL through a Community `ISqlBuilder` implementation.
 pub const COMMUNITY_SQL_BUILDER_CAPABILITY: &str = "community.sql-builder.v1";
 /// Parses SQL through a Community `ISqlSyntaxPlugin` implementation.
@@ -652,6 +655,88 @@ pub struct CommunityPrimaryKey {
     pub name: String,
 }
 
+/// Process-neutral database function metadata.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommunityFunction {
+    pub database_name: String,
+    pub schema_name: String,
+    pub name: String,
+    pub remarks: String,
+    pub function_type: Option<i32>,
+    pub specific_name: String,
+    pub body: String,
+    pub template: String,
+}
+
+/// Process-neutral function-parameter metadata.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommunityFunctionParameter {
+    pub function_database: String,
+    pub function_schema: String,
+    pub function_name: String,
+    pub column_name: String,
+    pub column_type: Option<i32>,
+    pub data_type: Option<i32>,
+    pub type_name: String,
+    pub precision: Option<i32>,
+    pub length: Option<i32>,
+    pub scale: Option<i32>,
+    pub radix: Option<i32>,
+    pub nullable: Option<i32>,
+    pub remarks: String,
+    pub char_octet_length: Option<i32>,
+    pub ordinal_position: Option<i32>,
+    pub is_nullable: String,
+    pub specific_name: String,
+}
+
+/// Process-neutral database procedure metadata.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommunityProcedure {
+    pub database_name: String,
+    pub schema_name: String,
+    pub name: String,
+    pub remarks: String,
+    pub procedure_type: Option<i32>,
+    pub specific_name: String,
+    pub body: String,
+}
+
+/// Process-neutral procedure-parameter metadata.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommunityProcedureParameter {
+    pub procedure_database: String,
+    pub procedure_schema: String,
+    pub procedure_name: String,
+    pub column_name: String,
+    pub column_type: Option<i32>,
+    pub data_type: Option<i32>,
+    pub type_name: String,
+    pub precision: Option<i32>,
+    pub length: Option<i32>,
+    pub scale: Option<i32>,
+    pub radix: Option<i32>,
+    pub nullable: Option<i32>,
+    pub remarks: String,
+    pub column_default: String,
+    pub sql_data_type: Option<i32>,
+    pub sql_datetime_sub: Option<i32>,
+    pub char_octet_length: Option<i32>,
+    pub ordinal_position: Option<i32>,
+    pub is_nullable: String,
+    pub specific_name: String,
+}
+
+/// Process-neutral database trigger metadata.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommunityTrigger {
+    pub database_name: String,
+    pub schema_name: String,
+    pub name: String,
+    pub event_manipulation: String,
+    pub body: String,
+}
+
 /// One statement returned by the retained Community parser.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommunityParsedStatement {
@@ -1150,6 +1235,394 @@ impl CommunityClient {
         Ok(keys.keys.into_iter().map(Into::into).collect())
     }
 
+    /// Lists database functions through Community metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a session from another engine,
+    /// plugin/JDBC failure, timeout, or an invalid response.
+    pub async fn list_functions(
+        &self,
+        session: &Session,
+        database_type: impl Into<String>,
+        database_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        transaction_id: Option<String>,
+    ) -> Result<Vec<CommunityFunction>, BridgeError> {
+        let scope = metadata_list_scope_request(
+            &self.binding,
+            session,
+            database_type.into(),
+            database_name.into(),
+            schema_name.into(),
+            transaction_id,
+        )?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
+                Some(&session.id),
+                Some(session.state.clone()),
+                wire::client_envelope::Payload::ListCommunityFunctions(
+                    wire::ListCommunityFunctionsRequest {
+                        database_type: scope.database_type,
+                        database_name: scope.database_name,
+                        schema_name: scope.schema_name,
+                        transaction_id: scope.transaction_id,
+                    },
+                ),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityFunctionList(functions)) =
+            response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community function-list response")
+                .await;
+        };
+        Ok(functions.functions.into_iter().map(Into::into).collect())
+    }
+
+    /// Reads one database function through Community metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a session from another engine,
+    /// plugin/JDBC failure, timeout, or an invalid response.
+    pub async fn get_function(
+        &self,
+        session: &Session,
+        database_type: impl Into<String>,
+        database_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        function_name: impl Into<String>,
+        transaction_id: Option<String>,
+    ) -> Result<CommunityFunction, BridgeError> {
+        let request = metadata_function_request(
+            &self.binding,
+            session,
+            database_type.into(),
+            database_name.into(),
+            schema_name.into(),
+            function_name.into(),
+            transaction_id,
+        )?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
+                Some(&session.id),
+                Some(session.state.clone()),
+                wire::client_envelope::Payload::GetCommunityFunction(request),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityFunction(function)) = response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community function response")
+                .await;
+        };
+        Ok(function.into())
+    }
+
+    /// Lists parameters for one database function through Community metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a session from another engine,
+    /// plugin/JDBC failure, timeout, or an invalid response.
+    pub async fn list_function_parameters(
+        &self,
+        session: &Session,
+        database_type: impl Into<String>,
+        database_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        function_name: impl Into<String>,
+        transaction_id: Option<String>,
+    ) -> Result<Vec<CommunityFunctionParameter>, BridgeError> {
+        let request = metadata_function_request(
+            &self.binding,
+            session,
+            database_type.into(),
+            database_name.into(),
+            schema_name.into(),
+            function_name.into(),
+            transaction_id,
+        )?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
+                Some(&session.id),
+                Some(session.state.clone()),
+                wire::client_envelope::Payload::ListCommunityFunctionParameters(request),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityFunctionParameterList(parameters)) =
+            response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community function-parameter-list response")
+                .await;
+        };
+        Ok(parameters.parameters.into_iter().map(Into::into).collect())
+    }
+
+    /// Lists database procedures through Community metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a session from another engine,
+    /// plugin/JDBC failure, timeout, or an invalid response.
+    pub async fn list_procedures(
+        &self,
+        session: &Session,
+        database_type: impl Into<String>,
+        database_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        transaction_id: Option<String>,
+    ) -> Result<Vec<CommunityProcedure>, BridgeError> {
+        let scope = metadata_list_scope_request(
+            &self.binding,
+            session,
+            database_type.into(),
+            database_name.into(),
+            schema_name.into(),
+            transaction_id,
+        )?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
+                Some(&session.id),
+                Some(session.state.clone()),
+                wire::client_envelope::Payload::ListCommunityProcedures(
+                    wire::ListCommunityProceduresRequest {
+                        database_type: scope.database_type,
+                        database_name: scope.database_name,
+                        schema_name: scope.schema_name,
+                        transaction_id: scope.transaction_id,
+                    },
+                ),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityProcedureList(procedures)) =
+            response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community procedure-list response")
+                .await;
+        };
+        Ok(procedures.procedures.into_iter().map(Into::into).collect())
+    }
+
+    /// Reads one database procedure through Community metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a session from another engine,
+    /// plugin/JDBC failure, timeout, or an invalid response.
+    pub async fn get_procedure(
+        &self,
+        session: &Session,
+        database_type: impl Into<String>,
+        database_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        procedure_name: impl Into<String>,
+        transaction_id: Option<String>,
+    ) -> Result<CommunityProcedure, BridgeError> {
+        let request = metadata_procedure_request(
+            &self.binding,
+            session,
+            database_type.into(),
+            database_name.into(),
+            schema_name.into(),
+            procedure_name.into(),
+            transaction_id,
+        )?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
+                Some(&session.id),
+                Some(session.state.clone()),
+                wire::client_envelope::Payload::GetCommunityProcedure(request),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityProcedure(procedure)) = response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community procedure response")
+                .await;
+        };
+        Ok(procedure.into())
+    }
+
+    /// Lists parameters for one database procedure through Community metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a session from another engine,
+    /// plugin/JDBC failure, timeout, or an invalid response.
+    pub async fn list_procedure_parameters(
+        &self,
+        session: &Session,
+        database_type: impl Into<String>,
+        database_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        procedure_name: impl Into<String>,
+        transaction_id: Option<String>,
+    ) -> Result<Vec<CommunityProcedureParameter>, BridgeError> {
+        let request = metadata_procedure_request(
+            &self.binding,
+            session,
+            database_type.into(),
+            database_name.into(),
+            schema_name.into(),
+            procedure_name.into(),
+            transaction_id,
+        )?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
+                Some(&session.id),
+                Some(session.state.clone()),
+                wire::client_envelope::Payload::ListCommunityProcedureParameters(request),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityProcedureParameterList(parameters)) =
+            response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community procedure-parameter-list response")
+                .await;
+        };
+        Ok(parameters.parameters.into_iter().map(Into::into).collect())
+    }
+
+    /// Lists database triggers through Community metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a session from another engine,
+    /// plugin/JDBC failure, timeout, or an invalid response.
+    pub async fn list_triggers(
+        &self,
+        session: &Session,
+        database_type: impl Into<String>,
+        database_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        transaction_id: Option<String>,
+    ) -> Result<Vec<CommunityTrigger>, BridgeError> {
+        let scope = metadata_list_scope_request(
+            &self.binding,
+            session,
+            database_type.into(),
+            database_name.into(),
+            schema_name.into(),
+            transaction_id,
+        )?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
+                Some(&session.id),
+                Some(session.state.clone()),
+                wire::client_envelope::Payload::ListCommunityTriggers(
+                    wire::ListCommunityTriggersRequest {
+                        database_type: scope.database_type,
+                        database_name: scope.database_name,
+                        schema_name: scope.schema_name,
+                        transaction_id: scope.transaction_id,
+                    },
+                ),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityTriggerList(triggers)) = response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community trigger-list response")
+                .await;
+        };
+        Ok(triggers.triggers.into_iter().map(Into::into).collect())
+    }
+
+    /// Reads one database trigger through Community metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a session from another engine,
+    /// plugin/JDBC failure, timeout, or an invalid response.
+    pub async fn get_trigger(
+        &self,
+        session: &Session,
+        database_type: impl Into<String>,
+        database_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        trigger_name: impl Into<String>,
+        transaction_id: Option<String>,
+    ) -> Result<CommunityTrigger, BridgeError> {
+        let scope = metadata_scope_request(
+            &self.binding,
+            session,
+            database_type.into(),
+            database_name.into(),
+            schema_name.into(),
+            transaction_id,
+        )?;
+        let trigger_name = trigger_name.into();
+        validate_non_blank_utf8(&trigger_name, MAX_SCALAR_BYTES, "trigger name")?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
+                Some(&session.id),
+                Some(session.state.clone()),
+                wire::client_envelope::Payload::GetCommunityTrigger(
+                    wire::GetCommunityTriggerRequest {
+                        database_type: scope.database_type,
+                        database_name: scope.database_name,
+                        schema_name: scope.schema_name,
+                        trigger_name,
+                        transaction_id: scope.transaction_id,
+                    },
+                ),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityTrigger(trigger)) = response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community trigger response")
+                .await;
+        };
+        Ok(trigger.into())
+    }
+
     /// Builds `CREATE SCHEMA` through the selected plugin's SQL builder.
     ///
     /// # Errors
@@ -1478,6 +1951,98 @@ impl From<wire::CommunityPrimaryKey> for CommunityPrimaryKey {
     }
 }
 
+impl From<wire::CommunityFunction> for CommunityFunction {
+    fn from(function: wire::CommunityFunction) -> Self {
+        Self {
+            database_name: function.database_name,
+            schema_name: function.schema_name,
+            name: function.name,
+            remarks: function.remarks,
+            function_type: function.function_type,
+            specific_name: function.specific_name,
+            body: function.body,
+            template: function.template,
+        }
+    }
+}
+
+impl From<wire::CommunityFunctionParameter> for CommunityFunctionParameter {
+    fn from(parameter: wire::CommunityFunctionParameter) -> Self {
+        Self {
+            function_database: parameter.function_database,
+            function_schema: parameter.function_schema,
+            function_name: parameter.function_name,
+            column_name: parameter.column_name,
+            column_type: parameter.column_type,
+            data_type: parameter.data_type,
+            type_name: parameter.type_name,
+            precision: parameter.precision,
+            length: parameter.length,
+            scale: parameter.scale,
+            radix: parameter.radix,
+            nullable: parameter.nullable,
+            remarks: parameter.remarks,
+            char_octet_length: parameter.char_octet_length,
+            ordinal_position: parameter.ordinal_position,
+            is_nullable: parameter.is_nullable,
+            specific_name: parameter.specific_name,
+        }
+    }
+}
+
+impl From<wire::CommunityProcedure> for CommunityProcedure {
+    fn from(procedure: wire::CommunityProcedure) -> Self {
+        Self {
+            database_name: procedure.database_name,
+            schema_name: procedure.schema_name,
+            name: procedure.name,
+            remarks: procedure.remarks,
+            procedure_type: procedure.procedure_type,
+            specific_name: procedure.specific_name,
+            body: procedure.body,
+        }
+    }
+}
+
+impl From<wire::CommunityProcedureParameter> for CommunityProcedureParameter {
+    fn from(parameter: wire::CommunityProcedureParameter) -> Self {
+        Self {
+            procedure_database: parameter.procedure_database,
+            procedure_schema: parameter.procedure_schema,
+            procedure_name: parameter.procedure_name,
+            column_name: parameter.column_name,
+            column_type: parameter.column_type,
+            data_type: parameter.data_type,
+            type_name: parameter.type_name,
+            precision: parameter.precision,
+            length: parameter.length,
+            scale: parameter.scale,
+            radix: parameter.radix,
+            nullable: parameter.nullable,
+            remarks: parameter.remarks,
+            column_default: parameter.column_default,
+            sql_data_type: parameter.sql_data_type,
+            sql_datetime_sub: parameter.sql_datetime_sub,
+            char_octet_length: parameter.char_octet_length,
+            ordinal_position: parameter.ordinal_position,
+            is_nullable: parameter.is_nullable,
+            specific_name: parameter.specific_name,
+        }
+    }
+}
+
+impl From<wire::CommunityTrigger> for CommunityTrigger {
+    fn from(trigger: wire::CommunityTrigger) -> Self {
+        Self {
+            database_name: trigger.database_name,
+            schema_name: trigger.schema_name,
+            name: trigger.name,
+            event_manipulation: trigger.event_manipulation,
+            body: trigger.body,
+        }
+    }
+}
+
 impl From<wire::CommunitySqlAnalysis> for CommunitySqlAnalysis {
     fn from(analysis: wire::CommunitySqlAnalysis) -> Self {
         Self {
@@ -1511,6 +2076,99 @@ fn validate_metadata_session(
         ));
     }
     Ok(())
+}
+
+fn metadata_scope_request(
+    binding: &EngineBinding,
+    session: &Session,
+    database_type: String,
+    database_name: String,
+    schema_name: String,
+    transaction_id: Option<String>,
+) -> Result<wire::ListCommunityFunctionsRequest, BridgeError> {
+    validate_database_type(&database_type)?;
+    validate_utf8(&database_name, MAX_SCALAR_BYTES, "database name")?;
+    validate_utf8(&schema_name, MAX_SCALAR_BYTES, "schema name")?;
+    validate_metadata_session(binding, session, transaction_id.as_deref())?;
+    Ok(wire::ListCommunityFunctionsRequest {
+        database_type,
+        database_name,
+        schema_name,
+        transaction_id,
+    })
+}
+
+fn metadata_list_scope_request(
+    binding: &EngineBinding,
+    session: &Session,
+    database_type: String,
+    database_name: String,
+    schema_name: String,
+    transaction_id: Option<String>,
+) -> Result<wire::ListCommunityFunctionsRequest, BridgeError> {
+    validate_non_blank_utf8(&database_name, MAX_SCALAR_BYTES, "database name")?;
+    metadata_scope_request(
+        binding,
+        session,
+        database_type,
+        database_name,
+        schema_name,
+        transaction_id,
+    )
+}
+
+fn metadata_function_request(
+    binding: &EngineBinding,
+    session: &Session,
+    database_type: String,
+    database_name: String,
+    schema_name: String,
+    function_name: String,
+    transaction_id: Option<String>,
+) -> Result<wire::GetCommunityFunctionRequest, BridgeError> {
+    let scope = metadata_scope_request(
+        binding,
+        session,
+        database_type,
+        database_name,
+        schema_name,
+        transaction_id,
+    )?;
+    validate_non_blank_utf8(&function_name, MAX_SCALAR_BYTES, "function name")?;
+    Ok(wire::GetCommunityFunctionRequest {
+        database_type: scope.database_type,
+        database_name: scope.database_name,
+        schema_name: scope.schema_name,
+        function_name,
+        transaction_id: scope.transaction_id,
+    })
+}
+
+fn metadata_procedure_request(
+    binding: &EngineBinding,
+    session: &Session,
+    database_type: String,
+    database_name: String,
+    schema_name: String,
+    procedure_name: String,
+    transaction_id: Option<String>,
+) -> Result<wire::GetCommunityProcedureRequest, BridgeError> {
+    let scope = metadata_scope_request(
+        binding,
+        session,
+        database_type,
+        database_name,
+        schema_name,
+        transaction_id,
+    )?;
+    validate_non_blank_utf8(&procedure_name, MAX_SCALAR_BYTES, "procedure name")?;
+    Ok(wire::GetCommunityProcedureRequest {
+        database_type: scope.database_type,
+        database_name: scope.database_name,
+        schema_name: scope.schema_name,
+        procedure_name,
+        transaction_id: scope.transaction_id,
+    })
 }
 
 fn metadata_table_request(
@@ -1771,7 +2429,11 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{CommunityClasspath, CommunityForeignKey, CommunityPrimaryKey};
+    use super::{
+        CommunityClasspath, CommunityForeignKey, CommunityFunction, CommunityFunctionParameter,
+        CommunityPrimaryKey, CommunityProcedure, CommunityProcedureParameter, CommunityTrigger,
+        MAX_SCALAR_BYTES, validate_non_blank_utf8,
+    };
 
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -1829,6 +2491,175 @@ mod tests {
                 column_name: "id".to_owned(),
                 name: "pk_parent".to_owned(),
             }
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn programmability_metadata_wire_mapping_preserves_every_field() {
+        assert_eq!(
+            CommunityFunction::from(wire::CommunityFunction {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                name: "total_stock".to_owned(),
+                remarks: "stock total".to_owned(),
+                function_type: Some(1),
+                specific_name: "total_stock_1".to_owned(),
+                body: "RETURN 1".to_owned(),
+                template: "total_stock(?)".to_owned(),
+            }),
+            CommunityFunction {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                name: "total_stock".to_owned(),
+                remarks: "stock total".to_owned(),
+                function_type: Some(1),
+                specific_name: "total_stock_1".to_owned(),
+                body: "RETURN 1".to_owned(),
+                template: "total_stock(?)".to_owned(),
+            }
+        );
+
+        assert_eq!(
+            CommunityFunctionParameter::from(wire::CommunityFunctionParameter {
+                function_database: "inventory".to_owned(),
+                function_schema: "APP".to_owned(),
+                function_name: "total_stock".to_owned(),
+                column_name: "warehouse".to_owned(),
+                column_type: Some(2),
+                data_type: Some(12),
+                type_name: "VARCHAR".to_owned(),
+                precision: Some(255),
+                length: Some(255),
+                scale: Some(0),
+                radix: Some(10),
+                nullable: Some(1),
+                remarks: "warehouse name".to_owned(),
+                char_octet_length: Some(255),
+                ordinal_position: Some(1),
+                is_nullable: "YES".to_owned(),
+                specific_name: "total_stock_1".to_owned(),
+            }),
+            CommunityFunctionParameter {
+                function_database: "inventory".to_owned(),
+                function_schema: "APP".to_owned(),
+                function_name: "total_stock".to_owned(),
+                column_name: "warehouse".to_owned(),
+                column_type: Some(2),
+                data_type: Some(12),
+                type_name: "VARCHAR".to_owned(),
+                precision: Some(255),
+                length: Some(255),
+                scale: Some(0),
+                radix: Some(10),
+                nullable: Some(1),
+                remarks: "warehouse name".to_owned(),
+                char_octet_length: Some(255),
+                ordinal_position: Some(1),
+                is_nullable: "YES".to_owned(),
+                specific_name: "total_stock_1".to_owned(),
+            }
+        );
+
+        assert_eq!(
+            CommunityProcedure::from(wire::CommunityProcedure {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                name: "refresh_stock".to_owned(),
+                remarks: "refresh totals".to_owned(),
+                procedure_type: Some(2),
+                specific_name: "refresh_stock_1".to_owned(),
+                body: "BEGIN SELECT 1; END".to_owned(),
+            }),
+            CommunityProcedure {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                name: "refresh_stock".to_owned(),
+                remarks: "refresh totals".to_owned(),
+                procedure_type: Some(2),
+                specific_name: "refresh_stock_1".to_owned(),
+                body: "BEGIN SELECT 1; END".to_owned(),
+            }
+        );
+
+        assert_eq!(
+            CommunityProcedureParameter::from(wire::CommunityProcedureParameter {
+                procedure_database: "inventory".to_owned(),
+                procedure_schema: "APP".to_owned(),
+                procedure_name: "refresh_stock".to_owned(),
+                column_name: "warehouse".to_owned(),
+                column_type: Some(1),
+                data_type: Some(12),
+                type_name: "VARCHAR".to_owned(),
+                precision: Some(255),
+                length: Some(255),
+                scale: Some(0),
+                radix: Some(10),
+                nullable: Some(1),
+                remarks: "warehouse name".to_owned(),
+                column_default: "'all'".to_owned(),
+                sql_data_type: Some(12),
+                sql_datetime_sub: Some(0),
+                char_octet_length: Some(255),
+                ordinal_position: Some(1),
+                is_nullable: "YES".to_owned(),
+                specific_name: "refresh_stock_1".to_owned(),
+            }),
+            CommunityProcedureParameter {
+                procedure_database: "inventory".to_owned(),
+                procedure_schema: "APP".to_owned(),
+                procedure_name: "refresh_stock".to_owned(),
+                column_name: "warehouse".to_owned(),
+                column_type: Some(1),
+                data_type: Some(12),
+                type_name: "VARCHAR".to_owned(),
+                precision: Some(255),
+                length: Some(255),
+                scale: Some(0),
+                radix: Some(10),
+                nullable: Some(1),
+                remarks: "warehouse name".to_owned(),
+                column_default: "'all'".to_owned(),
+                sql_data_type: Some(12),
+                sql_datetime_sub: Some(0),
+                char_octet_length: Some(255),
+                ordinal_position: Some(1),
+                is_nullable: "YES".to_owned(),
+                specific_name: "refresh_stock_1".to_owned(),
+            }
+        );
+
+        assert_eq!(
+            CommunityTrigger::from(wire::CommunityTrigger {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                name: "audit_stock".to_owned(),
+                event_manipulation: "UPDATE".to_owned(),
+                body: "INSERT INTO audit_log VALUES (1)".to_owned(),
+            }),
+            CommunityTrigger {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                name: "audit_stock".to_owned(),
+                event_manipulation: "UPDATE".to_owned(),
+                body: "INSERT INTO audit_log VALUES (1)".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn programmability_identifiers_require_nonblank_bounded_utf8() {
+        let blank = validate_non_blank_utf8(" \t", MAX_SCALAR_BYTES, "function name")
+            .expect_err("blank routine identifiers must fail");
+        assert!(blank.to_string().contains("function name is required"));
+
+        let oversized = "x".repeat(MAX_SCALAR_BYTES + 1);
+        let error = validate_non_blank_utf8(&oversized, MAX_SCALAR_BYTES, "procedure name")
+            .expect_err("oversized routine identifiers must fail");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("cannot exceed {MAX_SCALAR_BYTES} UTF-8 bytes"))
         );
     }
 

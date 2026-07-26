@@ -11,6 +11,11 @@ import ai.chat2db.rust.compat.protocol.v1.CommunityDownloadUrlLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunityDriverConfig;
 import ai.chat2db.rust.compat.protocol.v1.CommunityForeignKey;
 import ai.chat2db.rust.compat.protocol.v1.CommunityForeignKeyList;
+import ai.chat2db.rust.compat.protocol.v1.CommunityFunction;
+import ai.chat2db.rust.compat.protocol.v1.CommunityFunctionCountLimit;
+import ai.chat2db.rust.compat.protocol.v1.CommunityFunctionList;
+import ai.chat2db.rust.compat.protocol.v1.CommunityFunctionParameter;
+import ai.chat2db.rust.compat.protocol.v1.CommunityFunctionParameterList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityIndexColumnCountLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunityIndexCountLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunityKeyCountLimit;
@@ -19,6 +24,12 @@ import ai.chat2db.rust.compat.protocol.v1.CommunityPluginCatalog;
 import ai.chat2db.rust.compat.protocol.v1.CommunityPluginDescriptor;
 import ai.chat2db.rust.compat.protocol.v1.CommunityPrimaryKey;
 import ai.chat2db.rust.compat.protocol.v1.CommunityPrimaryKeyList;
+import ai.chat2db.rust.compat.protocol.v1.CommunityProcedure;
+import ai.chat2db.rust.compat.protocol.v1.CommunityProcedureCountLimit;
+import ai.chat2db.rust.compat.protocol.v1.CommunityProcedureList;
+import ai.chat2db.rust.compat.protocol.v1.CommunityProcedureParameter;
+import ai.chat2db.rust.compat.protocol.v1.CommunityProcedureParameterList;
+import ai.chat2db.rust.compat.protocol.v1.CommunityRoutineParameterCountLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySchema;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySchemaList;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySchemaCountLimit;
@@ -31,6 +42,9 @@ import ai.chat2db.rust.compat.protocol.v1.CommunityTableIndex;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableIndexColumn;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableIndexList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableList;
+import ai.chat2db.rust.compat.protocol.v1.CommunityTrigger;
+import ai.chat2db.rust.compat.protocol.v1.CommunityTriggerCountLimit;
+import ai.chat2db.rust.compat.protocol.v1.CommunityTriggerList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityViewCountLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunityViewList;
 import ai.chat2db.rust.compat.protocol.v1.JdbcProtocolLimit;
@@ -78,6 +92,13 @@ final class CommunityPluginRegistry implements AutoCloseable {
             "ai.chat2db.spi.model.request.TableMetadataRequest";
     private static final String VIEW_METADATA_REQUEST_CLASS =
             "ai.chat2db.spi.model.request.ViewMetadataRequest";
+    private static final String FUNCTION_METADATA_REQUEST_CLASS =
+            "ai.chat2db.spi.model.request.FunctionMetadataRequest";
+    private static final String PROCEDURE_METADATA_REQUEST_CLASS =
+            "ai.chat2db.spi.model.request.ProcedureMetadataRequest";
+    private static final String TRIGGER_METADATA_REQUEST_CLASS =
+            "ai.chat2db.spi.model.request.TriggerMetadataRequest";
+    private static final String H2_DATABASE_TYPE = "H2";
     private static final int MAX_CLASSPATH_ARTIFACTS =
             CommunityCountLimit.COMMUNITY_COUNT_LIMIT_MAX_CLASSPATH_ARTIFACTS.getNumber();
     private static final long MAX_CLASSPATH_BYTES =
@@ -98,6 +119,16 @@ final class CommunityPluginRegistry implements AutoCloseable {
             CommunityViewCountLimit.COMMUNITY_VIEW_COUNT_LIMIT_MAX_VIEWS.getNumber();
     private static final int MAX_KEYS =
             CommunityKeyCountLimit.COMMUNITY_KEY_COUNT_LIMIT_MAX_KEYS.getNumber();
+    private static final int MAX_FUNCTIONS =
+            CommunityFunctionCountLimit.COMMUNITY_FUNCTION_COUNT_LIMIT_MAX_FUNCTIONS.getNumber();
+    private static final int MAX_PROCEDURES =
+            CommunityProcedureCountLimit.COMMUNITY_PROCEDURE_COUNT_LIMIT_MAX_PROCEDURES.getNumber();
+    private static final int MAX_TRIGGERS =
+            CommunityTriggerCountLimit.COMMUNITY_TRIGGER_COUNT_LIMIT_MAX_TRIGGERS.getNumber();
+    private static final int MAX_ROUTINE_PARAMETERS =
+            CommunityRoutineParameterCountLimit
+                    .COMMUNITY_ROUTINE_PARAMETER_COUNT_LIMIT_MAX_PARAMETERS
+                    .getNumber();
     private static final int MAX_COLUMNS =
             CommunityColumnCountLimit.COMMUNITY_COLUMN_COUNT_LIMIT_MAX_COLUMNS.getNumber();
     private static final int MAX_INDEXES =
@@ -525,6 +556,473 @@ final class CommunityPluginRegistry implements AutoCloseable {
             }
             return keys.build();
         });
+    }
+
+    void validateProgrammabilityListRequest(
+            String databaseType, String databaseName, String schemaName)
+            throws RuntimeFailure {
+        ensureOpen();
+        requireDatabaseType(databaseType);
+        requireNonBlank(databaseName, MAX_SCALAR_BYTES, "database_name");
+        requireUtf8(schemaName, MAX_SCALAR_BYTES, "schema_name");
+        requirePlugin(databaseType);
+    }
+
+    void validateFunctionRequest(
+            String databaseType,
+            String databaseName,
+            String schemaName,
+            String functionName)
+            throws RuntimeFailure {
+        validateProgrammabilityDetailRequest(
+                databaseType,
+                databaseName,
+                schemaName,
+                functionName,
+                "function_name");
+    }
+
+    void validateProcedureRequest(
+            String databaseType,
+            String databaseName,
+            String schemaName,
+            String procedureName)
+            throws RuntimeFailure {
+        validateProgrammabilityDetailRequest(
+                databaseType,
+                databaseName,
+                schemaName,
+                procedureName,
+                "procedure_name");
+    }
+
+    void validateTriggerRequest(
+            String databaseType,
+            String databaseName,
+            String schemaName,
+            String triggerName)
+            throws RuntimeFailure {
+        validateProgrammabilityDetailRequest(
+                databaseType,
+                databaseName,
+                schemaName,
+                triggerName,
+                "trigger_name");
+    }
+
+    private void validateProgrammabilityDetailRequest(
+            String databaseType,
+            String databaseName,
+            String schemaName,
+            String name,
+            String nameField)
+            throws RuntimeFailure {
+        ensureOpen();
+        requireDatabaseType(databaseType);
+        requireUtf8(databaseName, MAX_SCALAR_BYTES, "database_name");
+        requireUtf8(schemaName, MAX_SCALAR_BYTES, "schema_name");
+        requireNonBlank(name, MAX_SCALAR_BYTES, nameField);
+        requirePlugin(databaseType);
+    }
+
+    CommunityFunctionList functions(
+            String databaseType,
+            Connection connection,
+            String databaseName,
+            String schemaName)
+            throws RuntimeFailure {
+        validateProgrammabilityListRequest(databaseType, databaseName, schemaName);
+        return withMetadata(databaseType, metadata -> {
+            List<?> values = requireList(
+                    invoke(
+                            metadata,
+                            "functions",
+                            new Class<?>[] {Connection.class, String.class, String.class},
+                            connection,
+                            databaseName,
+                            schemaName),
+                    "functions");
+            requireCount(values.size(), MAX_FUNCTIONS, "community functions");
+            ProjectionBudget budget = ProjectionBudget.response();
+            budget.consumeMessage();
+            CommunityFunctionList.Builder functions = CommunityFunctionList.newBuilder();
+            for (Object value : values) {
+                budget.consumeMessage();
+                functions.addFunctions(function(value, budget));
+            }
+            return functions.build();
+        });
+    }
+
+    CommunityFunction function(
+            String databaseType,
+            Connection connection,
+            String databaseName,
+            String schemaName,
+            String functionName)
+            throws RuntimeFailure {
+        validateFunctionRequest(databaseType, databaseName, schemaName, functionName);
+        String verifiedDatabaseName =
+                verifiedProgrammabilityCatalog(databaseType, connection, databaseName);
+        return withMetadata(databaseType, metadata -> {
+            String lookupDatabaseName = h2SqlLiteral(
+                    databaseType,
+                    programmabilityDetailDatabaseName(
+                            databaseType, verifiedDatabaseName, schemaName));
+            String lookupFunctionName = h2SqlLiteral(databaseType, functionName);
+            Object request = namedMetadataRequest(
+                    FUNCTION_METADATA_REQUEST_CLASS,
+                    lookupDatabaseName,
+                    schemaName,
+                    "setFunctionName",
+                    lookupFunctionName);
+            Object value = invoke(
+                    metadata,
+                    "function",
+                    new Class<?>[] {Connection.class, request.getClass()},
+                    connection,
+                    request);
+            requireDetail(value, "community.function_not_found", "function");
+            ProjectionBudget budget = ProjectionBudget.response();
+            budget.consumeMessage();
+            CommunityFunction projected = function(value, budget);
+            requireH2FunctionDetail(databaseType, projected);
+            return restoreProgrammabilityIdentity(
+                    databaseType,
+                    verifiedDatabaseName,
+                    schemaName,
+                    functionName,
+                    projected);
+        });
+    }
+
+    CommunityFunctionParameterList functionParameters(
+            String databaseType,
+            Connection connection,
+            String databaseName,
+            String schemaName,
+            String functionName)
+            throws RuntimeFailure {
+        validateFunctionRequest(databaseType, databaseName, schemaName, functionName);
+        return withMetadata(databaseType, metadata -> {
+            Object request = namedMetadataRequest(
+                    FUNCTION_METADATA_REQUEST_CLASS,
+                    databaseName,
+                    schemaName,
+                    "setFunctionName",
+                    functionName);
+            List<?> values = requireList(
+                    invoke(
+                            metadata,
+                            "getFunctionParameters",
+                            new Class<?>[] {Connection.class, request.getClass()},
+                            connection,
+                            request),
+                    "function parameters");
+            requireCount(
+                    values.size(), MAX_ROUTINE_PARAMETERS, "community function parameters");
+            ProjectionBudget budget = ProjectionBudget.response();
+            budget.consumeMessage();
+            CommunityFunctionParameterList.Builder parameters =
+                    CommunityFunctionParameterList.newBuilder();
+            for (Object value : values) {
+                budget.consumeMessage();
+                parameters.addParameters(functionParameter(value, budget));
+            }
+            return parameters.build();
+        });
+    }
+
+    CommunityProcedureList procedures(
+            String databaseType,
+            Connection connection,
+            String databaseName,
+            String schemaName)
+            throws RuntimeFailure {
+        validateProgrammabilityListRequest(databaseType, databaseName, schemaName);
+        return withMetadata(databaseType, metadata -> {
+            List<?> values = requireList(
+                    invoke(
+                            metadata,
+                            "procedures",
+                            new Class<?>[] {Connection.class, String.class, String.class},
+                            connection,
+                            databaseName,
+                            schemaName),
+                    "procedures");
+            requireCount(values.size(), MAX_PROCEDURES, "community procedures");
+            ProjectionBudget budget = ProjectionBudget.response();
+            budget.consumeMessage();
+            CommunityProcedureList.Builder procedures = CommunityProcedureList.newBuilder();
+            for (Object value : values) {
+                budget.consumeMessage();
+                procedures.addProcedures(procedure(value, budget));
+            }
+            return procedures.build();
+        });
+    }
+
+    CommunityProcedure procedure(
+            String databaseType,
+            Connection connection,
+            String databaseName,
+            String schemaName,
+            String procedureName)
+            throws RuntimeFailure {
+        validateProcedureRequest(databaseType, databaseName, schemaName, procedureName);
+        String verifiedDatabaseName =
+                verifiedProgrammabilityCatalog(databaseType, connection, databaseName);
+        return withMetadata(databaseType, metadata -> {
+            String lookupDatabaseName = h2SqlLiteral(
+                    databaseType,
+                    programmabilityDetailDatabaseName(
+                            databaseType, verifiedDatabaseName, schemaName));
+            String lookupProcedureName = h2SqlLiteral(databaseType, procedureName);
+            Object request = namedMetadataRequest(
+                    PROCEDURE_METADATA_REQUEST_CLASS,
+                    lookupDatabaseName,
+                    schemaName,
+                    "setProcedureName",
+                    lookupProcedureName);
+            Object value = invoke(
+                    metadata,
+                    "procedure",
+                    new Class<?>[] {Connection.class, request.getClass()},
+                    connection,
+                    request);
+            requireDetail(value, "community.procedure_not_found", "procedure");
+            ProjectionBudget budget = ProjectionBudget.response();
+            budget.consumeMessage();
+            CommunityProcedure projected = procedure(value, budget);
+            requireH2ProcedureDetail(databaseType, projected);
+            return restoreProgrammabilityIdentity(
+                    databaseType,
+                    verifiedDatabaseName,
+                    schemaName,
+                    procedureName,
+                    projected);
+        });
+    }
+
+    CommunityProcedureParameterList procedureParameters(
+            String databaseType,
+            Connection connection,
+            String databaseName,
+            String schemaName,
+            String procedureName)
+            throws RuntimeFailure {
+        validateProcedureRequest(databaseType, databaseName, schemaName, procedureName);
+        return withMetadata(databaseType, metadata -> {
+            Object request = namedMetadataRequest(
+                    PROCEDURE_METADATA_REQUEST_CLASS,
+                    databaseName,
+                    schemaName,
+                    "setProcedureName",
+                    procedureName);
+            List<?> values = requireList(
+                    invoke(
+                            metadata,
+                            "getProcedureParameters",
+                            new Class<?>[] {Connection.class, request.getClass()},
+                            connection,
+                            request),
+                    "procedure parameters");
+            requireCount(
+                    values.size(), MAX_ROUTINE_PARAMETERS, "community procedure parameters");
+            ProjectionBudget budget = ProjectionBudget.response();
+            budget.consumeMessage();
+            CommunityProcedureParameterList.Builder parameters =
+                    CommunityProcedureParameterList.newBuilder();
+            for (Object value : values) {
+                budget.consumeMessage();
+                parameters.addParameters(procedureParameter(value, budget));
+            }
+            return parameters.build();
+        });
+    }
+
+    CommunityTriggerList triggers(
+            String databaseType,
+            Connection connection,
+            String databaseName,
+            String schemaName)
+            throws RuntimeFailure {
+        validateProgrammabilityListRequest(databaseType, databaseName, schemaName);
+        return withMetadata(databaseType, metadata -> {
+            String lookupDatabaseName = h2SqlLiteral(databaseType, databaseName);
+            String lookupSchemaName = h2SqlLiteral(databaseType, schemaName);
+            List<?> values = requireList(
+                    invoke(
+                            metadata,
+                            "triggers",
+                            new Class<?>[] {Connection.class, String.class, String.class},
+                            connection,
+                            lookupDatabaseName,
+                            lookupSchemaName),
+                    "triggers");
+            requireCount(values.size(), MAX_TRIGGERS, "community triggers");
+            ProjectionBudget budget = ProjectionBudget.response();
+            budget.consumeMessage();
+            CommunityTriggerList.Builder triggers = CommunityTriggerList.newBuilder();
+            for (Object value : values) {
+                budget.consumeMessage();
+                CommunityTrigger projected = trigger(value, budget);
+                triggers.addTriggers(restoreProgrammabilityIdentity(
+                        databaseType,
+                        databaseName,
+                        schemaName,
+                        projected.getName(),
+                        projected));
+            }
+            return triggers.build();
+        });
+    }
+
+    CommunityTrigger trigger(
+            String databaseType,
+            Connection connection,
+            String databaseName,
+            String schemaName,
+            String triggerName)
+            throws RuntimeFailure {
+        validateTriggerRequest(databaseType, databaseName, schemaName, triggerName);
+        String verifiedDatabaseName =
+                verifiedProgrammabilityCatalog(databaseType, connection, databaseName);
+        return withMetadata(databaseType, metadata -> {
+            String lookupDatabaseName = h2SqlLiteral(
+                    databaseType,
+                    programmabilityDetailDatabaseName(
+                            databaseType, verifiedDatabaseName, schemaName));
+            String lookupTriggerName = h2SqlLiteral(databaseType, triggerName);
+            Object request = namedMetadataRequest(
+                    TRIGGER_METADATA_REQUEST_CLASS,
+                    lookupDatabaseName,
+                    schemaName,
+                    "setTriggerName",
+                    lookupTriggerName);
+            Object value = invoke(
+                    metadata,
+                    "trigger",
+                    new Class<?>[] {Connection.class, request.getClass()},
+                    connection,
+                    request);
+            requireDetail(value, "community.trigger_not_found", "trigger");
+            ProjectionBudget budget = ProjectionBudget.response();
+            budget.consumeMessage();
+            CommunityTrigger projected = trigger(value, budget);
+            requireH2TriggerDetail(databaseType, projected);
+            return restoreProgrammabilityIdentity(
+                    databaseType,
+                    verifiedDatabaseName,
+                    schemaName,
+                    triggerName,
+                    projected);
+        });
+    }
+
+    private static String programmabilityDetailDatabaseName(
+            String databaseType, String databaseName, String schemaName) {
+        // Community 5.3.0 H2Meta uses request.databaseName as the schema predicate
+        // for function, procedure, and trigger detail queries.
+        return isH2(databaseType) ? schemaName : databaseName;
+    }
+
+    private static String verifiedProgrammabilityCatalog(
+            String databaseType, Connection connection, String requestedDatabaseName)
+            throws RuntimeFailure {
+        if (!isH2(databaseType)) {
+            return requestedDatabaseName;
+        }
+        String catalog;
+        try {
+            catalog = connection.getCatalog();
+        } catch (SQLException failure) {
+            throw metadataFailure(failure);
+        }
+        if (!requestedDatabaseName.equals(catalog)) {
+            throw RuntimeFailure.validation(
+                    "community.catalog_mismatch",
+                    "the requested Community database does not match the active connection");
+        }
+        return catalog;
+    }
+
+    private static String h2SqlLiteral(String databaseType, String value) {
+        return isH2(databaseType) ? value.replace("'", "''") : value;
+    }
+
+    private static void requireH2FunctionDetail(
+            String databaseType, CommunityFunction projected) throws RuntimeFailure {
+        if (isH2(databaseType)
+                && projected.getSpecificName().isBlank()
+                && projected.getBody().isBlank()) {
+            requireDetail(null, "community.function_not_found", "function");
+        }
+    }
+
+    private static void requireH2ProcedureDetail(
+            String databaseType, CommunityProcedure projected) throws RuntimeFailure {
+        if (isH2(databaseType)
+                && projected.getSpecificName().isBlank()
+                && projected.getBody().isBlank()) {
+            requireDetail(null, "community.procedure_not_found", "procedure");
+        }
+    }
+
+    private static void requireH2TriggerDetail(
+            String databaseType, CommunityTrigger projected) throws RuntimeFailure {
+        if (isH2(databaseType) && projected.getBody().isBlank()) {
+            requireDetail(null, "community.trigger_not_found", "trigger");
+        }
+    }
+
+    private static boolean isH2(String databaseType) {
+        return H2_DATABASE_TYPE.equalsIgnoreCase(databaseType);
+    }
+
+    private static CommunityFunction restoreProgrammabilityIdentity(
+            String databaseType,
+            String databaseName,
+            String schemaName,
+            String functionName,
+            CommunityFunction projected) {
+        return isH2(databaseType)
+                ? projected.toBuilder()
+                        .setDatabaseName(databaseName)
+                        .setSchemaName(schemaName)
+                        .setName(functionName)
+                        .build()
+                : projected;
+    }
+
+    private static CommunityProcedure restoreProgrammabilityIdentity(
+            String databaseType,
+            String databaseName,
+            String schemaName,
+            String procedureName,
+            CommunityProcedure projected) {
+        return isH2(databaseType)
+                ? projected.toBuilder()
+                        .setDatabaseName(databaseName)
+                        .setSchemaName(schemaName)
+                        .setName(procedureName)
+                        .build()
+                : projected;
+    }
+
+    private static CommunityTrigger restoreProgrammabilityIdentity(
+            String databaseType,
+            String databaseName,
+            String schemaName,
+            String triggerName,
+            CommunityTrigger projected) {
+        return isH2(databaseType)
+                ? projected.toBuilder()
+                        .setDatabaseName(databaseName)
+                        .setSchemaName(schemaName)
+                        .setName(triggerName)
+                        .build()
+                : projected;
     }
 
     CommunityBuiltSql buildCreateSchema(String databaseType, CommunitySchema requested)
@@ -970,6 +1468,250 @@ final class CommunityPluginRegistry implements AutoCloseable {
                 .build();
     }
 
+    private CommunityFunction function(Object value, ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        CommunityFunction.Builder function = CommunityFunction.newBuilder()
+                .setDatabaseName(getString(
+                        value,
+                        "getDatabaseName",
+                        MAX_SCALAR_BYTES,
+                        "function_database_name",
+                        budget))
+                .setSchemaName(getString(
+                        value,
+                        "getSchemaName",
+                        MAX_SCALAR_BYTES,
+                        "function_schema_name",
+                        budget))
+                .setName(getRequiredString(
+                        value,
+                        "getFunctionName",
+                        MAX_SCALAR_BYTES,
+                        "function_name",
+                        budget))
+                .setRemarks(getString(
+                        value, "getRemarks", MAX_COMMENT_BYTES, "function_remarks", budget))
+                .setSpecificName(getString(
+                        value,
+                        "getSpecificName",
+                        MAX_SCALAR_BYTES,
+                        "function_specific_name",
+                        budget))
+                .setBody(getString(
+                        value, "getFunctionBody", MAX_SQL_BYTES, "function_body", budget))
+                .setTemplate(getString(
+                        value,
+                        "getFunctionTemplate",
+                        MAX_SQL_BYTES,
+                        "function_template",
+                        budget));
+        setOptionalInteger(function::setFunctionType, value, "getFunctionType", budget);
+        return function.build();
+    }
+
+    private CommunityFunctionParameter functionParameter(
+            Object value, ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        CommunityFunctionParameter.Builder parameter = CommunityFunctionParameter.newBuilder()
+                .setFunctionDatabase(getString(
+                        value,
+                        "getFunctionCat",
+                        MAX_SCALAR_BYTES,
+                        "function_parameter_database",
+                        budget))
+                .setFunctionSchema(getString(
+                        value,
+                        "getFunctionSchem",
+                        MAX_SCALAR_BYTES,
+                        "function_parameter_schema",
+                        budget))
+                .setFunctionName(getRequiredString(
+                        value,
+                        "getFunctionName",
+                        MAX_SCALAR_BYTES,
+                        "function_parameter_function_name",
+                        budget))
+                .setColumnName(getString(
+                        value,
+                        "getColumnName",
+                        MAX_SCALAR_BYTES,
+                        "function_parameter_column_name",
+                        budget))
+                .setTypeName(getString(
+                        value,
+                        "getTypeName",
+                        MAX_SCALAR_BYTES,
+                        "function_parameter_type_name",
+                        budget))
+                .setRemarks(getString(
+                        value,
+                        "getRemarks",
+                        MAX_COMMENT_BYTES,
+                        "function_parameter_remarks",
+                        budget))
+                .setIsNullable(getString(
+                        value,
+                        "getIsNullable",
+                        MAX_SCALAR_BYTES,
+                        "function_parameter_is_nullable",
+                        budget))
+                .setSpecificName(getString(
+                        value,
+                        "getSpecificName",
+                        MAX_SCALAR_BYTES,
+                        "function_parameter_specific_name",
+                        budget));
+        setOptionalInteger(parameter::setColumnType, value, "getColumnType", budget);
+        setOptionalInteger(parameter::setDataType, value, "getDataType", budget);
+        setOptionalInteger(parameter::setPrecision, value, "getPrecision", budget);
+        setOptionalInteger(parameter::setLength, value, "getLength", budget);
+        setOptionalInteger(parameter::setScale, value, "getScale", budget);
+        setOptionalInteger(parameter::setRadix, value, "getRadix", budget);
+        setOptionalInteger(parameter::setNullable, value, "getNullable", budget);
+        setOptionalInteger(parameter::setCharOctetLength, value, "getCharOctetLength", budget);
+        setOptionalInteger(parameter::setOrdinalPosition, value, "getOrdinalPosition", budget);
+        return parameter.build();
+    }
+
+    private CommunityProcedure procedure(Object value, ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        CommunityProcedure.Builder procedure = CommunityProcedure.newBuilder()
+                .setDatabaseName(getString(
+                        value,
+                        "getDatabaseName",
+                        MAX_SCALAR_BYTES,
+                        "procedure_database_name",
+                        budget))
+                .setSchemaName(getString(
+                        value,
+                        "getSchemaName",
+                        MAX_SCALAR_BYTES,
+                        "procedure_schema_name",
+                        budget))
+                .setName(getRequiredString(
+                        value,
+                        "getProcedureName",
+                        MAX_SCALAR_BYTES,
+                        "procedure_name",
+                        budget))
+                .setRemarks(getString(
+                        value, "getRemarks", MAX_COMMENT_BYTES, "procedure_remarks", budget))
+                .setSpecificName(getString(
+                        value,
+                        "getSpecificName",
+                        MAX_SCALAR_BYTES,
+                        "procedure_specific_name",
+                        budget))
+                .setBody(getString(
+                        value, "getProcedureBody", MAX_SQL_BYTES, "procedure_body", budget));
+        setOptionalInteger(procedure::setProcedureType, value, "getProcedureType", budget);
+        return procedure.build();
+    }
+
+    private CommunityProcedureParameter procedureParameter(
+            Object value, ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        CommunityProcedureParameter.Builder parameter = CommunityProcedureParameter.newBuilder()
+                .setProcedureDatabase(getString(
+                        value,
+                        "getProcedureCat",
+                        MAX_SCALAR_BYTES,
+                        "procedure_parameter_database",
+                        budget))
+                .setProcedureSchema(getString(
+                        value,
+                        "getProcedureSchem",
+                        MAX_SCALAR_BYTES,
+                        "procedure_parameter_schema",
+                        budget))
+                .setProcedureName(getRequiredString(
+                        value,
+                        "getProcedureName",
+                        MAX_SCALAR_BYTES,
+                        "procedure_parameter_procedure_name",
+                        budget))
+                .setColumnName(getString(
+                        value,
+                        "getColumnName",
+                        MAX_SCALAR_BYTES,
+                        "procedure_parameter_column_name",
+                        budget))
+                .setTypeName(getString(
+                        value,
+                        "getTypeName",
+                        MAX_SCALAR_BYTES,
+                        "procedure_parameter_type_name",
+                        budget))
+                .setRemarks(getString(
+                        value,
+                        "getRemarks",
+                        MAX_COMMENT_BYTES,
+                        "procedure_parameter_remarks",
+                        budget))
+                .setColumnDefault(getString(
+                        value,
+                        "getColumnDef",
+                        MAX_SQL_BYTES,
+                        "procedure_parameter_column_default",
+                        budget))
+                .setIsNullable(getString(
+                        value,
+                        "getIsNullable",
+                        MAX_SCALAR_BYTES,
+                        "procedure_parameter_is_nullable",
+                        budget))
+                .setSpecificName(getString(
+                        value,
+                        "getSpecificName",
+                        MAX_SCALAR_BYTES,
+                        "procedure_parameter_specific_name",
+                        budget));
+        setOptionalInteger(parameter::setColumnType, value, "getColumnType", budget);
+        setOptionalInteger(parameter::setDataType, value, "getDataType", budget);
+        setOptionalInteger(parameter::setPrecision, value, "getPrecision", budget);
+        setOptionalInteger(parameter::setLength, value, "getLength", budget);
+        setOptionalInteger(parameter::setScale, value, "getScale", budget);
+        setOptionalInteger(parameter::setRadix, value, "getRadix", budget);
+        setOptionalInteger(parameter::setNullable, value, "getNullable", budget);
+        setOptionalInteger(parameter::setSqlDataType, value, "getSqlDataType", budget);
+        setOptionalInteger(parameter::setSqlDatetimeSub, value, "getSqlDatetimeSub", budget);
+        setOptionalInteger(parameter::setCharOctetLength, value, "getCharOctetLength", budget);
+        setOptionalInteger(parameter::setOrdinalPosition, value, "getOrdinalPosition", budget);
+        return parameter.build();
+    }
+
+    private CommunityTrigger trigger(Object value, ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        return CommunityTrigger.newBuilder()
+                .setDatabaseName(getString(
+                        value,
+                        "getDatabaseName",
+                        MAX_SCALAR_BYTES,
+                        "trigger_database_name",
+                        budget))
+                .setSchemaName(getString(
+                        value,
+                        "getSchemaName",
+                        MAX_SCALAR_BYTES,
+                        "trigger_schema_name",
+                        budget))
+                .setName(getRequiredString(
+                        value,
+                        "getTriggerName",
+                        MAX_SCALAR_BYTES,
+                        "trigger_name",
+                        budget))
+                .setEventManipulation(getString(
+                        value,
+                        "getEventManipulation",
+                        MAX_SCALAR_BYTES,
+                        "trigger_event_manipulation",
+                        budget))
+                .setBody(getString(
+                        value, "getTriggerBody", MAX_SQL_BYTES, "trigger_body", budget))
+                .build();
+    }
+
     private CommunityTableColumn column(Object value, ProjectionBudget budget)
             throws ReflectiveOperationException, RuntimeFailure {
         CommunityTableColumn.Builder column = CommunityTableColumn.newBuilder()
@@ -1180,6 +1922,21 @@ final class CommunityPluginRegistry implements AutoCloseable {
         invokeSetter(request, "setDatabaseName", String.class, databaseName);
         invokeSetter(request, "setSchemaName", String.class, schemaName);
         invokeSetter(request, "setViewName", String.class, viewName);
+        return request;
+    }
+
+    private Object namedMetadataRequest(
+            String className,
+            String databaseName,
+            String schemaName,
+            String nameSetter,
+            String name)
+            throws ReflectiveOperationException {
+        Class<?> requestType = Class.forName(className, true, loader);
+        Object request = requestType.getDeclaredConstructor().newInstance();
+        invokeSetter(request, "setDatabaseName", String.class, databaseName);
+        invokeSetter(request, "setSchemaName", String.class, schemaName);
+        invokeSetter(request, nameSetter, String.class, name);
         return request;
     }
 
@@ -1437,6 +2194,18 @@ final class CommunityPluginRegistry implements AutoCloseable {
         return projectString(value, maximum, field, budget);
     }
 
+    private static String getRequiredString(
+            Object target,
+            String getter,
+            int maximum,
+            String field,
+            ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        String value = getString(target, getter, maximum, field, budget);
+        requireNonBlank(value, maximum, field);
+        return value;
+    }
+
     private static String projectString(
             String value, int maximum, String field, ProjectionBudget budget)
             throws RuntimeFailure {
@@ -1533,6 +2302,21 @@ final class CommunityPluginRegistry implements AutoCloseable {
                 "community.invalid_projection",
                 "the Community plugin returned an invalid " + field + " projection",
                 new IllegalStateException("expected a List"));
+    }
+
+    private static void requireCount(int count, int maximum, String field)
+            throws RuntimeFailure {
+        if (count > maximum) {
+            throw RuntimeFailure.limit(field, maximum);
+        }
+    }
+
+    static <T> T requireDetail(T value, String code, String field) throws RuntimeFailure {
+        if (value == null) {
+            throw RuntimeFailure.validation(
+                    code, "the requested Community " + field + " was not found");
+        }
+        return value;
     }
 
     private static List<?> requireListForStartup(Object value, String field) {

@@ -17,15 +17,21 @@ import ai.chat2db.rust.compat.protocol.v1.ExecuteQueryRequest;
 import ai.chat2db.rust.compat.protocol.v1.ExecuteUpdateRequest;
 import ai.chat2db.rust.compat.protocol.v1.ErrorCategory;
 import ai.chat2db.rust.compat.protocol.v1.GrantCreditsRequest;
+import ai.chat2db.rust.compat.protocol.v1.GetCommunityFunctionRequest;
+import ai.chat2db.rust.compat.protocol.v1.GetCommunityProcedureRequest;
+import ai.chat2db.rust.compat.protocol.v1.GetCommunityTriggerRequest;
 import ai.chat2db.rust.compat.protocol.v1.JdbcParameter;
 import ai.chat2db.rust.compat.protocol.v1.JdbcValue;
 import ai.chat2db.rust.compat.protocol.v1.LoadDriverRequest;
 import ai.chat2db.rust.compat.protocol.v1.ListCommunityColumnsRequest;
 import ai.chat2db.rust.compat.protocol.v1.ListCommunityDatabasesRequest;
+import ai.chat2db.rust.compat.protocol.v1.ListCommunityFunctionsRequest;
 import ai.chat2db.rust.compat.protocol.v1.ListCommunityIndexesRequest;
+import ai.chat2db.rust.compat.protocol.v1.ListCommunityProceduresRequest;
 import ai.chat2db.rust.compat.protocol.v1.ListCommunitySchemasRequest;
 import ai.chat2db.rust.compat.protocol.v1.ListCommunityTableKeysRequest;
 import ai.chat2db.rust.compat.protocol.v1.ListCommunityTablesRequest;
+import ai.chat2db.rust.compat.protocol.v1.ListCommunityTriggersRequest;
 import ai.chat2db.rust.compat.protocol.v1.ListCommunityViewsRequest;
 import ai.chat2db.rust.compat.protocol.v1.OpenSessionRequest;
 import ai.chat2db.rust.compat.protocol.v1.ProtocolVersion;
@@ -93,6 +99,7 @@ class JdbcProtocolLoopTest {
                             ProtocolLoop.COMMUNITY_SCHEMA_METADATA_CAPABILITY,
                             ProtocolLoop.COMMUNITY_OBJECT_METADATA_CAPABILITY,
                             ProtocolLoop.COMMUNITY_RELATION_METADATA_CAPABILITY,
+                            ProtocolLoop.COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
                             ProtocolLoop.COMMUNITY_SQL_BUILDER_CAPABILITY,
                             ProtocolLoop.COMMUNITY_SQL_PARSER_CAPABILITY),
                     hello.getHello().getCapabilitiesList());
@@ -372,6 +379,78 @@ class JdbcProtocolLoopTest {
                     blankCommunityPrimaryKeyDatabaseType.getError().getSessionState());
 
             harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("blank-community-function-database", sessionId))
+                    .setListCommunityFunctions(ListCommunityFunctionsRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setDatabaseName("  "))
+                    .build());
+            assertCommunityValidationFailure(
+                    harness, "protocol.invalid_database_name");
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("blank-community-function-name", sessionId))
+                    .setGetCommunityFunction(GetCommunityFunctionRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setFunctionName("  "))
+                    .build());
+            assertCommunityValidationFailure(
+                    harness, "protocol.invalid_function_name");
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("oversized-community-function-parameter-schema", sessionId))
+                    .setListCommunityFunctionParameters(GetCommunityFunctionRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setSchemaName("x".repeat(ProtocolLimits.MAX_SCALAR_BYTES + 1))
+                            .setFunctionName("calculate"))
+                    .build());
+            assertCommunityValidationFailure(harness, "protocol.limit_exceeded");
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("blank-community-procedure-database", sessionId))
+                    .setListCommunityProcedures(ListCommunityProceduresRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setDatabaseName(""))
+                    .build());
+            assertCommunityValidationFailure(
+                    harness, "protocol.invalid_database_name");
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("blank-community-procedure-name", sessionId))
+                    .setGetCommunityProcedure(GetCommunityProcedureRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setProcedureName("  "))
+                    .build());
+            assertCommunityValidationFailure(
+                    harness, "protocol.invalid_procedure_name");
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("oversized-community-procedure-parameter-database", sessionId))
+                    .setListCommunityProcedureParameters(GetCommunityProcedureRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setDatabaseName("x".repeat(ProtocolLimits.MAX_SCALAR_BYTES + 1))
+                            .setProcedureName("record_event"))
+                    .build());
+            assertCommunityValidationFailure(harness, "protocol.limit_exceeded");
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("blank-community-trigger-database", sessionId))
+                    .setListCommunityTriggers(ListCommunityTriggersRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setDatabaseName("  "))
+                    .build());
+            assertCommunityValidationFailure(
+                    harness, "protocol.invalid_database_name");
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("blank-community-trigger-name", sessionId))
+                    .setGetCommunityTrigger(GetCommunityTriggerRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setTriggerName(""))
+                    .build());
+            assertCommunityValidationFailure(
+                    harness, "protocol.invalid_trigger_name");
+
+            harness.send(ClientEnvelope.newBuilder()
                     .setMeta(meta("begin", sessionId))
                     .setBeginTransaction(BeginTransactionRequest.newBuilder()
                             .setIsolation(TransactionIsolation.TRANSACTION_ISOLATION_READ_COMMITTED))
@@ -567,6 +646,16 @@ class JdbcProtocolLoopTest {
         assertEquals(ServerEnvelope.PayloadCase.UPDATE_COMPLETED, response.getPayloadCase());
         assertEquals(affectedRows, response.getUpdateCompleted().getAffectedRows());
         assertTrue(response.getSerializedSize() <= 1024);
+    }
+
+    private static void assertCommunityValidationFailure(Harness harness, String code)
+            throws Exception {
+        ServerEnvelope response = harness.read();
+        assertEquals(ServerEnvelope.PayloadCase.ERROR, response.getPayloadCase());
+        assertEquals(code, response.getError().getCode());
+        assertEquals(
+                SessionState.SESSION_STATE_AUTO_COMMIT,
+                response.getError().getSessionState());
     }
 
     private static List<ServerEnvelope> byRequest(List<ServerEnvelope> responses, String requestId) {

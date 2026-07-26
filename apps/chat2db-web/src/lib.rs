@@ -371,6 +371,99 @@ mod tests {
             (
                 json_request(
                     Method::POST,
+                    "/api/v1/community/metadata/functions",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1", "databaseType": "H2",
+                        "databaseName": "inventory", "schemaName": "APP"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/metadata/function",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1", "databaseType": "H2",
+                        "databaseName": "inventory", "schemaName": "APP",
+                        "functionName": "double_value"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/metadata/function-parameters",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1", "databaseType": "H2",
+                        "databaseName": "inventory", "schemaName": "APP",
+                        "functionName": "double_value"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/metadata/procedures",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1", "databaseType": "H2",
+                        "databaseName": "inventory", "schemaName": "APP"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/metadata/procedure",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1", "databaseType": "H2",
+                        "databaseName": "inventory", "schemaName": "APP",
+                        "procedureName": "refresh_items"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/metadata/procedure-parameters",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1", "databaseType": "H2",
+                        "databaseName": "inventory", "schemaName": "APP",
+                        "procedureName": "refresh_items"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/metadata/triggers",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1", "databaseType": "H2",
+                        "databaseName": "inventory", "schemaName": "APP"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/metadata/trigger",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1", "databaseType": "H2",
+                        "databaseName": "inventory", "schemaName": "APP",
+                        "triggerName": "items_audit"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
                     "/api/v1/community/sql/build-create-schema",
                     &serde_json::json!({
                         "databaseType": "H2",
@@ -521,6 +614,14 @@ mod tests {
             "/api/v1/community/metadata/imported-keys",
             "/api/v1/community/metadata/exported-keys",
             "/api/v1/community/metadata/primary-keys",
+            "/api/v1/community/metadata/functions",
+            "/api/v1/community/metadata/function",
+            "/api/v1/community/metadata/function-parameters",
+            "/api/v1/community/metadata/procedures",
+            "/api/v1/community/metadata/procedure",
+            "/api/v1/community/metadata/procedure-parameters",
+            "/api/v1/community/metadata/triggers",
+            "/api/v1/community/metadata/trigger",
             "/api/v1/community/sql/build-create-schema",
             "/api/v1/community/sql/parse",
             "/api/v1/datasources",
@@ -558,6 +659,14 @@ mod tests {
             "/api/v1/community/metadata/imported-keys",
             "/api/v1/community/metadata/exported-keys",
             "/api/v1/community/metadata/primary-keys",
+            "/api/v1/community/metadata/functions",
+            "/api/v1/community/metadata/function",
+            "/api/v1/community/metadata/function-parameters",
+            "/api/v1/community/metadata/procedures",
+            "/api/v1/community/metadata/procedure",
+            "/api/v1/community/metadata/procedure-parameters",
+            "/api/v1/community/metadata/triggers",
+            "/api/v1/community/metadata/trigger",
             "/api/v1/community/sql/build-create-schema",
             "/api/v1/community/sql/parse",
         ] {
@@ -637,6 +746,10 @@ mod tests {
             "CommunityDriverConfig",
             "CommunityForeignKey",
             "CommunityForeignKeyList",
+            "CommunityFunction",
+            "CommunityFunctionList",
+            "CommunityFunctionParameter",
+            "CommunityFunctionParameterList",
             "CommunityParsedStatement",
             "CommunityPlugin",
             "CommunityPluginBehavior",
@@ -644,6 +757,10 @@ mod tests {
             "CommunityPluginServices",
             "CommunityPrimaryKey",
             "CommunityPrimaryKeyList",
+            "CommunityProcedure",
+            "CommunityProcedureList",
+            "CommunityProcedureParameter",
+            "CommunityProcedureParameterList",
             "CommunitySchema",
             "CommunitySchemaList",
             "CommunitySqlAnalysis",
@@ -654,17 +771,25 @@ mod tests {
             "CommunityTableIndexColumn",
             "CommunityTableIndexList",
             "CommunityTableList",
+            "CommunityTrigger",
+            "CommunityTriggerList",
             "CommunityViewList",
             "ContextCompactionStrategy",
             "CreateAgentSessionRequest",
             "CreateProviderProfileRequest",
             "DecideAgentPermissionRequest",
+            "GetCommunityFunctionRequest",
+            "GetCommunityProcedureRequest",
+            "GetCommunityTriggerRequest",
             "ListCommunitySchemasRequest",
             "ListCommunityTableKeysRequest",
             "ListCommunityColumnsRequest",
             "ListCommunityDatabasesRequest",
+            "ListCommunityFunctionsRequest",
             "ListCommunityIndexesRequest",
+            "ListCommunityProceduresRequest",
             "ListCommunityTablesRequest",
+            "ListCommunityTriggersRequest",
             "ListCommunityViewsRequest",
             "ParseCommunitySqlRequest",
             "ProviderCredentials",

@@ -12,7 +12,7 @@ in runtime health until then.
 | 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
 | 5 | Complete | Product transports | Generated OpenAPI/TypeScript contract, Axum JSON/SSE, Tauri 2 commands/channels, shared SQL workbench, product H2 tests |
 | 6 | Complete | Agent, MCP, and CLI | Direct providers, durable bounded tool loop, SQL tools/permissions, compaction, Web/Tauri run transports, owner-only local attachment, read-query CLI, and bounded `rmcp` stdio tools |
-| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs, 7B fixed Community H2 SPI/ANTLR, 7C product Core/Web/Tauri contracts, 7D relational object metadata, and 7E relation metadata implemented; remaining plugin/UI operations and per-dialect conformance explicit |
+| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs, 7B fixed Community H2 SPI/ANTLR, 7C product Core/Web/Tauri contracts, 7D relational object metadata, 7E relation metadata, and 7F programmability metadata implemented; remaining plugin/UI operations and per-dialect conformance explicit |
 | 8 | Planned | Packaging and release | License authorization, NOTICE/SBOM, jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
 
 Stage 3 completion means the versioned Rust-Java bridge can load an external
@@ -79,7 +79,7 @@ supervised Java generation. Java isolates them behind a platform-parent
 `URLClassLoader`, rejects manifest `Class-Path` escapes, discovers real `IPlugin`
 services, and exposes plugin catalog, H2 schema metadata, `CREATE SCHEMA`, and
 retained ANTLR parsing DTOs over Protobuf. Configuring the classpath requires all
-six current Community capabilities at handshake, and Java plus Rust enforce the
+seven current Community capabilities at handshake, and Java plus Rust enforce the
 generated 8 MiB cumulative response budget. Rust counts raw Community oneof
 values before decoding, including duplicate fields, and retains a generation
 snapshot whenever child reap cannot be proven. The real vertical test keeps the
@@ -127,11 +127,26 @@ same generated contracts. Real H2 bridge and product gates create a view,
 named primary key, and named foreign key, verify both foreign-key directions,
 and prove metadata-session cleanup still permits driver unload.
 
+Stage 7F adds the independent `community.metadata.programmability.v1`
+capability and preserves all existing wire meanings by assigning `212..=219`
+to function list/detail/parameters, procedure list/detail/parameters, and
+trigger list/detail responses. Java invokes the real Community metadata SPI and
+projects compatibility-owned DTOs; each list or parameter collection is capped
+at 65,536 entries under the cumulative 8 MiB response budget. Rust counts these
+repeated fields directly from the undecoded wire before allocation, then
+validates decoded counts, fields, aggregate strings, and encoded bytes again.
+Core exposes eight forced-read-only, cancellation-safe services; Axum, Tauri,
+and the shared HTTP/Tauri frontend backend expose matching contracts. Real H2
+bridge and product gates create Java aliases plus a trigger, verify H2's JDBC
+procedure-list behavior, exercise all eight services, preserve the external
+catalog across H2's schema-based detail lookup, and prove session cleanup still
+permits driver unload.
+
 Stage 7 remains incomplete: no end-user Community workflow uses the new
-frontend backend methods yet. Functions, procedures, triggers, type conversion,
-script execution, data import/export, formatting, validation, completion,
-non-relational behavior, remaining builders and plugin inventory, driver
-distribution, and per-dialect conformance are not implemented.
+frontend backend methods yet. Type conversion, script execution, data
+import/export, formatting, validation, completion, non-relational behavior,
+remaining builders and plugin inventory, driver distribution, and per-dialect
+conformance are not implemented.
 
 Before Stage 8 may produce any Object-form distribution containing Community
 5.3.0 code, the release must record written commercial authorization compatible

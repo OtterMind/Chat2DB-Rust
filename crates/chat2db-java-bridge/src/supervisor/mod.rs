@@ -37,12 +37,14 @@ mod pending;
 
 pub use community::{
     COMMUNITY_OBJECT_METADATA_CAPABILITY, COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
-    COMMUNITY_RELATION_METADATA_CAPABILITY, COMMUNITY_SCHEMA_METADATA_CAPABILITY,
-    COMMUNITY_SQL_BUILDER_CAPABILITY, COMMUNITY_SQL_PARSER_CAPABILITY, CommunityClasspath,
-    CommunityClient, CommunityDatabase, CommunityDriverConfig, CommunityForeignKey,
+    COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY, COMMUNITY_RELATION_METADATA_CAPABILITY,
+    COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
+    COMMUNITY_SQL_PARSER_CAPABILITY, CommunityClasspath, CommunityClient, CommunityDatabase,
+    CommunityDriverConfig, CommunityForeignKey, CommunityFunction, CommunityFunctionParameter,
     CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
-    CommunityPluginServices, CommunityPrimaryKey, CommunitySchema, CommunitySqlAnalysis,
-    CommunityTable, CommunityTableColumn, CommunityTableIndex, CommunityTableIndexColumn,
+    CommunityPluginServices, CommunityPrimaryKey, CommunityProcedure, CommunityProcedureParameter,
+    CommunitySchema, CommunitySqlAnalysis, CommunityTable, CommunityTableColumn,
+    CommunityTableIndex, CommunityTableIndexColumn, CommunityTrigger,
 };
 
 pub use jdbc::{
@@ -171,6 +173,7 @@ impl EngineConfig {
             COMMUNITY_SCHEMA_METADATA_CAPABILITY,
             COMMUNITY_OBJECT_METADATA_CAPABILITY,
             COMMUNITY_RELATION_METADATA_CAPABILITY,
+            COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
             COMMUNITY_SQL_BUILDER_CAPABILITY,
             COMMUNITY_SQL_PARSER_CAPABILITY,
         ] {

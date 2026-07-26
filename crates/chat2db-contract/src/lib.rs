@@ -23,14 +23,19 @@ pub use agent::{
 };
 pub use community::{
     BuildCommunityCreateSchemaRequest, CommunityBuiltSql, CommunityDatabase, CommunityDatabaseList,
-    CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList, CommunityParsedStatement,
-    CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
-    CommunityPrimaryKey, CommunityPrimaryKeyList, CommunitySchema, CommunitySchemaList,
-    CommunitySqlAnalysis, CommunityTable, CommunityTableColumn, CommunityTableColumnList,
-    CommunityTableIndex, CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList,
-    CommunityViewList, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
-    ListCommunityIndexesRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
-    ListCommunityTablesRequest, ListCommunityViewsRequest, ParseCommunitySqlRequest,
+    CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList, CommunityFunction,
+    CommunityFunctionList, CommunityFunctionParameter, CommunityFunctionParameterList,
+    CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
+    CommunityPluginServices, CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure,
+    CommunityProcedureList, CommunityProcedureParameter, CommunityProcedureParameterList,
+    CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis, CommunityTable,
+    CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
+    CommunityTableIndexList, CommunityTableList, CommunityTrigger, CommunityTriggerList,
+    CommunityViewList, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
+    GetCommunityTriggerRequest, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
+    ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
+    ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
+    ListCommunityTriggersRequest, ListCommunityViewsRequest, ParseCommunitySqlRequest,
 };
 pub use datasource::{
     CreateDatasourceRequest, Datasource, DatasourceConnection, DatasourceConnectionProperty,

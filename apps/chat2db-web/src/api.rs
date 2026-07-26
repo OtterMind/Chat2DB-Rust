@@ -14,24 +14,29 @@ use chat2db_contract::{
     AgentToolOutput, AgentUsage, ApiError, ApiErrorDetails, BuildCommunityCreateSchemaRequest,
     CancelAgentRunResponse, CancelDisposition, CancelOperationResponse, ColumnNullability,
     CommunityBuiltSql, CommunityDatabase, CommunityDatabaseList, CommunityDriverConfig,
-    CommunityForeignKey, CommunityForeignKeyList, CommunityParsedStatement, CommunityPlugin,
-    CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices, CommunityPrimaryKey,
-    CommunityPrimaryKeyList, CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis,
-    CommunityTable, CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex,
-    CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList, CommunityViewList,
-    ComponentHealth, ComponentState, ContextCompactionStrategy, CreateAgentSessionRequest,
-    CreateDatasourceRequest, CreateProviderProfileRequest, Datasource, DatasourceConnection,
-    DatasourceConnectionProperty, DatasourceList, DatasourceSecretChange,
-    DecideAgentPermissionRequest, HealthResponse, JdbcDriver, JdbcDriverList, JdbcValue,
+    CommunityForeignKey, CommunityForeignKeyList, CommunityFunction, CommunityFunctionList,
+    CommunityFunctionParameter, CommunityFunctionParameterList, CommunityParsedStatement,
+    CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
+    CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
+    CommunityProcedureParameter, CommunityProcedureParameterList, CommunitySchema,
+    CommunitySchemaList, CommunitySqlAnalysis, CommunityTable, CommunityTableColumn,
+    CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
+    CommunityTableIndexList, CommunityTableList, CommunityTrigger, CommunityTriggerList,
+    CommunityViewList, ComponentHealth, ComponentState, ContextCompactionStrategy,
+    CreateAgentSessionRequest, CreateDatasourceRequest, CreateProviderProfileRequest, Datasource,
+    DatasourceConnection, DatasourceConnectionProperty, DatasourceList, DatasourceSecretChange,
+    DecideAgentPermissionRequest, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
+    GetCommunityTriggerRequest, HealthResponse, JdbcDriver, JdbcDriverList, JdbcValue,
     JdbcValueType, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
-    ListCommunityIndexesRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
-    ListCommunityTablesRequest, ListCommunityViewsRequest, OperationEvent, OperationEventEnvelope,
-    OperationSnapshot, OperationStatus, OperationStreamMessage, OperationSubscriptionAccepted,
-    ParseCommunitySqlRequest, ProductInfo, ProviderCredentials, ProviderKind, ProviderProfile,
-    ProviderProfileList, ProviderSecretChange, QueryAccepted, QueryLimits, QueryParameter,
-    ResultColumn, ResultMetadata, ResultPage, ResultPageRequest, ResultRow, RuntimeStatus,
-    SqlPermissionMode, StartAgentRunRequest, StartQueryRequest, UpdateAgentSessionRequest,
-    UpdateDatasourceRequest, UpdateProviderProfileRequest,
+    ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
+    ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
+    ListCommunityTriggersRequest, ListCommunityViewsRequest, OperationEvent,
+    OperationEventEnvelope, OperationSnapshot, OperationStatus, OperationStreamMessage,
+    OperationSubscriptionAccepted, ParseCommunitySqlRequest, ProductInfo, ProviderCredentials,
+    ProviderKind, ProviderProfile, ProviderProfileList, ProviderSecretChange, QueryAccepted,
+    QueryLimits, QueryParameter, ResultColumn, ResultMetadata, ResultPage, ResultPageRequest,
+    ResultRow, RuntimeStatus, SqlPermissionMode, StartAgentRunRequest, StartQueryRequest,
+    UpdateAgentSessionRequest, UpdateDatasourceRequest, UpdateProviderProfileRequest,
 };
 use chat2db_core::{AppError, Application};
 use futures_util::{Stream, stream};
@@ -100,6 +105,10 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         CommunityDriverConfig,
         CommunityForeignKey,
         CommunityForeignKeyList,
+        CommunityFunction,
+        CommunityFunctionList,
+        CommunityFunctionParameter,
+        CommunityFunctionParameterList,
         CommunityParsedStatement,
         CommunityPlugin,
         CommunityPluginBehavior,
@@ -107,6 +116,10 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         CommunityPluginServices,
         CommunityPrimaryKey,
         CommunityPrimaryKeyList,
+        CommunityProcedure,
+        CommunityProcedureList,
+        CommunityProcedureParameter,
+        CommunityProcedureParameterList,
         CommunitySchema,
         CommunitySchemaList,
         CommunitySqlAnalysis,
@@ -117,6 +130,8 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         CommunityTableIndexColumn,
         CommunityTableIndexList,
         CommunityTableList,
+        CommunityTrigger,
+        CommunityTriggerList,
         CommunityViewList,
         ContextCompactionStrategy,
         CreateAgentSessionRequest,
@@ -129,16 +144,22 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         DatasourceSecretChange,
         DecideAgentPermissionRequest,
         HealthResponse,
+        GetCommunityFunctionRequest,
+        GetCommunityProcedureRequest,
+        GetCommunityTriggerRequest,
         JdbcDriver,
         JdbcDriverList,
         JdbcValue,
         JdbcValueType,
         ListCommunityColumnsRequest,
         ListCommunityDatabasesRequest,
+        ListCommunityFunctionsRequest,
         ListCommunityIndexesRequest,
+        ListCommunityProceduresRequest,
         ListCommunitySchemasRequest,
         ListCommunityTableKeysRequest,
         ListCommunityTablesRequest,
+        ListCommunityTriggersRequest,
         ListCommunityViewsRequest,
         OperationEvent,
         OperationEventEnvelope,
@@ -200,6 +221,14 @@ fn documented_router() -> OpenApiRouter<Application> {
         .routes(routes!(list_community_imported_keys))
         .routes(routes!(list_community_exported_keys))
         .routes(routes!(list_community_primary_keys))
+        .routes(routes!(list_community_functions))
+        .routes(routes!(get_community_function))
+        .routes(routes!(list_community_function_parameters))
+        .routes(routes!(list_community_procedures))
+        .routes(routes!(get_community_procedure))
+        .routes(routes!(list_community_procedure_parameters))
+        .routes(routes!(list_community_triggers))
+        .routes(routes!(get_community_trigger))
         .routes(routes!(build_community_create_schema))
         .routes(routes!(parse_community_sql))
         .routes(routes!(list_datasources, create_datasource))
@@ -507,6 +536,190 @@ async fn list_community_primary_keys(
 ) -> Result<Json<CommunityPrimaryKeyList>, WebError> {
     application
         .list_community_primary_keys(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/metadata/functions",
+    tag = "community",
+    request_body = ListCommunityFunctionsRequest,
+    responses(
+        (status = 200, description = "Community function metadata", body = CommunityFunctionList),
+        (status = 400, description = "Invalid Community metadata request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community metadata failure", body = ApiError)
+    )
+)]
+async fn list_community_functions(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<ListCommunityFunctionsRequest>,
+) -> Result<Json<CommunityFunctionList>, WebError> {
+    application
+        .list_community_functions(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/metadata/function",
+    tag = "community",
+    request_body = GetCommunityFunctionRequest,
+    responses(
+        (status = 200, description = "Community function detail", body = CommunityFunction),
+        (status = 400, description = "Invalid Community metadata request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community metadata failure", body = ApiError)
+    )
+)]
+async fn get_community_function(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<GetCommunityFunctionRequest>,
+) -> Result<Json<CommunityFunction>, WebError> {
+    application
+        .get_community_function(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/metadata/function-parameters",
+    tag = "community",
+    request_body = GetCommunityFunctionRequest,
+    responses(
+        (status = 200, description = "Community function parameter metadata", body = CommunityFunctionParameterList),
+        (status = 400, description = "Invalid Community metadata request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community metadata failure", body = ApiError)
+    )
+)]
+async fn list_community_function_parameters(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<GetCommunityFunctionRequest>,
+) -> Result<Json<CommunityFunctionParameterList>, WebError> {
+    application
+        .list_community_function_parameters(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/metadata/procedures",
+    tag = "community",
+    request_body = ListCommunityProceduresRequest,
+    responses(
+        (status = 200, description = "Community procedure metadata", body = CommunityProcedureList),
+        (status = 400, description = "Invalid Community metadata request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community metadata failure", body = ApiError)
+    )
+)]
+async fn list_community_procedures(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<ListCommunityProceduresRequest>,
+) -> Result<Json<CommunityProcedureList>, WebError> {
+    application
+        .list_community_procedures(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/metadata/procedure",
+    tag = "community",
+    request_body = GetCommunityProcedureRequest,
+    responses(
+        (status = 200, description = "Community procedure detail", body = CommunityProcedure),
+        (status = 400, description = "Invalid Community metadata request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community metadata failure", body = ApiError)
+    )
+)]
+async fn get_community_procedure(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<GetCommunityProcedureRequest>,
+) -> Result<Json<CommunityProcedure>, WebError> {
+    application
+        .get_community_procedure(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/metadata/procedure-parameters",
+    tag = "community",
+    request_body = GetCommunityProcedureRequest,
+    responses(
+        (status = 200, description = "Community procedure parameter metadata", body = CommunityProcedureParameterList),
+        (status = 400, description = "Invalid Community metadata request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community metadata failure", body = ApiError)
+    )
+)]
+async fn list_community_procedure_parameters(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<GetCommunityProcedureRequest>,
+) -> Result<Json<CommunityProcedureParameterList>, WebError> {
+    application
+        .list_community_procedure_parameters(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/metadata/triggers",
+    tag = "community",
+    request_body = ListCommunityTriggersRequest,
+    responses(
+        (status = 200, description = "Community trigger metadata", body = CommunityTriggerList),
+        (status = 400, description = "Invalid Community metadata request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community metadata failure", body = ApiError)
+    )
+)]
+async fn list_community_triggers(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<ListCommunityTriggersRequest>,
+) -> Result<Json<CommunityTriggerList>, WebError> {
+    application
+        .list_community_triggers(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/metadata/trigger",
+    tag = "community",
+    request_body = GetCommunityTriggerRequest,
+    responses(
+        (status = 200, description = "Community trigger detail", body = CommunityTrigger),
+        (status = 400, description = "Invalid Community metadata request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community metadata failure", body = ApiError)
+    )
+)]
+async fn get_community_trigger(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<GetCommunityTriggerRequest>,
+) -> Result<Json<CommunityTrigger>, WebError> {
+    application
+        .get_community_trigger(request)
         .await
         .map(Json)
         .map_err(Into::into)

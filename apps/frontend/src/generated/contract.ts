@@ -212,6 +212,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/community/metadata/function": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["get_community_function"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/community/metadata/function-parameters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["list_community_function_parameters"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/community/metadata/functions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["list_community_functions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/community/metadata/imported-keys": {
         parameters: {
             query?: never;
@@ -260,6 +308,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/community/metadata/procedure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["get_community_procedure"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/community/metadata/procedure-parameters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["list_community_procedure_parameters"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/community/metadata/procedures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["list_community_procedures"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/community/metadata/schemas": {
         parameters: {
             query?: never;
@@ -286,6 +382,38 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["list_community_tables"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/community/metadata/trigger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["get_community_trigger"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/community/metadata/triggers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["list_community_triggers"];
         delete?: never;
         options?: never;
         head?: never;
@@ -979,6 +1107,55 @@ export interface components {
         CommunityForeignKeyList: {
             items: components["schemas"]["CommunityForeignKey"][];
         };
+        /** @description Secret-free Community function metadata. */
+        CommunityFunction: {
+            body: string;
+            databaseName: string;
+            /** Format: int32 */
+            functionType?: number | null;
+            name: string;
+            remarks: string;
+            schemaName: string;
+            specificName: string;
+            template: string;
+        };
+        /** @description Stable function collection returned by Community metadata. */
+        CommunityFunctionList: {
+            items: components["schemas"]["CommunityFunction"][];
+        };
+        /** @description Secret-free Community function-parameter metadata. */
+        CommunityFunctionParameter: {
+            /** Format: int32 */
+            charOctetLength?: number | null;
+            columnName: string;
+            /** Format: int32 */
+            columnType?: number | null;
+            /** Format: int32 */
+            dataType?: number | null;
+            functionDatabase: string;
+            functionName: string;
+            functionSchema: string;
+            isNullable: string;
+            /** Format: int32 */
+            length?: number | null;
+            /** Format: int32 */
+            nullable?: number | null;
+            /** Format: int32 */
+            ordinalPosition?: number | null;
+            /** Format: int32 */
+            precision?: number | null;
+            /** Format: int32 */
+            radix?: number | null;
+            remarks: string;
+            /** Format: int32 */
+            scale?: number | null;
+            specificName: string;
+            typeName: string;
+        };
+        /** @description Stable function-parameter collection returned by Community metadata. */
+        CommunityFunctionParameterList: {
+            items: components["schemas"]["CommunityFunctionParameter"][];
+        };
         /** @description One statement returned by the retained Community parser. */
         CommunityParsedStatement: {
             /** @description Bounded parser-specific statement kind. */
@@ -1037,6 +1214,59 @@ export interface components {
         /** @description Stable primary-key collection returned by Community metadata. */
         CommunityPrimaryKeyList: {
             items: components["schemas"]["CommunityPrimaryKey"][];
+        };
+        /** @description Secret-free Community stored-procedure metadata. */
+        CommunityProcedure: {
+            body: string;
+            databaseName: string;
+            name: string;
+            /** Format: int32 */
+            procedureType?: number | null;
+            remarks: string;
+            schemaName: string;
+            specificName: string;
+        };
+        /** @description Stable procedure collection returned by Community metadata. */
+        CommunityProcedureList: {
+            items: components["schemas"]["CommunityProcedure"][];
+        };
+        /** @description Secret-free Community procedure-parameter metadata. */
+        CommunityProcedureParameter: {
+            /** Format: int32 */
+            charOctetLength?: number | null;
+            columnDefault: string;
+            columnName: string;
+            /** Format: int32 */
+            columnType?: number | null;
+            /** Format: int32 */
+            dataType?: number | null;
+            isNullable: string;
+            /** Format: int32 */
+            length?: number | null;
+            /** Format: int32 */
+            nullable?: number | null;
+            /** Format: int32 */
+            ordinalPosition?: number | null;
+            /** Format: int32 */
+            precision?: number | null;
+            procedureDatabase: string;
+            procedureName: string;
+            procedureSchema: string;
+            /** Format: int32 */
+            radix?: number | null;
+            remarks: string;
+            /** Format: int32 */
+            scale?: number | null;
+            specificName: string;
+            /** Format: int32 */
+            sqlDataType?: number | null;
+            /** Format: int32 */
+            sqlDatetimeSub?: number | null;
+            typeName: string;
+        };
+        /** @description Stable procedure-parameter collection returned by Community metadata. */
+        CommunityProcedureParameterList: {
+            items: components["schemas"]["CommunityProcedureParameter"][];
         };
         /** @description Secret-free database schema metadata returned by Community. */
         CommunitySchema: {
@@ -1185,6 +1415,18 @@ export interface components {
         CommunityTableList: {
             items: components["schemas"]["CommunityTable"][];
         };
+        /** @description Secret-free Community trigger metadata. */
+        CommunityTrigger: {
+            body: string;
+            databaseName: string;
+            eventManipulation: string;
+            name: string;
+            schemaName: string;
+        };
+        /** @description Stable trigger collection returned by Community metadata. */
+        CommunityTriggerList: {
+            items: components["schemas"]["CommunityTrigger"][];
+        };
         /** @description Stable view collection returned by Community metadata APIs. */
         CommunityViewList: {
             /** @description Views represented by the same bounded metadata projection as tables. */
@@ -1309,6 +1551,30 @@ export interface components {
             runId: string;
             /** @description Exact tool-call id displayed with the permission request. */
             toolCallId: string;
+        };
+        /** @description Request to read one function or its parameters. */
+        GetCommunityFunctionRequest: {
+            databaseName: string;
+            databaseType: string;
+            datasourceId: string;
+            functionName: string;
+            schemaName: string;
+        };
+        /** @description Request to read one stored procedure or its parameters. */
+        GetCommunityProcedureRequest: {
+            databaseName: string;
+            databaseType: string;
+            datasourceId: string;
+            procedureName: string;
+            schemaName: string;
+        };
+        /** @description Request to read one trigger. */
+        GetCommunityTriggerRequest: {
+            databaseName: string;
+            databaseType: string;
+            datasourceId: string;
+            schemaName: string;
+            triggerName: string;
         };
         /** @description Health response shared by Web, desktop, CLI, and local control adapters. */
         HealthResponse: {
@@ -1460,6 +1726,13 @@ export interface components {
             databaseType: string;
             datasourceId: string;
         };
+        /** @description Request to list functions through one datasource connection. */
+        ListCommunityFunctionsRequest: {
+            databaseName: string;
+            databaseType: string;
+            datasourceId: string;
+            schemaName: string;
+        };
         /** @description Request to list indexes for one table through Community metadata. */
         ListCommunityIndexesRequest: {
             databaseName: string;
@@ -1467,6 +1740,13 @@ export interface components {
             datasourceId: string;
             schemaName: string;
             tableName: string;
+        };
+        /** @description Request to list stored procedures through one datasource connection. */
+        ListCommunityProceduresRequest: {
+            databaseName: string;
+            databaseType: string;
+            datasourceId: string;
+            schemaName: string;
         };
         /** @description Request to list schemas through one datasource connection. */
         ListCommunitySchemasRequest: {
@@ -1492,6 +1772,13 @@ export interface components {
             datasourceId: string;
             schemaName: string;
             tableNamePattern: string;
+        };
+        /** @description Request to list triggers through one datasource connection. */
+        ListCommunityTriggersRequest: {
+            databaseName: string;
+            databaseType: string;
+            datasourceId: string;
+            schemaName: string;
         };
         /** @description Request to list views through one datasource connection. */
         ListCommunityViewsRequest: {
@@ -2983,6 +3270,159 @@ export interface operations {
             };
         };
     };
+    get_community_function: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GetCommunityFunctionRequest"];
+            };
+        };
+        responses: {
+            /** @description Community function detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityFunction"];
+                };
+            };
+            /** @description Invalid Community metadata request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected Community metadata failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Community compatibility engine is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    list_community_function_parameters: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GetCommunityFunctionRequest"];
+            };
+        };
+        responses: {
+            /** @description Community function parameter metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityFunctionParameterList"];
+                };
+            };
+            /** @description Invalid Community metadata request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected Community metadata failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Community compatibility engine is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    list_community_functions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ListCommunityFunctionsRequest"];
+            };
+        };
+        responses: {
+            /** @description Community function metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityFunctionList"];
+                };
+            };
+            /** @description Invalid Community metadata request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected Community metadata failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Community compatibility engine is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
     list_community_imported_keys: {
         parameters: {
             query?: never;
@@ -3136,6 +3576,159 @@ export interface operations {
             };
         };
     };
+    get_community_procedure: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GetCommunityProcedureRequest"];
+            };
+        };
+        responses: {
+            /** @description Community procedure detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityProcedure"];
+                };
+            };
+            /** @description Invalid Community metadata request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected Community metadata failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Community compatibility engine is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    list_community_procedure_parameters: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GetCommunityProcedureRequest"];
+            };
+        };
+        responses: {
+            /** @description Community procedure parameter metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityProcedureParameterList"];
+                };
+            };
+            /** @description Invalid Community metadata request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected Community metadata failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Community compatibility engine is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    list_community_procedures: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ListCommunityProceduresRequest"];
+            };
+        };
+        responses: {
+            /** @description Community procedure metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityProcedureList"];
+                };
+            };
+            /** @description Invalid Community metadata request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected Community metadata failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Community compatibility engine is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
     list_community_schemas: {
         parameters: {
             query?: never;
@@ -3207,6 +3800,108 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CommunityTableList"];
+                };
+            };
+            /** @description Invalid Community metadata request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected Community metadata failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Community compatibility engine is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    get_community_trigger: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GetCommunityTriggerRequest"];
+            };
+        };
+        responses: {
+            /** @description Community trigger detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityTrigger"];
+                };
+            };
+            /** @description Invalid Community metadata request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected Community metadata failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Community compatibility engine is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    list_community_triggers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ListCommunityTriggersRequest"];
+            };
+        };
+        responses: {
+            /** @description Community trigger metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityTriggerList"];
                 };
             };
             /** @description Invalid Community metadata request */

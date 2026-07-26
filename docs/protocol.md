@@ -8,14 +8,14 @@ external JDBC driver loading, sessions, local transactions, prepared queries
 and updates, typed row streams, credit flow control, cancellation, deadlines,
 bounded errors, conservative delivery outcomes, Community plugin inventory,
 H2 schema, database, table, column, index, view, imported/exported foreign-key,
-and primary-key metadata, `CREATE SCHEMA` building, and retained SQL parsing.
+primary-key, function, function-parameter, procedure, procedure-parameter, and
+trigger metadata, `CREATE SCHEMA` building, and retained SQL parsing.
 
-Not implemented in the compatibility protocol: functions, procedures,
-triggers, general-purpose SQL builder operations, script execution, data
-import/export, formatting, completion, non-relational operations, or retained
-result handles. Driver-pack discovery and inventory are product-level Rust
-contracts; the process protocol continues to receive only ordered canonical
-JDBC JAR paths and expected digests.
+Not implemented in the compatibility protocol: general-purpose SQL builder
+operations, script execution, data import/export, formatting, completion,
+non-relational operations, or retained result handles. Driver-pack discovery
+and inventory are product-level Rust contracts; the process protocol continues
+to receive only ordered canonical JDBC JAR paths and expected digests.
 
 ## Source of truth
 
@@ -74,6 +74,7 @@ The implemented capability names are:
 - `community.metadata.schemas.v1`
 - `community.metadata.objects.v1`
 - `community.metadata.relations.v1`
+- `community.metadata.programmability.v1`
 - `community.sql-builder.v1`
 - `community.sql-parser.v1`
 
@@ -208,7 +209,7 @@ before lock verification by rebuilding only affected JARs with sorted entries,
 the source-commit timestamp, and the `STORED` method. A two-clean-build gate
 compares every resulting JAR digest and length.
 
-Configuring the classpath automatically makes all six Community capabilities
+Configuring the classpath automatically makes all seven Community capabilities
 required during handshake. A sidecar that lacks any one of them fails startup
 and is reaped before the generation becomes ready.
 
@@ -221,8 +222,9 @@ Rust independently scans the undecoded `ServerEnvelope` wire and accumulates
 the raw length-delimited values of every Community response field, including
 unknown nested bytes and duplicate oneof fields. The same allocation-free scan
 parses known Community submessages and rejects plugin, driver, download URL,
-schema, statement, object, and nested index-column counts before Protobuf DTO
-decoding can allocate their repeated collections. More than 8 MiB is fatal
+schema, statement, object, nested index-column, function, function-parameter,
+procedure, procedure-parameter, and trigger counts before Protobuf DTO decoding
+can allocate their repeated collections. More than 8 MiB is fatal
 while non-Community responses retain the negotiated limit up to 16 MiB.
 Decoded counts, string totals, and message sizes are checked again against the
 same generated limits. Rust requires the catalog's source commit to equal the
@@ -257,11 +259,34 @@ each primary-key list are capped at 65,536 entries. Both sides validate scalar
 and aggregate response budgets, and Rust counts these repeated fields from raw
 wire bytes before Protobuf decoding and validates them again afterward.
 
-Schema, object, and relation metadata reuse an existing generation-bound JDBC
-session and optional transaction. Java validates each request and selected
-plugin before claiming the session operation. Any `RuntimeFailure`, unchecked
-failure, or linkage failure after the claim conservatively marks an active transaction
-`ROLLBACK_REQUIRED`. A claim-stage `NOT_STARTED` outcome is promoted to
+The programmability-metadata capability adds eight unary session-bound
+operations: function list/detail/parameters, procedure list/detail/parameters,
+and trigger list/detail. Java invokes the selected plugin's real
+`IDbMetaData.functions`, `function`, `getFunctionParameters`, `procedures`,
+`procedure`, `getProcedureParameters`, `triggers`, and `trigger` methods. Their
+server-envelope tags are `212..=219`; all existing `200..=211` meanings remain
+unchanged. Function, function-parameter, procedure, procedure-parameter, and
+trigger collections are independently capped at 65,536 entries. Both sides
+validate scalar, aggregate-string, encoded-message, and 8 MiB cumulative
+response budgets, while Rust counts each repeated field from raw wire bytes
+before Protobuf decoding and validates it again afterward. Community 5.3.0's
+H2 detail implementation uses request `databaseName` as its schema predicate;
+the compatibility adapter first requires the requested catalog to equal the
+active JDBC catalog, SQL-literal-escapes the H2 schema and object names, supplies
+the schema for that internal lookup, and restores the verified catalog plus
+original identifiers in the external DTO. Empty H2 detail projections become
+stable not-found errors rather than caller-labelled placeholder objects. H2
+exposes Java aliases through JDBC procedure-list metadata even when its
+information schema classifies an alias as a function, so the fixed H2
+conformance test expects an empty function list and still verifies function
+detail directly.
+
+Schema, object, relation, and programmability metadata reuse an existing
+generation-bound JDBC session and optional transaction. Java validates each
+request and selected plugin before claiming the session operation. Any
+`RuntimeFailure`, unchecked failure, or linkage failure after the claim
+conservatively marks an active transaction `ROLLBACK_REQUIRED`. A claim-stage
+`NOT_STARTED` outcome is promoted to
 `KNOWN_FAILED`, while an existing `UNKNOWN` outcome remains unknown; failures
 rejected before the claim leave the transaction active and retain
 `NOT_STARTED`.
@@ -269,7 +294,7 @@ rejected before the claim leave the transaction active and retain
 parsing uses the plugin's retained syntax parser. No Community, JDBC, ANTLR, or
 exception object crosses the process boundary.
 
-All twelve Community operations use the fatal-on-unknown lane. Once delivered,
+All twenty Community operations use the fatal-on-unknown lane. Once delivered,
 a timeout or abandoned response terminates and reaps the Java generation because
 the host can no longer prove the plugin invocation's state. The checked-in
 `third_party/community-h2-classpath.lock` additionally binds the current
@@ -279,12 +304,13 @@ authorization.
 
 The product runtime embeds that lock and accepts only a directory matching it
 exactly. `CHAT2DB_COMMUNITY_CLASSPATH_DIR` selects the directory but cannot
-override its source commit or inventory. Core maps all twelve protocol
-operations to stable external DTOs; schema, object, and relation metadata
-resolve a vault-backed datasource and use a forced-read-only JDBC session
-before invoking this protocol. Core keeps each bounded metadata operation alive
-if its transport waiter is cancelled so it can consume the response and close
-the session. These product rules sit above the compatibility wire contract.
+override its source commit or inventory. Core maps all twenty protocol
+operations to stable external DTOs; schema, object, relation, and
+programmability metadata resolve a vault-backed datasource and use a
+forced-read-only JDBC session before invoking this protocol. Core keeps each
+bounded metadata operation alive if its transport waiter is cancelled so it can
+consume the response and close the session. These product rules sit above the
+compatibility wire contract.
 
 ## Supervision
 
@@ -311,11 +337,11 @@ CI runs the same cross-language H2 gates without conditional skips and adds a
 Windows managed-pack runtime test. The Stage 7B gate performs a clean build of
 the fixed Community source with a commit-derived archive timestamp and a
 repository-local Maven cache, rejects classpath lock drift, keeps the H2 JDBC
-driver external, and executes catalog, schema metadata, schema builder, and
-ANTLR parser calls through the real Community H2 plugin. CI runs that same
-Community sidecar path on Linux and Windows. The Stage 7C-7E product gate starts
-from the exact embedded lock, stores an encrypted H2 datasource, invokes all
-twelve operations through Core, and verifies database/table/column/index,
-view, imported/exported foreign-key, and primary-key projection plus
-metadata-session and driver cleanup; CI runs this product boundary on Linux and
-Windows as well.
+driver external, and executes catalog, schema, object, relation,
+programmability, schema-builder, and ANTLR-parser calls through the real
+Community H2 plugin. CI runs that same Community sidecar path on Linux and
+Windows. The Stage 7C-7F product gate starts from the exact embedded lock,
+stores an encrypted H2 datasource, invokes all twenty operations through Core,
+and verifies database/table/column/index, view, foreign-key, primary-key,
+function, procedure, parameter, and trigger projection plus metadata-session
+and driver cleanup; CI runs this product boundary on Linux and Windows as well.

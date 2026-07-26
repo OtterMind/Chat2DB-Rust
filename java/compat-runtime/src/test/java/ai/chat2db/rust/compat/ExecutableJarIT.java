@@ -80,6 +80,7 @@ class ExecutableJarIT {
                         ProtocolLoop.COMMUNITY_SCHEMA_METADATA_CAPABILITY,
                         ProtocolLoop.COMMUNITY_OBJECT_METADATA_CAPABILITY,
                         ProtocolLoop.COMMUNITY_RELATION_METADATA_CAPABILITY,
+                        ProtocolLoop.COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
                         ProtocolLoop.COMMUNITY_SQL_BUILDER_CAPABILITY,
                             ProtocolLoop.COMMUNITY_SQL_PARSER_CAPABILITY),
                     serverHello.getHello().getCapabilitiesList());

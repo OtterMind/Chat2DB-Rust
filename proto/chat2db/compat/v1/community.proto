@@ -46,6 +46,26 @@ enum CommunityKeyCountLimit {
   COMMUNITY_KEY_COUNT_LIMIT_MAX_KEYS = 65536;
 }
 
+enum CommunityFunctionCountLimit {
+  COMMUNITY_FUNCTION_COUNT_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_FUNCTION_COUNT_LIMIT_MAX_FUNCTIONS = 65536;
+}
+
+enum CommunityProcedureCountLimit {
+  COMMUNITY_PROCEDURE_COUNT_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_PROCEDURE_COUNT_LIMIT_MAX_PROCEDURES = 65536;
+}
+
+enum CommunityTriggerCountLimit {
+  COMMUNITY_TRIGGER_COUNT_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_TRIGGER_COUNT_LIMIT_MAX_TRIGGERS = 65536;
+}
+
+enum CommunityRoutineParameterCountLimit {
+  COMMUNITY_ROUTINE_PARAMETER_COUNT_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_ROUTINE_PARAMETER_COUNT_LIMIT_MAX_PARAMETERS = 65536;
+}
+
 enum CommunityColumnCountLimit {
   COMMUNITY_COLUMN_COUNT_LIMIT_UNSPECIFIED = 0;
   COMMUNITY_COLUMN_COUNT_LIMIT_MAX_COLUMNS = 65536;
@@ -318,6 +338,143 @@ message CommunityPrimaryKey {
 
 message CommunityPrimaryKeyList {
   repeated CommunityPrimaryKey keys = 1;
+}
+
+message ListCommunityFunctionsRequest {
+  string database_type = 1;
+  string database_name = 2;
+  string schema_name = 3;
+  optional string transaction_id = 4;
+}
+
+message GetCommunityFunctionRequest {
+  string database_type = 1;
+  string database_name = 2;
+  string schema_name = 3;
+  string function_name = 4;
+  optional string transaction_id = 5;
+}
+
+message CommunityFunction {
+  string database_name = 1;
+  string schema_name = 2;
+  string name = 3;
+  string remarks = 4;
+  optional int32 function_type = 5;
+  string specific_name = 6;
+  string body = 7;
+  string template = 8;
+}
+
+message CommunityFunctionList {
+  repeated CommunityFunction functions = 1;
+}
+
+message CommunityFunctionParameter {
+  string function_database = 1;
+  string function_schema = 2;
+  string function_name = 3;
+  string column_name = 4;
+  optional int32 column_type = 5;
+  optional int32 data_type = 6;
+  string type_name = 7;
+  optional int32 precision = 8;
+  optional int32 length = 9;
+  optional int32 scale = 10;
+  optional int32 radix = 11;
+  optional int32 nullable = 12;
+  string remarks = 13;
+  optional int32 char_octet_length = 14;
+  optional int32 ordinal_position = 15;
+  string is_nullable = 16;
+  string specific_name = 17;
+}
+
+message CommunityFunctionParameterList {
+  repeated CommunityFunctionParameter parameters = 1;
+}
+
+message ListCommunityProceduresRequest {
+  string database_type = 1;
+  string database_name = 2;
+  string schema_name = 3;
+  optional string transaction_id = 4;
+}
+
+message GetCommunityProcedureRequest {
+  string database_type = 1;
+  string database_name = 2;
+  string schema_name = 3;
+  string procedure_name = 4;
+  optional string transaction_id = 5;
+}
+
+message CommunityProcedure {
+  string database_name = 1;
+  string schema_name = 2;
+  string name = 3;
+  string remarks = 4;
+  optional int32 procedure_type = 5;
+  string specific_name = 6;
+  string body = 7;
+}
+
+message CommunityProcedureList {
+  repeated CommunityProcedure procedures = 1;
+}
+
+message CommunityProcedureParameter {
+  string procedure_database = 1;
+  string procedure_schema = 2;
+  string procedure_name = 3;
+  string column_name = 4;
+  optional int32 column_type = 5;
+  optional int32 data_type = 6;
+  string type_name = 7;
+  optional int32 precision = 8;
+  optional int32 length = 9;
+  optional int32 scale = 10;
+  optional int32 radix = 11;
+  optional int32 nullable = 12;
+  string remarks = 13;
+  string column_default = 14;
+  optional int32 sql_data_type = 15;
+  optional int32 sql_datetime_sub = 16;
+  optional int32 char_octet_length = 17;
+  optional int32 ordinal_position = 18;
+  string is_nullable = 19;
+  string specific_name = 20;
+}
+
+message CommunityProcedureParameterList {
+  repeated CommunityProcedureParameter parameters = 1;
+}
+
+message ListCommunityTriggersRequest {
+  string database_type = 1;
+  string database_name = 2;
+  string schema_name = 3;
+  optional string transaction_id = 4;
+}
+
+message GetCommunityTriggerRequest {
+  string database_type = 1;
+  string database_name = 2;
+  string schema_name = 3;
+  string trigger_name = 4;
+  optional string transaction_id = 5;
+}
+
+message CommunityTrigger {
+  string database_name = 1;
+  string schema_name = 2;
+  string name = 3;
+  string event_manipulation = 4;
+  string body = 5;
+}
+
+message CommunityTriggerList {
+  repeated CommunityTrigger triggers = 1;
 }
 
 message BuildCommunityCreateSchemaRequest {

@@ -35,6 +35,11 @@ const MAX_COMMUNITY_DATABASES: usize = wire::CommunityDatabaseCountLimit::MaxDat
 const MAX_COMMUNITY_TABLES: usize = wire::CommunityTableCountLimit::MaxTables as usize;
 const MAX_COMMUNITY_VIEWS: usize = wire::CommunityViewCountLimit::MaxViews as usize;
 const MAX_COMMUNITY_KEYS: usize = wire::CommunityKeyCountLimit::MaxKeys as usize;
+const MAX_COMMUNITY_FUNCTIONS: usize = wire::CommunityFunctionCountLimit::MaxFunctions as usize;
+const MAX_COMMUNITY_PROCEDURES: usize = wire::CommunityProcedureCountLimit::MaxProcedures as usize;
+const MAX_COMMUNITY_TRIGGERS: usize = wire::CommunityTriggerCountLimit::MaxTriggers as usize;
+const MAX_COMMUNITY_ROUTINE_PARAMETERS: usize =
+    wire::CommunityRoutineParameterCountLimit::MaxParameters as usize;
 const MAX_COMMUNITY_COLUMNS: usize = wire::CommunityColumnCountLimit::MaxColumns as usize;
 const MAX_COMMUNITY_INDEXES: usize = wire::CommunityIndexCountLimit::MaxIndexes as usize;
 const MAX_COMMUNITY_INDEX_COLUMNS: usize =
@@ -998,6 +1003,38 @@ fn validate_response_payload(
             validate_community_primary_key_list(keys)?;
             Ok(None)
         }
+        wire::server_envelope::Payload::CommunityFunctionList(functions) => {
+            validate_community_function_list(functions)?;
+            Ok(None)
+        }
+        wire::server_envelope::Payload::CommunityFunction(function) => {
+            validate_community_function(function)?;
+            Ok(None)
+        }
+        wire::server_envelope::Payload::CommunityFunctionParameterList(parameters) => {
+            validate_community_function_parameter_list(parameters)?;
+            Ok(None)
+        }
+        wire::server_envelope::Payload::CommunityProcedureList(procedures) => {
+            validate_community_procedure_list(procedures)?;
+            Ok(None)
+        }
+        wire::server_envelope::Payload::CommunityProcedure(procedure) => {
+            validate_community_procedure(procedure)?;
+            Ok(None)
+        }
+        wire::server_envelope::Payload::CommunityProcedureParameterList(parameters) => {
+            validate_community_procedure_parameter_list(parameters)?;
+            Ok(None)
+        }
+        wire::server_envelope::Payload::CommunityTriggerList(triggers) => {
+            validate_community_trigger_list(triggers)?;
+            Ok(None)
+        }
+        wire::server_envelope::Payload::CommunityTrigger(trigger) => {
+            validate_community_trigger(trigger)?;
+            Ok(None)
+        }
         wire::server_envelope::Payload::CommunityBuiltSql(built) => {
             validate_non_empty_bytes(&built.sql, MAX_SQL_BYTES, "Community built SQL")?;
             let mut field_bytes = 0;
@@ -1216,6 +1253,259 @@ fn validate_community_primary_key_list(keys: &wire::CommunityPrimaryKeyList) -> 
         }
     }
     validate_community_response_encoded_len(keys)
+}
+
+fn validate_community_function_list(functions: &wire::CommunityFunctionList) -> Result<(), String> {
+    if functions.functions.len() > MAX_COMMUNITY_FUNCTIONS {
+        return Err(format!(
+            "Community metadata exceeded the {MAX_COMMUNITY_FUNCTIONS}-function limit"
+        ));
+    }
+    let mut field_bytes = 0;
+    for function in &functions.functions {
+        validate_community_function_value(function, &mut field_bytes)?;
+    }
+    validate_community_response_encoded_len(functions)
+}
+
+fn validate_community_function(function: &wire::CommunityFunction) -> Result<(), String> {
+    let mut field_bytes = 0;
+    validate_community_function_value(function, &mut field_bytes)?;
+    validate_community_response_encoded_len(function)
+}
+
+fn validate_community_function_value(
+    function: &wire::CommunityFunction,
+    field_bytes: &mut usize,
+) -> Result<(), String> {
+    for (value, field) in [
+        (&function.database_name, "Community function database"),
+        (&function.schema_name, "Community function schema"),
+        (&function.name, "Community function name"),
+        (&function.specific_name, "Community function specific name"),
+    ] {
+        validate_community_response_field(field_bytes, value, MAX_SCALAR_BYTES, field)?;
+    }
+    validate_community_response_field(
+        field_bytes,
+        &function.remarks,
+        MAX_COMMUNITY_COMMENT_BYTES,
+        "Community function remarks",
+    )?;
+    validate_community_response_field(
+        field_bytes,
+        &function.body,
+        MAX_SQL_BYTES,
+        "Community function body",
+    )?;
+    validate_community_response_field(
+        field_bytes,
+        &function.template,
+        MAX_SQL_BYTES,
+        "Community function template",
+    )
+}
+
+fn validate_community_function_parameter_list(
+    parameters: &wire::CommunityFunctionParameterList,
+) -> Result<(), String> {
+    if parameters.parameters.len() > MAX_COMMUNITY_ROUTINE_PARAMETERS {
+        return Err(format!(
+            "Community metadata exceeded the {MAX_COMMUNITY_ROUTINE_PARAMETERS}-routine-parameter limit"
+        ));
+    }
+    let mut field_bytes = 0;
+    for parameter in &parameters.parameters {
+        for (value, field) in [
+            (
+                &parameter.function_database,
+                "Community function-parameter database",
+            ),
+            (
+                &parameter.function_schema,
+                "Community function-parameter schema",
+            ),
+            (
+                &parameter.function_name,
+                "Community function-parameter function",
+            ),
+            (
+                &parameter.column_name,
+                "Community function-parameter column",
+            ),
+            (
+                &parameter.type_name,
+                "Community function-parameter type name",
+            ),
+            (
+                &parameter.is_nullable,
+                "Community function-parameter nullable text",
+            ),
+            (
+                &parameter.specific_name,
+                "Community function-parameter specific name",
+            ),
+        ] {
+            validate_community_response_field(&mut field_bytes, value, MAX_SCALAR_BYTES, field)?;
+        }
+        validate_community_response_field(
+            &mut field_bytes,
+            &parameter.remarks,
+            MAX_COMMUNITY_COMMENT_BYTES,
+            "Community function-parameter remarks",
+        )?;
+    }
+    validate_community_response_encoded_len(parameters)
+}
+
+fn validate_community_procedure_list(
+    procedures: &wire::CommunityProcedureList,
+) -> Result<(), String> {
+    if procedures.procedures.len() > MAX_COMMUNITY_PROCEDURES {
+        return Err(format!(
+            "Community metadata exceeded the {MAX_COMMUNITY_PROCEDURES}-procedure limit"
+        ));
+    }
+    let mut field_bytes = 0;
+    for procedure in &procedures.procedures {
+        validate_community_procedure_value(procedure, &mut field_bytes)?;
+    }
+    validate_community_response_encoded_len(procedures)
+}
+
+fn validate_community_procedure(procedure: &wire::CommunityProcedure) -> Result<(), String> {
+    let mut field_bytes = 0;
+    validate_community_procedure_value(procedure, &mut field_bytes)?;
+    validate_community_response_encoded_len(procedure)
+}
+
+fn validate_community_procedure_value(
+    procedure: &wire::CommunityProcedure,
+    field_bytes: &mut usize,
+) -> Result<(), String> {
+    for (value, field) in [
+        (&procedure.database_name, "Community procedure database"),
+        (&procedure.schema_name, "Community procedure schema"),
+        (&procedure.name, "Community procedure name"),
+        (
+            &procedure.specific_name,
+            "Community procedure specific name",
+        ),
+    ] {
+        validate_community_response_field(field_bytes, value, MAX_SCALAR_BYTES, field)?;
+    }
+    validate_community_response_field(
+        field_bytes,
+        &procedure.remarks,
+        MAX_COMMUNITY_COMMENT_BYTES,
+        "Community procedure remarks",
+    )?;
+    validate_community_response_field(
+        field_bytes,
+        &procedure.body,
+        MAX_SQL_BYTES,
+        "Community procedure body",
+    )
+}
+
+fn validate_community_procedure_parameter_list(
+    parameters: &wire::CommunityProcedureParameterList,
+) -> Result<(), String> {
+    if parameters.parameters.len() > MAX_COMMUNITY_ROUTINE_PARAMETERS {
+        return Err(format!(
+            "Community metadata exceeded the {MAX_COMMUNITY_ROUTINE_PARAMETERS}-routine-parameter limit"
+        ));
+    }
+    let mut field_bytes = 0;
+    for parameter in &parameters.parameters {
+        for (value, field) in [
+            (
+                &parameter.procedure_database,
+                "Community procedure-parameter database",
+            ),
+            (
+                &parameter.procedure_schema,
+                "Community procedure-parameter schema",
+            ),
+            (
+                &parameter.procedure_name,
+                "Community procedure-parameter procedure",
+            ),
+            (
+                &parameter.column_name,
+                "Community procedure-parameter column",
+            ),
+            (
+                &parameter.type_name,
+                "Community procedure-parameter type name",
+            ),
+            (
+                &parameter.is_nullable,
+                "Community procedure-parameter nullable text",
+            ),
+            (
+                &parameter.specific_name,
+                "Community procedure-parameter specific name",
+            ),
+        ] {
+            validate_community_response_field(&mut field_bytes, value, MAX_SCALAR_BYTES, field)?;
+        }
+        validate_community_response_field(
+            &mut field_bytes,
+            &parameter.remarks,
+            MAX_COMMUNITY_COMMENT_BYTES,
+            "Community procedure-parameter remarks",
+        )?;
+        validate_community_response_field(
+            &mut field_bytes,
+            &parameter.column_default,
+            MAX_SQL_BYTES,
+            "Community procedure-parameter default",
+        )?;
+    }
+    validate_community_response_encoded_len(parameters)
+}
+
+fn validate_community_trigger_list(triggers: &wire::CommunityTriggerList) -> Result<(), String> {
+    if triggers.triggers.len() > MAX_COMMUNITY_TRIGGERS {
+        return Err(format!(
+            "Community metadata exceeded the {MAX_COMMUNITY_TRIGGERS}-trigger limit"
+        ));
+    }
+    let mut field_bytes = 0;
+    for trigger in &triggers.triggers {
+        validate_community_trigger_value(trigger, &mut field_bytes)?;
+    }
+    validate_community_response_encoded_len(triggers)
+}
+
+fn validate_community_trigger(trigger: &wire::CommunityTrigger) -> Result<(), String> {
+    let mut field_bytes = 0;
+    validate_community_trigger_value(trigger, &mut field_bytes)?;
+    validate_community_response_encoded_len(trigger)
+}
+
+fn validate_community_trigger_value(
+    trigger: &wire::CommunityTrigger,
+    field_bytes: &mut usize,
+) -> Result<(), String> {
+    for (value, field) in [
+        (&trigger.database_name, "Community trigger database"),
+        (&trigger.schema_name, "Community trigger schema"),
+        (&trigger.name, "Community trigger name"),
+        (
+            &trigger.event_manipulation,
+            "Community trigger event manipulation",
+        ),
+    ] {
+        validate_community_response_field(field_bytes, value, MAX_SCALAR_BYTES, field)?;
+    }
+    validate_community_response_field(
+        field_bytes,
+        &trigger.body,
+        MAX_SQL_BYTES,
+        "Community trigger body",
+    )
 }
 
 fn validate_community_table_column_list(
@@ -2109,6 +2399,152 @@ mod tests {
             validate_response_payload(&oversized_primary)
                 .expect_err("oversized Community primary-key list must fail")
                 .contains("primary-key limit")
+        );
+    }
+
+    #[test]
+    fn community_programmability_responses_enforce_collection_bounds() {
+        let oversized_functions =
+            wire::server_envelope::Payload::CommunityFunctionList(wire::CommunityFunctionList {
+                functions: vec![wire::CommunityFunction::default(); MAX_COMMUNITY_FUNCTIONS + 1],
+            });
+        assert!(
+            validate_response_payload(&oversized_functions)
+                .expect_err("oversized Community function list must fail")
+                .contains("function limit")
+        );
+        drop(oversized_functions);
+
+        let oversized_function_parameters =
+            wire::server_envelope::Payload::CommunityFunctionParameterList(
+                wire::CommunityFunctionParameterList {
+                    parameters: vec![
+                        wire::CommunityFunctionParameter::default();
+                        MAX_COMMUNITY_ROUTINE_PARAMETERS + 1
+                    ],
+                },
+            );
+        assert!(
+            validate_response_payload(&oversized_function_parameters)
+                .expect_err("oversized Community function-parameter list must fail")
+                .contains("routine-parameter limit")
+        );
+        drop(oversized_function_parameters);
+
+        let oversized_procedures =
+            wire::server_envelope::Payload::CommunityProcedureList(wire::CommunityProcedureList {
+                procedures: vec![wire::CommunityProcedure::default(); MAX_COMMUNITY_PROCEDURES + 1],
+            });
+        assert!(
+            validate_response_payload(&oversized_procedures)
+                .expect_err("oversized Community procedure list must fail")
+                .contains("procedure limit")
+        );
+        drop(oversized_procedures);
+
+        let oversized_procedure_parameters =
+            wire::server_envelope::Payload::CommunityProcedureParameterList(
+                wire::CommunityProcedureParameterList {
+                    parameters: vec![
+                        wire::CommunityProcedureParameter::default();
+                        MAX_COMMUNITY_ROUTINE_PARAMETERS + 1
+                    ],
+                },
+            );
+        assert!(
+            validate_response_payload(&oversized_procedure_parameters)
+                .expect_err("oversized Community procedure-parameter list must fail")
+                .contains("routine-parameter limit")
+        );
+        drop(oversized_procedure_parameters);
+
+        let oversized_triggers =
+            wire::server_envelope::Payload::CommunityTriggerList(wire::CommunityTriggerList {
+                triggers: vec![wire::CommunityTrigger::default(); MAX_COMMUNITY_TRIGGERS + 1],
+            });
+        assert!(
+            validate_response_payload(&oversized_triggers)
+                .expect_err("oversized Community trigger list must fail")
+                .contains("trigger limit")
+        );
+    }
+
+    #[test]
+    fn community_programmability_responses_enforce_field_bounds() {
+        let oversized_function =
+            wire::server_envelope::Payload::CommunityFunction(wire::CommunityFunction {
+                template: "x".repeat(MAX_SQL_BYTES + 1),
+                ..Default::default()
+            });
+        assert!(
+            validate_response_payload(&oversized_function)
+                .expect_err("oversized Community function template must fail")
+                .contains("function template")
+        );
+
+        let oversized_function_parameter =
+            wire::server_envelope::Payload::CommunityFunctionParameterList(
+                wire::CommunityFunctionParameterList {
+                    parameters: vec![wire::CommunityFunctionParameter {
+                        type_name: "x".repeat(MAX_SCALAR_BYTES + 1),
+                        ..Default::default()
+                    }],
+                },
+            );
+        assert!(
+            validate_response_payload(&oversized_function_parameter)
+                .expect_err("oversized Community function-parameter type must fail")
+                .contains("function-parameter type name")
+        );
+
+        let oversized_procedure =
+            wire::server_envelope::Payload::CommunityProcedure(wire::CommunityProcedure {
+                remarks: "x".repeat(MAX_COMMUNITY_COMMENT_BYTES + 1),
+                ..Default::default()
+            });
+        assert!(
+            validate_response_payload(&oversized_procedure)
+                .expect_err("oversized Community procedure remarks must fail")
+                .contains("procedure remarks")
+        );
+
+        let oversized_procedure_parameter =
+            wire::server_envelope::Payload::CommunityProcedureParameterList(
+                wire::CommunityProcedureParameterList {
+                    parameters: vec![wire::CommunityProcedureParameter {
+                        column_default: "x".repeat(MAX_SQL_BYTES + 1),
+                        ..Default::default()
+                    }],
+                },
+            );
+        assert!(
+            validate_response_payload(&oversized_procedure_parameter)
+                .expect_err("oversized Community procedure-parameter default must fail")
+                .contains("procedure-parameter default")
+        );
+
+        let oversized_trigger =
+            wire::server_envelope::Payload::CommunityTrigger(wire::CommunityTrigger {
+                body: "x".repeat(MAX_SQL_BYTES + 1),
+                ..Default::default()
+            });
+        assert!(
+            validate_response_payload(&oversized_trigger)
+                .expect_err("oversized Community trigger body must fail")
+                .contains("trigger body")
+        );
+
+        let oversized_trigger_list =
+            wire::server_envelope::Payload::CommunityTriggerList(wire::CommunityTriggerList {
+                triggers: vec![wire::CommunityTrigger {
+                    name: "x".repeat(MAX_SCALAR_BYTES + 1),
+                    ..Default::default()
+                }],
+            });
+        assert!(
+            validate_response_payload(&oversized_trigger_list)
+                .expect_err("oversized Community trigger name in a list must fail")
+                .contains("trigger name")
         );
     }
 

@@ -1364,6 +1364,186 @@
         }
       }
     },
+    "/api/v1/community/metadata/function": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "get_community_function",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetCommunityFunctionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community function detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityFunction"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community metadata request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community metadata failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/community/metadata/function-parameters": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "list_community_function_parameters",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetCommunityFunctionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community function parameter metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityFunctionParameterList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community metadata request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community metadata failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/community/metadata/functions": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "list_community_functions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListCommunityFunctionsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community function metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityFunctionList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community metadata request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community metadata failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/community/metadata/imported-keys": {
       "post": {
         "tags": [
@@ -1544,6 +1724,186 @@
         }
       }
     },
+    "/api/v1/community/metadata/procedure": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "get_community_procedure",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetCommunityProcedureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community procedure detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityProcedure"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community metadata request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community metadata failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/community/metadata/procedure-parameters": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "list_community_procedure_parameters",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetCommunityProcedureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community procedure parameter metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityProcedureParameterList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community metadata request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community metadata failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/community/metadata/procedures": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "list_community_procedures",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListCommunityProceduresRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community procedure metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityProcedureList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community metadata request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community metadata failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/community/metadata/schemas": {
       "post": {
         "tags": [
@@ -1627,6 +1987,126 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CommunityTableList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community metadata request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community metadata failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/community/metadata/trigger": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "get_community_trigger",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetCommunityTriggerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community trigger detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityTrigger"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community metadata request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community metadata failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/community/metadata/triggers": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "list_community_triggers",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListCommunityTriggersRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community trigger metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityTriggerList"
                 }
               }
             }
@@ -4013,6 +4493,182 @@
           }
         }
       },
+      "CommunityFunction": {
+        "type": "object",
+        "description": "Secret-free Community function metadata.",
+        "required": [
+          "databaseName",
+          "schemaName",
+          "name",
+          "remarks",
+          "specificName",
+          "body",
+          "template"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "databaseName": {
+            "type": "string"
+          },
+          "functionType": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          },
+          "remarks": {
+            "type": "string"
+          },
+          "schemaName": {
+            "type": "string"
+          },
+          "specificName": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          }
+        }
+      },
+      "CommunityFunctionList": {
+        "type": "object",
+        "description": "Stable function collection returned by Community metadata.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityFunction"
+            }
+          }
+        }
+      },
+      "CommunityFunctionParameter": {
+        "type": "object",
+        "description": "Secret-free Community function-parameter metadata.",
+        "required": [
+          "functionDatabase",
+          "functionSchema",
+          "functionName",
+          "columnName",
+          "typeName",
+          "remarks",
+          "isNullable",
+          "specificName"
+        ],
+        "properties": {
+          "charOctetLength": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "columnName": {
+            "type": "string"
+          },
+          "columnType": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "dataType": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "functionDatabase": {
+            "type": "string"
+          },
+          "functionName": {
+            "type": "string"
+          },
+          "functionSchema": {
+            "type": "string"
+          },
+          "isNullable": {
+            "type": "string"
+          },
+          "length": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "nullable": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "ordinalPosition": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "precision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "radix": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "remarks": {
+            "type": "string"
+          },
+          "scale": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "specificName": {
+            "type": "string"
+          },
+          "typeName": {
+            "type": "string"
+          }
+        }
+      },
+      "CommunityFunctionParameterList": {
+        "type": "object",
+        "description": "Stable function-parameter collection returned by Community metadata.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityFunctionParameter"
+            }
+          }
+        }
+      },
       "CommunityParsedStatement": {
         "type": "object",
         "description": "One statement returned by the retained Community parser.",
@@ -4178,6 +4834,196 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/CommunityPrimaryKey"
+            }
+          }
+        }
+      },
+      "CommunityProcedure": {
+        "type": "object",
+        "description": "Secret-free Community stored-procedure metadata.",
+        "required": [
+          "databaseName",
+          "schemaName",
+          "name",
+          "remarks",
+          "specificName",
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "databaseName": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "procedureType": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "remarks": {
+            "type": "string"
+          },
+          "schemaName": {
+            "type": "string"
+          },
+          "specificName": {
+            "type": "string"
+          }
+        }
+      },
+      "CommunityProcedureList": {
+        "type": "object",
+        "description": "Stable procedure collection returned by Community metadata.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityProcedure"
+            }
+          }
+        }
+      },
+      "CommunityProcedureParameter": {
+        "type": "object",
+        "description": "Secret-free Community procedure-parameter metadata.",
+        "required": [
+          "procedureDatabase",
+          "procedureSchema",
+          "procedureName",
+          "columnName",
+          "typeName",
+          "remarks",
+          "columnDefault",
+          "isNullable",
+          "specificName"
+        ],
+        "properties": {
+          "charOctetLength": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "columnDefault": {
+            "type": "string"
+          },
+          "columnName": {
+            "type": "string"
+          },
+          "columnType": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "dataType": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "isNullable": {
+            "type": "string"
+          },
+          "length": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "nullable": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "ordinalPosition": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "precision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "procedureDatabase": {
+            "type": "string"
+          },
+          "procedureName": {
+            "type": "string"
+          },
+          "procedureSchema": {
+            "type": "string"
+          },
+          "radix": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "remarks": {
+            "type": "string"
+          },
+          "scale": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "specificName": {
+            "type": "string"
+          },
+          "sqlDataType": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "sqlDatetimeSub": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "typeName": {
+            "type": "string"
+          }
+        }
+      },
+      "CommunityProcedureParameterList": {
+        "type": "object",
+        "description": "Stable procedure-parameter collection returned by Community metadata.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityProcedureParameter"
             }
           }
         }
@@ -4721,6 +5567,49 @@
           }
         }
       },
+      "CommunityTrigger": {
+        "type": "object",
+        "description": "Secret-free Community trigger metadata.",
+        "required": [
+          "databaseName",
+          "schemaName",
+          "name",
+          "eventManipulation",
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "databaseName": {
+            "type": "string"
+          },
+          "eventManipulation": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "schemaName": {
+            "type": "string"
+          }
+        }
+      },
+      "CommunityTriggerList": {
+        "type": "object",
+        "description": "Stable trigger collection returned by Community metadata.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityTrigger"
+            }
+          }
+        }
+      },
       "CommunityViewList": {
         "type": "object",
         "description": "Stable view collection returned by Community metadata APIs.",
@@ -5080,6 +5969,90 @@
           "toolCallId": {
             "type": "string",
             "description": "Exact tool-call id displayed with the permission request."
+          }
+        }
+      },
+      "GetCommunityFunctionRequest": {
+        "type": "object",
+        "description": "Request to read one function or its parameters.",
+        "required": [
+          "datasourceId",
+          "databaseType",
+          "databaseName",
+          "schemaName",
+          "functionName"
+        ],
+        "properties": {
+          "databaseName": {
+            "type": "string"
+          },
+          "databaseType": {
+            "type": "string"
+          },
+          "datasourceId": {
+            "type": "string"
+          },
+          "functionName": {
+            "type": "string"
+          },
+          "schemaName": {
+            "type": "string"
+          }
+        }
+      },
+      "GetCommunityProcedureRequest": {
+        "type": "object",
+        "description": "Request to read one stored procedure or its parameters.",
+        "required": [
+          "datasourceId",
+          "databaseType",
+          "databaseName",
+          "schemaName",
+          "procedureName"
+        ],
+        "properties": {
+          "databaseName": {
+            "type": "string"
+          },
+          "databaseType": {
+            "type": "string"
+          },
+          "datasourceId": {
+            "type": "string"
+          },
+          "procedureName": {
+            "type": "string"
+          },
+          "schemaName": {
+            "type": "string"
+          }
+        }
+      },
+      "GetCommunityTriggerRequest": {
+        "type": "object",
+        "description": "Request to read one trigger.",
+        "required": [
+          "datasourceId",
+          "databaseType",
+          "databaseName",
+          "schemaName",
+          "triggerName"
+        ],
+        "properties": {
+          "databaseName": {
+            "type": "string"
+          },
+          "databaseType": {
+            "type": "string"
+          },
+          "datasourceId": {
+            "type": "string"
+          },
+          "schemaName": {
+            "type": "string"
+          },
+          "triggerName": {
+            "type": "string"
           }
         }
       },
@@ -5568,6 +6541,30 @@
           }
         }
       },
+      "ListCommunityFunctionsRequest": {
+        "type": "object",
+        "description": "Request to list functions through one datasource connection.",
+        "required": [
+          "datasourceId",
+          "databaseType",
+          "databaseName",
+          "schemaName"
+        ],
+        "properties": {
+          "databaseName": {
+            "type": "string"
+          },
+          "databaseType": {
+            "type": "string"
+          },
+          "datasourceId": {
+            "type": "string"
+          },
+          "schemaName": {
+            "type": "string"
+          }
+        }
+      },
       "ListCommunityIndexesRequest": {
         "type": "object",
         "description": "Request to list indexes for one table through Community metadata.",
@@ -5592,6 +6589,30 @@
             "type": "string"
           },
           "tableName": {
+            "type": "string"
+          }
+        }
+      },
+      "ListCommunityProceduresRequest": {
+        "type": "object",
+        "description": "Request to list stored procedures through one datasource connection.",
+        "required": [
+          "datasourceId",
+          "databaseType",
+          "databaseName",
+          "schemaName"
+        ],
+        "properties": {
+          "databaseName": {
+            "type": "string"
+          },
+          "databaseType": {
+            "type": "string"
+          },
+          "datasourceId": {
+            "type": "string"
+          },
+          "schemaName": {
             "type": "string"
           }
         }
@@ -5671,6 +6692,30 @@
             "type": "string"
           },
           "tableNamePattern": {
+            "type": "string"
+          }
+        }
+      },
+      "ListCommunityTriggersRequest": {
+        "type": "object",
+        "description": "Request to list triggers through one datasource connection.",
+        "required": [
+          "datasourceId",
+          "databaseType",
+          "databaseName",
+          "schemaName"
+        ],
+        "properties": {
+          "databaseName": {
+            "type": "string"
+          },
+          "databaseType": {
+            "type": "string"
+          },
+          "datasourceId": {
+            "type": "string"
+          },
+          "schemaName": {
             "type": "string"
           }
         }
