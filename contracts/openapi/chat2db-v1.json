@@ -2364,6 +2364,66 @@
         }
       }
     },
+    "/api/v1/community/sql/validate": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "validate_community_sql",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidateCommunitySqlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community SQL syntax validation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunitySqlValidation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community SQL-validation request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community SQL-validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/datasources": {
       "get": {
         "tags": [
@@ -5098,6 +5158,75 @@
           }
         }
       },
+      "CommunitySqlDiagnostic": {
+        "type": "object",
+        "description": "One syntax diagnostic returned by the retained Community parser.",
+        "required": [
+          "startLine",
+          "startColumn",
+          "endLine",
+          "endColumn",
+          "tokenText",
+          "message"
+        ],
+        "properties": {
+          "endColumn": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "endLine": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string"
+          },
+          "startColumn": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "startLine": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "tokenText": {
+            "type": "string"
+          }
+        }
+      },
+      "CommunitySqlValidation": {
+        "type": "object",
+        "description": "Bounded Community syntax-validation result for one SQL input.",
+        "required": [
+          "valid",
+          "statements",
+          "diagnostics"
+        ],
+        "properties": {
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunitySqlDiagnostic"
+            },
+            "description": "Syntax diagnostics in source order."
+          },
+          "statements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityParsedStatement"
+            },
+            "description": "Parsed statements in source order."
+          },
+          "valid": {
+            "type": "boolean",
+            "description": "True when the parser reported no syntax diagnostics."
+          }
+        }
+      },
       "CommunityTable": {
         "type": "object",
         "description": "Secret-free table metadata without nested column or index payloads.",
@@ -7695,6 +7824,24 @@
           "secretChange": {
             "$ref": "#/components/schemas/ProviderSecretChange",
             "description": "Explicit keep, clear, or replace action for the credential."
+          }
+        }
+      },
+      "ValidateCommunitySqlRequest": {
+        "type": "object",
+        "description": "Request to validate SQL through a retained Community parser.",
+        "required": [
+          "databaseType",
+          "sql"
+        ],
+        "properties": {
+          "databaseType": {
+            "type": "string",
+            "description": "Community database type used to select the parser."
+          },
+          "sql": {
+            "type": "string",
+            "description": "SQL text to validate."
           }
         }
       }

@@ -604,6 +604,40 @@ pub struct CommunitySqlAnalysis {
     pub statements: Vec<CommunityParsedStatement>,
 }
 
+/// Request to validate SQL through a retained Community parser.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidateCommunitySqlRequest {
+    /// Community database type used to select the parser.
+    pub database_type: String,
+    /// SQL text to validate.
+    pub sql: String,
+}
+
+/// One syntax diagnostic returned by the retained Community parser.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunitySqlDiagnostic {
+    pub start_line: u32,
+    pub start_column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+    pub token_text: String,
+    pub message: String,
+}
+
+/// Bounded Community syntax-validation result for one SQL input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunitySqlValidation {
+    /// True when the parser reported no syntax diagnostics.
+    pub valid: bool,
+    /// Parsed statements in source order.
+    pub statements: Vec<CommunityParsedStatement>,
+    /// Syntax diagnostics in source order.
+    pub diagnostics: Vec<CommunitySqlDiagnostic>,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -616,14 +650,15 @@ mod tests {
         CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
         CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
         CommunityProcedureParameter, CommunityProcedureParameterList, CommunitySchema,
-        CommunitySchemaList, CommunitySqlAnalysis, CommunityTable, CommunityTableColumn,
-        CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
-        CommunityTableIndexList, CommunityTableList, CommunityTrigger, CommunityTriggerList,
-        CommunityViewList, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
-        GetCommunityTriggerRequest, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
-        ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
-        ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
-        ListCommunityTriggersRequest, ListCommunityViewsRequest, ParseCommunitySqlRequest,
+        CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlDiagnostic, CommunitySqlValidation,
+        CommunityTable, CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex,
+        CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList, CommunityTrigger,
+        CommunityTriggerList, CommunityViewList, GetCommunityFunctionRequest,
+        GetCommunityProcedureRequest, GetCommunityTriggerRequest, ListCommunityColumnsRequest,
+        ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
+        ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
+        ListCommunityTablesRequest, ListCommunityTriggersRequest, ListCommunityViewsRequest,
+        ParseCommunitySqlRequest, ValidateCommunitySqlRequest,
     };
 
     #[test]
@@ -696,6 +731,10 @@ mod tests {
             database_type: "H2".to_owned(),
             sql: "select 1".to_owned(),
         };
+        let validate_request = ValidateCommunitySqlRequest {
+            database_type: "H2".to_owned(),
+            sql: "select from".to_owned(),
+        };
         let schema_list = CommunitySchemaList {
             items: vec![schema],
         };
@@ -710,6 +749,18 @@ mod tests {
                 kind: "Select".to_owned(),
             }],
         };
+        let validation = CommunitySqlValidation {
+            valid: false,
+            statements: Vec::new(),
+            diagnostics: vec![CommunitySqlDiagnostic {
+                start_line: 1,
+                start_column: 8,
+                end_line: 1,
+                end_column: 12,
+                token_text: "from".to_owned(),
+                message: "unexpected FROM".to_owned(),
+            }],
+        };
 
         assert_eq!(
             serde_json::to_value(&list_request).expect("request must serialize"),
@@ -721,9 +772,33 @@ mod tests {
         );
         assert_round_trip(&build_request);
         assert_round_trip(&parse_request);
+        assert_eq!(
+            serde_json::to_value(&validate_request).expect("validation request must serialize"),
+            json!({
+                "databaseType": "H2",
+                "sql": "select from"
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&validation).expect("validation result must serialize"),
+            json!({
+                "valid": false,
+                "statements": [],
+                "diagnostics": [{
+                    "startLine": 1,
+                    "startColumn": 8,
+                    "endLine": 1,
+                    "endColumn": 12,
+                    "tokenText": "from",
+                    "message": "unexpected FROM"
+                }]
+            })
+        );
         assert_round_trip(&schema_list);
         assert_round_trip(&built);
         assert_round_trip(&analysis);
+        assert_round_trip(&validate_request);
+        assert_round_trip(&validation);
     }
 
     #[test]

@@ -15,6 +15,7 @@ import type {
   CommunityProcedureParameterList,
   CommunitySchemaList,
   CommunitySqlAnalysis,
+  CommunitySqlValidation,
   CommunityTableColumnList,
   CommunityTableIndexList,
   CommunityTableList,
@@ -35,6 +36,7 @@ import type {
   ListCommunityTriggersRequest,
   ListCommunityViewsRequest,
   ParseCommunitySqlRequest,
+  ValidateCommunitySqlRequest,
 } from './client';
 import { HttpBackendClient } from './http';
 import { TauriBackendClient } from './tauri';
@@ -129,6 +131,11 @@ const parseSqlRequest = {
   databaseType: 'H2',
   sql: 'select 1',
 } satisfies ParseCommunitySqlRequest;
+
+const validateSqlRequest = {
+  databaseType: 'H2',
+  sql: 'select from',
+} satisfies ValidateCommunitySqlRequest;
 
 const catalog = {
   sourceCommit: 'f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7',
@@ -356,6 +363,18 @@ const analysis = {
   isSelect: true,
   statements: [{ sql: 'select 1', statementType: 'SELECT', kind: 'Select' }],
 } satisfies CommunitySqlAnalysis;
+const validation = {
+  valid: false,
+  statements: [],
+  diagnostics: [{
+    startLine: 1,
+    startColumn: 8,
+    endLine: 1,
+    endColumn: 12,
+    tokenText: 'from',
+    message: 'unexpected FROM',
+  }],
+} satisfies CommunitySqlValidation;
 
 const responses = [
   catalog,
@@ -378,6 +397,7 @@ const responses = [
   trigger,
   builtSql,
   analysis,
+  validation,
 ] as const;
 
 function jsonResponse(value: unknown): Response {
@@ -423,6 +443,7 @@ describe('Community backend adapter parity', () => {
       await client.getCommunityTrigger(getTriggerRequest),
       await client.buildCommunityCreateSchema(buildSchemaRequest),
       await client.parseCommunitySql(parseSqlRequest),
+      await client.validateCommunitySql(validateSqlRequest),
     ];
 
     expect(received).toEqual(responses);
@@ -525,6 +546,7 @@ describe('Community backend adapter parity', () => {
         body: buildSchemaRequest,
       },
       { path: '/api/v1/community/sql/parse', method: 'POST', body: parseSqlRequest },
+      { path: '/api/v1/community/sql/validate', method: 'POST', body: validateSqlRequest },
     ]);
   });
 
@@ -560,6 +582,7 @@ describe('Community backend adapter parity', () => {
       await client.getCommunityTrigger(getTriggerRequest),
       await client.buildCommunityCreateSchema(buildSchemaRequest),
       await client.parseCommunitySql(parseSqlRequest),
+      await client.validateCommunitySql(validateSqlRequest),
     ];
 
     expect(received).toEqual(responses);
@@ -592,6 +615,7 @@ describe('Community backend adapter parity', () => {
       { command: 'get_community_trigger', args: { request: getTriggerRequest } },
       { command: 'build_community_create_schema', args: { request: buildSchemaRequest } },
       { command: 'parse_community_sql', args: { request: parseSqlRequest } },
+      { command: 'validate_community_sql', args: { request: validateSqlRequest } },
     ]);
   });
 });

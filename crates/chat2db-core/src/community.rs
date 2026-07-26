@@ -7,14 +7,15 @@ use chat2db_contract::{
     CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
     CommunityPluginServices, CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure,
     CommunityProcedureList, CommunityProcedureParameter, CommunityProcedureParameterList,
-    CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis, CommunityTable,
-    CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
-    CommunityTableIndexList, CommunityTableList, CommunityTrigger, CommunityTriggerList,
-    CommunityViewList, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
-    GetCommunityTriggerRequest, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
-    ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
-    ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
-    ListCommunityTriggersRequest, ListCommunityViewsRequest, ParseCommunitySqlRequest,
+    CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlDiagnostic,
+    CommunitySqlValidation, CommunityTable, CommunityTableColumn, CommunityTableColumnList,
+    CommunityTableIndex, CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList,
+    CommunityTrigger, CommunityTriggerList, CommunityViewList, GetCommunityFunctionRequest,
+    GetCommunityProcedureRequest, GetCommunityTriggerRequest, ListCommunityColumnsRequest,
+    ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
+    ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
+    ListCommunityTablesRequest, ListCommunityTriggersRequest, ListCommunityViewsRequest,
+    ParseCommunitySqlRequest, ValidateCommunitySqlRequest,
 };
 use chat2db_java_bridge::{
     BridgeError, CommunityClasspath, CommunityDatabase as BridgeCommunityDatabase,
@@ -28,7 +29,9 @@ use chat2db_java_bridge::{
     CommunityProcedure as BridgeCommunityProcedure,
     CommunityProcedureParameter as BridgeCommunityProcedureParameter,
     CommunitySchema as BridgeCommunitySchema, CommunitySqlAnalysis as BridgeCommunitySqlAnalysis,
-    CommunityTable as BridgeCommunityTable, CommunityTableColumn as BridgeCommunityTableColumn,
+    CommunitySqlDiagnostic as BridgeCommunitySqlDiagnostic,
+    CommunitySqlValidation as BridgeCommunitySqlValidation, CommunityTable as BridgeCommunityTable,
+    CommunityTableColumn as BridgeCommunityTableColumn,
     CommunityTableIndex as BridgeCommunityTableIndex,
     CommunityTableIndexColumn as BridgeCommunityTableIndexColumn,
     CommunityTrigger as BridgeCommunityTrigger, EngineClient, Session,
@@ -816,6 +819,25 @@ impl Application {
             .map_err(AppError::from)
     }
 
+    /// Validates SQL through the retained Community dialect parser.
+    ///
+    /// # Errors
+    ///
+    /// Returns an engine availability, capability, validation, protocol, or
+    /// Community parser error.
+    pub async fn validate_community_sql(
+        &self,
+        request: ValidateCommunitySqlRequest,
+    ) -> Result<CommunitySqlValidation, AppError> {
+        let engine = self.require_community_engine()?;
+        let client = engine.community_client().map_err(AppError::from)?;
+        client
+            .validate_sql(request.database_type, request.sql)
+            .await
+            .map(community_sql_validation)
+            .map_err(AppError::from)
+    }
+
     fn require_community_engine(&self) -> Result<chat2db_java_bridge::EngineClient, AppError> {
         let engine = self.require_engine()?;
         if !engine.community_compatibility_configured() {
@@ -1195,6 +1217,33 @@ fn community_sql_analysis(analysis: BridgeCommunitySqlAnalysis) -> CommunitySqlA
     }
 }
 
+fn community_sql_validation(validation: BridgeCommunitySqlValidation) -> CommunitySqlValidation {
+    CommunitySqlValidation {
+        valid: validation.valid,
+        statements: validation
+            .statements
+            .into_iter()
+            .map(community_parsed_statement)
+            .collect(),
+        diagnostics: validation
+            .diagnostics
+            .into_iter()
+            .map(community_sql_diagnostic)
+            .collect(),
+    }
+}
+
+fn community_sql_diagnostic(diagnostic: BridgeCommunitySqlDiagnostic) -> CommunitySqlDiagnostic {
+    CommunitySqlDiagnostic {
+        start_line: diagnostic.start_line,
+        start_column: diagnostic.start_column,
+        end_line: diagnostic.end_line,
+        end_column: diagnostic.end_column,
+        token_text: diagnostic.token_text,
+        message: diagnostic.message,
+    }
+}
+
 fn community_parsed_statement(
     statement: BridgeCommunityParsedStatement,
 ) -> CommunityParsedStatement {
@@ -1233,10 +1282,11 @@ mod tests {
         CommunityFunctionParameter, CommunityParsedStatement, CommunityPlugin,
         CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
         CommunityPrimaryKey, CommunityProcedure, CommunityProcedureParameter, CommunitySchema,
-        CommunitySqlAnalysis, CommunityTable, CommunityTableColumn, CommunityTableIndex,
-        CommunityTableIndexColumn, CommunityTrigger, ListCommunityColumnsRequest,
-        ListCommunityDatabasesRequest, ListCommunityIndexesRequest, ListCommunitySchemasRequest,
-        ListCommunityTableKeysRequest, ListCommunityTablesRequest, ListCommunityViewsRequest,
+        CommunitySqlAnalysis, CommunitySqlDiagnostic, CommunitySqlValidation, CommunityTable,
+        CommunityTableColumn, CommunityTableIndex, CommunityTableIndexColumn, CommunityTrigger,
+        ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityIndexesRequest,
+        ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
+        ListCommunityViewsRequest,
     };
     use chat2db_java_bridge::{
         CommunityDatabase as BridgeCommunityDatabase,
@@ -1253,8 +1303,10 @@ mod tests {
         CommunityProcedure as BridgeCommunityProcedure,
         CommunityProcedureParameter as BridgeCommunityProcedureParameter,
         CommunitySchema as BridgeCommunitySchema,
-        CommunitySqlAnalysis as BridgeCommunitySqlAnalysis, CommunityTable as BridgeCommunityTable,
-        CommunityTableColumn as BridgeCommunityTableColumn,
+        CommunitySqlAnalysis as BridgeCommunitySqlAnalysis,
+        CommunitySqlDiagnostic as BridgeCommunitySqlDiagnostic,
+        CommunitySqlValidation as BridgeCommunitySqlValidation,
+        CommunityTable as BridgeCommunityTable, CommunityTableColumn as BridgeCommunityTableColumn,
         CommunityTableIndex as BridgeCommunityTableIndex,
         CommunityTableIndexColumn as BridgeCommunityTableIndexColumn,
         CommunityTrigger as BridgeCommunityTrigger,
@@ -1268,8 +1320,8 @@ mod tests {
         Application, bridge_schema, community_database, community_foreign_key, community_function,
         community_function_parameter, community_plugin_catalog, community_primary_key,
         community_procedure, community_procedure_parameter, community_schema,
-        community_sql_analysis, community_table, community_table_column, community_table_index,
-        community_trigger, preserve_primary_result, run_cancellation_safe,
+        community_sql_analysis, community_sql_validation, community_table, community_table_column,
+        community_table_index, community_trigger, preserve_primary_result, run_cancellation_safe,
         run_cancellation_safe_with_cleanup,
     };
     use crate::{AppError, AppErrorKind};
@@ -1777,6 +1829,46 @@ mod tests {
                     sql: "select 1".to_owned(),
                     statement_type: "SELECT".to_owned(),
                     kind: "Select".to_owned(),
+                }],
+            }
+        );
+    }
+
+    #[test]
+    fn sql_validation_mapping_preserves_every_field() {
+        let validation = BridgeCommunitySqlValidation {
+            valid: false,
+            statements: vec![BridgeCommunityParsedStatement {
+                sql: "select from".to_owned(),
+                statement_type: "UNKNOWN".to_owned(),
+                kind: "Unknown".to_owned(),
+            }],
+            diagnostics: vec![BridgeCommunitySqlDiagnostic {
+                start_line: 1,
+                start_column: 8,
+                end_line: 1,
+                end_column: 12,
+                token_text: "from".to_owned(),
+                message: "unexpected FROM".to_owned(),
+            }],
+        };
+
+        assert_eq!(
+            community_sql_validation(validation),
+            CommunitySqlValidation {
+                valid: false,
+                statements: vec![CommunityParsedStatement {
+                    sql: "select from".to_owned(),
+                    statement_type: "UNKNOWN".to_owned(),
+                    kind: "Unknown".to_owned(),
+                }],
+                diagnostics: vec![CommunitySqlDiagnostic {
+                    start_line: 1,
+                    start_column: 8,
+                    end_line: 1,
+                    end_column: 12,
+                    token_text: "from".to_owned(),
+                    message: "unexpected FROM".to_owned(),
                 }],
             }
         );

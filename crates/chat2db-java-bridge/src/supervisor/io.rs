@@ -32,7 +32,9 @@ const MAX_COMMUNITY_INDEXES: usize = wire::CommunityIndexCountLimit::MaxIndexes 
 const MAX_COMMUNITY_INDEX_COLUMNS: usize =
     wire::CommunityIndexColumnCountLimit::MaxIndexColumns as usize;
 const MAX_COMMUNITY_STATEMENTS: usize = wire::CommunityCountLimit::MaxStatements as usize;
-const COMMUNITY_RESPONSE_TAGS: std::ops::RangeInclusive<u32> = 200..=219;
+const MAX_COMMUNITY_SQL_DIAGNOSTICS: usize =
+    wire::CommunitySqlDiagnosticCountLimit::MaxDiagnostics as usize;
+const COMMUNITY_RESPONSE_TAGS: std::ops::RangeInclusive<u32> = 200..=220;
 const MAX_PROTOBUF_FIELD_NUMBER: u64 = (1 << 29) - 1;
 const MAX_PROTOBUF_GROUP_DEPTH: usize = 100;
 
@@ -158,6 +160,7 @@ struct CommunityWireCounts {
     triggers: usize,
     routine_parameters: usize,
     statements: usize,
+    diagnostics: usize,
 }
 
 fn validate_community_response_wire_counts(
@@ -248,8 +251,29 @@ fn validate_community_response_wire_counts(
             MAX_COMMUNITY_TRIGGERS,
             "trigger",
         ),
+        220 => scan_community_sql_validation(payload, counts),
         _ => Ok(()),
     }
+}
+
+fn scan_community_sql_validation(
+    payload: &[u8],
+    counts: &mut CommunityWireCounts,
+) -> Result<(), String> {
+    scan_bounded_repeated_field(
+        payload,
+        2,
+        &mut counts.statements,
+        MAX_COMMUNITY_STATEMENTS,
+        "statement",
+    )?;
+    scan_bounded_repeated_field(
+        payload,
+        3,
+        &mut counts.diagnostics,
+        MAX_COMMUNITY_SQL_DIAGNOSTICS,
+        "diagnostic",
+    )
 }
 
 fn scan_community_plugin_catalog(
@@ -563,9 +587,9 @@ mod tests {
         MAX_COMMUNITY_DRIVERS, MAX_COMMUNITY_FUNCTIONS, MAX_COMMUNITY_INDEX_COLUMNS,
         MAX_COMMUNITY_INDEXES, MAX_COMMUNITY_KEYS, MAX_COMMUNITY_PLUGINS, MAX_COMMUNITY_PROCEDURES,
         MAX_COMMUNITY_RESPONSE_BYTES, MAX_COMMUNITY_ROUTINE_PARAMETERS, MAX_COMMUNITY_SCHEMAS,
-        MAX_COMMUNITY_STATEMENTS, MAX_COMMUNITY_TABLES, MAX_COMMUNITY_TRIGGERS,
-        MAX_COMMUNITY_VIEWS, ReaderEvent, WriterCommand, WriterEvent, reader_loop,
-        validate_community_response_wire_budget, writer_loop,
+        MAX_COMMUNITY_SQL_DIAGNOSTICS, MAX_COMMUNITY_STATEMENTS, MAX_COMMUNITY_TABLES,
+        MAX_COMMUNITY_TRIGGERS, MAX_COMMUNITY_VIEWS, ReaderEvent, WriterCommand, WriterEvent,
+        reader_loop, validate_community_response_wire_budget, writer_loop,
     };
 
     const COMMUNITY_PLUGIN_CATALOG_TAG: u32 = 200;
@@ -588,7 +612,8 @@ mod tests {
     const COMMUNITY_PROCEDURE_LIST_TAG: u32 = 215;
     const COMMUNITY_PROCEDURE_PARAMETER_LIST_TAG: u32 = 217;
     const COMMUNITY_TRIGGER_LIST_TAG: u32 = 218;
-    const NON_COMMUNITY_TAG: u32 = 220;
+    const COMMUNITY_SQL_VALIDATION_TAG: u32 = 220;
+    const NON_COMMUNITY_TAG: u32 = 221;
 
     fn encode_varint(mut value: u64, output: &mut Vec<u8>) {
         loop {
@@ -992,6 +1017,61 @@ mod tests {
             validate_community_response_wire_budget(&oversized_catalog)
                 .expect_err("download-URL limit plus one must fail before decode")
                 .contains(&format!("{MAX_COMMUNITY_DOWNLOAD_URLS}-download-URL limit"))
+        );
+    }
+
+    #[test]
+    fn raw_scanner_enforces_sql_validation_limits_before_protobuf_decode() {
+        let mut exact_validation = repeated_empty_fields(2, MAX_COMMUNITY_STATEMENTS);
+        exact_validation.extend(repeated_empty_fields(3, MAX_COMMUNITY_SQL_DIAGNOSTICS));
+        validate_community_response_wire_budget(&community_response(
+            COMMUNITY_SQL_VALIDATION_TAG,
+            &exact_validation,
+        ))
+        .expect("exact validation collection limits must pass before decode");
+
+        for (field_number, maximum, label) in [
+            (2, MAX_COMMUNITY_STATEMENTS, "statement"),
+            (3, MAX_COMMUNITY_SQL_DIAGNOSTICS, "diagnostic"),
+        ] {
+            let oversized = community_response(
+                COMMUNITY_SQL_VALIDATION_TAG,
+                &repeated_empty_fields(field_number, maximum + 1),
+            );
+            let error = validate_community_response_wire_budget(&oversized)
+                .expect_err("validation limit plus one must fail before decode");
+            assert!(error.contains(&format!("{maximum}-{label} limit")));
+            assert!(error.contains("before Protobuf decode"));
+        }
+
+        let mut cross_payload_statements = community_response(
+            COMMUNITY_SQL_ANALYSIS_TAG,
+            &repeated_empty_fields(2, MAX_COMMUNITY_STATEMENTS),
+        );
+        push_length_delimited_field(
+            COMMUNITY_SQL_VALIDATION_TAG,
+            &repeated_empty_fields(2, 1),
+            &mut cross_payload_statements,
+        );
+        assert!(
+            validate_community_response_wire_budget(&cross_payload_statements)
+                .expect_err("analysis and validation must share the statement limit")
+                .contains(&format!("{MAX_COMMUNITY_STATEMENTS}-statement limit"))
+        );
+
+        let mut duplicate_diagnostics = community_response(
+            COMMUNITY_SQL_VALIDATION_TAG,
+            &repeated_empty_fields(3, MAX_COMMUNITY_SQL_DIAGNOSTICS),
+        );
+        push_length_delimited_field(
+            COMMUNITY_SQL_VALIDATION_TAG,
+            &repeated_empty_fields(3, 1),
+            &mut duplicate_diagnostics,
+        );
+        assert!(
+            validate_community_response_wire_budget(&duplicate_diagnostics)
+                .expect_err("duplicate validation payloads must share the diagnostic limit")
+                .contains(&format!("{MAX_COMMUNITY_SQL_DIAGNOSTICS}-diagnostic limit"))
         );
     }
 

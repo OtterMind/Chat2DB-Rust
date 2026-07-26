@@ -12,7 +12,7 @@ in runtime health until then.
 | 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
 | 5 | Complete | Product transports | Generated OpenAPI/TypeScript contract, Axum JSON/SSE, Tauri 2 commands/channels, shared SQL workbench, product H2 tests |
 | 6 | Complete | Agent, MCP, and CLI | Direct providers, durable bounded tool loop, SQL tools/permissions, compaction, Web/Tauri run transports, owner-only local attachment, read-query CLI, and bounded `rmcp` stdio tools |
-| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs, 7B fixed Community H2 SPI/ANTLR, 7C product Core/Web/Tauri contracts, 7D relational object metadata, 7E relation metadata, 7F programmability metadata, and 7G end-user object explorer implemented; remaining plugin operations and per-dialect conformance explicit |
+| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs, 7B fixed Community H2 SPI/ANTLR, 7C product Core/Web/Tauri contracts, 7D relational object metadata, 7E relation metadata, 7F programmability metadata, 7G end-user object explorer, and 7H SQL validation implemented; remaining plugin operations and per-dialect conformance explicit |
 | 8 | Planned | Packaging and release | License authorization, NOTICE/SBOM, jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
 
 Stage 3 completion means the versioned Rust-Java bridge can load an external
@@ -79,7 +79,7 @@ supervised Java generation. Java isolates them behind a platform-parent
 `URLClassLoader`, rejects manifest `Class-Path` escapes, discovers real `IPlugin`
 services, and exposes plugin catalog, H2 schema metadata, `CREATE SCHEMA`, and
 retained ANTLR parsing DTOs over Protobuf. Configuring the classpath requires all
-seven current Community capabilities at handshake, and Java plus Rust enforce the
+eight current Community capabilities at handshake, and Java plus Rust enforce the
 generated 8 MiB cumulative response budget. Rust counts raw Community oneof
 values before decoding, including duplicate fields, and retains a generation
 snapshot whenever child reap cannot be proven. The real vertical test keeps the
@@ -160,8 +160,21 @@ tests verify request scope, operation fan-out, progressive and partial result
 retention, abort propagation, deterministic selection, and driver-to-plugin
 mapping.
 
+Stage 7H adds the independent `community.sql-validation.v1` capability at
+request/response tag `220` without changing the existing parser operation.
+Java calls the real retained `ISQLParser.parserStatements` implementation and
+returns a validity flag, bounded statement summaries, and source diagnostics.
+Each response is capped at 4,096 diagnostics and the shared 8 MiB Community
+budget. Rust counts nested diagnostics before Protobuf allocation, then
+revalidates counts, coordinates, strings, aggregate bytes, and encoded size.
+Core exposes validation without resolving a datasource or opening a JDBC
+session; Axum, Tauri, and the shared HTTP/Tauri frontend backend expose the same
+contract. The editor provides an explicit parser-gated Validate action and
+renders diagnostic locations and messages. Real H2 bridge and product gates
+cover valid and invalid SQL through the fixed Community classpath.
+
 Stage 7 remains incomplete. Type conversion, script execution, data
-import/export, formatting, validation, completion, non-relational behavior,
+import/export, formatting, completion, non-relational behavior,
 remaining builders and plugin inventory, driver distribution, and per-dialect
 conformance are not implemented.
 

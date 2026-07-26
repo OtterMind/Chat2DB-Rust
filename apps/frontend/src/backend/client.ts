@@ -21,6 +21,7 @@ export type CommunityProcedureList = Schema<'CommunityProcedureList'>;
 export type CommunityProcedureParameterList = Schema<'CommunityProcedureParameterList'>;
 export type CommunitySchemaList = Schema<'CommunitySchemaList'>;
 export type CommunitySqlAnalysis = Schema<'CommunitySqlAnalysis'>;
+export type CommunitySqlValidation = Schema<'CommunitySqlValidation'>;
 export type CommunityTableColumnList = Schema<'CommunityTableColumnList'>;
 export type CommunityTableIndexList = Schema<'CommunityTableIndexList'>;
 export type CommunityTableList = Schema<'CommunityTableList'>;
@@ -66,6 +67,7 @@ export type StartQueryRequest = Schema<'StartQueryRequest'>;
 export type UpdateAgentSessionRequest = Schema<'UpdateAgentSessionRequest'>;
 export type UpdateDatasourceRequest = Schema<'UpdateDatasourceRequest'>;
 export type UpdateProviderProfileRequest = Schema<'UpdateProviderProfileRequest'>;
+export type ValidateCommunitySqlRequest = Schema<'ValidateCommunitySqlRequest'>;
 
 export type AgentEvent = Schema<'AgentEvent'>;
 export type AgentEventEnvelope = Schema<'AgentEventEnvelope'>;
@@ -192,6 +194,10 @@ export interface BackendClient {
     request: ParseCommunitySqlRequest,
     signal?: AbortSignal,
   ): Promise<CommunitySqlAnalysis>;
+  validateCommunitySql(
+    request: ValidateCommunitySqlRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunitySqlValidation>;
   listDatasources(signal?: AbortSignal): Promise<DatasourceList>;
   createDatasource(
     request: CreateDatasourceRequest,

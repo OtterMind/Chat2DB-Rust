@@ -29,6 +29,7 @@ import type {
   CommunityProcedureParameterList,
   CommunitySchemaList,
   CommunitySqlAnalysis,
+  CommunitySqlValidation,
   CommunityTableColumnList,
   CommunityTableIndexList,
   CommunityTableList,
@@ -73,6 +74,7 @@ import type {
   UpdateAgentSessionRequest,
   UpdateDatasourceRequest,
   UpdateProviderProfileRequest,
+  ValidateCommunitySqlRequest,
 } from './client';
 import {
   abortError,
@@ -264,6 +266,13 @@ export class TauriBackendClient implements BackendClient {
     signal?: AbortSignal,
   ): Promise<CommunitySqlAnalysis> {
     return this.#request('parse_community_sql', { request }, signal);
+  }
+
+  validateCommunitySql(
+    request: ValidateCommunitySqlRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunitySqlValidation> {
+    return this.#request('validate_community_sql', { request }, signal);
   }
 
   listDatasources(signal?: AbortSignal): Promise<DatasourceList> {

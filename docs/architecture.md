@@ -27,9 +27,10 @@ building, and retained ANTLR parsing. Product Core, Axum, Tauri, and both
 frontend backend adapters expose catalog, schemas, databases, tables, columns,
 indexes, views, imported and exported foreign keys, primary keys, functions,
 function parameters, procedures, procedure parameters, triggers, schema SQL
-building, and parsing when the exact locked classpath is configured. The shared
+building, parsing, and syntax validation when the exact locked classpath is configured. The shared
 React workbench consumes all 20 operations through an end-user object explorer,
-schema SQL insertion, and explicit SQL analysis. Signing, distribution, the
+schema SQL insertion, explicit SQL analysis, and a separately negotiated
+validation action. Signing, distribution, the
 remaining dialect estate, and packaging remain target components. CLI and MCP
 attach to a running host rather than composing a second product runtime.
 
@@ -202,8 +203,20 @@ only when the selected plugin advertises parser support. Scope and detail
 requests are abortable; the responsive object browser preserves keyboard
 tab/dialog behavior and starts collapsed on mobile.
 
+Stage 7H adds the independent `community.sql-validation.v1` capability without
+changing the existing parser operation. Java invokes the retained Community
+`ISQLParser.parserStatements` path and projects statement summaries plus source
+diagnostics through Protobuf tag `220`. Each result is capped at 4,096
+diagnostics; Java and Rust enforce coordinate, string, aggregate, encoded-size,
+and cumulative 8 MiB response limits, while Rust also counts raw nested
+diagnostics before Protobuf allocation. Validation is parser-only and never
+opens a JDBC session. Core, Axum, Tauri, and both frontend adapters expose one
+matching request/response contract, and the React editor provides an explicit
+parser-gated Validate action alongside Analyze. Real H2 bridge and product
+tests cover both valid and invalid SQL.
+
 Remaining builders, type conversion, non-relational operations, script
-execution, import/export, formatting, validation, completion, and per-dialect
+execution, import/export, formatting, completion, and per-dialect
 conformance are not implemented yet. The current product slice proves H2 only.
 
 Spring Boot, Spring Web, Spring AI, MCP, JCEF, product storage, and updater logic

@@ -1,6 +1,7 @@
 package ai.chat2db.rust.compat;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -11,6 +12,7 @@ import ai.chat2db.rust.compat.protocol.v1.CommunityPrimaryKey;
 import java.io.OutputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
@@ -100,6 +102,34 @@ class CommunityPluginRegistryTest {
                 RuntimeFailure.class,
                 () -> budget.consumeUtf8("x"));
         assertEquals("protocol.limit_exceeded", failure.code());
+    }
+
+    @Test
+    void sqlValidationRejectsExcessDiagnosticsAndNegativeCoordinates() {
+        RuntimeFailure tooManyDiagnostics = assertThrows(
+                RuntimeFailure.class,
+                () -> CommunityPluginRegistry.requireSqlDiagnosticCount(
+                        CommunityPluginRegistry.MAX_SQL_DIAGNOSTICS + 1));
+        assertEquals("protocol.limit_exceeded", tooManyDiagnostics.code());
+        assertEquals(
+                0,
+                CommunityPluginRegistry.requireNonNegativeCoordinate(
+                        0, "diagnostic_start_line"));
+        assertThrows(
+                IllegalStateException.class,
+                () -> CommunityPluginRegistry.requireNonNegativeCoordinate(
+                        -1, "diagnostic_start_line"));
+    }
+
+    @Test
+    void retainedSqlParserOperationsAreSerialized() throws Exception {
+        Method parse = CommunityPluginRegistry.class.getDeclaredMethod(
+                "parse", String.class, String.class);
+        Method validate = CommunityPluginRegistry.class.getDeclaredMethod(
+                "validate", String.class, String.class);
+
+        assertTrue(Modifier.isSynchronized(parse.getModifiers()));
+        assertTrue(Modifier.isSynchronized(validate.getModifiers()));
     }
 
     @Test
@@ -313,6 +343,31 @@ class CommunityPluginRegistryTest {
                     "community.catalog_mismatch",
                     () -> registry.trigger(
                             "H2", connection, "WRONG_CATALOG", schemaName, "AUDIT_TRIGGER"));
+        }
+    }
+
+    @Test
+    void realCommunityH2ParserValidatesSql() throws Exception {
+        Path communityClasspath = communityClasspathDirectory();
+        assumeTrue(
+                Files.isDirectory(communityClasspath),
+                "the fixed Community H2 classpath is built by the extended integration lane");
+
+        try (CommunityPluginRegistry registry = openRegistry(communityClasspath)) {
+            var valid = registry.validate("H2", "SELECT 1;");
+            assertTrue(valid.getValid());
+            assertFalse(valid.getStatementsList().isEmpty());
+            assertTrue(valid.getDiagnosticsList().isEmpty());
+
+            var invalid = registry.validate("H2", "SELECT FROM;");
+            assertFalse(invalid.getValid());
+            assertFalse(invalid.getStatementsList().isEmpty());
+            assertFalse(invalid.getDiagnosticsList().isEmpty());
+            var diagnostic = invalid.getDiagnostics(0);
+            assertTrue(diagnostic.getStartLine() > 0);
+            assertTrue(diagnostic.getEndLine() >= diagnostic.getStartLine());
+            assertTrue(diagnostic.getEndColumn() >= diagnostic.getStartColumn());
+            assertFalse(diagnostic.getMessage().isBlank());
         }
     }
 

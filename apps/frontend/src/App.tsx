@@ -12,6 +12,7 @@ import {
   Plus,
   RefreshCw,
   Server,
+  ShieldCheck,
   Trash2,
   X,
 } from 'lucide-react';
@@ -21,6 +22,7 @@ import {
   ApiRequestError,
   BackendClient,
   CommunitySqlAnalysis,
+  CommunitySqlValidation,
   CreateDatasourceRequest,
   Datasource,
   DatasourceConnection,
@@ -40,6 +42,7 @@ import { CommunityExplorer } from './CommunityExplorer';
 
 const PAGE_ROWS = 50n;
 const PAGE_BYTES = '1048576';
+const VALIDATION_PREVIEW_ITEMS = 8;
 
 interface ConnectionPropertyForm extends DatasourceConnectionProperty {
   id: number;
@@ -63,6 +66,10 @@ interface QueryOperation {
   resultId?: string;
   error?: string;
 }
+
+type SqlInspection =
+  | { kind: 'analysis'; result: CommunitySqlAnalysis }
+  | { kind: 'validation'; result: CommunitySqlValidation };
 
 type DialogState = { kind: 'create' } | { kind: 'edit'; datasource: Datasource };
 
@@ -403,15 +410,15 @@ export default function App() {
   const [sql, setSql] = useState('SELECT 1;');
   const [communitySelection, setCommunitySelection] = useState({ datasourceKey: '', databaseType: '' });
   const [communityParserAvailable, setCommunityParserAvailable] = useState(false);
-  const [sqlAnalysis, setSqlAnalysis] = useState<CommunitySqlAnalysis | null>(null);
-  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [sqlInspection, setSqlInspection] = useState<SqlInspection | null>(null);
+  const [inspectionLoading, setInspectionLoading] = useState<'analysis' | 'validation' | null>(null);
   const [operation, setOperation] = useState<QueryOperation | null>(null);
   const [resultPage, setResultPage] = useState<ResultPage | null>(null);
   const [resultLoading, setResultLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const subscriptionRef = useRef<OperationSubscription | null>(null);
   const resultRequestRef = useRef(0);
-  const analysisRequestRef = useRef(0);
+  const inspectionRequestRef = useRef(0);
 
   const selectedDatasource = datasources.find((datasource) => datasource.id === selectedId);
   const selectedDatasourceKey = selectedDatasource
@@ -426,25 +433,25 @@ export default function App() {
   const queryRunning = operation?.status === 'running' || operation?.status === 'starting';
 
   const updateSql = useCallback((nextSql: string) => {
-    analysisRequestRef.current += 1;
-    setAnalysisLoading(false);
-    setSqlAnalysis(null);
+    inspectionRequestRef.current += 1;
+    setInspectionLoading(null);
+    setSqlInspection(null);
     setSql(nextSql);
   }, []);
 
   const selectCommunityDatabaseType = useCallback((databaseType: string) => {
-    analysisRequestRef.current += 1;
-    setAnalysisLoading(false);
-    setSqlAnalysis(null);
+    inspectionRequestRef.current += 1;
+    setInspectionLoading(null);
+    setSqlInspection(null);
     setCommunityParserAvailable(false);
     setCommunitySelection({ datasourceKey: selectedDatasourceKey, databaseType });
   }, [selectedDatasourceKey]);
 
   const setParserAvailability = useCallback((available: boolean) => {
     if (!available) {
-      analysisRequestRef.current += 1;
-      setAnalysisLoading(false);
-      setSqlAnalysis(null);
+      inspectionRequestRef.current += 1;
+      setInspectionLoading(null);
+      setSqlInspection(null);
     }
     setCommunityParserAvailable(available);
   }, []);
@@ -480,9 +487,9 @@ export default function App() {
   useEffect(() => () => subscriptionRef.current?.close(), []);
 
   useEffect(() => {
-    analysisRequestRef.current += 1;
-    setAnalysisLoading(false);
-    setSqlAnalysis(null);
+    inspectionRequestRef.current += 1;
+    setInspectionLoading(null);
+    setSqlInspection(null);
     setCommunityParserAvailable(false);
   }, [selectedDatasourceKey]);
 
@@ -682,21 +689,51 @@ export default function App() {
       || !communityDatabaseType
       || !communityParserAvailable
       || communityCompatibility?.state !== 'ready'
-      || analysisLoading
+      || inspectionLoading !== null
     ) return;
-    const requestId = ++analysisRequestRef.current;
-    setAnalysisLoading(true);
+    const requestId = ++inspectionRequestRef.current;
+    setInspectionLoading('analysis');
+    setSqlInspection(null);
     setError(null);
     try {
       const analysis = await client.parseCommunitySql({
         databaseType: communityDatabaseType,
         sql,
       });
-      if (analysisRequestRef.current === requestId) setSqlAnalysis(analysis);
+      if (inspectionRequestRef.current === requestId) {
+        setSqlInspection({ kind: 'analysis', result: analysis });
+      }
     } catch (requestError) {
-      if (analysisRequestRef.current === requestId) setError(errorMessage(requestError));
+      if (inspectionRequestRef.current === requestId) setError(errorMessage(requestError));
     } finally {
-      if (analysisRequestRef.current === requestId) setAnalysisLoading(false);
+      if (inspectionRequestRef.current === requestId) setInspectionLoading(null);
+    }
+  };
+
+  const validateSql = async () => {
+    if (
+      !sql.trim()
+      || !communityDatabaseType
+      || !communityParserAvailable
+      || communityCompatibility?.state !== 'ready'
+      || inspectionLoading !== null
+    ) return;
+    const requestId = ++inspectionRequestRef.current;
+    setInspectionLoading('validation');
+    setSqlInspection(null);
+    setError(null);
+    try {
+      const validation = await client.validateCommunitySql({
+        databaseType: communityDatabaseType,
+        sql,
+      });
+      if (inspectionRequestRef.current === requestId) {
+        setSqlInspection({ kind: 'validation', result: validation });
+      }
+    } catch (requestError) {
+      if (inspectionRequestRef.current === requestId) setError(errorMessage(requestError));
+    } finally {
+      if (inspectionRequestRef.current === requestId) setInspectionLoading(null);
     }
   };
 
@@ -812,15 +849,30 @@ export default function App() {
                 type="button"
                 onClick={() => void analyzeSql()}
                 disabled={
-                  analysisLoading
+                  inspectionLoading !== null
                   || !sql.trim()
                   || !communityDatabaseType
                   || !communityParserAvailable
                   || communityCompatibility?.state !== 'ready'
                 }
               >
-                {analysisLoading ? <LoaderCircle className="spinning" size={16} aria-hidden="true" /> : <Code2 size={16} aria-hidden="true" />}
-                {analysisLoading ? 'Analyzing' : 'Analyze'}
+                {inspectionLoading === 'analysis' ? <LoaderCircle className="spinning" size={16} aria-hidden="true" /> : <Code2 size={16} aria-hidden="true" />}
+                {inspectionLoading === 'analysis' ? 'Analyzing' : 'Analyze'}
+              </button>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => void validateSql()}
+                disabled={
+                  inspectionLoading !== null
+                  || !sql.trim()
+                  || !communityDatabaseType
+                  || !communityParserAvailable
+                  || communityCompatibility?.state !== 'ready'
+                }
+              >
+                {inspectionLoading === 'validation' ? <LoaderCircle className="spinning" size={16} aria-hidden="true" /> : <ShieldCheck size={16} aria-hidden="true" />}
+                {inspectionLoading === 'validation' ? 'Validating' : 'Validate'}
               </button>
               {queryRunning ? (
                 <button className="secondary-button danger-text" type="button" onClick={() => void cancelQuery()}>
@@ -839,21 +891,60 @@ export default function App() {
             spellCheck={false}
             aria-label="SQL query"
           />
-          {sqlAnalysis ? (
+          {sqlInspection?.kind === 'analysis' ? (
             <section className="analysis-strip" aria-label="Community SQL analysis">
               <header>
-                <strong>{sqlAnalysis.isSelect ? 'SELECT' : 'NON-SELECT'}</strong>
-                <span>{sqlAnalysis.statements.length} statement{sqlAnalysis.statements.length === 1 ? '' : 's'}</span>
+                <strong>{sqlInspection.result.isSelect ? 'SELECT' : 'NON-SELECT'}</strong>
+                <span>{sqlInspection.result.statements.length} statement{sqlInspection.result.statements.length === 1 ? '' : 's'}</span>
               </header>
               <div className="analysis-statements">
-                {sqlAnalysis.statements.slice(0, 4).map((statement, index) => (
+                {sqlInspection.result.statements.slice(0, 4).map((statement, index) => (
                   <div key={`${statement.statementType}:${index}`}>
                     <code>{statement.statementType || statement.kind}</code>
                     <span title={statement.sql}>{statement.sql}</span>
                   </div>
                 ))}
-                {sqlAnalysis.statements.length === 0 ? <span>No statements returned</span> : null}
-                {sqlAnalysis.statements.length > 4 ? <span>+{sqlAnalysis.statements.length - 4} more</span> : null}
+                {sqlInspection.result.statements.length === 0 ? <span>No statements returned</span> : null}
+                {sqlInspection.result.statements.length > 4 ? <span>+{sqlInspection.result.statements.length - 4} more</span> : null}
+              </div>
+            </section>
+          ) : null}
+          {sqlInspection?.kind === 'validation' ? (
+            <section
+              className={`analysis-strip validation-strip ${sqlInspection.result.valid ? 'validation-valid' : 'validation-invalid'}`}
+              aria-label="Community SQL validation"
+              aria-live="polite"
+            >
+              <header>
+                <strong>{sqlInspection.result.valid ? 'VALID' : 'INVALID'}</strong>
+                <span>
+                  {sqlInspection.result.diagnostics.length} issue{sqlInspection.result.diagnostics.length === 1 ? '' : 's'}
+                </span>
+              </header>
+              <div className="analysis-statements validation-diagnostics">
+                {sqlInspection.result.valid
+                  ? sqlInspection.result.statements.slice(0, 4).map((statement, index) => (
+                    <div key={`${statement.statementType}:${index}`}>
+                      <code>{statement.statementType || statement.kind}</code>
+                      <span title={statement.sql}>{statement.sql}</span>
+                    </div>
+                  ))
+                  : sqlInspection.result.diagnostics.slice(0, VALIDATION_PREVIEW_ITEMS).map((diagnostic, index) => (
+                    <div key={`${diagnostic.startLine}:${diagnostic.startColumn}:${index}`}>
+                      <code>
+                        {diagnostic.startLine}:{diagnostic.startColumn}-{diagnostic.endLine}:{diagnostic.endColumn}
+                      </code>
+                      <span title={`${diagnostic.message}${diagnostic.tokenText ? ` (${diagnostic.tokenText})` : ''}`}>
+                        {diagnostic.message}{diagnostic.tokenText ? ` · ${diagnostic.tokenText}` : ''}
+                      </span>
+                    </div>
+                  ))}
+                {sqlInspection.result.valid && sqlInspection.result.statements.length === 0 ? <span>No syntax issues</span> : null}
+                {!sqlInspection.result.valid && sqlInspection.result.diagnostics.length === 0 ? <span>No diagnostics returned</span> : null}
+                {sqlInspection.result.valid && sqlInspection.result.statements.length > 4 ? <span>+{sqlInspection.result.statements.length - 4} more</span> : null}
+                {!sqlInspection.result.valid && sqlInspection.result.diagnostics.length > VALIDATION_PREVIEW_ITEMS ? (
+                  <span>+{sqlInspection.result.diagnostics.length - VALIDATION_PREVIEW_ITEMS} more issues</span>
+                ) : null}
               </div>
             </section>
           ) : null}

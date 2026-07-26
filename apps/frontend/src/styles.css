@@ -1009,6 +1009,23 @@ h2 {
   font-size: 9px;
 }
 
+.validation-strip.validation-invalid {
+  background: #fff5f3;
+  border-top-color: #efc9c1;
+}
+
+.validation-strip.validation-invalid > header {
+  border-right-color: #efc9c1;
+}
+
+.validation-strip.validation-invalid > header strong {
+  color: #9b392c;
+}
+
+.validation-diagnostics code {
+  font-variant-numeric: tabular-nums;
+}
+
 .editor-status {
   grid-area: status;
   min-width: 0;

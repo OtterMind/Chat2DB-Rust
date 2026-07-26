@@ -489,6 +489,17 @@ mod tests {
                 ),
                 "database_engine_unavailable",
             ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/sql/validate",
+                    &serde_json::json!({
+                        "databaseType": "H2",
+                        "sql": "select from"
+                    }),
+                ),
+                "database_engine_unavailable",
+            ),
         ];
 
         for (request, expected_code) in requests {
@@ -624,6 +635,7 @@ mod tests {
             "/api/v1/community/metadata/trigger",
             "/api/v1/community/sql/build-create-schema",
             "/api/v1/community/sql/parse",
+            "/api/v1/community/sql/validate",
             "/api/v1/datasources",
             "/api/v1/datasources/{datasource_id}",
             "/api/v1/agent/providers",
@@ -669,6 +681,7 @@ mod tests {
             "/api/v1/community/metadata/trigger",
             "/api/v1/community/sql/build-create-schema",
             "/api/v1/community/sql/parse",
+            "/api/v1/community/sql/validate",
         ] {
             assert!(paths[path].get("post").is_some());
         }
@@ -764,6 +777,8 @@ mod tests {
             "CommunitySchema",
             "CommunitySchemaList",
             "CommunitySqlAnalysis",
+            "CommunitySqlDiagnostic",
+            "CommunitySqlValidation",
             "CommunityTable",
             "CommunityTableColumn",
             "CommunityTableColumnList",
@@ -792,6 +807,7 @@ mod tests {
             "ListCommunityTriggersRequest",
             "ListCommunityViewsRequest",
             "ParseCommunitySqlRequest",
+            "ValidateCommunitySqlRequest",
             "ProviderCredentials",
             "ProviderProfile",
             "ProviderProfileList",

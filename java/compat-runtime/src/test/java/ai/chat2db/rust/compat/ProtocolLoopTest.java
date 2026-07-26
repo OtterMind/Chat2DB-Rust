@@ -49,23 +49,7 @@ class ProtocolLoopTest {
         assertEquals(ServerEnvelope.PayloadCase.HELLO, serverHello.getPayloadCase());
         assertEquals(version(1, 0), serverHello.getHello().getSelectedVersion());
         assertEquals(
-                List.of(
-                        ProtocolLoop.PING_CAPABILITY,
-                        ProtocolLoop.SHUTDOWN_CAPABILITY,
-                        ProtocolLoop.EXTERNAL_DRIVER_CAPABILITY,
-                        ProtocolLoop.JDBC_SESSION_CAPABILITY,
-                        ProtocolLoop.TYPED_QUERY_CAPABILITY,
-                        ProtocolLoop.CREDIT_FLOW_CAPABILITY,
-                        ProtocolLoop.OPERATION_CANCEL_CAPABILITY,
-                        ProtocolLoop.JDBC_UPDATE_CAPABILITY,
-                        ProtocolLoop.LOCAL_TRANSACTION_CAPABILITY,
-                        ProtocolLoop.COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
-                        ProtocolLoop.COMMUNITY_SCHEMA_METADATA_CAPABILITY,
-                        ProtocolLoop.COMMUNITY_OBJECT_METADATA_CAPABILITY,
-                        ProtocolLoop.COMMUNITY_RELATION_METADATA_CAPABILITY,
-                        ProtocolLoop.COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
-                        ProtocolLoop.COMMUNITY_SQL_BUILDER_CAPABILITY,
-                        ProtocolLoop.COMMUNITY_SQL_PARSER_CAPABILITY),
+                expectedCapabilities(),
                 serverHello.getHello().getCapabilitiesList());
         assertEquals(FrameCodec.MAX_FRAME_BYTES, serverHello.getHello().getMaxReceiveFrameBytes());
         assertResponseMeta(serverHello, "hello");
@@ -80,6 +64,17 @@ class ProtocolLoopTest {
         assertResponseMeta(shutdownAck, "shutdown");
         assertTrue(result.diagnostics().contains("handshake accepted protocol=1.0"));
         assertTrue(result.diagnostics().contains("shutdown accepted request_id=shutdown"));
+    }
+
+    @Test
+    void advertisesSqlValidationOnlyWithCommunityCompatibility() {
+        assertFalse(ProtocolLoop.capabilities(false)
+                .contains(ProtocolLoop.COMMUNITY_SQL_VALIDATION_CAPABILITY));
+        assertTrue(ProtocolLoop.capabilities(true)
+                .contains(ProtocolLoop.COMMUNITY_SQL_VALIDATION_CAPABILITY));
+        assertEquals(
+                ProtocolLoop.capabilities(false).size() + 1,
+                ProtocolLoop.capabilities(true).size());
     }
 
     @Test
@@ -253,6 +248,15 @@ class ProtocolLoopTest {
                 new RuntimeInfo("chat2db-java-compat", "test", 1, 0),
                 "engine-test",
                 requests);
+    }
+
+    private static List<String> expectedCapabilities() {
+        return ProtocolLoop.capabilities(isCommunityCompatibilityConfigured());
+    }
+
+    private static boolean isCommunityCompatibilityConfigured() {
+        String classpath = System.getenv(CommunityPluginRegistry.CLASSPATH_ENV);
+        return classpath != null && !classpath.isBlank();
     }
 
     private static RunResult runWithRuntime(

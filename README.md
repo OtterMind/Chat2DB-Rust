@@ -4,7 +4,7 @@ Private implementation of the Chat2DB Community hybrid runtime.
 
 ## Current state
 
-The repository has completed Stages 1 through 6 and the first seven independently
+The repository has completed Stages 1 through 6 and the first eight independently
 buildable Stage 7 slices:
 
 - canonical Rust API contracts;
@@ -66,7 +66,9 @@ buildable Stage 7 slices:
 - an end-user Community object explorer that selects plugin, database, and
   schema scopes, preserves partial metadata from long-tail plugins, lazily opens
   relational and programmability details, inserts generated schema SQL into the
-  console, and explicitly analyzes editor SQL.
+  console, and explicitly analyzes editor SQL; and
+- bounded Community ANTLR syntax validation with statement summaries and source
+  diagnostics exposed through Core, Axum, Tauri, and the shared React editor.
 
 Stage 6 is complete. Web and desktop own the product runtime and publish its
 owner-only local endpoint; CLI and MCP attach to that host and never contact
@@ -83,8 +85,10 @@ function parameters, procedures, procedure parameters, and triggers through the
 same Core/Axum/Tauri/frontend boundary. Stage 7G connects all 20 fixed Community
 operations to the shared React workbench through a three-pane object explorer,
 partial long-tail metadata, lazy detail views, schema SQL generation, and
-explicit SQL analysis. Signing, downloading, updating, rollback, the remaining
-builder/parser estate, and full per-dialect compatibility remain Stage 7 work.
+explicit SQL analysis. Stage 7H adds a separately negotiated SQL-validation
+capability and an explicit editor Validate action without opening a JDBC
+session. Signing, downloading, updating, rollback, the remaining builder/parser
+estate, and full per-dialect compatibility remain Stage 7 work.
 
 ## Architecture
 

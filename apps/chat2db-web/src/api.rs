@@ -19,24 +19,25 @@ use chat2db_contract::{
     CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
     CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
     CommunityProcedureParameter, CommunityProcedureParameterList, CommunitySchema,
-    CommunitySchemaList, CommunitySqlAnalysis, CommunityTable, CommunityTableColumn,
-    CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
-    CommunityTableIndexList, CommunityTableList, CommunityTrigger, CommunityTriggerList,
-    CommunityViewList, ComponentHealth, ComponentState, ContextCompactionStrategy,
-    CreateAgentSessionRequest, CreateDatasourceRequest, CreateProviderProfileRequest, Datasource,
-    DatasourceConnection, DatasourceConnectionProperty, DatasourceList, DatasourceSecretChange,
-    DecideAgentPermissionRequest, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
-    GetCommunityTriggerRequest, HealthResponse, JdbcDriver, JdbcDriverList, JdbcValue,
-    JdbcValueType, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
-    ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
-    ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
-    ListCommunityTriggersRequest, ListCommunityViewsRequest, OperationEvent,
-    OperationEventEnvelope, OperationSnapshot, OperationStatus, OperationStreamMessage,
-    OperationSubscriptionAccepted, ParseCommunitySqlRequest, ProductInfo, ProviderCredentials,
-    ProviderKind, ProviderProfile, ProviderProfileList, ProviderSecretChange, QueryAccepted,
-    QueryLimits, QueryParameter, ResultColumn, ResultMetadata, ResultPage, ResultPageRequest,
-    ResultRow, RuntimeStatus, SqlPermissionMode, StartAgentRunRequest, StartQueryRequest,
-    UpdateAgentSessionRequest, UpdateDatasourceRequest, UpdateProviderProfileRequest,
+    CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlDiagnostic, CommunitySqlValidation,
+    CommunityTable, CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex,
+    CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList, CommunityTrigger,
+    CommunityTriggerList, CommunityViewList, ComponentHealth, ComponentState,
+    ContextCompactionStrategy, CreateAgentSessionRequest, CreateDatasourceRequest,
+    CreateProviderProfileRequest, Datasource, DatasourceConnection, DatasourceConnectionProperty,
+    DatasourceList, DatasourceSecretChange, DecideAgentPermissionRequest,
+    GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
+    HealthResponse, JdbcDriver, JdbcDriverList, JdbcValue, JdbcValueType,
+    ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityFunctionsRequest,
+    ListCommunityIndexesRequest, ListCommunityProceduresRequest, ListCommunitySchemasRequest,
+    ListCommunityTableKeysRequest, ListCommunityTablesRequest, ListCommunityTriggersRequest,
+    ListCommunityViewsRequest, OperationEvent, OperationEventEnvelope, OperationSnapshot,
+    OperationStatus, OperationStreamMessage, OperationSubscriptionAccepted,
+    ParseCommunitySqlRequest, ProductInfo, ProviderCredentials, ProviderKind, ProviderProfile,
+    ProviderProfileList, ProviderSecretChange, QueryAccepted, QueryLimits, QueryParameter,
+    ResultColumn, ResultMetadata, ResultPage, ResultPageRequest, ResultRow, RuntimeStatus,
+    SqlPermissionMode, StartAgentRunRequest, StartQueryRequest, UpdateAgentSessionRequest,
+    UpdateDatasourceRequest, UpdateProviderProfileRequest, ValidateCommunitySqlRequest,
 };
 use chat2db_core::{AppError, Application};
 use futures_util::{Stream, stream};
@@ -123,6 +124,8 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         CommunitySchema,
         CommunitySchemaList,
         CommunitySqlAnalysis,
+        CommunitySqlDiagnostic,
+        CommunitySqlValidation,
         CommunityTable,
         CommunityTableColumn,
         CommunityTableColumnList,
@@ -168,6 +171,7 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         OperationStreamMessage,
         OperationSubscriptionAccepted,
         ParseCommunitySqlRequest,
+        ValidateCommunitySqlRequest,
         ProductInfo,
         ProviderCredentials,
         ProviderKind,
@@ -231,6 +235,7 @@ fn documented_router() -> OpenApiRouter<Application> {
         .routes(routes!(get_community_trigger))
         .routes(routes!(build_community_create_schema))
         .routes(routes!(parse_community_sql))
+        .routes(routes!(validate_community_sql))
         .routes(routes!(list_datasources, create_datasource))
         .routes(routes!(
             get_datasource,
@@ -766,6 +771,29 @@ async fn parse_community_sql(
 ) -> Result<Json<CommunitySqlAnalysis>, WebError> {
     application
         .parse_community_sql(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/sql/validate",
+    tag = "community",
+    request_body = ValidateCommunitySqlRequest,
+    responses(
+        (status = 200, description = "Community SQL syntax validation", body = CommunitySqlValidation),
+        (status = 400, description = "Invalid Community SQL-validation request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community SQL-validation failure", body = ApiError)
+    )
+)]
+async fn validate_community_sql(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<ValidateCommunitySqlRequest>,
+) -> Result<Json<CommunitySqlValidation>, WebError> {
+    application
+        .validate_community_sql(request)
         .await
         .map(Json)
         .map_err(Into::into)

@@ -66,6 +66,11 @@ enum CommunityRoutineParameterCountLimit {
   COMMUNITY_ROUTINE_PARAMETER_COUNT_LIMIT_MAX_PARAMETERS = 65536;
 }
 
+enum CommunitySqlDiagnosticCountLimit {
+  COMMUNITY_SQL_DIAGNOSTIC_COUNT_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_SQL_DIAGNOSTIC_COUNT_LIMIT_MAX_DIAGNOSTICS = 4096;
+}
+
 enum CommunityColumnCountLimit {
   COMMUNITY_COLUMN_COUNT_LIMIT_UNSPECIFIED = 0;
   COMMUNITY_COLUMN_COUNT_LIMIT_MAX_COLUMNS = 65536;
@@ -491,6 +496,11 @@ message ParseCommunitySqlRequest {
   string sql = 2;
 }
 
+message ValidateCommunitySqlRequest {
+  string database_type = 1;
+  string sql = 2;
+}
+
 message CommunityParsedStatement {
   string sql = 1;
   string type = 2;
@@ -500,4 +510,19 @@ message CommunityParsedStatement {
 message CommunitySqlAnalysis {
   bool is_select = 1;
   repeated CommunityParsedStatement statements = 2;
+}
+
+message CommunitySqlDiagnostic {
+  uint32 start_line = 1;
+  uint32 start_column = 2;
+  uint32 end_line = 3;
+  uint32 end_column = 4;
+  string token_text = 5;
+  string message = 6;
+}
+
+message CommunitySqlValidation {
+  bool valid = 1;
+  repeated CommunityParsedStatement statements = 2;
+  repeated CommunitySqlDiagnostic diagnostics = 3;
 }

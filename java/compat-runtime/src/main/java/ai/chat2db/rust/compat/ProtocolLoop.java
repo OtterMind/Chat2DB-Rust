@@ -16,6 +16,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintStream;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -47,9 +48,10 @@ final class ProtocolLoop {
             "community.metadata.programmability.v1";
     static final String COMMUNITY_SQL_BUILDER_CAPABILITY = "community.sql-builder.v1";
     static final String COMMUNITY_SQL_PARSER_CAPABILITY = "community.sql-parser.v1";
+    static final String COMMUNITY_SQL_VALIDATION_CAPABILITY = "community.sql-validation.v1";
 
     private static final int MINIMUM_PEER_FRAME_BYTES = 1024;
-    private static final List<String> CAPABILITIES = List.of(
+    private static final List<String> BASE_CAPABILITIES = List.of(
             PING_CAPABILITY,
             SHUTDOWN_CAPABILITY,
             EXTERNAL_DRIVER_CAPABILITY,
@@ -158,7 +160,7 @@ final class ProtocolLoop {
                         true,
                         CompatibilityRuntime.EXIT_PROTOCOL);
             }
-            return handshake(meta, envelope.getHello(), writer);
+            return handshake(meta, envelope.getHello(), writer, jdbcRuntime);
         }
 
         try {
@@ -352,6 +354,13 @@ final class ProtocolLoop {
                                     meta, envelope.getParseCommunitySql()));
                     yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
                 }
+                case VALIDATE_COMMUNITY_SQL -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.validateCommunitySql(
+                                    meta, envelope.getValidateCommunitySql()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
                 case HELLO -> error(
                         meta,
                         "protocol.handshake_already_completed",
@@ -379,7 +388,10 @@ final class ProtocolLoop {
     }
 
     private Dispatch handshake(
-            RequestMeta meta, ClientHello hello, ProtocolWriter writer) {
+            RequestMeta meta,
+            ClientHello hello,
+            ProtocolWriter writer,
+            JdbcRuntime jdbcRuntime) {
         if (hello.getMaxReceiveFrameBytes() < MINIMUM_PEER_FRAME_BYTES) {
             return error(
                     meta,
@@ -409,8 +421,10 @@ final class ProtocolLoop {
                     versionsDisplay(SUPPORTED_VERSIONS));
         }
 
+        List<String> capabilities =
+                capabilities(jdbcRuntime.communityCompatibilityConfigured());
         Set<String> missingCapabilities = new LinkedHashSet<>(hello.getRequiredCapabilitiesList());
-        missingCapabilities.removeAll(CAPABILITIES);
+        missingCapabilities.removeAll(capabilities);
         if (!missingCapabilities.isEmpty()) {
             return error(
                     meta,
@@ -435,13 +449,22 @@ final class ProtocolLoop {
                 .setEngineVersion(runtimeInfo.version())
                 .setEngineInstanceId(engineInstanceId)
                 .setSelectedVersion(negotiated)
-                .addAllCapabilities(CAPABILITIES)
+                .addAllCapabilities(capabilities)
                 .setMaxReceiveFrameBytes(FrameCodec.MAX_FRAME_BYTES)
                 .build();
         return new Dispatch(
                 response(meta).setHello(response).build(),
                 false,
                 CompatibilityRuntime.EXIT_OK);
+    }
+
+    static List<String> capabilities(boolean communityCompatibilityConfigured) {
+        if (!communityCompatibilityConfigured) {
+            return BASE_CAPABILITIES;
+        }
+        List<String> capabilities = new ArrayList<>(BASE_CAPABILITIES);
+        capabilities.add(COMMUNITY_SQL_VALIDATION_CAPABILITY);
+        return List.copyOf(capabilities);
     }
 
     private Dispatch pong(RequestMeta meta, long nonce) {

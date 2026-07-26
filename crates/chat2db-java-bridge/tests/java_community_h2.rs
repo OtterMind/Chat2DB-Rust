@@ -9,9 +9,10 @@ use chat2db_java_bridge::{
     COMMUNITY_OBJECT_METADATA_CAPABILITY, COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
     COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY, COMMUNITY_RELATION_METADATA_CAPABILITY,
     COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
-    COMMUNITY_SQL_PARSER_CAPABILITY, CommunityClasspath, CommunityClient, CommunityPluginCatalog,
-    CommunitySchema, DriverArtifact, DriverSpec, EngineCommand, EngineConfig, EngineState,
-    EngineSupervisor, Session, SessionConfig, UpdateRequest,
+    COMMUNITY_SQL_PARSER_CAPABILITY, COMMUNITY_SQL_VALIDATION_CAPABILITY, CommunityClasspath,
+    CommunityClient, CommunityPluginCatalog, CommunitySchema, DriverArtifact, DriverSpec,
+    EngineCommand, EngineConfig, EngineState, EngineSupervisor, Session, SessionConfig,
+    UpdateRequest,
 };
 use tempfile::TempDir;
 
@@ -51,6 +52,7 @@ async fn invokes_real_community_h2_spi_metadata_builder_and_parser() {
         COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
         COMMUNITY_SQL_BUILDER_CAPABILITY,
         COMMUNITY_SQL_PARSER_CAPABILITY,
+        COMMUNITY_SQL_VALIDATION_CAPABILITY,
     ] {
         assert!(
             identity
@@ -475,6 +477,27 @@ async fn verify_parser(community: &CommunityClient) {
         .await
         .expect("Community parser must split a bounded SQL script");
     assert_eq!(script.statements.len(), 2);
+
+    let valid = community
+        .validate_sql("H2", "SELECT id, label FROM APP.items;")
+        .await
+        .expect("Community parser must validate well-formed SQL");
+    assert!(valid.valid);
+    assert_eq!(valid.statements.len(), 1);
+    assert!(valid.diagnostics.is_empty());
+
+    let invalid = community
+        .validate_sql("H2", "SELECT FROM;")
+        .await
+        .expect("Community parser must return bounded syntax diagnostics");
+    assert!(!invalid.valid);
+    assert!(!invalid.diagnostics.is_empty());
+    assert!(
+        invalid
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.is_empty())
+    );
 }
 
 async fn execute_update(session: &Session, sql: &str) {

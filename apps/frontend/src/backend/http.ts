@@ -27,6 +27,7 @@ import type {
   CommunityProcedureParameterList,
   CommunitySchemaList,
   CommunitySqlAnalysis,
+  CommunitySqlValidation,
   CommunityTableColumnList,
   CommunityTableIndexList,
   CommunityTableList,
@@ -68,6 +69,7 @@ import type {
   UpdateAgentSessionRequest,
   UpdateDatasourceRequest,
   UpdateProviderProfileRequest,
+  ValidateCommunitySqlRequest,
 } from './client';
 import {
   ApiRequestError,
@@ -354,6 +356,17 @@ export class HttpBackendClient implements BackendClient {
   ): Promise<CommunitySqlAnalysis> {
     return this.#json(
       '/api/v1/community/sql/parse',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  validateCommunitySql(
+    request: ValidateCommunitySqlRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunitySqlValidation> {
+    return this.#json(
+      '/api/v1/community/sql/validate',
       { method: 'POST', body: JSON.stringify(request), signal },
       [200],
     );

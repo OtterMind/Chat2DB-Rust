@@ -43,6 +43,7 @@ import ai.chat2db.rust.compat.protocol.v1.SessionState;
 import ai.chat2db.rust.compat.protocol.v1.Shutdown;
 import ai.chat2db.rust.compat.protocol.v1.TransactionIsolation;
 import ai.chat2db.rust.compat.protocol.v1.UnloadDriverRequest;
+import ai.chat2db.rust.compat.protocol.v1.ValidateCommunitySqlRequest;
 import com.google.protobuf.ByteString;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -85,23 +86,7 @@ class JdbcProtocolLoopTest {
             ServerEnvelope hello = harness.read();
             assertEquals(ServerEnvelope.PayloadCase.HELLO, hello.getPayloadCase());
             assertEquals(
-                    List.of(
-                            ProtocolLoop.PING_CAPABILITY,
-                            ProtocolLoop.SHUTDOWN_CAPABILITY,
-                            ProtocolLoop.EXTERNAL_DRIVER_CAPABILITY,
-                            ProtocolLoop.JDBC_SESSION_CAPABILITY,
-                            ProtocolLoop.TYPED_QUERY_CAPABILITY,
-                            ProtocolLoop.CREDIT_FLOW_CAPABILITY,
-                            ProtocolLoop.OPERATION_CANCEL_CAPABILITY,
-                            ProtocolLoop.JDBC_UPDATE_CAPABILITY,
-                            ProtocolLoop.LOCAL_TRANSACTION_CAPABILITY,
-                            ProtocolLoop.COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
-                            ProtocolLoop.COMMUNITY_SCHEMA_METADATA_CAPABILITY,
-                            ProtocolLoop.COMMUNITY_OBJECT_METADATA_CAPABILITY,
-                            ProtocolLoop.COMMUNITY_RELATION_METADATA_CAPABILITY,
-                            ProtocolLoop.COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
-                            ProtocolLoop.COMMUNITY_SQL_BUILDER_CAPABILITY,
-                            ProtocolLoop.COMMUNITY_SQL_PARSER_CAPABILITY),
+                    ProtocolLoop.capabilities(isCommunityCompatibilityConfigured()),
                     hello.getHello().getCapabilitiesList());
 
             harness.send(ClientEnvelope.newBuilder()
@@ -451,6 +436,65 @@ class JdbcProtocolLoopTest {
                     harness, "protocol.invalid_trigger_name");
 
             harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("oversized-community-validation-sql", sessionId))
+                    .setValidateCommunitySql(ValidateCommunitySqlRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setSql("x".repeat(ProtocolLimits.MAX_SQL_BYTES + 1)))
+                    .build());
+            assertCommunityValidationFailure(harness, "protocol.limit_exceeded");
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("blank-community-validation-type", sessionId))
+                    .setValidateCommunitySql(ValidateCommunitySqlRequest.newBuilder()
+                            .setDatabaseType("  ")
+                            .setSql("SELECT 1"))
+                    .build());
+            assertCommunityValidationFailure(
+                    harness, "protocol.invalid_database_type");
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("missing-community-validation-plugin", sessionId))
+                    .setValidateCommunitySql(ValidateCommunitySqlRequest.newBuilder()
+                            .setDatabaseType("MISSING")
+                            .setSql("SELECT 1"))
+                    .build());
+            assertCommunityValidationFailure(harness, "community.plugin_not_found");
+
+            if (isCommunityCompatibilityConfigured()) {
+                harness.send(ClientEnvelope.newBuilder()
+                        .setMeta(meta("valid-community-sql", sessionId))
+                        .setValidateCommunitySql(ValidateCommunitySqlRequest.newBuilder()
+                                .setDatabaseType("H2")
+                                .setSql("SELECT 1;"))
+                        .build());
+                ServerEnvelope validCommunitySql = harness.read();
+                assertEquals(
+                        ServerEnvelope.PayloadCase.COMMUNITY_SQL_VALIDATION,
+                        validCommunitySql.getPayloadCase());
+                assertTrue(validCommunitySql.getCommunitySqlValidation().getValid());
+                assertFalse(validCommunitySql
+                        .getCommunitySqlValidation()
+                        .getStatementsList()
+                        .isEmpty());
+
+                harness.send(ClientEnvelope.newBuilder()
+                        .setMeta(meta("invalid-community-sql", sessionId))
+                        .setValidateCommunitySql(ValidateCommunitySqlRequest.newBuilder()
+                                .setDatabaseType("H2")
+                                .setSql("SELECT FROM;"))
+                        .build());
+                ServerEnvelope invalidCommunitySql = harness.read();
+                assertEquals(
+                        ServerEnvelope.PayloadCase.COMMUNITY_SQL_VALIDATION,
+                        invalidCommunitySql.getPayloadCase());
+                assertFalse(invalidCommunitySql.getCommunitySqlValidation().getValid());
+                assertFalse(invalidCommunitySql
+                        .getCommunitySqlValidation()
+                        .getDiagnosticsList()
+                        .isEmpty());
+            }
+
+            harness.send(ClientEnvelope.newBuilder()
                     .setMeta(meta("begin", sessionId))
                     .setBeginTransaction(BeginTransactionRequest.newBuilder()
                             .setIsolation(TransactionIsolation.TRANSACTION_ISOLATION_READ_COMMITTED))
@@ -676,6 +720,11 @@ class JdbcProtocolLoopTest {
                                 ProtocolLoop.SHUTDOWN_CAPABILITY))
                         .setMaxReceiveFrameBytes(1024))
                 .build();
+    }
+
+    private static boolean isCommunityCompatibilityConfigured() {
+        String classpath = System.getenv(CommunityPluginRegistry.CLASSPATH_ENV);
+        return classpath != null && !classpath.isBlank();
     }
 
     private static RequestMeta meta(String requestId) {

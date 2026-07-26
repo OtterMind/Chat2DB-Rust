@@ -66,23 +66,7 @@ class ExecutableJarIT {
             assertEquals(1, serverHello.getHello().getSelectedVersion().getMajor());
             assertEquals(0, serverHello.getHello().getSelectedVersion().getMinor());
             assertEquals(
-                    List.of(
-                            ProtocolLoop.PING_CAPABILITY,
-                            ProtocolLoop.SHUTDOWN_CAPABILITY,
-                            ProtocolLoop.EXTERNAL_DRIVER_CAPABILITY,
-                            ProtocolLoop.JDBC_SESSION_CAPABILITY,
-                            ProtocolLoop.TYPED_QUERY_CAPABILITY,
-                            ProtocolLoop.CREDIT_FLOW_CAPABILITY,
-                            ProtocolLoop.OPERATION_CANCEL_CAPABILITY,
-                            ProtocolLoop.JDBC_UPDATE_CAPABILITY,
-                            ProtocolLoop.LOCAL_TRANSACTION_CAPABILITY,
-                        ProtocolLoop.COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
-                        ProtocolLoop.COMMUNITY_SCHEMA_METADATA_CAPABILITY,
-                        ProtocolLoop.COMMUNITY_OBJECT_METADATA_CAPABILITY,
-                        ProtocolLoop.COMMUNITY_RELATION_METADATA_CAPABILITY,
-                        ProtocolLoop.COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
-                        ProtocolLoop.COMMUNITY_SQL_BUILDER_CAPABILITY,
-                            ProtocolLoop.COMMUNITY_SQL_PARSER_CAPABILITY),
+                    ProtocolLoop.capabilities(isCommunityCompatibilityConfigured()),
                     serverHello.getHello().getCapabilitiesList());
 
             FrameCodec.writeFrame(
@@ -157,5 +141,10 @@ class ExecutableJarIT {
                 ? "java.exe"
                 : "java";
         return Path.of(System.getProperty("java.home"), "bin", executable).toString();
+    }
+
+    private static boolean isCommunityCompatibilityConfigured() {
+        String classpath = System.getenv(CommunityPluginRegistry.CLASSPATH_ENV);
+        return classpath != null && !classpath.isBlank();
     }
 }

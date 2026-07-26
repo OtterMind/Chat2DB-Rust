@@ -13,6 +13,7 @@ use chat2db_contract::{
     ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
     ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
     ListCommunityTriggersRequest, ListCommunityViewsRequest, ParseCommunitySqlRequest,
+    ValidateCommunitySqlRequest,
 };
 use chat2db_core::{
     AppError, AppErrorKind, Application, RuntimeHost, load_fixed_community_classpath,
@@ -33,6 +34,16 @@ async fn product_services_invoke_the_fixed_community_h2_compatibility_slice() {
     let application = host.application();
 
     verify_community_catalog(&application).await;
+
+    let validation = application
+        .validate_community_sql(ValidateCommunitySqlRequest {
+            database_type: "H2".to_owned(),
+            sql: "SELECT FROM;".to_owned(),
+        })
+        .await
+        .expect("Core SQL validation must not require a datasource or JDBC session");
+    assert!(!validation.valid);
+    assert!(!validation.diagnostics.is_empty());
 
     let datasource = application
         .create_datasource(CreateDatasourceRequest {

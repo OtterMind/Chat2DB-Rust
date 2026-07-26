@@ -31,6 +31,8 @@ pub const COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY: &str =
 pub const COMMUNITY_SQL_BUILDER_CAPABILITY: &str = "community.sql-builder.v1";
 /// Parses SQL through a Community `ISqlSyntaxPlugin` implementation.
 pub const COMMUNITY_SQL_PARSER_CAPABILITY: &str = "community.sql-parser.v1";
+/// Validates SQL through a Community `ISqlSyntaxPlugin` implementation.
+pub const COMMUNITY_SQL_VALIDATION_CAPABILITY: &str = "community.sql-validation.v1";
 
 pub(super) const COMMUNITY_CLASSPATH_ENV: &str = "CHAT2DB_COMMUNITY_CLASSPATH_DIR";
 pub(super) const COMMUNITY_SOURCE_COMMIT_ENV: &str = "CHAT2DB_COMMUNITY_SOURCE_COMMIT";
@@ -750,6 +752,25 @@ pub struct CommunityParsedStatement {
 pub struct CommunitySqlAnalysis {
     pub is_select: bool,
     pub statements: Vec<CommunityParsedStatement>,
+}
+
+/// One syntax diagnostic returned by the retained Community parser.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommunitySqlDiagnostic {
+    pub start_line: u32,
+    pub start_column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+    pub token_text: String,
+    pub message: String,
+}
+
+/// Bounded syntax-validation projection for a SQL input.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommunitySqlValidation {
+    pub valid: bool,
+    pub statements: Vec<CommunityParsedStatement>,
+    pub diagnostics: Vec<CommunitySqlDiagnostic>,
 }
 
 /// Client bound to one validated Java engine generation.
@@ -1701,6 +1722,45 @@ impl CommunityClient {
         Ok(analysis.into())
     }
 
+    /// Validates SQL through the selected plugin's retained syntax plugin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, unsupported syntax, parser failure,
+    /// transport failure, or an invalid response.
+    pub async fn validate_sql(
+        &self,
+        database_type: impl Into<String>,
+        sql: impl Into<String>,
+    ) -> Result<CommunitySqlValidation, BridgeError> {
+        let database_type = database_type.into();
+        let sql = sql.into();
+        validate_database_type(&database_type)?;
+        validate_non_blank_utf8(&sql, MAX_SQL_BYTES, "SQL")?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_SQL_VALIDATION_CAPABILITY,
+                None,
+                None,
+                wire::client_envelope::Payload::ValidateCommunitySql(
+                    wire::ValidateCommunitySqlRequest { database_type, sql },
+                ),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunitySqlValidation(validation)) =
+            response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community SQL-validation response")
+                .await;
+        };
+        Ok(validation.into())
+    }
+
     #[must_use]
     pub const fn generation(&self) -> u64 {
         self.binding.generation
@@ -2048,6 +2108,29 @@ impl From<wire::CommunitySqlAnalysis> for CommunitySqlAnalysis {
         Self {
             is_select: analysis.is_select,
             statements: analysis.statements.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<wire::CommunitySqlValidation> for CommunitySqlValidation {
+    fn from(validation: wire::CommunitySqlValidation) -> Self {
+        Self {
+            valid: validation.valid,
+            statements: validation.statements.into_iter().map(Into::into).collect(),
+            diagnostics: validation.diagnostics.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<wire::CommunitySqlDiagnostic> for CommunitySqlDiagnostic {
+    fn from(diagnostic: wire::CommunitySqlDiagnostic) -> Self {
+        Self {
+            start_line: diagnostic.start_line,
+            start_column: diagnostic.start_column,
+            end_line: diagnostic.end_line,
+            end_column: diagnostic.end_column,
+            token_text: diagnostic.token_text,
+            message: diagnostic.message,
         }
     }
 }
@@ -2431,11 +2514,52 @@ mod tests {
 
     use super::{
         CommunityClasspath, CommunityForeignKey, CommunityFunction, CommunityFunctionParameter,
-        CommunityPrimaryKey, CommunityProcedure, CommunityProcedureParameter, CommunityTrigger,
-        MAX_SCALAR_BYTES, validate_non_blank_utf8,
+        CommunityPrimaryKey, CommunityProcedure, CommunityProcedureParameter,
+        CommunitySqlDiagnostic, CommunitySqlValidation, CommunityTrigger, MAX_SCALAR_BYTES,
+        validate_non_blank_utf8,
     };
 
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn sql_validation_wire_mapping_preserves_every_field() {
+        let validation = wire::CommunitySqlValidation {
+            valid: false,
+            statements: vec![wire::CommunityParsedStatement {
+                sql: "SELECT FROM".to_owned(),
+                r#type: "Unknown".to_owned(),
+                statement_type: "UNKNOWN".to_owned(),
+            }],
+            diagnostics: vec![wire::CommunitySqlDiagnostic {
+                start_line: 1,
+                start_column: 8,
+                end_line: 1,
+                end_column: 12,
+                token_text: "FROM".to_owned(),
+                message: "unexpected FROM".to_owned(),
+            }],
+        };
+
+        assert_eq!(
+            CommunitySqlValidation::from(validation),
+            CommunitySqlValidation {
+                valid: false,
+                statements: vec![super::CommunityParsedStatement {
+                    sql: "SELECT FROM".to_owned(),
+                    statement_type: "UNKNOWN".to_owned(),
+                    kind: "Unknown".to_owned(),
+                }],
+                diagnostics: vec![CommunitySqlDiagnostic {
+                    start_line: 1,
+                    start_column: 8,
+                    end_line: 1,
+                    end_column: 12,
+                    token_text: "FROM".to_owned(),
+                    message: "unexpected FROM".to_owned(),
+                }],
+            }
+        );
+    }
 
     #[test]
     fn relation_metadata_wire_mapping_preserves_every_field() {

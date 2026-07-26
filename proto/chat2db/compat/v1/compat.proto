@@ -69,6 +69,7 @@ message ClientEnvelope {
     GetCommunityProcedureRequest list_community_procedure_parameters = 217;
     ListCommunityTriggersRequest list_community_triggers = 218;
     GetCommunityTriggerRequest get_community_trigger = 219;
+    ValidateCommunitySqlRequest validate_community_sql = 220;
   }
 }
 
@@ -113,6 +114,7 @@ message ServerEnvelope {
     CommunityProcedureParameterList community_procedure_parameter_list = 217;
     CommunityTriggerList community_trigger_list = 218;
     CommunityTrigger community_trigger = 219;
+    CommunitySqlValidation community_sql_validation = 220;
   }
 }
 

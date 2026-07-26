@@ -39,11 +39,12 @@ pub use community::{
     COMMUNITY_OBJECT_METADATA_CAPABILITY, COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
     COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY, COMMUNITY_RELATION_METADATA_CAPABILITY,
     COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
-    COMMUNITY_SQL_PARSER_CAPABILITY, CommunityClasspath, CommunityClient, CommunityDatabase,
-    CommunityDriverConfig, CommunityForeignKey, CommunityFunction, CommunityFunctionParameter,
-    CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
-    CommunityPluginServices, CommunityPrimaryKey, CommunityProcedure, CommunityProcedureParameter,
-    CommunitySchema, CommunitySqlAnalysis, CommunityTable, CommunityTableColumn,
+    COMMUNITY_SQL_PARSER_CAPABILITY, COMMUNITY_SQL_VALIDATION_CAPABILITY, CommunityClasspath,
+    CommunityClient, CommunityDatabase, CommunityDriverConfig, CommunityForeignKey,
+    CommunityFunction, CommunityFunctionParameter, CommunityParsedStatement, CommunityPlugin,
+    CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices, CommunityPrimaryKey,
+    CommunityProcedure, CommunityProcedureParameter, CommunitySchema, CommunitySqlAnalysis,
+    CommunitySqlDiagnostic, CommunitySqlValidation, CommunityTable, CommunityTableColumn,
     CommunityTableIndex, CommunityTableIndexColumn, CommunityTrigger,
 };
 
@@ -176,6 +177,7 @@ impl EngineConfig {
             COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
             COMMUNITY_SQL_BUILDER_CAPABILITY,
             COMMUNITY_SQL_PARSER_CAPABILITY,
+            COMMUNITY_SQL_VALIDATION_CAPABILITY,
         ] {
             if !self
                 .required_capabilities

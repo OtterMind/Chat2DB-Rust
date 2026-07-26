@@ -16,6 +16,7 @@ import ai.chat2db.rust.compat.protocol.v1.CommunityProcedureList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityProcedureParameterList;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySchemaList;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySqlAnalysis;
+import ai.chat2db.rust.compat.protocol.v1.CommunitySqlValidation;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableColumnList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableIndexList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableList;
@@ -62,6 +63,7 @@ import ai.chat2db.rust.compat.protocol.v1.TransactionRolledBack;
 import ai.chat2db.rust.compat.protocol.v1.TransactionStarted;
 import ai.chat2db.rust.compat.protocol.v1.UnloadDriverRequest;
 import ai.chat2db.rust.compat.protocol.v1.UpdateCompleted;
+import ai.chat2db.rust.compat.protocol.v1.ValidateCommunitySqlRequest;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.sql.Connection;
@@ -798,6 +800,17 @@ final class JdbcRuntime implements AutoCloseable {
         CommunitySqlAnalysis analysis =
                 community.parse(request.getDatabaseType(), request.getSql());
         return terminal(meta).setCommunitySqlAnalysis(analysis).build();
+    }
+
+    ServerEnvelope validateCommunitySql(
+            RequestMeta meta, ValidateCommunitySqlRequest request) throws RuntimeFailure {
+        CommunitySqlValidation validation =
+                community.validate(request.getDatabaseType(), request.getSql());
+        return terminal(meta).setCommunitySqlValidation(validation).build();
+    }
+
+    boolean communityCompatibilityConfigured() {
+        return community.configured();
     }
 
     RuntimeFailure attachSessionState(RequestMeta meta, RuntimeFailure failure) {

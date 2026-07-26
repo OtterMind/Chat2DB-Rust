@@ -34,6 +34,9 @@ import ai.chat2db.rust.compat.protocol.v1.CommunitySchema;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySchemaList;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySchemaCountLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySqlAnalysis;
+import ai.chat2db.rust.compat.protocol.v1.CommunitySqlDiagnostic;
+import ai.chat2db.rust.compat.protocol.v1.CommunitySqlDiagnosticCountLimit;
+import ai.chat2db.rust.compat.protocol.v1.CommunitySqlValidation;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTable;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableColumn;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableColumnList;
@@ -138,6 +141,10 @@ final class CommunityPluginRegistry implements AutoCloseable {
                     .getNumber();
     private static final int MAX_STATEMENTS =
             CommunityCountLimit.COMMUNITY_COUNT_LIMIT_MAX_STATEMENTS.getNumber();
+    static final int MAX_SQL_DIAGNOSTICS =
+            CommunitySqlDiagnosticCountLimit
+                    .COMMUNITY_SQL_DIAGNOSTIC_COUNT_LIMIT_MAX_DIAGNOSTICS
+                    .getNumber();
     private static final int MAX_DATABASE_TYPE_BYTES =
             CommunityByteLimit.COMMUNITY_BYTE_LIMIT_MAX_DATABASE_TYPE_BYTES.getNumber();
     private static final int MAX_PLUGIN_NAME_BYTES =
@@ -195,6 +202,10 @@ final class CommunityPluginRegistry implements AutoCloseable {
             throw new IllegalStateException(
                     "Community compatibility classpath could not be loaded", failure);
         }
+    }
+
+    boolean configured() {
+        return loader != null;
     }
 
     CommunityPluginCatalog catalog() throws RuntimeFailure {
@@ -1094,7 +1105,7 @@ final class CommunityPluginRegistry implements AutoCloseable {
         }
     }
 
-    CommunitySqlAnalysis parse(String databaseType, String sql) throws RuntimeFailure {
+    synchronized CommunitySqlAnalysis parse(String databaseType, String sql) throws RuntimeFailure {
         ensureOpen();
         requireNonBlank(sql, MAX_SQL_BYTES, "sql");
         PluginHandle handle = requirePlugin(databaseType);
@@ -1129,25 +1140,7 @@ final class CommunityPluginRegistry implements AutoCloseable {
                     CommunitySqlAnalysis.newBuilder().setIsSelect(isSelect);
             for (Object statement : statements) {
                 budget.consumeMessage();
-                analysis.addStatements(CommunityParsedStatement.newBuilder()
-                        .setSql(getString(
-                                statement,
-                                "getSql",
-                                MAX_SQL_BYTES,
-                                "statement_sql",
-                                budget))
-                        .setType(getString(
-                                statement,
-                                "getType",
-                                MAX_SCALAR_BYTES,
-                                "statement_type",
-                                budget))
-                        .setStatementType(getString(
-                                statement,
-                                "getStatementType",
-                                MAX_SCALAR_BYTES,
-                                "statement_statement_type",
-                                budget)));
+                analysis.addStatements(parsedStatement(statement, budget));
             }
             return analysis.build();
         } catch (RuntimeFailure failure) {
@@ -1165,6 +1158,128 @@ final class CommunityPluginRegistry implements AutoCloseable {
         } finally {
             thread.setContextClassLoader(previous);
         }
+    }
+
+    synchronized CommunitySqlValidation validate(String databaseType, String sql)
+            throws RuntimeFailure {
+        ensureOpen();
+        requireNonBlank(sql, MAX_SQL_BYTES, "sql");
+        PluginHandle handle = requirePlugin(databaseType);
+        Thread thread = Thread.currentThread();
+        ClassLoader previous = thread.getContextClassLoader();
+        thread.setContextClassLoader(loader);
+        try {
+            Object syntax = invoke(handle.plugin(), "getSqlSyntaxPlugin");
+            if (syntax == null) {
+                throw RuntimeFailure.validation(
+                        "community.sql_parser_not_supported",
+                        "the selected Community plugin does not provide a SQL parser");
+            }
+            Object parser = invoke(syntax, "getSQLParser");
+            if (parser == null) {
+                throw RuntimeFailure.validation(
+                        "community.sql_parser_not_supported",
+                        "the selected Community plugin does not provide a SQL parser");
+            }
+            Object response = invoke(
+                    parser, "parserStatements", new Class<?>[] {String.class}, sql);
+            List<?> statements = requireList(invoke(response, "getStatements"), "statements");
+            List<?> diagnostics =
+                    requireList(invoke(response, "getSyntaxErrors"), "SQL diagnostics");
+            requireCount(statements.size(), MAX_STATEMENTS, "community parsed statements");
+            requireSqlDiagnosticCount(diagnostics.size());
+
+            ProjectionBudget budget = ProjectionBudget.response();
+            budget.consumeMessage();
+            budget.consumeBoolean();
+            CommunitySqlValidation.Builder validation =
+                    CommunitySqlValidation.newBuilder().setValid(diagnostics.isEmpty());
+            for (Object statement : statements) {
+                budget.consumeMessage();
+                validation.addStatements(parsedStatement(statement, budget));
+            }
+            for (Object diagnostic : diagnostics) {
+                budget.consumeMessage();
+                validation.addDiagnostics(sqlDiagnostic(diagnostic, budget));
+            }
+            return validation.build();
+        } catch (RuntimeFailure failure) {
+            throw failure;
+        } catch (InvocationTargetException failure) {
+            throw RuntimeFailure.internal(
+                    "community.sql_parser_failed",
+                    "the Community SQL parser failed internally",
+                    rootInvocationCause(failure));
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+            throw RuntimeFailure.internal(
+                    "community.sql_parser_failed",
+                    "the Community SQL parser failed internally",
+                    failure);
+        } finally {
+            thread.setContextClassLoader(previous);
+        }
+    }
+
+    private static CommunityParsedStatement parsedStatement(
+            Object statement, ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        return CommunityParsedStatement.newBuilder()
+                .setSql(getString(
+                        statement,
+                        "getSql",
+                        MAX_SQL_BYTES,
+                        "statement_sql",
+                        budget))
+                .setType(getString(
+                        statement,
+                        "getType",
+                        MAX_SCALAR_BYTES,
+                        "statement_type",
+                        budget))
+                .setStatementType(getString(
+                        statement,
+                        "getStatementType",
+                        MAX_SCALAR_BYTES,
+                        "statement_statement_type",
+                        budget))
+                .build();
+    }
+
+    private static CommunitySqlDiagnostic sqlDiagnostic(
+            Object diagnostic, ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        return CommunitySqlDiagnostic.newBuilder()
+                .setStartLine(getNonNegativeInteger(
+                        diagnostic, "getErrorStartLine", "diagnostic_start_line", budget))
+                .setStartColumn(getNonNegativeInteger(
+                        diagnostic,
+                        "getErrorStartPositionInLine",
+                        "diagnostic_start_column",
+                        budget))
+                .setEndLine(getNonNegativeInteger(
+                        diagnostic, "getErrorEndLine", "diagnostic_end_line", budget))
+                .setEndColumn(getNonNegativeInteger(
+                        diagnostic,
+                        "getErrorEndPositionInLine",
+                        "diagnostic_end_column",
+                        budget))
+                .setTokenText(getString(
+                        diagnostic,
+                        "getErrorTokenText",
+                        MAX_SQL_BYTES,
+                        "diagnostic_token_text",
+                        budget))
+                .setMessage(getString(
+                        diagnostic,
+                        "getErrorMessage",
+                        MAX_COMMENT_BYTES,
+                        "diagnostic_message",
+                        budget))
+                .build();
+    }
+
+    static void requireSqlDiagnosticCount(int count) throws RuntimeFailure {
+        requireCount(count, MAX_SQL_DIAGNOSTICS, "community SQL diagnostics");
     }
 
     @Override
@@ -2230,6 +2345,20 @@ final class CommunityPluginRegistry implements AutoCloseable {
         }
         budget.consumeNumeric();
         return number.intValue();
+    }
+
+    private static int getNonNegativeInteger(
+            Object target, String getter, String field, ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        return requireNonNegativeCoordinate(getRequiredInteger(target, getter, budget), field);
+    }
+
+    static int requireNonNegativeCoordinate(int value, String field) {
+        if (value < 0) {
+            throw new IllegalStateException(
+                    "Community SQL parser returned a negative " + field);
+        }
+        return value;
     }
 
     private static void setOptionalBoolean(

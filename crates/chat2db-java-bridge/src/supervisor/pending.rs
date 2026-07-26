@@ -45,6 +45,8 @@ const MAX_COMMUNITY_INDEXES: usize = wire::CommunityIndexCountLimit::MaxIndexes 
 const MAX_COMMUNITY_INDEX_COLUMNS: usize =
     wire::CommunityIndexColumnCountLimit::MaxIndexColumns as usize;
 const MAX_COMMUNITY_STATEMENTS: usize = wire::CommunityCountLimit::MaxStatements as usize;
+const MAX_COMMUNITY_SQL_DIAGNOSTICS: usize =
+    wire::CommunitySqlDiagnosticCountLimit::MaxDiagnostics as usize;
 const MAX_COMMUNITY_DATABASE_TYPE_BYTES: usize =
     wire::CommunityByteLimit::MaxDatabaseTypeBytes as usize;
 const MAX_COMMUNITY_PLUGIN_NAME_BYTES: usize =
@@ -1044,27 +1046,65 @@ fn validate_response_payload(
         }
         wire::server_envelope::Payload::CommunitySqlAnalysis(analysis) => {
             let mut field_bytes = 0;
-            if analysis.statements.len() > MAX_COMMUNITY_STATEMENTS {
+            validate_community_parsed_statements(&analysis.statements, &mut field_bytes)?;
+            validate_community_response_encoded_len(analysis)?;
+            Ok(None)
+        }
+        wire::server_envelope::Payload::CommunitySqlValidation(validation) => {
+            let mut field_bytes = 0;
+            validate_community_parsed_statements(&validation.statements, &mut field_bytes)?;
+            if validation.diagnostics.len() > MAX_COMMUNITY_SQL_DIAGNOSTICS {
                 return Err(format!(
-                    "Community parser exceeded the {MAX_COMMUNITY_STATEMENTS}-statement limit"
+                    "Community SQL validation exceeded the {MAX_COMMUNITY_SQL_DIAGNOSTICS}-diagnostic limit"
                 ));
             }
-            for statement in &analysis.statements {
-                validate_bytes_limit(&statement.sql, MAX_SQL_BYTES, "Community parsed SQL")?;
-                validate_scalar(&statement.r#type, "Community parsed statement type")?;
-                validate_scalar(
-                    &statement.statement_type,
-                    "Community parsed statement category",
+            for diagnostic in &validation.diagnostics {
+                validate_bytes_limit(
+                    &diagnostic.token_text,
+                    MAX_SQL_BYTES,
+                    "Community SQL diagnostic token text",
                 )?;
-                add_community_response_field(&mut field_bytes, &statement.sql)?;
-                add_community_response_field(&mut field_bytes, &statement.r#type)?;
-                add_community_response_field(&mut field_bytes, &statement.statement_type)?;
+                validate_bytes_limit(
+                    &diagnostic.message,
+                    MAX_COMMUNITY_COMMENT_BYTES,
+                    "Community SQL diagnostic message",
+                )?;
+                add_community_response_field(&mut field_bytes, &diagnostic.token_text)?;
+                add_community_response_field(&mut field_bytes, &diagnostic.message)?;
             }
-            validate_community_response_encoded_len(analysis)?;
+            if validation.valid != validation.diagnostics.is_empty() {
+                return Err(
+                    "Community SQL validation validity disagreed with its diagnostics".to_owned(),
+                );
+            }
+            validate_community_response_encoded_len(validation)?;
             Ok(None)
         }
         _ => Ok(None),
     }
+}
+
+fn validate_community_parsed_statements(
+    statements: &[wire::CommunityParsedStatement],
+    field_bytes: &mut usize,
+) -> Result<(), String> {
+    if statements.len() > MAX_COMMUNITY_STATEMENTS {
+        return Err(format!(
+            "Community parser exceeded the {MAX_COMMUNITY_STATEMENTS}-statement limit"
+        ));
+    }
+    for statement in statements {
+        validate_bytes_limit(&statement.sql, MAX_SQL_BYTES, "Community parsed SQL")?;
+        validate_scalar(&statement.r#type, "Community parsed statement type")?;
+        validate_scalar(
+            &statement.statement_type,
+            "Community parsed statement category",
+        )?;
+        add_community_response_field(field_bytes, &statement.sql)?;
+        add_community_response_field(field_bytes, &statement.r#type)?;
+        add_community_response_field(field_bytes, &statement.statement_type)?;
+    }
+    Ok(())
 }
 
 fn validate_community_database_list(databases: &wire::CommunityDatabaseList) -> Result<(), String> {
@@ -2725,6 +2765,128 @@ mod tests {
             ))
             .expect_err("a Community response one encoded byte over budget must fail")
             .contains("encoded length")
+        );
+    }
+
+    #[test]
+    fn community_sql_validation_responses_enforce_counts_and_string_bounds() {
+        let too_many_statements =
+            wire::server_envelope::Payload::CommunitySqlValidation(wire::CommunitySqlValidation {
+                statements: vec![
+                    wire::CommunityParsedStatement::default();
+                    MAX_COMMUNITY_STATEMENTS + 1
+                ],
+                ..Default::default()
+            });
+        assert!(
+            validate_response_payload(&too_many_statements)
+                .expect_err("validation statement count above the limit must fail")
+                .contains("statement limit")
+        );
+
+        let too_many_diagnostics =
+            wire::server_envelope::Payload::CommunitySqlValidation(wire::CommunitySqlValidation {
+                diagnostics: vec![
+                    wire::CommunitySqlDiagnostic::default();
+                    MAX_COMMUNITY_SQL_DIAGNOSTICS + 1
+                ],
+                ..Default::default()
+            });
+        assert!(
+            validate_response_payload(&too_many_diagnostics)
+                .expect_err("diagnostic count above the limit must fail")
+                .contains("diagnostic limit")
+        );
+
+        for (diagnostic, expected) in [
+            (
+                wire::CommunitySqlDiagnostic {
+                    token_text: "x".repeat(MAX_SQL_BYTES + 1),
+                    ..Default::default()
+                },
+                "diagnostic token text",
+            ),
+            (
+                wire::CommunitySqlDiagnostic {
+                    message: "x".repeat(MAX_COMMUNITY_COMMENT_BYTES + 1),
+                    ..Default::default()
+                },
+                "diagnostic message",
+            ),
+        ] {
+            let payload = wire::server_envelope::Payload::CommunitySqlValidation(
+                wire::CommunitySqlValidation {
+                    diagnostics: vec![diagnostic],
+                    ..Default::default()
+                },
+            );
+            assert!(
+                validate_response_payload(&payload)
+                    .expect_err("oversized diagnostic string must fail")
+                    .contains(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn community_sql_validation_requires_validity_to_match_diagnostics() {
+        for validation in [
+            wire::CommunitySqlValidation {
+                valid: true,
+                diagnostics: vec![wire::CommunitySqlDiagnostic::default()],
+                ..Default::default()
+            },
+            wire::CommunitySqlValidation {
+                valid: false,
+                diagnostics: Vec::new(),
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                validate_response_payload(&wire::server_envelope::Payload::CommunitySqlValidation(
+                    validation
+                ))
+                .expect_err("inconsistent validation validity must fail")
+                .contains("validity disagreed")
+            );
+        }
+    }
+
+    #[test]
+    fn community_sql_validation_enforces_cumulative_and_encoded_byte_budgets() {
+        let aggregate_overflow =
+            wire::server_envelope::Payload::CommunitySqlValidation(wire::CommunitySqlValidation {
+                statements: vec![
+                    wire::CommunityParsedStatement {
+                        sql: "x".repeat(MAX_SQL_BYTES),
+                        ..Default::default()
+                    };
+                    (MAX_COMMUNITY_RESPONSE_BYTES / MAX_SQL_BYTES) + 1
+                ],
+                ..Default::default()
+            });
+        assert!(
+            validate_response_payload(&aggregate_overflow)
+                .expect_err("aggregate validation strings above the budget must fail")
+                .contains("string fields")
+        );
+
+        let bytes_per_diagnostic = MAX_COMMUNITY_RESPONSE_BYTES / MAX_COMMUNITY_SQL_DIAGNOSTICS;
+        let encoded_overflow =
+            wire::server_envelope::Payload::CommunitySqlValidation(wire::CommunitySqlValidation {
+                diagnostics: vec![
+                    wire::CommunitySqlDiagnostic {
+                        message: "x".repeat(bytes_per_diagnostic),
+                        ..Default::default()
+                    };
+                    MAX_COMMUNITY_SQL_DIAGNOSTICS
+                ],
+                ..Default::default()
+            });
+        assert!(
+            validate_response_payload(&encoded_overflow)
+                .expect_err("validation framing above the encoded budget must fail")
+                .contains("encoded length")
         );
     }
 
