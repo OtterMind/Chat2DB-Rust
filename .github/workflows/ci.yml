@@ -197,6 +197,7 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           git config --global core.longpaths true
+          git config --global core.autocrlf false
           git submodule update --init --recursive third_party/chat2db-community
       - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.7.1
         if: runner.os == 'Windows'
