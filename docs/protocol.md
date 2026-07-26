@@ -77,6 +77,8 @@ The implemented capability names are:
 - `community.metadata.programmability.v1`
 - `community.sql-builder.v1`
 - `community.sql-parser.v1`
+- `community.sql-validation.v1`
+- `community.sql-formatter.v1`
 
 No common version or missing required capability returns a fatal structured
 error and terminates the engine. Rust rejects a selected version it did not

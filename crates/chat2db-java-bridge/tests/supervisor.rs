@@ -291,6 +291,54 @@ async fn mismatched_community_commit_fails_and_reaps_the_generation() {
 }
 
 #[tokio::test]
+async fn formatter_complexity_is_scoped_and_rejected_before_transport() {
+    let directory = tempfile::tempdir().expect("fixture directory must exist");
+    let jar = directory.path().join("community-fixture.jar");
+    std::fs::write(&jar, b"fixture").expect("fixture JAR must write");
+    let classpath = CommunityClasspath::from_paths(COMMUNITY_COMMIT, [jar])
+        .expect("fixture Community classpath must validate");
+    let supervisor = EngineSupervisor::spawn(
+        fast_config(fixture_command(&["--community=wrong-commit"]))
+            .with_community_classpath(classpath),
+    )
+    .await
+    .expect("Community fixture must handshake");
+    let community = supervisor
+        .client()
+        .community_client()
+        .expect("Community client must bind");
+
+    let exact = "a,".repeat(8_192);
+    let exact_error = community
+        .format_sql("H2", exact.clone())
+        .await
+        .expect_err("the exact complexity limit must reach the fixture");
+    assert!(matches!(
+        exact_error,
+        BridgeError::Remote(remote) if remote.code == "community.not_configured"
+    ));
+
+    let over_limit = exact + "a";
+    let formatter_error = community
+        .format_sql("H2", over_limit.clone())
+        .await
+        .expect_err("formatter input above the complexity limit must fail locally");
+    assert!(matches!(formatter_error, BridgeError::InvalidRequest(_)));
+    assert!(formatter_error.to_string().contains("16384 units"));
+
+    let parser_error = community
+        .parse_sql("H2", over_limit)
+        .await
+        .expect_err("parser input must retain its independent byte-only contract");
+    assert!(matches!(
+        parser_error,
+        BridgeError::Remote(remote) if remote.code == "community.not_configured"
+    ));
+
+    supervisor.shutdown().await.expect("fixture must shut down");
+}
+
+#[tokio::test]
 async fn delivered_community_timeout_fails_and_reaps_the_generation() {
     let directory = tempfile::tempdir().expect("fixture directory must exist");
     let jar = directory.path().join("community-fixture.jar");

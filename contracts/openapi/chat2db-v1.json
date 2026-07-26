@@ -2304,6 +2304,66 @@
         }
       }
     },
+    "/api/v1/community/sql/format": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "format_community_sql",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FormatCommunitySqlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community formatted SQL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityFormattedSql"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community SQL-formatter request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community SQL-formatter failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/community/sql/parse": {
       "post": {
         "tags": [
@@ -4553,6 +4613,19 @@
           }
         }
       },
+      "CommunityFormattedSql": {
+        "type": "object",
+        "description": "SQL formatted by a retained Community dialect service.",
+        "required": [
+          "sql"
+        ],
+        "properties": {
+          "sql": {
+            "type": "string",
+            "description": "Complete formatted SQL, capped at 1 MiB."
+          }
+        }
+      },
       "CommunityFunction": {
         "type": "object",
         "description": "Secret-free Community function metadata.",
@@ -6098,6 +6171,24 @@
           "toolCallId": {
             "type": "string",
             "description": "Exact tool-call id displayed with the permission request."
+          }
+        }
+      },
+      "FormatCommunitySqlRequest": {
+        "type": "object",
+        "description": "Request to format SQL through a retained Community formatter.",
+        "required": [
+          "databaseType",
+          "sql"
+        ],
+        "properties": {
+          "databaseType": {
+            "type": "string",
+            "description": "Community database type used to select the formatter."
+          },
+          "sql": {
+            "type": "string",
+            "description": "SQL text to format, capped at 1 MiB and 16,384 lexical complexity units."
           }
         }
       },

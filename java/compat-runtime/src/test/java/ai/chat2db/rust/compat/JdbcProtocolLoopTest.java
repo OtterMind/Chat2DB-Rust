@@ -16,6 +16,7 @@ import ai.chat2db.rust.compat.protocol.v1.DriverArtifact;
 import ai.chat2db.rust.compat.protocol.v1.ExecuteQueryRequest;
 import ai.chat2db.rust.compat.protocol.v1.ExecuteUpdateRequest;
 import ai.chat2db.rust.compat.protocol.v1.ErrorCategory;
+import ai.chat2db.rust.compat.protocol.v1.FormatCommunitySqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.GrantCreditsRequest;
 import ai.chat2db.rust.compat.protocol.v1.GetCommunityFunctionRequest;
 import ai.chat2db.rust.compat.protocol.v1.GetCommunityProcedureRequest;
@@ -434,6 +435,39 @@ class JdbcProtocolLoopTest {
                     .build());
             assertCommunityValidationFailure(
                     harness, "protocol.invalid_trigger_name");
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("oversized-community-format-sql", sessionId))
+                    .setFormatCommunitySql(FormatCommunitySqlRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setSql("x".repeat(ProtocolLimits.MAX_SQL_BYTES + 1)))
+                    .build());
+            assertCommunityValidationFailure(harness, "protocol.limit_exceeded");
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("blank-community-format-type", sessionId))
+                    .setFormatCommunitySql(FormatCommunitySqlRequest.newBuilder()
+                            .setDatabaseType("  ")
+                            .setSql("SELECT 1"))
+                    .build());
+            assertCommunityValidationFailure(
+                    harness, "protocol.invalid_database_type");
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("format-community-h2", sessionId))
+                    .setFormatCommunitySql(FormatCommunitySqlRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setSql("select id,secret from items where id=7"))
+                    .build());
+            ServerEnvelope formattedCommunitySql = harness.read();
+            assertEquals(
+                    ServerEnvelope.PayloadCase.COMMUNITY_FORMATTED_SQL,
+                    formattedCommunitySql.getPayloadCase());
+            assertTrue(formattedCommunitySql.getCommunityFormattedSql().getSql().contains("\n"));
+            assertTrue(formattedCommunitySql
+                    .getCommunityFormattedSql()
+                    .getSql()
+                    .contains("from\n  items"));
 
             harness.send(ClientEnvelope.newBuilder()
                     .setMeta(meta("oversized-community-validation-sql", sessionId))

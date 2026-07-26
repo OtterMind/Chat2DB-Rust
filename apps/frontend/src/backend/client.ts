@@ -10,6 +10,7 @@ export type CancelOperationResponse = Schema<'CancelOperationResponse'>;
 export type BuildCommunityCreateSchemaRequest = Schema<'BuildCommunityCreateSchemaRequest'>;
 export type CommunityBuiltSql = Schema<'CommunityBuiltSql'>;
 export type CommunityDatabaseList = Schema<'CommunityDatabaseList'>;
+export type CommunityFormattedSql = Schema<'CommunityFormattedSql'>;
 export type CommunityForeignKeyList = Schema<'CommunityForeignKeyList'>;
 export type CommunityFunction = Schema<'CommunityFunction'>;
 export type CommunityFunctionList = Schema<'CommunityFunctionList'>;
@@ -40,6 +41,7 @@ export type HealthResponse = Schema<'HealthResponse'>;
 export type GetCommunityFunctionRequest = Schema<'GetCommunityFunctionRequest'>;
 export type GetCommunityProcedureRequest = Schema<'GetCommunityProcedureRequest'>;
 export type GetCommunityTriggerRequest = Schema<'GetCommunityTriggerRequest'>;
+export type FormatCommunitySqlRequest = Schema<'FormatCommunitySqlRequest'>;
 export type JdbcDriver = Schema<'JdbcDriver'>;
 export type JdbcDriverList = Schema<'JdbcDriverList'>;
 export type JdbcValue = Schema<'JdbcValue'>;
@@ -198,6 +200,10 @@ export interface BackendClient {
     request: ValidateCommunitySqlRequest,
     signal?: AbortSignal,
   ): Promise<CommunitySqlValidation>;
+  formatCommunitySql(
+    request: FormatCommunitySqlRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityFormattedSql>;
   listDatasources(signal?: AbortSignal): Promise<DatasourceList>;
   createDatasource(
     request: CreateDatasourceRequest,

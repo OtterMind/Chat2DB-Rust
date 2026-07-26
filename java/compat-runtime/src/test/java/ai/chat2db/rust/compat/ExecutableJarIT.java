@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.chat2db.rust.compat.protocol.v1.ClientEnvelope;
 import ai.chat2db.rust.compat.protocol.v1.ClientHello;
+import ai.chat2db.rust.compat.protocol.v1.FormatCommunitySqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.Ping;
 import ai.chat2db.rust.compat.protocol.v1.ProtocolVersion;
 import ai.chat2db.rust.compat.protocol.v1.RequestMeta;
@@ -31,6 +32,8 @@ class ExecutableJarIT {
 
     private static final Duration TIMEOUT = Duration.ofSeconds(10);
     private static final String H2_DRIVER_ENTRY = "org/h2/Driver.class";
+    private static final String SQL_FORMATTER_ENTRY =
+            "com/github/vertical_blank/sqlformatter/SqlFormatter.class";
 
     @Test
     void h2TestDriverRemainsExternalToTheShadedRuntime() throws Exception {
@@ -47,6 +50,10 @@ class ExecutableJarIT {
             assertTrue(
                     h2Archive.stream().anyMatch(entry -> entry.getName().equals(H2_DRIVER_ENTRY)),
                     "external H2 test driver must contain org.h2.Driver");
+            assertTrue(
+                    runtimeArchive.stream()
+                            .anyMatch(entry -> entry.getName().equals(SQL_FORMATTER_ENTRY)),
+                    "shaded runtime jar must embed the fixed SQL formatter");
         }
     }
 
@@ -77,6 +84,20 @@ class ExecutableJarIT {
                             .build());
             ServerEnvelope pong = readResponse(readers, process.getInputStream());
             assertEquals(99, pong.getPong().getNonce());
+
+            FrameCodec.writeFrame(
+                    process.getOutputStream(),
+                    ClientEnvelope.newBuilder()
+                            .setMeta(meta("format"))
+                            .setFormatCommunitySql(FormatCommunitySqlRequest.newBuilder()
+                                    .setDatabaseType("H2")
+                                    .setSql("select id,name from items where id=1"))
+                            .build());
+            ServerEnvelope formatted = readResponse(readers, process.getInputStream());
+            assertEquals(
+                    ServerEnvelope.PayloadCase.COMMUNITY_FORMATTED_SQL,
+                    formatted.getPayloadCase());
+            assertTrue(formatted.getCommunityFormattedSql().getSql().contains("from\n  items"));
 
             FrameCodec.writeFrame(
                     process.getOutputStream(),

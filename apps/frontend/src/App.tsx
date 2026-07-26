@@ -1,4 +1,5 @@
 import {
+  AlignLeft,
   AlertCircle,
   ChevronLeft,
   ChevronRight,
@@ -39,6 +40,7 @@ import {
   observeOperation,
 } from './backend';
 import { CommunityExplorer } from './CommunityExplorer';
+import { isCurrentSqlFormatRequest } from './sql-format-model';
 
 const PAGE_ROWS = 50n;
 const PAGE_BYTES = '1048576';
@@ -412,6 +414,7 @@ export default function App() {
   const [communityParserAvailable, setCommunityParserAvailable] = useState(false);
   const [sqlInspection, setSqlInspection] = useState<SqlInspection | null>(null);
   const [inspectionLoading, setInspectionLoading] = useState<'analysis' | 'validation' | null>(null);
+  const [formatLoading, setFormatLoading] = useState(false);
   const [operation, setOperation] = useState<QueryOperation | null>(null);
   const [resultPage, setResultPage] = useState<ResultPage | null>(null);
   const [resultLoading, setResultLoading] = useState(false);
@@ -419,6 +422,7 @@ export default function App() {
   const subscriptionRef = useRef<OperationSubscription | null>(null);
   const resultRequestRef = useRef(0);
   const inspectionRequestRef = useRef(0);
+  const formatRequestRef = useRef(0);
 
   const selectedDatasource = datasources.find((datasource) => datasource.id === selectedId);
   const selectedDatasourceKey = selectedDatasource
@@ -430,9 +434,18 @@ export default function App() {
   const communityCompatibility = health?.components.find(
     (component) => component.id === 'community-compatibility',
   );
+  const currentFormatScope = {
+    datasourceKey: selectedDatasourceKey,
+    databaseType: communityDatabaseType,
+    sql,
+  };
+  const formatScopeRef = useRef(currentFormatScope);
+  formatScopeRef.current = currentFormatScope;
   const queryRunning = operation?.status === 'running' || operation?.status === 'starting';
 
   const updateSql = useCallback((nextSql: string) => {
+    formatRequestRef.current += 1;
+    setFormatLoading(false);
     inspectionRequestRef.current += 1;
     setInspectionLoading(null);
     setSqlInspection(null);
@@ -440,6 +453,8 @@ export default function App() {
   }, []);
 
   const selectCommunityDatabaseType = useCallback((databaseType: string) => {
+    formatRequestRef.current += 1;
+    setFormatLoading(false);
     inspectionRequestRef.current += 1;
     setInspectionLoading(null);
     setSqlInspection(null);
@@ -456,7 +471,15 @@ export default function App() {
     setCommunityParserAvailable(available);
   }, []);
 
+  const selectDatasource = useCallback((datasourceId: string) => {
+    formatRequestRef.current += 1;
+    setFormatLoading(false);
+    setSelectedId(datasourceId);
+  }, []);
+
   const refreshDatasources = useCallback(async (signal?: AbortSignal) => {
+    formatRequestRef.current += 1;
+    setFormatLoading(false);
     setLoadingDatasources(true);
     try {
       const response = await client.listDatasources(signal);
@@ -487,6 +510,8 @@ export default function App() {
   useEffect(() => () => subscriptionRef.current?.close(), []);
 
   useEffect(() => {
+    formatRequestRef.current += 1;
+    setFormatLoading(false);
     inspectionRequestRef.current += 1;
     setInspectionLoading(null);
     setSqlInspection(null);
@@ -737,6 +762,47 @@ export default function App() {
     }
   };
 
+  const formatSql = async () => {
+    if (
+      !sql.trim()
+      || !communityDatabaseType
+      || communityCompatibility?.state !== 'ready'
+      || formatLoading
+    ) return;
+    const sourceSql = sql;
+    const request = {
+      sequence: ++formatRequestRef.current,
+      scope: currentFormatScope,
+    };
+    setFormatLoading(true);
+    setError(null);
+    try {
+      const formatted = await client.formatCommunitySql({
+        databaseType: communityDatabaseType,
+        sql: sourceSql,
+      });
+      if (!isCurrentSqlFormatRequest(
+        request,
+        formatRequestRef.current,
+        formatScopeRef.current,
+      )) return;
+      if (formatted.sql !== sourceSql) {
+        inspectionRequestRef.current += 1;
+        setInspectionLoading(null);
+        setSqlInspection(null);
+        setSql(formatted.sql);
+      }
+    } catch (requestError) {
+      if (isCurrentSqlFormatRequest(
+        request,
+        formatRequestRef.current,
+        formatScopeRef.current,
+      )) setError(errorMessage(requestError));
+    } finally {
+      if (formatRequestRef.current === request.sequence) setFormatLoading(false);
+    }
+  };
+
   const pageBack = () => {
     if (!resultPage || !operation?.resultId) return;
     const current = BigInt(resultPage.offset);
@@ -782,7 +848,7 @@ export default function App() {
             <button
               className={`datasource-item ${selectedId === datasource.id ? 'active' : ''}`}
               type="button"
-              onClick={() => setSelectedId(datasource.id)}
+              onClick={() => selectDatasource(datasource.id)}
               key={datasource.id}
             >
               <Database size={16} aria-hidden="true" />
@@ -844,6 +910,20 @@ export default function App() {
           <div className="editor-toolbar">
             <div><span className="section-kicker">SQL console</span><strong>Query</strong></div>
             <div className="query-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => void formatSql()}
+                disabled={
+                  formatLoading
+                  || !sql.trim()
+                  || !communityDatabaseType
+                  || communityCompatibility?.state !== 'ready'
+                }
+              >
+                {formatLoading ? <LoaderCircle className="spinning" size={16} aria-hidden="true" /> : <AlignLeft size={16} aria-hidden="true" />}
+                {formatLoading ? 'Formatting' : 'Format'}
+              </button>
               <button
                 className="secondary-button"
                 type="button"

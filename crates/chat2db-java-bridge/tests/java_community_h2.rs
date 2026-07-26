@@ -9,10 +9,10 @@ use chat2db_java_bridge::{
     COMMUNITY_OBJECT_METADATA_CAPABILITY, COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
     COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY, COMMUNITY_RELATION_METADATA_CAPABILITY,
     COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
-    COMMUNITY_SQL_PARSER_CAPABILITY, COMMUNITY_SQL_VALIDATION_CAPABILITY, CommunityClasspath,
-    CommunityClient, CommunityPluginCatalog, CommunitySchema, DriverArtifact, DriverSpec,
-    EngineCommand, EngineConfig, EngineState, EngineSupervisor, Session, SessionConfig,
-    UpdateRequest,
+    COMMUNITY_SQL_FORMATTER_CAPABILITY, COMMUNITY_SQL_PARSER_CAPABILITY,
+    COMMUNITY_SQL_VALIDATION_CAPABILITY, CommunityClasspath, CommunityClient,
+    CommunityPluginCatalog, CommunitySchema, DriverArtifact, DriverSpec, EngineCommand,
+    EngineConfig, EngineState, EngineSupervisor, Session, SessionConfig, UpdateRequest,
 };
 use tempfile::TempDir;
 
@@ -53,6 +53,7 @@ async fn invokes_real_community_h2_spi_metadata_builder_and_parser() {
         COMMUNITY_SQL_BUILDER_CAPABILITY,
         COMMUNITY_SQL_PARSER_CAPABILITY,
         COMMUNITY_SQL_VALIDATION_CAPABILITY,
+        COMMUNITY_SQL_FORMATTER_CAPABILITY,
     ] {
         assert!(
             identity
@@ -498,6 +499,31 @@ async fn verify_parser(community: &CommunityClient) {
             .iter()
             .all(|diagnostic| !diagnostic.message.is_empty())
     );
+
+    let formatted = community
+        .format_sql("H2", "select id,name from items where id=1")
+        .await
+        .expect("Community formatter must format SQL without a JDBC session");
+    assert!(formatted.sql.contains('\n'));
+    assert!(formatted.sql.contains("from\n  items"));
+
+    let blank = community
+        .format_sql("H2", " \n\t")
+        .await
+        .expect_err("blank formatter input must fail before transport");
+    assert!(blank.to_string().contains("SQL is required"));
+
+    let oversized = community
+        .format_sql("H2", "x".repeat(1_048_577))
+        .await
+        .expect_err("formatter input above one MiB must fail before transport");
+    assert!(oversized.to_string().contains("1048576 UTF-8 bytes"));
+
+    let token_dense = community
+        .format_sql("H2", "a,".repeat(8_193))
+        .await
+        .expect_err("formatter complexity must fail before entering the Java engine");
+    assert!(token_dense.to_string().contains("16384 units"));
 }
 
 async fn execute_update(session: &Session, sql: &str) {

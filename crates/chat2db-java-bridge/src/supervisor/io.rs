@@ -34,7 +34,7 @@ const MAX_COMMUNITY_INDEX_COLUMNS: usize =
 const MAX_COMMUNITY_STATEMENTS: usize = wire::CommunityCountLimit::MaxStatements as usize;
 const MAX_COMMUNITY_SQL_DIAGNOSTICS: usize =
     wire::CommunitySqlDiagnosticCountLimit::MaxDiagnostics as usize;
-const COMMUNITY_RESPONSE_TAGS: std::ops::RangeInclusive<u32> = 200..=220;
+const COMMUNITY_RESPONSE_TAGS: std::ops::RangeInclusive<u32> = 200..=221;
 const MAX_PROTOBUF_FIELD_NUMBER: u64 = (1 << 29) - 1;
 const MAX_PROTOBUF_GROUP_DEPTH: usize = 100;
 
@@ -613,7 +613,8 @@ mod tests {
     const COMMUNITY_PROCEDURE_PARAMETER_LIST_TAG: u32 = 217;
     const COMMUNITY_TRIGGER_LIST_TAG: u32 = 218;
     const COMMUNITY_SQL_VALIDATION_TAG: u32 = 220;
-    const NON_COMMUNITY_TAG: u32 = 221;
+    const COMMUNITY_FORMATTED_SQL_TAG: u32 = 221;
+    const NON_COMMUNITY_TAG: u32 = 222;
 
     fn encode_varint(mut value: u64, output: &mut Vec<u8>) {
         loop {
@@ -1072,6 +1073,43 @@ mod tests {
             validate_community_response_wire_budget(&duplicate_diagnostics)
                 .expect_err("duplicate validation payloads must share the diagnostic limit")
                 .contains(&format!("{MAX_COMMUNITY_SQL_DIAGNOSTICS}-diagnostic limit"))
+        );
+    }
+
+    #[test]
+    fn raw_scanner_enforces_formatter_budget_across_duplicate_oneof_payloads() {
+        let exact = community_response(
+            COMMUNITY_FORMATTED_SQL_TAG,
+            &unknown_nested_message(MAX_COMMUNITY_RESPONSE_BYTES),
+        );
+        validate_community_response_wire_budget(&exact)
+            .expect("formatter payload exactly at the Community byte budget must pass");
+
+        let oversized = community_response(
+            COMMUNITY_FORMATTED_SQL_TAG,
+            &unknown_nested_message(MAX_COMMUNITY_RESPONSE_BYTES + 1),
+        );
+        assert!(
+            validate_community_response_wire_budget(&oversized)
+                .expect_err("formatter payload above the Community byte budget must fail")
+                .contains(&format!("{} bytes", MAX_COMMUNITY_RESPONSE_BYTES + 1))
+        );
+
+        let first_length = MAX_COMMUNITY_RESPONSE_BYTES / 2;
+        let second_length = MAX_COMMUNITY_RESPONSE_BYTES - first_length + 1;
+        let mut duplicate = community_response(
+            COMMUNITY_FORMATTED_SQL_TAG,
+            &unknown_nested_message(first_length),
+        );
+        push_length_delimited_field(
+            COMMUNITY_FORMATTED_SQL_TAG,
+            &unknown_nested_message(second_length),
+            &mut duplicate,
+        );
+        assert!(
+            validate_community_response_wire_budget(&duplicate)
+                .expect_err("duplicate formatter payloads must share the Community byte budget")
+                .contains(&format!("{} bytes", MAX_COMMUNITY_RESPONSE_BYTES + 1))
         );
     }
 

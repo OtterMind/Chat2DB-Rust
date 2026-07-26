@@ -1080,6 +1080,13 @@ fn validate_response_payload(
             validate_community_response_encoded_len(validation)?;
             Ok(None)
         }
+        wire::server_envelope::Payload::CommunityFormattedSql(formatted) => {
+            validate_non_empty_bytes(&formatted.sql, MAX_SQL_BYTES, "Community formatted SQL")?;
+            let mut field_bytes = 0;
+            add_community_response_field(&mut field_bytes, &formatted.sql)?;
+            validate_community_response_encoded_len(formatted)?;
+            Ok(None)
+        }
         _ => Ok(None),
     }
 }
@@ -2887,6 +2894,34 @@ mod tests {
             validate_response_payload(&encoded_overflow)
                 .expect_err("validation framing above the encoded budget must fail")
                 .contains("encoded length")
+        );
+    }
+
+    #[test]
+    fn community_formatted_sql_enforces_nonempty_one_megabyte_output() {
+        let empty = wire::server_envelope::Payload::CommunityFormattedSql(
+            wire::CommunityFormattedSql::default(),
+        );
+        assert!(
+            validate_response_payload(&empty)
+                .expect_err("empty formatted SQL must fail")
+                .contains("cannot be empty")
+        );
+
+        let exact =
+            wire::server_envelope::Payload::CommunityFormattedSql(wire::CommunityFormattedSql {
+                sql: "x".repeat(MAX_SQL_BYTES),
+            });
+        validate_response_payload(&exact).expect("exact formatted-SQL byte limit must pass");
+
+        let oversized =
+            wire::server_envelope::Payload::CommunityFormattedSql(wire::CommunityFormattedSql {
+                sql: "x".repeat(MAX_SQL_BYTES + 1),
+            });
+        assert!(
+            validate_response_payload(&oversized)
+                .expect_err("formatted SQL above one MiB must fail")
+                .contains(&format!("{MAX_SQL_BYTES}-byte limit"))
         );
     }
 

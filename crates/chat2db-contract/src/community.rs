@@ -638,6 +638,24 @@ pub struct CommunitySqlValidation {
     pub diagnostics: Vec<CommunitySqlDiagnostic>,
 }
 
+/// Request to format SQL through a retained Community formatter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FormatCommunitySqlRequest {
+    /// Community database type used to select the formatter.
+    pub database_type: String,
+    /// SQL text to format, capped at 1 MiB and 16,384 lexical complexity units.
+    pub sql: String,
+}
+
+/// SQL formatted by a retained Community dialect service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityFormattedSql {
+    /// Complete formatted SQL, capped at 1 MiB.
+    pub sql: String,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -645,20 +663,20 @@ mod tests {
     use super::{
         BuildCommunityCreateSchemaRequest, CommunityBuiltSql, CommunityDatabase,
         CommunityDatabaseList, CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList,
-        CommunityFunction, CommunityFunctionList, CommunityFunctionParameter,
-        CommunityFunctionParameterList, CommunityParsedStatement, CommunityPlugin,
-        CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
+        CommunityFormattedSql, CommunityFunction, CommunityFunctionList,
+        CommunityFunctionParameter, CommunityFunctionParameterList, CommunityParsedStatement,
+        CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
         CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
         CommunityProcedureParameter, CommunityProcedureParameterList, CommunitySchema,
         CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlDiagnostic, CommunitySqlValidation,
         CommunityTable, CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex,
         CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList, CommunityTrigger,
-        CommunityTriggerList, CommunityViewList, GetCommunityFunctionRequest,
-        GetCommunityProcedureRequest, GetCommunityTriggerRequest, ListCommunityColumnsRequest,
-        ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
-        ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
-        ListCommunityTablesRequest, ListCommunityTriggersRequest, ListCommunityViewsRequest,
-        ParseCommunitySqlRequest, ValidateCommunitySqlRequest,
+        CommunityTriggerList, CommunityViewList, FormatCommunitySqlRequest,
+        GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
+        ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityFunctionsRequest,
+        ListCommunityIndexesRequest, ListCommunityProceduresRequest, ListCommunitySchemasRequest,
+        ListCommunityTableKeysRequest, ListCommunityTablesRequest, ListCommunityTriggersRequest,
+        ListCommunityViewsRequest, ParseCommunitySqlRequest, ValidateCommunitySqlRequest,
     };
 
     #[test]
@@ -761,7 +779,6 @@ mod tests {
                 message: "unexpected FROM".to_owned(),
             }],
         };
-
         assert_eq!(
             serde_json::to_value(&list_request).expect("request must serialize"),
             json!({
@@ -799,6 +816,31 @@ mod tests {
         assert_round_trip(&analysis);
         assert_round_trip(&validate_request);
         assert_round_trip(&validation);
+    }
+
+    #[test]
+    fn community_sql_format_contracts_use_exact_camel_case_and_round_trip() {
+        let request = FormatCommunitySqlRequest {
+            database_type: "H2".to_owned(),
+            sql: "select 1".to_owned(),
+        };
+        let formatted = CommunityFormattedSql {
+            sql: "SELECT\n  1;".to_owned(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(&request).expect("format request must serialize"),
+            json!({
+                "databaseType": "H2",
+                "sql": "select 1"
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&formatted).expect("formatted SQL must serialize"),
+            json!({"sql": "SELECT\n  1;"})
+        );
+        assert_round_trip(&request);
+        assert_round_trip(&formatted);
     }
 
     #[test]

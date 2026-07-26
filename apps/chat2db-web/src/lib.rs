@@ -500,6 +500,17 @@ mod tests {
                 ),
                 "database_engine_unavailable",
             ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/sql/format",
+                    &serde_json::json!({
+                        "databaseType": "H2",
+                        "sql": "select 1"
+                    }),
+                ),
+                "database_engine_unavailable",
+            ),
         ];
 
         for (request, expected_code) in requests {
@@ -636,6 +647,7 @@ mod tests {
             "/api/v1/community/sql/build-create-schema",
             "/api/v1/community/sql/parse",
             "/api/v1/community/sql/validate",
+            "/api/v1/community/sql/format",
             "/api/v1/datasources",
             "/api/v1/datasources/{datasource_id}",
             "/api/v1/agent/providers",
@@ -682,6 +694,7 @@ mod tests {
             "/api/v1/community/sql/build-create-schema",
             "/api/v1/community/sql/parse",
             "/api/v1/community/sql/validate",
+            "/api/v1/community/sql/format",
         ] {
             assert!(paths[path].get("post").is_some());
         }
@@ -759,6 +772,7 @@ mod tests {
             "CommunityDriverConfig",
             "CommunityForeignKey",
             "CommunityForeignKeyList",
+            "CommunityFormattedSql",
             "CommunityFunction",
             "CommunityFunctionList",
             "CommunityFunctionParameter",
@@ -793,6 +807,7 @@ mod tests {
             "CreateAgentSessionRequest",
             "CreateProviderProfileRequest",
             "DecideAgentPermissionRequest",
+            "FormatCommunitySqlRequest",
             "GetCommunityFunctionRequest",
             "GetCommunityProcedureRequest",
             "GetCommunityTriggerRequest",

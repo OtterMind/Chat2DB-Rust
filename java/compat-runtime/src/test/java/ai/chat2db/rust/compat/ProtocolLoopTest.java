@@ -67,13 +67,17 @@ class ProtocolLoopTest {
     }
 
     @Test
-    void advertisesSqlValidationOnlyWithCommunityCompatibility() {
+    void advertisesSqlToolsOnlyWithCommunityCompatibility() {
         assertFalse(ProtocolLoop.capabilities(false)
                 .contains(ProtocolLoop.COMMUNITY_SQL_VALIDATION_CAPABILITY));
+        assertFalse(ProtocolLoop.capabilities(false)
+                .contains(ProtocolLoop.COMMUNITY_SQL_FORMATTER_CAPABILITY));
         assertTrue(ProtocolLoop.capabilities(true)
                 .contains(ProtocolLoop.COMMUNITY_SQL_VALIDATION_CAPABILITY));
+        assertTrue(ProtocolLoop.capabilities(true)
+                .contains(ProtocolLoop.COMMUNITY_SQL_FORMATTER_CAPABILITY));
         assertEquals(
-                ProtocolLoop.capabilities(false).size() + 1,
+                ProtocolLoop.capabilities(false).size() + 2,
                 ProtocolLoop.capabilities(true).size());
     }
 

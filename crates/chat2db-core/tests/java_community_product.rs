@@ -8,12 +8,12 @@ use std::{
 
 use chat2db_contract::{
     BuildCommunityCreateSchemaRequest, ComponentState, CreateDatasourceRequest,
-    DatasourceConnection, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
-    GetCommunityTriggerRequest, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
-    ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
-    ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
-    ListCommunityTriggersRequest, ListCommunityViewsRequest, ParseCommunitySqlRequest,
-    ValidateCommunitySqlRequest,
+    DatasourceConnection, FormatCommunitySqlRequest, GetCommunityFunctionRequest,
+    GetCommunityProcedureRequest, GetCommunityTriggerRequest, ListCommunityColumnsRequest,
+    ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
+    ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
+    ListCommunityTablesRequest, ListCommunityTriggersRequest, ListCommunityViewsRequest,
+    ParseCommunitySqlRequest, ValidateCommunitySqlRequest,
 };
 use chat2db_core::{
     AppError, AppErrorKind, Application, RuntimeHost, load_fixed_community_classpath,
@@ -44,6 +44,15 @@ async fn product_services_invoke_the_fixed_community_h2_compatibility_slice() {
         .expect("Core SQL validation must not require a datasource or JDBC session");
     assert!(!validation.valid);
     assert!(!validation.diagnostics.is_empty());
+
+    let formatted = application
+        .format_community_sql(FormatCommunitySqlRequest {
+            database_type: "H2".to_owned(),
+            sql: "select id,name from items where id=1".to_owned(),
+        })
+        .await
+        .expect("Core SQL formatting must not require a datasource or JDBC session");
+    assert!(formatted.sql.contains("from\n  items"));
 
     let datasource = application
         .create_datasource(CreateDatasourceRequest {

@@ -4,7 +4,7 @@ Private implementation of the Chat2DB Community hybrid runtime.
 
 ## Current state
 
-The repository has completed Stages 1 through 6 and the first eight independently
+The repository has completed Stages 1 through 6 and the first nine independently
 buildable Stage 7 slices:
 
 - canonical Rust API contracts;
@@ -68,7 +68,11 @@ buildable Stage 7 slices:
   relational and programmability details, inserts generated schema SQL into the
   console, and explicitly analyzes editor SQL; and
 - bounded Community ANTLR syntax validation with statement summaries and source
-  diagnostics exposed through Core, Axum, Tauri, and the shared React editor.
+  diagnostics exposed through Core, Axum, Tauri, and the shared React editor;
+  and
+- Community-compatible SQL formatting with bounded input, output, and lexical
+  complexity, negotiated capability support, and one race-safe Format action
+  across HTTP and Tauri.
 
 Stage 6 is complete. Web and desktop own the product runtime and publish its
 owner-only local endpoint; CLI and MCP attach to that host and never contact
@@ -87,8 +91,12 @@ operations to the shared React workbench through a three-pane object explorer,
 partial long-tail metadata, lazy detail views, schema SQL generation, and
 explicit SQL analysis. Stage 7H adds a separately negotiated SQL-validation
 capability and an explicit editor Validate action without opening a JDBC
-session. Signing, downloading, updating, rollback, the remaining builder/parser
-estate, and full per-dialect compatibility remain Stage 7 work.
+session. Stage 7I adds separately negotiated SQL formatting through the retained
+Community formatter dependency, preserves Community's dialect mapping and
+fallback behavior, and replaces editor SQL only while the originating SQL,
+datasource, and database type are still current. Signing, downloading,
+updating, rollback, the remaining builder/parser estate, and full per-dialect
+compatibility remain Stage 7 work.
 
 ## Architecture
 
@@ -132,10 +140,11 @@ JAR integration test rejects any build that embeds `org/h2/Driver.class`.
 The H2 gates cover the Stage 3 JDBC bridge, the Stage 5 product path from a
 vault-backed datasource through retained-result paging and cancellation, and
 the Stage 7B Community path through real `IPlugin`, `IDbMetaData`,
-`ISqlBuilder`, and ANTLR parser implementations. The Stage 7C-7F product gate
+`ISqlBuilder`, and ANTLR parser implementations. The Stage 7C-7I product gate
 repeats those calls through encrypted datasource storage and Core services,
 including forced-read-only schema, object, relation, and programmability
-metadata session cleanup. H2
+metadata session cleanup plus datasource-free parsing, validation, and
+formatting. H2
 remains an external test driver rather than a runtime dependency of either Java
 classpath.
 
@@ -162,7 +171,7 @@ make check-contracts
 ```
 
 Build the Java engine, fixed Community classpath, and shared frontend, then run
-the Web product host with the Stage 7C-7G services enabled:
+the Web product host with the Stage 7C-7I services enabled:
 
 ```bash
 make java community-h2-classpath frontend

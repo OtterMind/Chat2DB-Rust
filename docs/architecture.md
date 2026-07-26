@@ -27,10 +27,11 @@ building, and retained ANTLR parsing. Product Core, Axum, Tauri, and both
 frontend backend adapters expose catalog, schemas, databases, tables, columns,
 indexes, views, imported and exported foreign keys, primary keys, functions,
 function parameters, procedures, procedure parameters, triggers, schema SQL
-building, parsing, and syntax validation when the exact locked classpath is configured. The shared
-React workbench consumes all 20 operations through an end-user object explorer,
-schema SQL insertion, explicit SQL analysis, and a separately negotiated
-validation action. Signing, distribution, the
+building, parsing, syntax validation, and formatting when the exact locked
+classpath is configured. The shared React workbench consumes the Community
+operations through an end-user object explorer, schema SQL insertion, explicit
+SQL analysis, separately negotiated validation, and race-safe in-place
+formatting actions. Signing, distribution, the
 remaining dialect estate, and packaging remain target components. CLI and MCP
 attach to a running host rather than composing a second product runtime.
 
@@ -46,7 +47,7 @@ attach to a running host rather than composing a second product runtime.
 | AI agent | Rust | Provider adapters, tool loop, limits, compaction, and cancellation |
 | MCP and CLI | Rust | Adapters around the same product services and policy |
 | Database compatibility | Java 17 | Existing SPI/plugins, JDBC, metadata, builders, and execution |
-| SQL parsing | Java 17 | Existing Java ANTLR grammars, parser behavior, and completion |
+| SQL parsing and formatting | Java 17 | Existing Java ANTLR grammars, parser behavior, formatter behavior, and completion |
 | Rust-to-Java IPC | Shared Protobuf contract | Length-prefixed frames over private stdin/stdout |
 
 ## Process topology
@@ -215,9 +216,26 @@ matching request/response contract, and the React editor provides an explicit
 parser-gated Validate action alongside Analyze. Real H2 bridge and product
 tests cover both valid and invalid SQL.
 
+Stage 7I adds the independent `community.sql-formatter.v1` capability at
+Protobuf request/response tag `221`. Java calls the retained
+`com.github.vertical-blank:sql-formatter:2.0.4` implementation with Community's
+database-type mapping: MySQL, PostgreSQL, PL/SQL, T-SQL, DB2, and MariaDB use
+their matching dialects, while every other type uses the generic formatter.
+Formatter exceptions preserve the original SQL. Rust limits both input and
+output SQL to 1 MiB. Rust and Java apply a shared 16,384-unit linear lexical
+complexity preflight before the retained formatter, preventing token-dense
+input from exhausting the 30-second generation request deadline. Rust rejects
+duplicate raw response payloads before Protobuf allocation and retains the
+cumulative 8 MiB Community response ceiling.
+Formatting resolves neither datasource secrets nor JDBC sessions. Core, Axum,
+Tauri, and both frontend adapters expose the same request/response contract;
+the editor replaces its SQL only if the originating SQL, datasource, and
+database type remain current. Real H2 bridge and product tests cover the
+generic fallback through the fixed Community classpath.
+
 Remaining builders, type conversion, non-relational operations, script
-execution, import/export, formatting, completion, and per-dialect
-conformance are not implemented yet. The current product slice proves H2 only.
+execution, import/export, completion, and per-dialect conformance are not
+implemented yet. The current product slice proves H2 only.
 
 Spring Boot, Spring Web, Spring AI, MCP, JCEF, product storage, and updater logic
 do not belong in the final Java engine.

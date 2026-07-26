@@ -14,30 +14,31 @@ use chat2db_contract::{
     AgentToolOutput, AgentUsage, ApiError, ApiErrorDetails, BuildCommunityCreateSchemaRequest,
     CancelAgentRunResponse, CancelDisposition, CancelOperationResponse, ColumnNullability,
     CommunityBuiltSql, CommunityDatabase, CommunityDatabaseList, CommunityDriverConfig,
-    CommunityForeignKey, CommunityForeignKeyList, CommunityFunction, CommunityFunctionList,
-    CommunityFunctionParameter, CommunityFunctionParameterList, CommunityParsedStatement,
-    CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
-    CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
-    CommunityProcedureParameter, CommunityProcedureParameterList, CommunitySchema,
-    CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlDiagnostic, CommunitySqlValidation,
-    CommunityTable, CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex,
-    CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList, CommunityTrigger,
-    CommunityTriggerList, CommunityViewList, ComponentHealth, ComponentState,
+    CommunityForeignKey, CommunityForeignKeyList, CommunityFormattedSql, CommunityFunction,
+    CommunityFunctionList, CommunityFunctionParameter, CommunityFunctionParameterList,
+    CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
+    CommunityPluginServices, CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure,
+    CommunityProcedureList, CommunityProcedureParameter, CommunityProcedureParameterList,
+    CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlDiagnostic,
+    CommunitySqlValidation, CommunityTable, CommunityTableColumn, CommunityTableColumnList,
+    CommunityTableIndex, CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList,
+    CommunityTrigger, CommunityTriggerList, CommunityViewList, ComponentHealth, ComponentState,
     ContextCompactionStrategy, CreateAgentSessionRequest, CreateDatasourceRequest,
     CreateProviderProfileRequest, Datasource, DatasourceConnection, DatasourceConnectionProperty,
     DatasourceList, DatasourceSecretChange, DecideAgentPermissionRequest,
-    GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
-    HealthResponse, JdbcDriver, JdbcDriverList, JdbcValue, JdbcValueType,
-    ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityFunctionsRequest,
-    ListCommunityIndexesRequest, ListCommunityProceduresRequest, ListCommunitySchemasRequest,
-    ListCommunityTableKeysRequest, ListCommunityTablesRequest, ListCommunityTriggersRequest,
-    ListCommunityViewsRequest, OperationEvent, OperationEventEnvelope, OperationSnapshot,
-    OperationStatus, OperationStreamMessage, OperationSubscriptionAccepted,
-    ParseCommunitySqlRequest, ProductInfo, ProviderCredentials, ProviderKind, ProviderProfile,
-    ProviderProfileList, ProviderSecretChange, QueryAccepted, QueryLimits, QueryParameter,
-    ResultColumn, ResultMetadata, ResultPage, ResultPageRequest, ResultRow, RuntimeStatus,
-    SqlPermissionMode, StartAgentRunRequest, StartQueryRequest, UpdateAgentSessionRequest,
-    UpdateDatasourceRequest, UpdateProviderProfileRequest, ValidateCommunitySqlRequest,
+    FormatCommunitySqlRequest, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
+    GetCommunityTriggerRequest, HealthResponse, JdbcDriver, JdbcDriverList, JdbcValue,
+    JdbcValueType, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
+    ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
+    ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
+    ListCommunityTriggersRequest, ListCommunityViewsRequest, OperationEvent,
+    OperationEventEnvelope, OperationSnapshot, OperationStatus, OperationStreamMessage,
+    OperationSubscriptionAccepted, ParseCommunitySqlRequest, ProductInfo, ProviderCredentials,
+    ProviderKind, ProviderProfile, ProviderProfileList, ProviderSecretChange, QueryAccepted,
+    QueryLimits, QueryParameter, ResultColumn, ResultMetadata, ResultPage, ResultPageRequest,
+    ResultRow, RuntimeStatus, SqlPermissionMode, StartAgentRunRequest, StartQueryRequest,
+    UpdateAgentSessionRequest, UpdateDatasourceRequest, UpdateProviderProfileRequest,
+    ValidateCommunitySqlRequest,
 };
 use chat2db_core::{AppError, Application};
 use futures_util::{Stream, stream};
@@ -106,6 +107,7 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         CommunityDriverConfig,
         CommunityForeignKey,
         CommunityForeignKeyList,
+        CommunityFormattedSql,
         CommunityFunction,
         CommunityFunctionList,
         CommunityFunctionParameter,
@@ -146,6 +148,7 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         DatasourceList,
         DatasourceSecretChange,
         DecideAgentPermissionRequest,
+        FormatCommunitySqlRequest,
         HealthResponse,
         GetCommunityFunctionRequest,
         GetCommunityProcedureRequest,
@@ -236,6 +239,7 @@ fn documented_router() -> OpenApiRouter<Application> {
         .routes(routes!(build_community_create_schema))
         .routes(routes!(parse_community_sql))
         .routes(routes!(validate_community_sql))
+        .routes(routes!(format_community_sql))
         .routes(routes!(list_datasources, create_datasource))
         .routes(routes!(
             get_datasource,
@@ -794,6 +798,29 @@ async fn validate_community_sql(
 ) -> Result<Json<CommunitySqlValidation>, WebError> {
     application
         .validate_community_sql(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/sql/format",
+    tag = "community",
+    request_body = FormatCommunitySqlRequest,
+    responses(
+        (status = 200, description = "Community formatted SQL", body = CommunityFormattedSql),
+        (status = 400, description = "Invalid Community SQL-formatter request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community SQL-formatter failure", body = ApiError)
+    )
+)]
+async fn format_community_sql(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<FormatCommunitySqlRequest>,
+) -> Result<Json<CommunityFormattedSql>, WebError> {
+    application
+        .format_community_sql(request)
         .await
         .map(Json)
         .map_err(Into::into)

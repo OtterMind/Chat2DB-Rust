@@ -2,25 +2,28 @@ use std::future::Future;
 
 use chat2db_contract::{
     BuildCommunityCreateSchemaRequest, CommunityBuiltSql, CommunityDatabase, CommunityDatabaseList,
-    CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList, CommunityFunction,
-    CommunityFunctionList, CommunityFunctionParameter, CommunityFunctionParameterList,
-    CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
-    CommunityPluginServices, CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure,
-    CommunityProcedureList, CommunityProcedureParameter, CommunityProcedureParameterList,
-    CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlDiagnostic,
-    CommunitySqlValidation, CommunityTable, CommunityTableColumn, CommunityTableColumnList,
-    CommunityTableIndex, CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList,
-    CommunityTrigger, CommunityTriggerList, CommunityViewList, GetCommunityFunctionRequest,
-    GetCommunityProcedureRequest, GetCommunityTriggerRequest, ListCommunityColumnsRequest,
-    ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
-    ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
-    ListCommunityTablesRequest, ListCommunityTriggersRequest, ListCommunityViewsRequest,
-    ParseCommunitySqlRequest, ValidateCommunitySqlRequest,
+    CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList, CommunityFormattedSql,
+    CommunityFunction, CommunityFunctionList, CommunityFunctionParameter,
+    CommunityFunctionParameterList, CommunityParsedStatement, CommunityPlugin,
+    CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices, CommunityPrimaryKey,
+    CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
+    CommunityProcedureParameter, CommunityProcedureParameterList, CommunitySchema,
+    CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlDiagnostic, CommunitySqlValidation,
+    CommunityTable, CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex,
+    CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList, CommunityTrigger,
+    CommunityTriggerList, CommunityViewList, FormatCommunitySqlRequest,
+    GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
+    ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityFunctionsRequest,
+    ListCommunityIndexesRequest, ListCommunityProceduresRequest, ListCommunitySchemasRequest,
+    ListCommunityTableKeysRequest, ListCommunityTablesRequest, ListCommunityTriggersRequest,
+    ListCommunityViewsRequest, ParseCommunitySqlRequest, ValidateCommunitySqlRequest,
 };
 use chat2db_java_bridge::{
     BridgeError, CommunityClasspath, CommunityDatabase as BridgeCommunityDatabase,
     CommunityDriverConfig as BridgeCommunityDriverConfig,
-    CommunityForeignKey as BridgeCommunityForeignKey, CommunityFunction as BridgeCommunityFunction,
+    CommunityForeignKey as BridgeCommunityForeignKey,
+    CommunityFormattedSql as BridgeCommunityFormattedSql,
+    CommunityFunction as BridgeCommunityFunction,
     CommunityFunctionParameter as BridgeCommunityFunctionParameter,
     CommunityParsedStatement as BridgeCommunityParsedStatement,
     CommunityPlugin as BridgeCommunityPlugin,
@@ -838,6 +841,25 @@ impl Application {
             .map_err(AppError::from)
     }
 
+    /// Formats SQL through the retained Community dialect formatter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an engine availability, capability, validation, protocol, or
+    /// Community formatter error.
+    pub async fn format_community_sql(
+        &self,
+        request: FormatCommunitySqlRequest,
+    ) -> Result<CommunityFormattedSql, AppError> {
+        let engine = self.require_community_engine()?;
+        let client = engine.community_client().map_err(AppError::from)?;
+        client
+            .format_sql(request.database_type, request.sql)
+            .await
+            .map(community_formatted_sql)
+            .map_err(AppError::from)
+    }
+
     fn require_community_engine(&self) -> Result<chat2db_java_bridge::EngineClient, AppError> {
         let engine = self.require_engine()?;
         if !engine.community_compatibility_configured() {
@@ -1244,6 +1266,10 @@ fn community_sql_diagnostic(diagnostic: BridgeCommunitySqlDiagnostic) -> Communi
     }
 }
 
+fn community_formatted_sql(formatted: BridgeCommunityFormattedSql) -> CommunityFormattedSql {
+    CommunityFormattedSql { sql: formatted.sql }
+}
+
 fn community_parsed_statement(
     statement: BridgeCommunityParsedStatement,
 ) -> CommunityParsedStatement {
@@ -1278,8 +1304,8 @@ fn preserve_primary_result<T>(
 #[cfg(test)]
 mod tests {
     use chat2db_contract::{
-        CommunityDatabase, CommunityDriverConfig, CommunityForeignKey, CommunityFunction,
-        CommunityFunctionParameter, CommunityParsedStatement, CommunityPlugin,
+        CommunityDatabase, CommunityDriverConfig, CommunityForeignKey, CommunityFormattedSql,
+        CommunityFunction, CommunityFunctionParameter, CommunityParsedStatement, CommunityPlugin,
         CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
         CommunityPrimaryKey, CommunityProcedure, CommunityProcedureParameter, CommunitySchema,
         CommunitySqlAnalysis, CommunitySqlDiagnostic, CommunitySqlValidation, CommunityTable,
@@ -1292,6 +1318,7 @@ mod tests {
         CommunityDatabase as BridgeCommunityDatabase,
         CommunityDriverConfig as BridgeCommunityDriverConfig,
         CommunityForeignKey as BridgeCommunityForeignKey,
+        CommunityFormattedSql as BridgeCommunityFormattedSql,
         CommunityFunction as BridgeCommunityFunction,
         CommunityFunctionParameter as BridgeCommunityFunctionParameter,
         CommunityParsedStatement as BridgeCommunityParsedStatement,
@@ -1317,11 +1344,12 @@ mod tests {
     use tokio::{sync::oneshot, time};
 
     use super::{
-        Application, bridge_schema, community_database, community_foreign_key, community_function,
-        community_function_parameter, community_plugin_catalog, community_primary_key,
-        community_procedure, community_procedure_parameter, community_schema,
-        community_sql_analysis, community_sql_validation, community_table, community_table_column,
-        community_table_index, community_trigger, preserve_primary_result, run_cancellation_safe,
+        Application, bridge_schema, community_database, community_foreign_key,
+        community_formatted_sql, community_function, community_function_parameter,
+        community_plugin_catalog, community_primary_key, community_procedure,
+        community_procedure_parameter, community_schema, community_sql_analysis,
+        community_sql_validation, community_table, community_table_column, community_table_index,
+        community_trigger, preserve_primary_result, run_cancellation_safe,
         run_cancellation_safe_with_cleanup,
     };
     use crate::{AppError, AppErrorKind};
@@ -1870,6 +1898,18 @@ mod tests {
                     token_text: "from".to_owned(),
                     message: "unexpected FROM".to_owned(),
                 }],
+            }
+        );
+    }
+
+    #[test]
+    fn formatted_sql_mapping_preserves_sql() {
+        assert_eq!(
+            community_formatted_sql(BridgeCommunityFormattedSql {
+                sql: "SELECT\n  1;".to_owned(),
+            }),
+            CommunityFormattedSql {
+                sql: "SELECT\n  1;".to_owned(),
             }
         );
     }

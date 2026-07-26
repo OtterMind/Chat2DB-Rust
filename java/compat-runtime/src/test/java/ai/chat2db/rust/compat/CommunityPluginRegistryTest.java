@@ -347,13 +347,17 @@ class CommunityPluginRegistryTest {
     }
 
     @Test
-    void realCommunityH2ParserValidatesSql() throws Exception {
+    void realCommunityH2SqlToolsFormatAndValidateSql() throws Exception {
         Path communityClasspath = communityClasspathDirectory();
         assumeTrue(
                 Files.isDirectory(communityClasspath),
                 "the fixed Community H2 classpath is built by the extended integration lane");
 
         try (CommunityPluginRegistry registry = openRegistry(communityClasspath)) {
+            var formatted = new CommunitySqlFormatter()
+                    .format("H2", "select id,name from items where id=1");
+            assertTrue(formatted.getSql().contains("from\n  items"));
+
             var valid = registry.validate("H2", "SELECT 1;");
             assertTrue(valid.getValid());
             assertFalse(valid.getStatementsList().isEmpty());

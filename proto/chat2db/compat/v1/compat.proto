@@ -70,6 +70,7 @@ message ClientEnvelope {
     ListCommunityTriggersRequest list_community_triggers = 218;
     GetCommunityTriggerRequest get_community_trigger = 219;
     ValidateCommunitySqlRequest validate_community_sql = 220;
+    FormatCommunitySqlRequest format_community_sql = 221;
   }
 }
 
@@ -115,6 +116,7 @@ message ServerEnvelope {
     CommunityTriggerList community_trigger_list = 218;
     CommunityTrigger community_trigger = 219;
     CommunitySqlValidation community_sql_validation = 220;
+    CommunityFormattedSql community_formatted_sql = 221;
   }
 }
 

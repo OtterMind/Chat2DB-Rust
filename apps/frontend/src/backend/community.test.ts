@@ -4,6 +4,7 @@ import type {
   BuildCommunityCreateSchemaRequest,
   CommunityBuiltSql,
   CommunityDatabaseList,
+  CommunityFormattedSql,
   CommunityForeignKeyList,
   CommunityFunction,
   CommunityFunctionList,
@@ -25,6 +26,7 @@ import type {
   GetCommunityFunctionRequest,
   GetCommunityProcedureRequest,
   GetCommunityTriggerRequest,
+  FormatCommunitySqlRequest,
   ListCommunityColumnsRequest,
   ListCommunityDatabasesRequest,
   ListCommunityFunctionsRequest,
@@ -136,6 +138,11 @@ const validateSqlRequest = {
   databaseType: 'H2',
   sql: 'select from',
 } satisfies ValidateCommunitySqlRequest;
+
+const formatSqlRequest = {
+  databaseType: 'H2',
+  sql: 'select 1',
+} satisfies FormatCommunitySqlRequest;
 
 const catalog = {
   sourceCommit: 'f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7',
@@ -375,6 +382,9 @@ const validation = {
     message: 'unexpected FROM',
   }],
 } satisfies CommunitySqlValidation;
+const formattedSql = {
+  sql: 'SELECT\n  1',
+} satisfies CommunityFormattedSql;
 
 const responses = [
   catalog,
@@ -398,6 +408,7 @@ const responses = [
   builtSql,
   analysis,
   validation,
+  formattedSql,
 ] as const;
 
 function jsonResponse(value: unknown): Response {
@@ -444,6 +455,7 @@ describe('Community backend adapter parity', () => {
       await client.buildCommunityCreateSchema(buildSchemaRequest),
       await client.parseCommunitySql(parseSqlRequest),
       await client.validateCommunitySql(validateSqlRequest),
+      await client.formatCommunitySql(formatSqlRequest),
     ];
 
     expect(received).toEqual(responses);
@@ -547,6 +559,7 @@ describe('Community backend adapter parity', () => {
       },
       { path: '/api/v1/community/sql/parse', method: 'POST', body: parseSqlRequest },
       { path: '/api/v1/community/sql/validate', method: 'POST', body: validateSqlRequest },
+      { path: '/api/v1/community/sql/format', method: 'POST', body: formatSqlRequest },
     ]);
   });
 
@@ -583,6 +596,7 @@ describe('Community backend adapter parity', () => {
       await client.buildCommunityCreateSchema(buildSchemaRequest),
       await client.parseCommunitySql(parseSqlRequest),
       await client.validateCommunitySql(validateSqlRequest),
+      await client.formatCommunitySql(formatSqlRequest),
     ];
 
     expect(received).toEqual(responses);
@@ -616,6 +630,7 @@ describe('Community backend adapter parity', () => {
       { command: 'build_community_create_schema', args: { request: buildSchemaRequest } },
       { command: 'parse_community_sql', args: { request: parseSqlRequest } },
       { command: 'validate_community_sql', args: { request: validateSqlRequest } },
+      { command: 'format_community_sql', args: { request: formatSqlRequest } },
     ]);
   });
 });

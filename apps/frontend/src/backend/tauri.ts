@@ -18,6 +18,7 @@ import type {
   CancelOperationResponse,
   CommunityBuiltSql,
   CommunityDatabaseList,
+  CommunityFormattedSql,
   CommunityForeignKeyList,
   CommunityFunction,
   CommunityFunctionList,
@@ -45,6 +46,7 @@ import type {
   GetCommunityFunctionRequest,
   GetCommunityProcedureRequest,
   GetCommunityTriggerRequest,
+  FormatCommunitySqlRequest,
   HealthResponse,
   JdbcDriverList,
   ListCommunityColumnsRequest,
@@ -273,6 +275,13 @@ export class TauriBackendClient implements BackendClient {
     signal?: AbortSignal,
   ): Promise<CommunitySqlValidation> {
     return this.#request('validate_community_sql', { request }, signal);
+  }
+
+  formatCommunitySql(
+    request: FormatCommunitySqlRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityFormattedSql> {
+    return this.#request('format_community_sql', { request }, signal);
   }
 
   listDatasources(signal?: AbortSignal): Promise<DatasourceList> {

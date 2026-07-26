@@ -6,6 +6,7 @@ import ai.chat2db.rust.compat.protocol.v1.BuildCommunityCreateSchemaRequest;
 import ai.chat2db.rust.compat.protocol.v1.CloseSessionRequest;
 import ai.chat2db.rust.compat.protocol.v1.CommunityDatabaseList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityForeignKeyList;
+import ai.chat2db.rust.compat.protocol.v1.CommunityFormattedSql;
 import ai.chat2db.rust.compat.protocol.v1.CommunityFunction;
 import ai.chat2db.rust.compat.protocol.v1.CommunityFunctionList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityFunctionParameterList;
@@ -29,6 +30,7 @@ import ai.chat2db.rust.compat.protocol.v1.DriverLoaded;
 import ai.chat2db.rust.compat.protocol.v1.DriverUnloaded;
 import ai.chat2db.rust.compat.protocol.v1.ExecuteQueryRequest;
 import ai.chat2db.rust.compat.protocol.v1.ExecuteUpdateRequest;
+import ai.chat2db.rust.compat.protocol.v1.FormatCommunitySqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.GrantCreditsRequest;
 import ai.chat2db.rust.compat.protocol.v1.GetCommunityFunctionRequest;
 import ai.chat2db.rust.compat.protocol.v1.GetCommunityProcedureRequest;
@@ -98,6 +100,7 @@ final class JdbcRuntime implements AutoCloseable {
     private final SessionRegistry sessions = new SessionRegistry(drivers);
     private final OperationRegistry operations = new OperationRegistry();
     private final CommunityPluginRegistry community = CommunityPluginRegistry.openConfigured();
+    private final CommunitySqlFormatter communitySqlFormatter = new CommunitySqlFormatter();
     private final ThreadPoolExecutor controlWorkers;
     private final ProtocolWriter writer;
     private final PrintStream diagnostics;
@@ -807,6 +810,13 @@ final class JdbcRuntime implements AutoCloseable {
         CommunitySqlValidation validation =
                 community.validate(request.getDatabaseType(), request.getSql());
         return terminal(meta).setCommunitySqlValidation(validation).build();
+    }
+
+    ServerEnvelope formatCommunitySql(
+            RequestMeta meta, FormatCommunitySqlRequest request) throws RuntimeFailure {
+        CommunityFormattedSql formatted =
+                communitySqlFormatter.format(request.getDatabaseType(), request.getSql());
+        return terminal(meta).setCommunityFormattedSql(formatted).build();
     }
 
     boolean communityCompatibilityConfigured() {

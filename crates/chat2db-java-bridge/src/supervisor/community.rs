@@ -33,6 +33,8 @@ pub const COMMUNITY_SQL_BUILDER_CAPABILITY: &str = "community.sql-builder.v1";
 pub const COMMUNITY_SQL_PARSER_CAPABILITY: &str = "community.sql-parser.v1";
 /// Validates SQL through a Community `ISqlSyntaxPlugin` implementation.
 pub const COMMUNITY_SQL_VALIDATION_CAPABILITY: &str = "community.sql-validation.v1";
+/// Formats SQL through the retained Community-compatible `SqlFormatter`.
+pub const COMMUNITY_SQL_FORMATTER_CAPABILITY: &str = "community.sql-formatter.v1";
 
 pub(super) const COMMUNITY_CLASSPATH_ENV: &str = "CHAT2DB_COMMUNITY_CLASSPATH_DIR";
 pub(super) const COMMUNITY_SOURCE_COMMIT_ENV: &str = "CHAT2DB_COMMUNITY_SOURCE_COMMIT";
@@ -42,6 +44,8 @@ const MAX_CLASSPATH_BYTES: u64 = wire::CommunityByteLimit::MaxClasspathBytes as 
 const MAX_DATABASE_TYPE_BYTES: usize = wire::CommunityByteLimit::MaxDatabaseTypeBytes as usize;
 const MAX_SOURCE_COMMIT_BYTES: usize = wire::CommunityByteLimit::MaxSourceCommitBytes as usize;
 const MAX_COMMENT_BYTES: usize = wire::CommunityByteLimit::MaxCommentBytes as usize;
+const MAX_SQL_FORMATTER_COMPLEXITY_UNITS: usize =
+    wire::CommunitySqlFormatterLimit::MaxComplexityUnits as usize;
 const MAX_SQL_BYTES: usize = wire::JdbcProtocolLimit::MaxSqlBytes as usize;
 const MAX_SCALAR_BYTES: usize = wire::JdbcProtocolLimit::MaxScalarBytes as usize;
 const MAX_PROTOCOL_ID_BYTES: usize = wire::JdbcProtocolLimit::MaxDriverIdBytes as usize;
@@ -771,6 +775,12 @@ pub struct CommunitySqlValidation {
     pub valid: bool,
     pub statements: Vec<CommunityParsedStatement>,
     pub diagnostics: Vec<CommunitySqlDiagnostic>,
+}
+
+/// Bounded SQL text returned by the retained Community formatter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommunityFormattedSql {
+    pub sql: String,
 }
 
 /// Client bound to one validated Java engine generation.
@@ -1761,6 +1771,47 @@ impl CommunityClient {
         Ok(validation.into())
     }
 
+    /// Formats SQL through the retained Community-compatible `SqlFormatter`,
+    /// using `database_type` to select its SQL dialect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, unsupported formatting, formatter
+    /// failure, transport failure, or an invalid response.
+    pub async fn format_sql(
+        &self,
+        database_type: impl Into<String>,
+        sql: impl Into<String>,
+    ) -> Result<CommunityFormattedSql, BridgeError> {
+        let database_type = database_type.into();
+        let sql = sql.into();
+        validate_database_type(&database_type)?;
+        validate_non_blank_utf8(&sql, MAX_SQL_BYTES, "SQL")?;
+        validate_sql_formatter_complexity(&sql)?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_SQL_FORMATTER_CAPABILITY,
+                None,
+                None,
+                wire::client_envelope::Payload::FormatCommunitySql(
+                    wire::FormatCommunitySqlRequest { database_type, sql },
+                ),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityFormattedSql(formatted)) =
+            response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community formatted-SQL response")
+                .await;
+        };
+        Ok(formatted.into())
+    }
+
     #[must_use]
     pub const fn generation(&self) -> u64 {
         self.binding.generation
@@ -2135,6 +2186,12 @@ impl From<wire::CommunitySqlDiagnostic> for CommunitySqlDiagnostic {
     }
 }
 
+impl From<wire::CommunityFormattedSql> for CommunityFormattedSql {
+    fn from(formatted: wire::CommunityFormattedSql) -> Self {
+        Self { sql: formatted.sql }
+    }
+}
+
 impl From<wire::CommunityParsedStatement> for CommunityParsedStatement {
     fn from(statement: wire::CommunityParsedStatement) -> Self {
         Self {
@@ -2472,6 +2529,33 @@ fn validate_database_type(database_type: &str) -> Result<(), BridgeError> {
     validate_non_blank_utf8(database_type, MAX_DATABASE_TYPE_BYTES, "database type")
 }
 
+fn validate_sql_formatter_complexity(sql: &str) -> Result<(), BridgeError> {
+    let mut units = 0_usize;
+    let mut in_ascii_word = false;
+    for character in sql.chars() {
+        if character.is_ascii_alphanumeric() || matches!(character, '_' | '$') {
+            if !in_ascii_word {
+                units += 1;
+            }
+            in_ascii_word = true;
+        } else {
+            in_ascii_word = false;
+            if !matches!(
+                character,
+                ' ' | '\t' | '\n' | '\u{000b}' | '\u{000c}' | '\r'
+            ) {
+                units += 1;
+            }
+        }
+        if units > MAX_SQL_FORMATTER_COMPLEXITY_UNITS {
+            return Err(BridgeError::InvalidRequest(format!(
+                "SQL formatter complexity cannot exceed {MAX_SQL_FORMATTER_COMPLEXITY_UNITS} units"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_schema(schema: &CommunitySchema, require_name: bool) -> Result<(), BridgeError> {
     if require_name {
         validate_non_blank_utf8(&schema.name, MAX_SCALAR_BYTES, "schema name")?;
@@ -2513,13 +2597,38 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        CommunityClasspath, CommunityForeignKey, CommunityFunction, CommunityFunctionParameter,
-        CommunityPrimaryKey, CommunityProcedure, CommunityProcedureParameter,
-        CommunitySqlDiagnostic, CommunitySqlValidation, CommunityTrigger, MAX_SCALAR_BYTES,
-        validate_non_blank_utf8,
+        CommunityClasspath, CommunityForeignKey, CommunityFormattedSql, CommunityFunction,
+        CommunityFunctionParameter, CommunityPrimaryKey, CommunityProcedure,
+        CommunityProcedureParameter, CommunitySqlDiagnostic, CommunitySqlValidation,
+        CommunityTrigger, MAX_SCALAR_BYTES, MAX_SQL_FORMATTER_COMPLEXITY_UNITS,
+        validate_non_blank_utf8, validate_sql_formatter_complexity,
     };
 
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn sql_formatter_complexity_rejects_token_dense_input_at_the_shared_limit() {
+        let exact = "a,".repeat(MAX_SQL_FORMATTER_COMPLEXITY_UNITS / 2);
+        validate_sql_formatter_complexity(&exact).expect("the exact complexity limit must pass");
+
+        let error = validate_sql_formatter_complexity(&(exact + "a"))
+            .expect_err("one unit above the complexity limit must fail");
+        assert!(error.to_string().contains("16384 units"));
+        validate_sql_formatter_complexity(&"a".repeat(1_048_576))
+            .expect("a long single token must retain the independent one MiB byte limit");
+    }
+
+    #[test]
+    fn formatted_sql_wire_mapping_preserves_sql() {
+        assert_eq!(
+            CommunityFormattedSql::from(wire::CommunityFormattedSql {
+                sql: "SELECT\n  1;".to_owned(),
+            }),
+            CommunityFormattedSql {
+                sql: "SELECT\n  1;".to_owned(),
+            }
+        );
+    }
 
     #[test]
     fn sql_validation_wire_mapping_preserves_every_field() {

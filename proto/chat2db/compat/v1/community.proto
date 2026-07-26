@@ -71,6 +71,15 @@ enum CommunitySqlDiagnosticCountLimit {
   COMMUNITY_SQL_DIAGNOSTIC_COUNT_LIMIT_MAX_DIAGNOSTICS = 4096;
 }
 
+// The retained formatter has superlinear behavior on token-dense input. This
+// linear preflight bound is enforced before entering the third-party library.
+// One unit is a non-empty run of [A-Za-z0-9_$] or one code point other than
+// ASCII whitespace; non-ASCII code points therefore count individually.
+enum CommunitySqlFormatterLimit {
+  COMMUNITY_SQL_FORMATTER_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_SQL_FORMATTER_LIMIT_MAX_COMPLEXITY_UNITS = 16384;
+}
+
 enum CommunityColumnCountLimit {
   COMMUNITY_COLUMN_COUNT_LIMIT_UNSPECIFIED = 0;
   COMMUNITY_COLUMN_COUNT_LIMIT_MAX_COLUMNS = 65536;
@@ -501,6 +510,11 @@ message ValidateCommunitySqlRequest {
   string sql = 2;
 }
 
+message FormatCommunitySqlRequest {
+  string database_type = 1;
+  string sql = 2;
+}
+
 message CommunityParsedStatement {
   string sql = 1;
   string type = 2;
@@ -525,4 +539,8 @@ message CommunitySqlValidation {
   bool valid = 1;
   repeated CommunityParsedStatement statements = 2;
   repeated CommunitySqlDiagnostic diagnostics = 3;
+}
+
+message CommunityFormattedSql {
+  string sql = 1;
 }

@@ -32,6 +32,7 @@
         <os.maven.version>1.7.1</os.maven.version>
         <protobuf.maven.version>0.6.1</protobuf.maven.version>
         <protobuf.version>4.31.1</protobuf.version>
+        <sql-formatter.version>2.0.4</sql-formatter.version>
     </properties>
 
     <dependencyManagement>
@@ -47,6 +48,11 @@
                 <groupId>com.google.protobuf</groupId>
                 <artifactId>protobuf-java</artifactId>
                 <version>${protobuf.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.github.vertical-blank</groupId>
+                <artifactId>sql-formatter</artifactId>
+                <version>${sql-formatter.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

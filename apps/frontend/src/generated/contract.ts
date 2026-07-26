@@ -468,6 +468,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/community/sql/format": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["format_community_sql"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/community/sql/parse": {
         parameters: {
             query?: never;
@@ -1123,6 +1139,11 @@ export interface components {
         CommunityForeignKeyList: {
             items: components["schemas"]["CommunityForeignKey"][];
         };
+        /** @description SQL formatted by a retained Community dialect service. */
+        CommunityFormattedSql: {
+            /** @description Complete formatted SQL, capped at 1 MiB. */
+            sql: string;
+        };
         /** @description Secret-free Community function metadata. */
         CommunityFunction: {
             body: string;
@@ -1589,6 +1610,13 @@ export interface components {
             runId: string;
             /** @description Exact tool-call id displayed with the permission request. */
             toolCallId: string;
+        };
+        /** @description Request to format SQL through a retained Community formatter. */
+        FormatCommunitySqlRequest: {
+            /** @description Community database type used to select the formatter. */
+            databaseType: string;
+            /** @description SQL text to format, capped at 1 MiB and 16,384 lexical complexity units. */
+            sql: string;
         };
         /** @description Request to read one function or its parameters. */
         GetCommunityFunctionRequest: {
@@ -4099,6 +4127,57 @@ export interface operations {
                 };
             };
             /** @description Unexpected Community SQL-builder failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Community compatibility engine is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    format_community_sql: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FormatCommunitySqlRequest"];
+            };
+        };
+        responses: {
+            /** @description Community formatted SQL */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityFormattedSql"];
+                };
+            };
+            /** @description Invalid Community SQL-formatter request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected Community SQL-formatter failure */
             500: {
                 headers: {
                     [name: string]: unknown;

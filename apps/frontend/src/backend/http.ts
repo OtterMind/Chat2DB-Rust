@@ -16,6 +16,7 @@ import type {
   CancelOperationResponse,
   CommunityBuiltSql,
   CommunityDatabaseList,
+  CommunityFormattedSql,
   CommunityForeignKeyList,
   CommunityFunction,
   CommunityFunctionList,
@@ -43,6 +44,7 @@ import type {
   GetCommunityFunctionRequest,
   GetCommunityProcedureRequest,
   GetCommunityTriggerRequest,
+  FormatCommunitySqlRequest,
   HealthResponse,
   JdbcDriverList,
   ListCommunityColumnsRequest,
@@ -367,6 +369,17 @@ export class HttpBackendClient implements BackendClient {
   ): Promise<CommunitySqlValidation> {
     return this.#json(
       '/api/v1/community/sql/validate',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  formatCommunitySql(
+    request: FormatCommunitySqlRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityFormattedSql> {
+    return this.#json(
+      '/api/v1/community/sql/format',
       { method: 'POST', body: JSON.stringify(request), signal },
       [200],
     );
