@@ -1184,6 +1184,186 @@
         }
       }
     },
+    "/api/v1/community/metadata/columns": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "list_community_columns",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListCommunityColumnsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community column metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityTableColumnList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community metadata request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community metadata failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/community/metadata/databases": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "list_community_databases",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListCommunityDatabasesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community database metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityDatabaseList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community metadata request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community metadata failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/community/metadata/indexes": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "list_community_indexes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListCommunityIndexesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community index metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityTableIndexList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community metadata request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community metadata failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/community/metadata/schemas": {
       "post": {
         "tags": [
@@ -1207,6 +1387,66 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CommunitySchemaList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community metadata request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community metadata failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/community/metadata/tables": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "list_community_tables",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListCommunityTablesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community table metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityTableList"
                 }
               }
             }
@@ -3362,6 +3602,53 @@
           }
         }
       },
+      "CommunityDatabase": {
+        "type": "object",
+        "description": "Secret-free database metadata returned by Community.",
+        "required": [
+          "name",
+          "comment",
+          "charset",
+          "collation",
+          "owner",
+          "system"
+        ],
+        "properties": {
+          "charset": {
+            "type": "string"
+          },
+          "collation": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "system": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CommunityDatabaseList": {
+        "type": "object",
+        "description": "Stable database collection returned by Community metadata APIs.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityDatabase"
+            }
+          }
+        }
+      },
       "CommunityDriverConfig": {
         "type": "object",
         "description": "One JDBC driver declaration retained from a Community plugin.",
@@ -3596,6 +3883,475 @@
               "$ref": "#/components/schemas/CommunityParsedStatement"
             },
             "description": "Parsed statements in source order."
+          }
+        }
+      },
+      "CommunityTable": {
+        "type": "object",
+        "description": "Secret-free table metadata without nested column or index payloads.",
+        "required": [
+          "databaseName",
+          "schemaName",
+          "name",
+          "tableType",
+          "comment",
+          "databaseType",
+          "pinned",
+          "ddl",
+          "engine",
+          "charset",
+          "collation",
+          "partition",
+          "tablespace",
+          "createTime",
+          "updateTime"
+        ],
+        "properties": {
+          "charset": {
+            "type": "string"
+          },
+          "collation": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "createTime": {
+            "type": "string"
+          },
+          "dataLength": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Data length encoded as a decimal integer string."
+          },
+          "databaseName": {
+            "type": "string"
+          },
+          "databaseType": {
+            "type": "string"
+          },
+          "ddl": {
+            "type": "string"
+          },
+          "engine": {
+            "type": "string"
+          },
+          "incrementValue": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Auto-increment value encoded as a decimal integer string."
+          },
+          "name": {
+            "type": "string"
+          },
+          "partition": {
+            "type": "string"
+          },
+          "pinned": {
+            "type": "boolean"
+          },
+          "rows": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Row count or estimate encoded as a decimal integer string."
+          },
+          "schemaName": {
+            "type": "string"
+          },
+          "tableType": {
+            "type": "string"
+          },
+          "tablespace": {
+            "type": "string"
+          },
+          "updateTime": {
+            "type": "string"
+          }
+        }
+      },
+      "CommunityTableColumn": {
+        "type": "object",
+        "description": "Secret-free Community table-column metadata.",
+        "required": [
+          "databaseName",
+          "schemaName",
+          "tableName",
+          "name",
+          "columnType",
+          "defaultValue",
+          "comment",
+          "primaryKeyName",
+          "primaryKeyOrder",
+          "extent",
+          "charset",
+          "collation",
+          "unit",
+          "defaultConstraintName"
+        ],
+        "properties": {
+          "autoIncrement": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "bufferLength": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "charOctetLength": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "charset": {
+            "type": "string"
+          },
+          "collation": {
+            "type": "string"
+          },
+          "columnSize": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "columnType": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "dataType": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "databaseName": {
+            "type": "string"
+          },
+          "decimalDigits": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "defaultConstraintName": {
+            "type": "string"
+          },
+          "defaultValue": {
+            "type": "string"
+          },
+          "extent": {
+            "type": "string"
+          },
+          "generatedColumn": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "increment": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          },
+          "nullable": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "numPrecRadix": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "onUpdateCurrentTimestamp": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "ordinalPosition": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "primaryKey": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "primaryKeyName": {
+            "type": "string"
+          },
+          "primaryKeyOrder": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "schemaName": {
+            "type": "string"
+          },
+          "seed": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "sparse": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "sqlDataType": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "sqlDatetimeSub": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "tableName": {
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          }
+        }
+      },
+      "CommunityTableColumnList": {
+        "type": "object",
+        "description": "Stable column collection returned by Community metadata APIs.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityTableColumn"
+            }
+          }
+        }
+      },
+      "CommunityTableIndex": {
+        "type": "object",
+        "description": "Secret-free Community table-index metadata.",
+        "required": [
+          "databaseName",
+          "schemaName",
+          "tableName",
+          "name",
+          "indexType",
+          "comment",
+          "columns",
+          "method",
+          "foreignSchemaName",
+          "foreignTableName",
+          "foreignColumnNames"
+        ],
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityTableIndexColumn"
+            }
+          },
+          "comment": {
+            "type": "string"
+          },
+          "concurrently": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "databaseName": {
+            "type": "string"
+          },
+          "foreignColumnNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "foreignSchemaName": {
+            "type": "string"
+          },
+          "foreignTableName": {
+            "type": "string"
+          },
+          "indexType": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "schemaName": {
+            "type": "string"
+          },
+          "tableName": {
+            "type": "string"
+          },
+          "unique": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
+      "CommunityTableIndexColumn": {
+        "type": "object",
+        "description": "Secret-free metadata for one indexed column.",
+        "required": [
+          "databaseName",
+          "schemaName",
+          "tableName",
+          "indexName",
+          "columnName",
+          "columnType",
+          "comment",
+          "collation",
+          "indexQualifier",
+          "sortOrder",
+          "filterCondition"
+        ],
+        "properties": {
+          "cardinality": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Index cardinality encoded as a decimal integer string."
+          },
+          "collation": {
+            "type": "string"
+          },
+          "columnName": {
+            "type": "string"
+          },
+          "columnType": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "databaseName": {
+            "type": "string"
+          },
+          "filterCondition": {
+            "type": "string"
+          },
+          "indexName": {
+            "type": "string"
+          },
+          "indexQualifier": {
+            "type": "string"
+          },
+          "nonUnique": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "ordinalPosition": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "pages": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Index page count encoded as a decimal integer string."
+          },
+          "schemaName": {
+            "type": "string"
+          },
+          "sortOrder": {
+            "type": "string"
+          },
+          "subPart": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Indexed prefix length encoded as a decimal integer string."
+          },
+          "tableName": {
+            "type": "string"
+          }
+        }
+      },
+      "CommunityTableIndexList": {
+        "type": "object",
+        "description": "Stable index collection returned by Community metadata APIs.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityTableIndex"
+            }
+          }
+        }
+      },
+      "CommunityTableList": {
+        "type": "object",
+        "description": "Stable table collection returned by Community metadata APIs.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityTable"
+            }
           }
         }
       },
@@ -4386,6 +5142,78 @@
           "opaque"
         ]
       },
+      "ListCommunityColumnsRequest": {
+        "type": "object",
+        "description": "Request to list columns for one table through Community metadata.",
+        "required": [
+          "datasourceId",
+          "databaseType",
+          "databaseName",
+          "schemaName",
+          "tableName"
+        ],
+        "properties": {
+          "databaseName": {
+            "type": "string"
+          },
+          "databaseType": {
+            "type": "string"
+          },
+          "datasourceId": {
+            "type": "string"
+          },
+          "schemaName": {
+            "type": "string"
+          },
+          "tableName": {
+            "type": "string"
+          }
+        }
+      },
+      "ListCommunityDatabasesRequest": {
+        "type": "object",
+        "description": "Request to list databases through one datasource connection.",
+        "required": [
+          "datasourceId",
+          "databaseType"
+        ],
+        "properties": {
+          "databaseType": {
+            "type": "string"
+          },
+          "datasourceId": {
+            "type": "string"
+          }
+        }
+      },
+      "ListCommunityIndexesRequest": {
+        "type": "object",
+        "description": "Request to list indexes for one table through Community metadata.",
+        "required": [
+          "datasourceId",
+          "databaseType",
+          "databaseName",
+          "schemaName",
+          "tableName"
+        ],
+        "properties": {
+          "databaseName": {
+            "type": "string"
+          },
+          "databaseType": {
+            "type": "string"
+          },
+          "datasourceId": {
+            "type": "string"
+          },
+          "schemaName": {
+            "type": "string"
+          },
+          "tableName": {
+            "type": "string"
+          }
+        }
+      },
       "ListCommunitySchemasRequest": {
         "type": "object",
         "description": "Request to list schemas through one datasource connection.",
@@ -4406,6 +5234,34 @@
           "datasourceId": {
             "type": "string",
             "description": "Datasource whose installed connection descriptor is used."
+          }
+        }
+      },
+      "ListCommunityTablesRequest": {
+        "type": "object",
+        "description": "Request to list tables through one datasource connection.",
+        "required": [
+          "datasourceId",
+          "databaseType",
+          "databaseName",
+          "schemaName",
+          "tableNamePattern"
+        ],
+        "properties": {
+          "databaseName": {
+            "type": "string"
+          },
+          "databaseType": {
+            "type": "string"
+          },
+          "datasourceId": {
+            "type": "string"
+          },
+          "schemaName": {
+            "type": "string"
+          },
+          "tableNamePattern": {
+            "type": "string"
           }
         }
       },

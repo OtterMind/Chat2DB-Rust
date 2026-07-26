@@ -26,6 +26,31 @@ enum CommunitySchemaCountLimit {
   COMMUNITY_SCHEMA_COUNT_LIMIT_MAX_SCHEMAS = 4096;
 }
 
+enum CommunityDatabaseCountLimit {
+  COMMUNITY_DATABASE_COUNT_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_DATABASE_COUNT_LIMIT_MAX_DATABASES = 4096;
+}
+
+enum CommunityTableCountLimit {
+  COMMUNITY_TABLE_COUNT_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_TABLE_COUNT_LIMIT_MAX_TABLES = 65536;
+}
+
+enum CommunityColumnCountLimit {
+  COMMUNITY_COLUMN_COUNT_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_COLUMN_COUNT_LIMIT_MAX_COLUMNS = 65536;
+}
+
+enum CommunityIndexCountLimit {
+  COMMUNITY_INDEX_COUNT_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_INDEX_COUNT_LIMIT_MAX_INDEXES = 65536;
+}
+
+enum CommunityIndexColumnCountLimit {
+  COMMUNITY_INDEX_COLUMN_COUNT_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_INDEX_COLUMN_COUNT_LIMIT_MAX_INDEX_COLUMNS = 65536;
+}
+
 enum CommunityByteLimit {
   COMMUNITY_BYTE_LIMIT_UNSPECIFIED = 0;
   COMMUNITY_BYTE_LIMIT_MAX_SOURCE_COMMIT_BYTES = 64;
@@ -86,6 +111,150 @@ message CommunitySchema {
 
 message CommunitySchemaList {
   repeated CommunitySchema schemas = 1;
+}
+
+message ListCommunityDatabasesRequest {
+  string database_type = 1;
+  optional string transaction_id = 2;
+}
+
+message CommunityDatabase {
+  string name = 1;
+  string comment = 2;
+  string charset = 3;
+  string collation = 4;
+  string owner = 5;
+  bool system = 6;
+}
+
+message CommunityDatabaseList {
+  repeated CommunityDatabase databases = 1;
+}
+
+message ListCommunityTablesRequest {
+  string database_type = 1;
+  string database_name = 2;
+  string schema_name = 3;
+  string table_name_pattern = 4;
+  optional string transaction_id = 5;
+}
+
+message CommunityTable {
+  string database_name = 1;
+  string schema_name = 2;
+  string name = 3;
+  string type = 4;
+  string comment = 5;
+  string database_type = 6;
+  bool pinned = 7;
+  string ddl = 8;
+  string engine = 9;
+  string charset = 10;
+  string collation = 11;
+  optional int64 increment_value = 12;
+  string partition = 13;
+  string tablespace = 14;
+  optional int64 rows = 15;
+  optional int64 data_length = 16;
+  string create_time = 17;
+  string update_time = 18;
+}
+
+message CommunityTableList {
+  repeated CommunityTable tables = 1;
+}
+
+message ListCommunityColumnsRequest {
+  string database_type = 1;
+  string database_name = 2;
+  string schema_name = 3;
+  string table_name = 4;
+  optional string transaction_id = 5;
+}
+
+message CommunityTableColumn {
+  string database_name = 1;
+  string schema_name = 2;
+  string table_name = 3;
+  string name = 4;
+  string column_type = 5;
+  optional int32 data_type = 6;
+  string default_value = 7;
+  optional bool auto_increment = 8;
+  string comment = 9;
+  optional bool primary_key = 10;
+  string primary_key_name = 11;
+  int32 primary_key_order = 12;
+  optional int32 column_size = 13;
+  optional int32 buffer_length = 14;
+  optional int32 decimal_digits = 15;
+  optional int32 num_prec_radix = 16;
+  optional int32 sql_data_type = 17;
+  optional int32 sql_datetime_sub = 18;
+  optional int32 char_octet_length = 19;
+  optional int32 ordinal_position = 20;
+  optional int32 nullable = 21;
+  optional bool generated_column = 22;
+  string extent = 23;
+  string charset = 24;
+  string collation = 25;
+  string unit = 26;
+  optional bool sparse = 27;
+  string default_constraint_name = 28;
+  optional int32 seed = 29;
+  optional int32 increment = 30;
+  optional bool on_update_current_timestamp = 31;
+}
+
+message CommunityTableColumnList {
+  repeated CommunityTableColumn columns = 1;
+}
+
+message ListCommunityIndexesRequest {
+  string database_type = 1;
+  string database_name = 2;
+  string schema_name = 3;
+  string table_name = 4;
+  optional string transaction_id = 5;
+}
+
+message CommunityTableIndexColumn {
+  string database_name = 1;
+  string schema_name = 2;
+  string table_name = 3;
+  string index_name = 4;
+  string column_name = 5;
+  string type = 6;
+  string comment = 7;
+  optional int32 ordinal_position = 8;
+  string collation = 9;
+  optional bool non_unique = 10;
+  string index_qualifier = 11;
+  string sort_order = 12;
+  optional int64 cardinality = 13;
+  optional int64 pages = 14;
+  string filter_condition = 15;
+  optional int64 sub_part = 16;
+}
+
+message CommunityTableIndex {
+  string database_name = 1;
+  string schema_name = 2;
+  string table_name = 3;
+  string name = 4;
+  string type = 5;
+  optional bool unique = 6;
+  string comment = 7;
+  repeated CommunityTableIndexColumn columns = 8;
+  optional bool concurrently = 9;
+  string method = 10;
+  string foreign_schema_name = 11;
+  string foreign_table_name = 12;
+  repeated string foreign_column_names = 13;
+}
+
+message CommunityTableIndexList {
+  repeated CommunityTableIndex indexes = 1;
 }
 
 message BuildCommunityCreateSchemaRequest {

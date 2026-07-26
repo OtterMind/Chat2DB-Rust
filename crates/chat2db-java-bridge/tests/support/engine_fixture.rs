@@ -20,9 +20,10 @@ const JDBC_CAPABILITIES: [&str; 7] = [
     "update.jdbc.v1",
     "transaction.local.v1",
 ];
-const COMMUNITY_CAPABILITIES: [&str; 4] = [
+const COMMUNITY_CAPABILITIES: [&str; 5] = [
     "community.plugin-catalog.v1",
     "community.metadata.schemas.v1",
+    "community.metadata.objects.v1",
     "community.sql-builder.v1",
     "community.sql-parser.v1",
 ];
@@ -466,6 +467,10 @@ async fn run(options: Options) -> Result<u8, Box<dyn std::error::Error>> {
             }
             Some(
                 wire::client_envelope::Payload::ListCommunitySchemas(_)
+                | wire::client_envelope::Payload::ListCommunityDatabases(_)
+                | wire::client_envelope::Payload::ListCommunityTables(_)
+                | wire::client_envelope::Payload::ListCommunityColumns(_)
+                | wire::client_envelope::Payload::ListCommunityIndexes(_)
                 | wire::client_envelope::Payload::BuildCommunityCreateSchema(_)
                 | wire::client_envelope::Payload::ParseCommunitySql(_),
             ) => {

@@ -15,9 +15,13 @@ import type {
   CancelAgentRunResponse,
   CancelOperationResponse,
   CommunityBuiltSql,
+  CommunityDatabaseList,
   CommunityPluginCatalog,
   CommunitySchemaList,
   CommunitySqlAnalysis,
+  CommunityTableColumnList,
+  CommunityTableIndexList,
+  CommunityTableList,
   CreateAgentSessionRequest,
   CreateDatasourceRequest,
   CreateProviderProfileRequest,
@@ -26,7 +30,11 @@ import type {
   DecideAgentPermissionRequest,
   HealthResponse,
   JdbcDriverList,
+  ListCommunityColumnsRequest,
+  ListCommunityDatabasesRequest,
+  ListCommunityIndexesRequest,
   ListCommunitySchemasRequest,
+  ListCommunityTablesRequest,
   OperationSnapshot,
   OperationSubscription,
   OperationSubscriptionOptions,
@@ -129,6 +137,50 @@ export class HttpBackendClient implements BackendClient {
   ): Promise<CommunitySchemaList> {
     return this.#json(
       '/api/v1/community/metadata/schemas',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  listCommunityDatabases(
+    request: ListCommunityDatabasesRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityDatabaseList> {
+    return this.#json(
+      '/api/v1/community/metadata/databases',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  listCommunityTables(
+    request: ListCommunityTablesRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTableList> {
+    return this.#json(
+      '/api/v1/community/metadata/tables',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  listCommunityColumns(
+    request: ListCommunityColumnsRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTableColumnList> {
+    return this.#json(
+      '/api/v1/community/metadata/columns',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  listCommunityIndexes(
+    request: ListCommunityIndexesRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTableIndexList> {
+    return this.#json(
+      '/api/v1/community/metadata/indexes',
       { method: 'POST', body: JSON.stringify(request), signal },
       [200],
     );

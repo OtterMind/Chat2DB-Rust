@@ -36,11 +36,12 @@ mod jdbc;
 mod pending;
 
 pub use community::{
-    COMMUNITY_PLUGIN_CATALOG_CAPABILITY, COMMUNITY_SCHEMA_METADATA_CAPABILITY,
-    COMMUNITY_SQL_BUILDER_CAPABILITY, COMMUNITY_SQL_PARSER_CAPABILITY, CommunityClasspath,
-    CommunityClient, CommunityDriverConfig, CommunityParsedStatement, CommunityPlugin,
-    CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices, CommunitySchema,
-    CommunitySqlAnalysis,
+    COMMUNITY_OBJECT_METADATA_CAPABILITY, COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
+    COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
+    COMMUNITY_SQL_PARSER_CAPABILITY, CommunityClasspath, CommunityClient, CommunityDatabase,
+    CommunityDriverConfig, CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior,
+    CommunityPluginCatalog, CommunityPluginServices, CommunitySchema, CommunitySqlAnalysis,
+    CommunityTable, CommunityTableColumn, CommunityTableIndex, CommunityTableIndexColumn,
 };
 
 pub use jdbc::{
@@ -167,6 +168,7 @@ impl EngineConfig {
         for capability in [
             COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
             COMMUNITY_SCHEMA_METADATA_CAPABILITY,
+            COMMUNITY_OBJECT_METADATA_CAPABILITY,
             COMMUNITY_SQL_BUILDER_CAPABILITY,
             COMMUNITY_SQL_PARSER_CAPABILITY,
         ] {

@@ -9,9 +9,13 @@ export type ApiError = Schema<'ApiError'>;
 export type CancelOperationResponse = Schema<'CancelOperationResponse'>;
 export type BuildCommunityCreateSchemaRequest = Schema<'BuildCommunityCreateSchemaRequest'>;
 export type CommunityBuiltSql = Schema<'CommunityBuiltSql'>;
+export type CommunityDatabaseList = Schema<'CommunityDatabaseList'>;
 export type CommunityPluginCatalog = Schema<'CommunityPluginCatalog'>;
 export type CommunitySchemaList = Schema<'CommunitySchemaList'>;
 export type CommunitySqlAnalysis = Schema<'CommunitySqlAnalysis'>;
+export type CommunityTableColumnList = Schema<'CommunityTableColumnList'>;
+export type CommunityTableIndexList = Schema<'CommunityTableIndexList'>;
+export type CommunityTableList = Schema<'CommunityTableList'>;
 export type CreateAgentSessionRequest = Schema<'CreateAgentSessionRequest'>;
 export type CreateDatasourceRequest = Schema<'CreateDatasourceRequest'>;
 export type CreateProviderProfileRequest = Schema<'CreateProviderProfileRequest'>;
@@ -25,6 +29,10 @@ export type JdbcDriver = Schema<'JdbcDriver'>;
 export type JdbcDriverList = Schema<'JdbcDriverList'>;
 export type JdbcValue = Schema<'JdbcValue'>;
 export type ListCommunitySchemasRequest = Schema<'ListCommunitySchemasRequest'>;
+export type ListCommunityColumnsRequest = Schema<'ListCommunityColumnsRequest'>;
+export type ListCommunityDatabasesRequest = Schema<'ListCommunityDatabasesRequest'>;
+export type ListCommunityIndexesRequest = Schema<'ListCommunityIndexesRequest'>;
+export type ListCommunityTablesRequest = Schema<'ListCommunityTablesRequest'>;
 export type OperationEventEnvelope = Schema<'OperationEventEnvelope'>;
 export type OperationSnapshot = Schema<'OperationSnapshot'>;
 export type OperationStreamMessage = Schema<'OperationStreamMessage'>;
@@ -93,6 +101,22 @@ export interface BackendClient {
     request: ListCommunitySchemasRequest,
     signal?: AbortSignal,
   ): Promise<CommunitySchemaList>;
+  listCommunityDatabases(
+    request: ListCommunityDatabasesRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityDatabaseList>;
+  listCommunityTables(
+    request: ListCommunityTablesRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTableList>;
+  listCommunityColumns(
+    request: ListCommunityColumnsRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTableColumnList>;
+  listCommunityIndexes(
+    request: ListCommunityIndexesRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTableIndexList>;
   buildCommunityCreateSchema(
     request: BuildCommunityCreateSchemaRequest,
     signal?: AbortSignal,

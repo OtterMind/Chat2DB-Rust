@@ -1,18 +1,26 @@
 use std::future::Future;
 
 use chat2db_contract::{
-    BuildCommunityCreateSchemaRequest, CommunityBuiltSql, CommunityDriverConfig,
-    CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
-    CommunityPluginServices, CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis,
-    ListCommunitySchemasRequest, ParseCommunitySqlRequest,
+    BuildCommunityCreateSchemaRequest, CommunityBuiltSql, CommunityDatabase, CommunityDatabaseList,
+    CommunityDriverConfig, CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior,
+    CommunityPluginCatalog, CommunityPluginServices, CommunitySchema, CommunitySchemaList,
+    CommunitySqlAnalysis, CommunityTable, CommunityTableColumn, CommunityTableColumnList,
+    CommunityTableIndex, CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList,
+    ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityIndexesRequest,
+    ListCommunitySchemasRequest, ListCommunityTablesRequest, ParseCommunitySqlRequest,
 };
 use chat2db_java_bridge::{
-    BridgeError, CommunityClasspath, CommunityDriverConfig as BridgeCommunityDriverConfig,
+    BridgeError, CommunityClasspath, CommunityDatabase as BridgeCommunityDatabase,
+    CommunityDriverConfig as BridgeCommunityDriverConfig,
     CommunityParsedStatement as BridgeCommunityParsedStatement,
     CommunityPlugin as BridgeCommunityPlugin,
     CommunityPluginCatalog as BridgeCommunityPluginCatalog,
     CommunitySchema as BridgeCommunitySchema, CommunitySqlAnalysis as BridgeCommunitySqlAnalysis,
+    CommunityTable as BridgeCommunityTable, CommunityTableColumn as BridgeCommunityTableColumn,
+    CommunityTableIndex as BridgeCommunityTableIndex,
+    CommunityTableIndexColumn as BridgeCommunityTableIndexColumn, EngineClient, Session,
 };
+use chat2db_storage::Storage;
 
 const FIXED_COMMUNITY_CLASSPATH_LOCK: &str =
     include_str!("../../../third_party/community-h2-classpath.lock");
@@ -69,20 +77,187 @@ impl Application {
             database_name,
         } = request;
         let client = engine.community_client().map_err(AppError::from)?;
-        run_cancellation_safe(async move {
-            let resolved = resolve_datasource_connection(&storage, &datasource_id).await?;
-            let session =
-                open_datasource_session(&engine, resolved, SessionReadOnly::Forced).await?;
-            let outcome = client
-                .list_schemas(&session, database_type, database_name, None)
-                .await
-                .map(|schemas| CommunitySchemaList {
-                    items: schemas.into_iter().map(community_schema).collect(),
-                })
-                .map_err(AppError::from);
-            let cleanup = session.close().await.map_err(AppError::from);
-            preserve_primary_result("close_community_schema_session", outcome, cleanup)
-        })
+        run_community_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_schema_session",
+            move |session| async move {
+                client
+                    .list_schemas(&session, database_type, database_name, None)
+                    .await
+                    .map(|schemas| CommunitySchemaList {
+                        items: schemas.into_iter().map(community_schema).collect(),
+                    })
+                    .map_err(AppError::from)
+            },
+        )
+        .await
+    }
+
+    /// Lists databases through Community metadata using a forced read-only session.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, metadata, or session-cleanup errors.
+    pub async fn list_community_databases(
+        &self,
+        request: ListCommunityDatabasesRequest,
+    ) -> Result<CommunityDatabaseList, AppError> {
+        let storage = self.require_storage()?;
+        let engine = self.require_community_engine()?;
+        let ListCommunityDatabasesRequest {
+            datasource_id,
+            database_type,
+        } = request;
+        let client = engine.community_client().map_err(AppError::from)?;
+        run_community_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_database_session",
+            move |session| async move {
+                client
+                    .list_databases(&session, database_type, None)
+                    .await
+                    .map(|databases| CommunityDatabaseList {
+                        items: databases.into_iter().map(community_database).collect(),
+                    })
+                    .map_err(AppError::from)
+            },
+        )
+        .await
+    }
+
+    /// Lists tables through Community metadata using a forced read-only session.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, metadata, or session-cleanup errors.
+    pub async fn list_community_tables(
+        &self,
+        request: ListCommunityTablesRequest,
+    ) -> Result<CommunityTableList, AppError> {
+        let storage = self.require_storage()?;
+        let engine = self.require_community_engine()?;
+        let ListCommunityTablesRequest {
+            datasource_id,
+            database_type,
+            database_name,
+            schema_name,
+            table_name_pattern,
+        } = request;
+        let client = engine.community_client().map_err(AppError::from)?;
+        run_community_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_table_session",
+            move |session| async move {
+                client
+                    .list_tables(
+                        &session,
+                        database_type,
+                        database_name,
+                        schema_name,
+                        table_name_pattern,
+                        None,
+                    )
+                    .await
+                    .map(|tables| CommunityTableList {
+                        items: tables.into_iter().map(community_table).collect(),
+                    })
+                    .map_err(AppError::from)
+            },
+        )
+        .await
+    }
+
+    /// Lists columns through Community metadata using a forced read-only session.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, metadata, or session-cleanup errors.
+    pub async fn list_community_columns(
+        &self,
+        request: ListCommunityColumnsRequest,
+    ) -> Result<CommunityTableColumnList, AppError> {
+        let storage = self.require_storage()?;
+        let engine = self.require_community_engine()?;
+        let ListCommunityColumnsRequest {
+            datasource_id,
+            database_type,
+            database_name,
+            schema_name,
+            table_name,
+        } = request;
+        let client = engine.community_client().map_err(AppError::from)?;
+        run_community_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_column_session",
+            move |session| async move {
+                client
+                    .list_columns(
+                        &session,
+                        database_type,
+                        database_name,
+                        schema_name,
+                        table_name,
+                        None,
+                    )
+                    .await
+                    .map(|columns| CommunityTableColumnList {
+                        items: columns.into_iter().map(community_table_column).collect(),
+                    })
+                    .map_err(AppError::from)
+            },
+        )
+        .await
+    }
+
+    /// Lists indexes through Community metadata using a forced read-only session.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, metadata, or session-cleanup errors.
+    pub async fn list_community_indexes(
+        &self,
+        request: ListCommunityIndexesRequest,
+    ) -> Result<CommunityTableIndexList, AppError> {
+        let storage = self.require_storage()?;
+        let engine = self.require_community_engine()?;
+        let ListCommunityIndexesRequest {
+            datasource_id,
+            database_type,
+            database_name,
+            schema_name,
+            table_name,
+        } = request;
+        let client = engine.community_client().map_err(AppError::from)?;
+        run_community_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_index_session",
+            move |session| async move {
+                client
+                    .list_indexes(
+                        &session,
+                        database_type,
+                        database_name,
+                        schema_name,
+                        table_name,
+                        None,
+                    )
+                    .await
+                    .map(|indexes| CommunityTableIndexList {
+                        items: indexes.into_iter().map(community_table_index).collect(),
+                    })
+                    .map_err(AppError::from)
+            },
+        )
         .await
     }
 
@@ -154,6 +329,54 @@ where
     }
 }
 
+async fn run_community_metadata_session<T, F, Fut>(
+    storage: Storage,
+    engine: EngineClient,
+    datasource_id: String,
+    cleanup_phase: &'static str,
+    operation: F,
+) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: FnOnce(Session) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, AppError>> + Send + 'static,
+{
+    run_cancellation_safe_with_cleanup(
+        async move {
+            let resolved = resolve_datasource_connection(&storage, &datasource_id).await?;
+            open_datasource_session(&engine, resolved, SessionReadOnly::Forced).await
+        },
+        cleanup_phase,
+        operation,
+        |session| async move { session.close().await.map_err(AppError::from) },
+    )
+    .await
+}
+
+async fn run_cancellation_safe_with_cleanup<T, R, OpenFut, F, Fut, C, CleanupFut>(
+    open: OpenFut,
+    cleanup_phase: &'static str,
+    operation: F,
+    cleanup: C,
+) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    R: Clone + Send + 'static,
+    OpenFut: Future<Output = Result<R, AppError>> + Send + 'static,
+    F: FnOnce(R) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, AppError>> + Send + 'static,
+    C: FnOnce(R) -> CleanupFut + Send + 'static,
+    CleanupFut: Future<Output = Result<(), AppError>> + Send + 'static,
+{
+    run_cancellation_safe(async move {
+        let resource = open.await?;
+        let outcome = operation(resource.clone()).await;
+        let cleanup = cleanup(resource).await;
+        preserve_primary_result(cleanup_phase, outcome, cleanup)
+    })
+    .await
+}
+
 fn community_plugin_catalog(catalog: BridgeCommunityPluginCatalog) -> CommunityPluginCatalog {
     CommunityPluginCatalog {
         source_commit: catalog.source_commit,
@@ -201,6 +424,121 @@ fn community_schema(schema: BridgeCommunitySchema) -> CommunitySchema {
         comment: schema.comment,
         owner: schema.owner,
         system: schema.system,
+    }
+}
+
+fn community_database(database: BridgeCommunityDatabase) -> CommunityDatabase {
+    CommunityDatabase {
+        name: database.name,
+        comment: database.comment,
+        charset: database.charset,
+        collation: database.collation,
+        owner: database.owner,
+        system: database.system,
+    }
+}
+
+fn community_table(table: BridgeCommunityTable) -> CommunityTable {
+    CommunityTable {
+        database_name: table.database_name,
+        schema_name: table.schema_name,
+        name: table.name,
+        table_type: table.table_type,
+        comment: table.comment,
+        database_type: table.database_type,
+        pinned: table.pinned,
+        ddl: table.ddl,
+        engine: table.engine,
+        charset: table.charset,
+        collation: table.collation,
+        increment_value: table.increment_value.map(|value| value.to_string()),
+        partition: table.partition,
+        tablespace: table.tablespace,
+        rows: table.rows.map(|value| value.to_string()),
+        data_length: table.data_length.map(|value| value.to_string()),
+        create_time: table.create_time,
+        update_time: table.update_time,
+    }
+}
+
+fn community_table_column(column: BridgeCommunityTableColumn) -> CommunityTableColumn {
+    CommunityTableColumn {
+        database_name: column.database_name,
+        schema_name: column.schema_name,
+        table_name: column.table_name,
+        name: column.name,
+        column_type: column.column_type,
+        data_type: column.data_type,
+        default_value: column.default_value,
+        auto_increment: column.auto_increment,
+        comment: column.comment,
+        primary_key: column.primary_key,
+        primary_key_name: column.primary_key_name,
+        primary_key_order: column.primary_key_order,
+        column_size: column.column_size,
+        buffer_length: column.buffer_length,
+        decimal_digits: column.decimal_digits,
+        num_prec_radix: column.num_prec_radix,
+        sql_data_type: column.sql_data_type,
+        sql_datetime_sub: column.sql_datetime_sub,
+        char_octet_length: column.char_octet_length,
+        ordinal_position: column.ordinal_position,
+        nullable: column.nullable,
+        generated_column: column.generated_column,
+        extent: column.extent,
+        charset: column.charset,
+        collation: column.collation,
+        unit: column.unit,
+        sparse: column.sparse,
+        default_constraint_name: column.default_constraint_name,
+        seed: column.seed,
+        increment: column.increment,
+        on_update_current_timestamp: column.on_update_current_timestamp,
+    }
+}
+
+fn community_table_index(index: BridgeCommunityTableIndex) -> CommunityTableIndex {
+    CommunityTableIndex {
+        database_name: index.database_name,
+        schema_name: index.schema_name,
+        table_name: index.table_name,
+        name: index.name,
+        index_type: index.index_type,
+        unique: index.unique,
+        comment: index.comment,
+        columns: index
+            .columns
+            .into_iter()
+            .map(community_table_index_column)
+            .collect(),
+        concurrently: index.concurrently,
+        method: index.method,
+        foreign_schema_name: index.foreign_schema_name,
+        foreign_table_name: index.foreign_table_name,
+        foreign_column_names: index.foreign_column_names,
+    }
+}
+
+fn community_table_index_column(
+    column: BridgeCommunityTableIndexColumn,
+) -> CommunityTableIndexColumn {
+    CommunityTableIndexColumn {
+        database_name: column.database_name,
+        schema_name: column.schema_name,
+        table_name: column.table_name,
+        index_name: column.index_name,
+        column_name: column.column_name,
+        column_type: column.column_type,
+        comment: column.comment,
+        ordinal_position: column.ordinal_position,
+        collation: column.collation,
+        non_unique: column.non_unique,
+        index_qualifier: column.index_qualifier,
+        sort_order: column.sort_order,
+        cardinality: column.cardinality.map(|value| value.to_string()),
+        pages: column.pages.map(|value| value.to_string()),
+        filter_condition: column.filter_condition,
+        sub_part: column.sub_part.map(|value| value.to_string()),
     }
 }
 
@@ -259,11 +597,14 @@ fn preserve_primary_result<T>(
 #[cfg(test)]
 mod tests {
     use chat2db_contract::{
-        CommunityDriverConfig, CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior,
-        CommunityPluginCatalog, CommunityPluginServices, CommunitySchema, CommunitySqlAnalysis,
-        ListCommunitySchemasRequest,
+        CommunityDatabase, CommunityDriverConfig, CommunityParsedStatement, CommunityPlugin,
+        CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices, CommunitySchema,
+        CommunitySqlAnalysis, CommunityTable, CommunityTableColumn, CommunityTableIndex,
+        CommunityTableIndexColumn, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
+        ListCommunityIndexesRequest, ListCommunitySchemasRequest, ListCommunityTablesRequest,
     };
     use chat2db_java_bridge::{
+        CommunityDatabase as BridgeCommunityDatabase,
         CommunityDriverConfig as BridgeCommunityDriverConfig,
         CommunityParsedStatement as BridgeCommunityParsedStatement,
         CommunityPlugin as BridgeCommunityPlugin,
@@ -271,13 +612,20 @@ mod tests {
         CommunityPluginCatalog as BridgeCommunityPluginCatalog,
         CommunityPluginServices as BridgeCommunityPluginServices,
         CommunitySchema as BridgeCommunitySchema,
-        CommunitySqlAnalysis as BridgeCommunitySqlAnalysis,
+        CommunitySqlAnalysis as BridgeCommunitySqlAnalysis, CommunityTable as BridgeCommunityTable,
+        CommunityTableColumn as BridgeCommunityTableColumn,
+        CommunityTableIndex as BridgeCommunityTableIndex,
+        CommunityTableIndexColumn as BridgeCommunityTableIndexColumn,
     };
+    use chat2db_storage::{EncryptedFileVault, Storage};
+    use std::sync::Arc;
+    use tempfile::TempDir;
     use tokio::{sync::oneshot, time};
 
     use super::{
-        Application, bridge_schema, community_plugin_catalog, community_schema,
-        community_sql_analysis, preserve_primary_result, run_cancellation_safe,
+        Application, bridge_schema, community_database, community_plugin_catalog, community_schema,
+        community_sql_analysis, community_table, community_table_column, community_table_index,
+        preserve_primary_result, run_cancellation_safe, run_cancellation_safe_with_cleanup,
     };
     use crate::{AppError, AppErrorKind};
 
@@ -356,6 +704,210 @@ mod tests {
 
         assert_eq!(bridge_schema(contract.clone()), bridge);
         assert_eq!(community_schema(bridge), contract);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn object_metadata_mapping_preserves_every_field() {
+        assert_eq!(
+            community_database(BridgeCommunityDatabase {
+                name: "inventory".to_owned(),
+                comment: "Inventory catalog".to_owned(),
+                charset: "UTF-8".to_owned(),
+                collation: "en_US".to_owned(),
+                owner: "app".to_owned(),
+                system: true,
+            }),
+            CommunityDatabase {
+                name: "inventory".to_owned(),
+                comment: "Inventory catalog".to_owned(),
+                charset: "UTF-8".to_owned(),
+                collation: "en_US".to_owned(),
+                owner: "app".to_owned(),
+                system: true,
+            }
+        );
+
+        assert_eq!(
+            community_table(BridgeCommunityTable {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                name: "items".to_owned(),
+                table_type: "TABLE".to_owned(),
+                comment: "Inventory items".to_owned(),
+                database_type: "H2".to_owned(),
+                pinned: true,
+                ddl: "CREATE TABLE APP.items (...)".to_owned(),
+                engine: "MVStore".to_owned(),
+                charset: "UTF-8".to_owned(),
+                collation: "en_US".to_owned(),
+                increment_value: Some(9_007_199_254_740_993),
+                partition: "HASH(id)".to_owned(),
+                tablespace: "main".to_owned(),
+                rows: Some(9_007_199_254_740_994),
+                data_length: Some(i64::MAX),
+                create_time: "created".to_owned(),
+                update_time: "updated".to_owned(),
+            }),
+            CommunityTable {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                name: "items".to_owned(),
+                table_type: "TABLE".to_owned(),
+                comment: "Inventory items".to_owned(),
+                database_type: "H2".to_owned(),
+                pinned: true,
+                ddl: "CREATE TABLE APP.items (...)".to_owned(),
+                engine: "MVStore".to_owned(),
+                charset: "UTF-8".to_owned(),
+                collation: "en_US".to_owned(),
+                increment_value: Some("9007199254740993".to_owned()),
+                partition: "HASH(id)".to_owned(),
+                tablespace: "main".to_owned(),
+                rows: Some("9007199254740994".to_owned()),
+                data_length: Some("9223372036854775807".to_owned()),
+                create_time: "created".to_owned(),
+                update_time: "updated".to_owned(),
+            }
+        );
+
+        assert_eq!(
+            community_table_column(BridgeCommunityTableColumn {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                table_name: "items".to_owned(),
+                name: "id".to_owned(),
+                column_type: "BIGINT".to_owned(),
+                data_type: Some(-5),
+                default_value: "NEXT VALUE FOR seq_items".to_owned(),
+                auto_increment: Some(true),
+                comment: "Primary identifier".to_owned(),
+                primary_key: Some(true),
+                primary_key_name: "pk_items".to_owned(),
+                primary_key_order: 1,
+                column_size: Some(64),
+                buffer_length: Some(8),
+                decimal_digits: Some(0),
+                num_prec_radix: Some(10),
+                sql_data_type: Some(-5),
+                sql_datetime_sub: Some(0),
+                char_octet_length: Some(8),
+                ordinal_position: Some(1),
+                nullable: Some(0),
+                generated_column: Some(false),
+                extent: "8".to_owned(),
+                charset: "UTF-8".to_owned(),
+                collation: "en_US".to_owned(),
+                unit: "bytes".to_owned(),
+                sparse: Some(false),
+                default_constraint_name: "df_items_id".to_owned(),
+                seed: Some(1),
+                increment: Some(2),
+                on_update_current_timestamp: Some(false),
+            }),
+            CommunityTableColumn {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                table_name: "items".to_owned(),
+                name: "id".to_owned(),
+                column_type: "BIGINT".to_owned(),
+                data_type: Some(-5),
+                default_value: "NEXT VALUE FOR seq_items".to_owned(),
+                auto_increment: Some(true),
+                comment: "Primary identifier".to_owned(),
+                primary_key: Some(true),
+                primary_key_name: "pk_items".to_owned(),
+                primary_key_order: 1,
+                column_size: Some(64),
+                buffer_length: Some(8),
+                decimal_digits: Some(0),
+                num_prec_radix: Some(10),
+                sql_data_type: Some(-5),
+                sql_datetime_sub: Some(0),
+                char_octet_length: Some(8),
+                ordinal_position: Some(1),
+                nullable: Some(0),
+                generated_column: Some(false),
+                extent: "8".to_owned(),
+                charset: "UTF-8".to_owned(),
+                collation: "en_US".to_owned(),
+                unit: "bytes".to_owned(),
+                sparse: Some(false),
+                default_constraint_name: "df_items_id".to_owned(),
+                seed: Some(1),
+                increment: Some(2),
+                on_update_current_timestamp: Some(false),
+            }
+        );
+
+        let bridge_index_column = BridgeCommunityTableIndexColumn {
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            table_name: "items".to_owned(),
+            index_name: "idx_items_label".to_owned(),
+            column_name: "label".to_owned(),
+            column_type: "VARCHAR".to_owned(),
+            comment: "Indexed label".to_owned(),
+            ordinal_position: Some(1),
+            collation: "A".to_owned(),
+            non_unique: Some(false),
+            index_qualifier: "inventory".to_owned(),
+            sort_order: "ASC".to_owned(),
+            cardinality: Some(9_007_199_254_740_995),
+            pages: Some(9_007_199_254_740_996),
+            filter_condition: "label IS NOT NULL".to_owned(),
+            sub_part: Some(9_007_199_254_740_997),
+        };
+        let contract_index_column = CommunityTableIndexColumn {
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            table_name: "items".to_owned(),
+            index_name: "idx_items_label".to_owned(),
+            column_name: "label".to_owned(),
+            column_type: "VARCHAR".to_owned(),
+            comment: "Indexed label".to_owned(),
+            ordinal_position: Some(1),
+            collation: "A".to_owned(),
+            non_unique: Some(false),
+            index_qualifier: "inventory".to_owned(),
+            sort_order: "ASC".to_owned(),
+            cardinality: Some("9007199254740995".to_owned()),
+            pages: Some("9007199254740996".to_owned()),
+            filter_condition: "label IS NOT NULL".to_owned(),
+            sub_part: Some("9007199254740997".to_owned()),
+        };
+        assert_eq!(
+            community_table_index(BridgeCommunityTableIndex {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                table_name: "items".to_owned(),
+                name: "idx_items_label".to_owned(),
+                index_type: "BTREE".to_owned(),
+                unique: Some(true),
+                comment: "Unique item label".to_owned(),
+                columns: vec![bridge_index_column],
+                concurrently: Some(false),
+                method: "BTREE".to_owned(),
+                foreign_schema_name: "PUBLIC".to_owned(),
+                foreign_table_name: "labels".to_owned(),
+                foreign_column_names: vec!["id".to_owned()],
+            }),
+            CommunityTableIndex {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                table_name: "items".to_owned(),
+                name: "idx_items_label".to_owned(),
+                index_type: "BTREE".to_owned(),
+                unique: Some(true),
+                comment: "Unique item label".to_owned(),
+                columns: vec![contract_index_column],
+                concurrently: Some(false),
+                method: "BTREE".to_owned(),
+                foreign_schema_name: "PUBLIC".to_owned(),
+                foreign_table_name: "labels".to_owned(),
+                foreign_column_names: vec!["id".to_owned()],
+            }
+        );
     }
 
     #[test]
@@ -453,6 +1005,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancellation_after_resource_open_still_runs_cleanup() {
+        let (opened_sender, opened_receiver) = oneshot::channel();
+        let (release_sender, release_receiver) = oneshot::channel();
+        let (closed_sender, closed_receiver) = oneshot::channel();
+        let waiter = tokio::spawn(run_cancellation_safe_with_cleanup(
+            async move {
+                opened_sender.send(()).expect("test must observe open");
+                Ok::<_, AppError>(())
+            },
+            "test_cleanup",
+            move |()| async move {
+                release_receiver.await.expect("test must release work");
+                Ok::<_, AppError>(7)
+            },
+            move |()| async move {
+                closed_sender.send(()).expect("test must observe cleanup");
+                Ok::<_, AppError>(())
+            },
+        ));
+
+        opened_receiver.await.expect("resource must open");
+        waiter.abort();
+        assert!(
+            waiter
+                .await
+                .expect_err("waiter must be aborted")
+                .is_cancelled()
+        );
+        release_sender
+            .send(())
+            .expect("detached operation must still be alive");
+        time::timeout(std::time::Duration::from_secs(1), closed_receiver)
+            .await
+            .expect("cleanup must run promptly")
+            .expect("cleanup must report completion");
+    }
+
+    #[tokio::test]
     async fn community_services_report_unconfigured_dependencies_safely() {
         let application = Application::new();
 
@@ -463,7 +1053,7 @@ mod tests {
         assert_eq!(engine_error.kind(), AppErrorKind::Unavailable);
         assert_eq!(engine_error.api_error().code, "database_engine_unavailable");
 
-        let storage_error = application
+        let schema_storage_error = application
             .list_community_schemas(ListCommunitySchemasRequest {
                 datasource_id: "datasource-1".to_owned(),
                 database_type: "H2".to_owned(),
@@ -471,7 +1061,115 @@ mod tests {
             })
             .await
             .expect_err("schema metadata requires storage");
-        assert_eq!(storage_error.kind(), AppErrorKind::Unavailable);
-        assert_eq!(storage_error.api_error().code, "storage_unavailable");
+        assert_eq!(schema_storage_error.kind(), AppErrorKind::Unavailable);
+        assert_eq!(schema_storage_error.api_error().code, "storage_unavailable");
+
+        let database_storage_error = application
+            .list_community_databases(database_request())
+            .await
+            .expect_err("database metadata requires storage");
+        assert_eq!(database_storage_error.kind(), AppErrorKind::Unavailable);
+        assert_eq!(
+            database_storage_error.api_error().code,
+            "storage_unavailable"
+        );
+        let table_storage_error = application
+            .list_community_tables(table_request())
+            .await
+            .expect_err("table metadata requires storage");
+        assert_eq!(table_storage_error.kind(), AppErrorKind::Unavailable);
+        assert_eq!(table_storage_error.api_error().code, "storage_unavailable");
+        let column_storage_error = application
+            .list_community_columns(column_request())
+            .await
+            .expect_err("column metadata requires storage");
+        assert_eq!(column_storage_error.kind(), AppErrorKind::Unavailable);
+        assert_eq!(column_storage_error.api_error().code, "storage_unavailable");
+        let index_storage_error = application
+            .list_community_indexes(index_request())
+            .await
+            .expect_err("index metadata requires storage");
+        assert_eq!(index_storage_error.kind(), AppErrorKind::Unavailable);
+        assert_eq!(index_storage_error.api_error().code, "storage_unavailable");
+
+        let directory = TempDir::new().expect("temporary data directory must open");
+        let vault = Arc::new(
+            EncryptedFileVault::new(directory.path(), [0x4d; 32]).expect("test vault must open"),
+        );
+        let storage = Storage::open(directory.path(), vault).expect("test storage must open");
+        let application = Application::with_storage(storage);
+        let database_engine_error = application
+            .list_community_databases(database_request())
+            .await
+            .expect_err("database metadata requires the engine");
+        assert_eq!(database_engine_error.kind(), AppErrorKind::Unavailable);
+        assert_eq!(
+            database_engine_error.api_error().code,
+            "database_engine_unavailable"
+        );
+        let table_engine_error = application
+            .list_community_tables(table_request())
+            .await
+            .expect_err("table metadata requires the engine");
+        assert_eq!(table_engine_error.kind(), AppErrorKind::Unavailable);
+        assert_eq!(
+            table_engine_error.api_error().code,
+            "database_engine_unavailable"
+        );
+        let column_engine_error = application
+            .list_community_columns(column_request())
+            .await
+            .expect_err("column metadata requires the engine");
+        assert_eq!(column_engine_error.kind(), AppErrorKind::Unavailable);
+        assert_eq!(
+            column_engine_error.api_error().code,
+            "database_engine_unavailable"
+        );
+        let index_engine_error = application
+            .list_community_indexes(index_request())
+            .await
+            .expect_err("index metadata requires the engine");
+        assert_eq!(index_engine_error.kind(), AppErrorKind::Unavailable);
+        assert_eq!(
+            index_engine_error.api_error().code,
+            "database_engine_unavailable"
+        );
+    }
+
+    fn database_request() -> ListCommunityDatabasesRequest {
+        ListCommunityDatabasesRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_type: "H2".to_owned(),
+        }
+    }
+
+    fn table_request() -> ListCommunityTablesRequest {
+        ListCommunityTablesRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            table_name_pattern: "%".to_owned(),
+        }
+    }
+
+    fn column_request() -> ListCommunityColumnsRequest {
+        ListCommunityColumnsRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            table_name: "items".to_owned(),
+        }
+    }
+
+    fn index_request() -> ListCommunityIndexesRequest {
+        ListCommunityIndexesRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            table_name: "items".to_owned(),
+        }
     }
 }

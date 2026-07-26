@@ -17,9 +17,13 @@ import type {
   CancelAgentRunResponse,
   CancelOperationResponse,
   CommunityBuiltSql,
+  CommunityDatabaseList,
   CommunityPluginCatalog,
   CommunitySchemaList,
   CommunitySqlAnalysis,
+  CommunityTableColumnList,
+  CommunityTableIndexList,
+  CommunityTableList,
   CreateAgentSessionRequest,
   CreateDatasourceRequest,
   CreateProviderProfileRequest,
@@ -28,7 +32,11 @@ import type {
   DecideAgentPermissionRequest,
   HealthResponse,
   JdbcDriverList,
+  ListCommunityColumnsRequest,
+  ListCommunityDatabasesRequest,
+  ListCommunityIndexesRequest,
   ListCommunitySchemasRequest,
+  ListCommunityTablesRequest,
   OperationEventEnvelope,
   OperationSnapshot,
   OperationStreamMessage,
@@ -111,6 +119,34 @@ export class TauriBackendClient implements BackendClient {
     signal?: AbortSignal,
   ): Promise<CommunitySchemaList> {
     return this.#request('list_community_schemas', { request }, signal);
+  }
+
+  listCommunityDatabases(
+    request: ListCommunityDatabasesRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityDatabaseList> {
+    return this.#request('list_community_databases', { request }, signal);
+  }
+
+  listCommunityTables(
+    request: ListCommunityTablesRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTableList> {
+    return this.#request('list_community_tables', { request }, signal);
+  }
+
+  listCommunityColumns(
+    request: ListCommunityColumnsRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTableColumnList> {
+    return this.#request('list_community_columns', { request }, signal);
+  }
+
+  listCommunityIndexes(
+    request: ListCommunityIndexesRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTableIndexList> {
+    return this.#request('list_community_indexes', { request }, signal);
   }
 
   buildCommunityCreateSchema(

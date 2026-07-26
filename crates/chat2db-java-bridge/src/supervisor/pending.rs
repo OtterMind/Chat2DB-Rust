@@ -31,6 +31,12 @@ const MAX_COMMUNITY_DRIVERS: usize = wire::CommunityCountLimit::MaxDriverConfigs
 const MAX_COMMUNITY_DOWNLOAD_URLS: usize =
     wire::CommunityDownloadUrlLimit::MaxDownloadUrls as usize;
 const MAX_COMMUNITY_SCHEMAS: usize = wire::CommunitySchemaCountLimit::MaxSchemas as usize;
+const MAX_COMMUNITY_DATABASES: usize = wire::CommunityDatabaseCountLimit::MaxDatabases as usize;
+const MAX_COMMUNITY_TABLES: usize = wire::CommunityTableCountLimit::MaxTables as usize;
+const MAX_COMMUNITY_COLUMNS: usize = wire::CommunityColumnCountLimit::MaxColumns as usize;
+const MAX_COMMUNITY_INDEXES: usize = wire::CommunityIndexCountLimit::MaxIndexes as usize;
+const MAX_COMMUNITY_INDEX_COLUMNS: usize =
+    wire::CommunityIndexColumnCountLimit::MaxIndexColumns as usize;
 const MAX_COMMUNITY_STATEMENTS: usize = wire::CommunityCountLimit::MaxStatements as usize;
 const MAX_COMMUNITY_DATABASE_TYPE_BYTES: usize =
     wire::CommunityByteLimit::MaxDatabaseTypeBytes as usize;
@@ -961,6 +967,22 @@ fn validate_response_payload(
             validate_community_response_encoded_len(schemas)?;
             Ok(None)
         }
+        wire::server_envelope::Payload::CommunityDatabaseList(databases) => {
+            validate_community_database_list(databases)?;
+            Ok(None)
+        }
+        wire::server_envelope::Payload::CommunityTableList(tables) => {
+            validate_community_table_list(tables)?;
+            Ok(None)
+        }
+        wire::server_envelope::Payload::CommunityTableColumnList(columns) => {
+            validate_community_table_column_list(columns)?;
+            Ok(None)
+        }
+        wire::server_envelope::Payload::CommunityTableIndexList(indexes) => {
+            validate_community_table_index_list(indexes)?;
+            Ok(None)
+        }
         wire::server_envelope::Payload::CommunityBuiltSql(built) => {
             validate_non_empty_bytes(&built.sql, MAX_SQL_BYTES, "Community built SQL")?;
             let mut field_bytes = 0;
@@ -991,6 +1013,264 @@ fn validate_response_payload(
         }
         _ => Ok(None),
     }
+}
+
+fn validate_community_database_list(databases: &wire::CommunityDatabaseList) -> Result<(), String> {
+    if databases.databases.len() > MAX_COMMUNITY_DATABASES {
+        return Err(format!(
+            "Community metadata exceeded the {MAX_COMMUNITY_DATABASES}-database limit"
+        ));
+    }
+    let mut field_bytes = 0;
+    for database in &databases.databases {
+        validate_community_response_field(
+            &mut field_bytes,
+            &database.name,
+            MAX_SCALAR_BYTES,
+            "Community database name",
+        )?;
+        validate_community_response_field(
+            &mut field_bytes,
+            &database.comment,
+            MAX_COMMUNITY_COMMENT_BYTES,
+            "Community database comment",
+        )?;
+        validate_community_response_field(
+            &mut field_bytes,
+            &database.charset,
+            MAX_SCALAR_BYTES,
+            "Community database charset",
+        )?;
+        validate_community_response_field(
+            &mut field_bytes,
+            &database.collation,
+            MAX_SCALAR_BYTES,
+            "Community database collation",
+        )?;
+        validate_community_response_field(
+            &mut field_bytes,
+            &database.owner,
+            MAX_SCALAR_BYTES,
+            "Community database owner",
+        )?;
+    }
+    validate_community_response_encoded_len(databases)
+}
+
+fn validate_community_table_list(tables: &wire::CommunityTableList) -> Result<(), String> {
+    if tables.tables.len() > MAX_COMMUNITY_TABLES {
+        return Err(format!(
+            "Community metadata exceeded the {MAX_COMMUNITY_TABLES}-table limit"
+        ));
+    }
+    let mut field_bytes = 0;
+    for table in &tables.tables {
+        for (value, field) in [
+            (&table.database_name, "Community table database"),
+            (&table.schema_name, "Community table schema"),
+            (&table.name, "Community table name"),
+            (&table.r#type, "Community table type"),
+        ] {
+            validate_community_response_field(&mut field_bytes, value, MAX_SCALAR_BYTES, field)?;
+        }
+        validate_community_response_field(
+            &mut field_bytes,
+            &table.comment,
+            MAX_COMMUNITY_COMMENT_BYTES,
+            "Community table comment",
+        )?;
+        validate_community_response_field(
+            &mut field_bytes,
+            &table.database_type,
+            MAX_COMMUNITY_DATABASE_TYPE_BYTES,
+            "Community table database type",
+        )?;
+        validate_community_response_field(
+            &mut field_bytes,
+            &table.ddl,
+            MAX_SQL_BYTES,
+            "Community table DDL",
+        )?;
+        for (value, field) in [
+            (&table.engine, "Community table engine"),
+            (&table.charset, "Community table charset"),
+            (&table.collation, "Community table collation"),
+        ] {
+            validate_community_response_field(&mut field_bytes, value, MAX_SCALAR_BYTES, field)?;
+        }
+        validate_community_response_field(
+            &mut field_bytes,
+            &table.partition,
+            MAX_SQL_BYTES,
+            "Community table partition",
+        )?;
+        for (value, field) in [
+            (&table.tablespace, "Community table tablespace"),
+            (&table.create_time, "Community table create time"),
+            (&table.update_time, "Community table update time"),
+        ] {
+            validate_community_response_field(&mut field_bytes, value, MAX_SCALAR_BYTES, field)?;
+        }
+    }
+    validate_community_response_encoded_len(tables)
+}
+
+fn validate_community_table_column_list(
+    columns: &wire::CommunityTableColumnList,
+) -> Result<(), String> {
+    if columns.columns.len() > MAX_COMMUNITY_COLUMNS {
+        return Err(format!(
+            "Community metadata exceeded the {MAX_COMMUNITY_COLUMNS}-column limit"
+        ));
+    }
+    let mut field_bytes = 0;
+    for column in &columns.columns {
+        for (value, field) in [
+            (&column.database_name, "Community column database"),
+            (&column.schema_name, "Community column schema"),
+            (&column.table_name, "Community column table"),
+            (&column.name, "Community column name"),
+            (&column.column_type, "Community column type"),
+        ] {
+            validate_community_response_field(&mut field_bytes, value, MAX_SCALAR_BYTES, field)?;
+        }
+        validate_community_response_field(
+            &mut field_bytes,
+            &column.default_value,
+            MAX_SQL_BYTES,
+            "Community column default value",
+        )?;
+        validate_community_response_field(
+            &mut field_bytes,
+            &column.comment,
+            MAX_COMMUNITY_COMMENT_BYTES,
+            "Community column comment",
+        )?;
+        for (value, field) in [
+            (
+                &column.primary_key_name,
+                "Community column primary-key name",
+            ),
+            (&column.extent, "Community column extent"),
+            (&column.charset, "Community column charset"),
+            (&column.collation, "Community column collation"),
+            (&column.unit, "Community column unit"),
+            (
+                &column.default_constraint_name,
+                "Community column default-constraint name",
+            ),
+        ] {
+            validate_community_response_field(&mut field_bytes, value, MAX_SCALAR_BYTES, field)?;
+        }
+    }
+    validate_community_response_encoded_len(columns)
+}
+
+fn validate_community_table_index_list(
+    indexes: &wire::CommunityTableIndexList,
+) -> Result<(), String> {
+    if indexes.indexes.len() > MAX_COMMUNITY_INDEXES {
+        return Err(format!(
+            "Community metadata exceeded the {MAX_COMMUNITY_INDEXES}-index limit"
+        ));
+    }
+    let mut field_bytes = 0;
+    let mut index_column_count = 0_usize;
+    for index in &indexes.indexes {
+        for (value, field) in [
+            (&index.database_name, "Community index database"),
+            (&index.schema_name, "Community index schema"),
+            (&index.table_name, "Community index table"),
+            (&index.name, "Community index name"),
+            (&index.r#type, "Community index type"),
+        ] {
+            validate_community_response_field(&mut field_bytes, value, MAX_SCALAR_BYTES, field)?;
+        }
+        validate_community_response_field(
+            &mut field_bytes,
+            &index.comment,
+            MAX_COMMUNITY_COMMENT_BYTES,
+            "Community index comment",
+        )?;
+        for (value, field) in [
+            (&index.method, "Community index method"),
+            (&index.foreign_schema_name, "Community index foreign schema"),
+            (&index.foreign_table_name, "Community index foreign table"),
+        ] {
+            validate_community_response_field(&mut field_bytes, value, MAX_SCALAR_BYTES, field)?;
+        }
+        add_community_index_columns(&mut index_column_count, index.columns.len())?;
+        for column in &index.columns {
+            validate_community_table_index_column(column, &mut field_bytes)?;
+        }
+        add_community_index_columns(&mut index_column_count, index.foreign_column_names.len())?;
+        for name in &index.foreign_column_names {
+            validate_community_response_field(
+                &mut field_bytes,
+                name,
+                MAX_SCALAR_BYTES,
+                "Community index foreign column",
+            )?;
+        }
+    }
+    validate_community_response_encoded_len(indexes)
+}
+
+fn validate_community_table_index_column(
+    column: &wire::CommunityTableIndexColumn,
+    field_bytes: &mut usize,
+) -> Result<(), String> {
+    for (value, field) in [
+        (&column.database_name, "Community index-column database"),
+        (&column.schema_name, "Community index-column schema"),
+        (&column.table_name, "Community index-column table"),
+        (&column.index_name, "Community index-column index name"),
+        (&column.column_name, "Community index-column name"),
+        (&column.r#type, "Community index-column type"),
+    ] {
+        validate_community_response_field(field_bytes, value, MAX_SCALAR_BYTES, field)?;
+    }
+    validate_community_response_field(
+        field_bytes,
+        &column.comment,
+        MAX_COMMUNITY_COMMENT_BYTES,
+        "Community index-column comment",
+    )?;
+    for (value, field) in [
+        (&column.collation, "Community index-column collation"),
+        (&column.index_qualifier, "Community index-column qualifier"),
+        (&column.sort_order, "Community index-column sort order"),
+    ] {
+        validate_community_response_field(field_bytes, value, MAX_SCALAR_BYTES, field)?;
+    }
+    validate_community_response_field(
+        field_bytes,
+        &column.filter_condition,
+        MAX_SQL_BYTES,
+        "Community index-column filter condition",
+    )
+}
+
+fn add_community_index_columns(total: &mut usize, additional: usize) -> Result<(), String> {
+    *total = total
+        .checked_add(additional)
+        .ok_or_else(|| "Community index-column count overflowed".to_owned())?;
+    if *total > MAX_COMMUNITY_INDEX_COLUMNS {
+        return Err(format!(
+            "Community metadata exceeded the {MAX_COMMUNITY_INDEX_COLUMNS}-index-column limit"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_community_response_field(
+    total: &mut usize,
+    value: &str,
+    maximum: usize,
+    field: &str,
+) -> Result<(), String> {
+    validate_bytes_limit(value, maximum, field)?;
+    add_community_response_field(total, value)
 }
 
 fn validate_community_source_commit(commit: &str) -> Result<(), String> {
@@ -1641,6 +1921,132 @@ mod tests {
             validate_response_payload(&oversized_comment)
                 .expect_err("oversized Community schema comment must fail")
                 .contains("comment")
+        );
+    }
+
+    #[test]
+    fn community_object_metadata_responses_enforce_collection_bounds() {
+        let oversized_databases =
+            wire::server_envelope::Payload::CommunityDatabaseList(wire::CommunityDatabaseList {
+                databases: vec![wire::CommunityDatabase::default(); MAX_COMMUNITY_DATABASES + 1],
+            });
+        assert!(
+            validate_response_payload(&oversized_databases)
+                .expect_err("oversized Community database list must fail")
+                .contains("database limit")
+        );
+        drop(oversized_databases);
+
+        let oversized_tables =
+            wire::server_envelope::Payload::CommunityTableList(wire::CommunityTableList {
+                tables: vec![wire::CommunityTable::default(); MAX_COMMUNITY_TABLES + 1],
+            });
+        assert!(
+            validate_response_payload(&oversized_tables)
+                .expect_err("oversized Community table list must fail")
+                .contains("table limit")
+        );
+        drop(oversized_tables);
+
+        let oversized_columns = wire::server_envelope::Payload::CommunityTableColumnList(
+            wire::CommunityTableColumnList {
+                columns: vec![wire::CommunityTableColumn::default(); MAX_COMMUNITY_COLUMNS + 1],
+            },
+        );
+        assert!(
+            validate_response_payload(&oversized_columns)
+                .expect_err("oversized Community column list must fail")
+                .contains("column limit")
+        );
+        drop(oversized_columns);
+
+        let oversized_indexes = wire::server_envelope::Payload::CommunityTableIndexList(
+            wire::CommunityTableIndexList {
+                indexes: vec![wire::CommunityTableIndex::default(); MAX_COMMUNITY_INDEXES + 1],
+            },
+        );
+        assert!(
+            validate_response_payload(&oversized_indexes)
+                .expect_err("oversized Community index list must fail")
+                .contains("index limit")
+        );
+    }
+
+    #[test]
+    fn community_object_metadata_responses_enforce_field_and_nested_bounds() {
+        let oversized_database_comment =
+            wire::server_envelope::Payload::CommunityDatabaseList(wire::CommunityDatabaseList {
+                databases: vec![wire::CommunityDatabase {
+                    comment: "x".repeat(MAX_COMMUNITY_COMMENT_BYTES + 1),
+                    ..Default::default()
+                }],
+            });
+        assert!(
+            validate_response_payload(&oversized_database_comment)
+                .expect_err("oversized Community database comment must fail")
+                .contains("database comment")
+        );
+
+        let oversized_table_ddl =
+            wire::server_envelope::Payload::CommunityTableList(wire::CommunityTableList {
+                tables: vec![wire::CommunityTable {
+                    ddl: "x".repeat(MAX_SQL_BYTES + 1),
+                    ..Default::default()
+                }],
+            });
+        assert!(
+            validate_response_payload(&oversized_table_ddl)
+                .expect_err("oversized Community table DDL must fail")
+                .contains("table DDL")
+        );
+
+        let oversized_column_name = wire::server_envelope::Payload::CommunityTableColumnList(
+            wire::CommunityTableColumnList {
+                columns: vec![wire::CommunityTableColumn {
+                    name: "x".repeat(MAX_SCALAR_BYTES + 1),
+                    ..Default::default()
+                }],
+            },
+        );
+        assert!(
+            validate_response_payload(&oversized_column_name)
+                .expect_err("oversized Community column name must fail")
+                .contains("column name")
+        );
+
+        let oversized_index_filter = wire::server_envelope::Payload::CommunityTableIndexList(
+            wire::CommunityTableIndexList {
+                indexes: vec![wire::CommunityTableIndex {
+                    columns: vec![wire::CommunityTableIndexColumn {
+                        filter_condition: "x".repeat(MAX_SQL_BYTES + 1),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            },
+        );
+        assert!(
+            validate_response_payload(&oversized_index_filter)
+                .expect_err("oversized Community index filter must fail")
+                .contains("filter condition")
+        );
+
+        let excessive_nested_columns = wire::server_envelope::Payload::CommunityTableIndexList(
+            wire::CommunityTableIndexList {
+                indexes: vec![wire::CommunityTableIndex {
+                    columns: vec![
+                        wire::CommunityTableIndexColumn::default();
+                        MAX_COMMUNITY_INDEX_COLUMNS
+                    ],
+                    foreign_column_names: vec![String::new()],
+                    ..Default::default()
+                }],
+            },
+        );
+        assert!(
+            validate_response_payload(&excessive_nested_columns)
+                .expect_err("combined Community index-column limit must fail")
+                .contains("index-column limit")
         );
     }
 

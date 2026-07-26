@@ -105,6 +105,195 @@ pub struct ListCommunitySchemasRequest {
     pub database_name: String,
 }
 
+/// Secret-free database metadata returned by Community.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityDatabase {
+    pub name: String,
+    pub comment: String,
+    pub charset: String,
+    pub collation: String,
+    pub owner: String,
+    pub system: bool,
+}
+
+/// Stable database collection returned by Community metadata APIs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityDatabaseList {
+    pub items: Vec<CommunityDatabase>,
+}
+
+/// Request to list databases through one datasource connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListCommunityDatabasesRequest {
+    pub datasource_id: String,
+    pub database_type: String,
+}
+
+/// Secret-free table metadata without nested column or index payloads.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityTable {
+    pub database_name: String,
+    pub schema_name: String,
+    pub name: String,
+    pub table_type: String,
+    pub comment: String,
+    pub database_type: String,
+    pub pinned: bool,
+    pub ddl: String,
+    pub engine: String,
+    pub charset: String,
+    pub collation: String,
+    /// Auto-increment value encoded as a decimal integer string.
+    pub increment_value: Option<String>,
+    pub partition: String,
+    pub tablespace: String,
+    /// Row count or estimate encoded as a decimal integer string.
+    pub rows: Option<String>,
+    /// Data length encoded as a decimal integer string.
+    pub data_length: Option<String>,
+    pub create_time: String,
+    pub update_time: String,
+}
+
+/// Stable table collection returned by Community metadata APIs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityTableList {
+    pub items: Vec<CommunityTable>,
+}
+
+/// Request to list tables through one datasource connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListCommunityTablesRequest {
+    pub datasource_id: String,
+    pub database_type: String,
+    pub database_name: String,
+    pub schema_name: String,
+    pub table_name_pattern: String,
+}
+
+/// Secret-free Community table-column metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityTableColumn {
+    pub database_name: String,
+    pub schema_name: String,
+    pub table_name: String,
+    pub name: String,
+    pub column_type: String,
+    pub data_type: Option<i32>,
+    pub default_value: String,
+    pub auto_increment: Option<bool>,
+    pub comment: String,
+    pub primary_key: Option<bool>,
+    pub primary_key_name: String,
+    pub primary_key_order: i32,
+    pub column_size: Option<i32>,
+    pub buffer_length: Option<i32>,
+    pub decimal_digits: Option<i32>,
+    pub num_prec_radix: Option<i32>,
+    pub sql_data_type: Option<i32>,
+    pub sql_datetime_sub: Option<i32>,
+    pub char_octet_length: Option<i32>,
+    pub ordinal_position: Option<i32>,
+    pub nullable: Option<i32>,
+    pub generated_column: Option<bool>,
+    pub extent: String,
+    pub charset: String,
+    pub collation: String,
+    pub unit: String,
+    pub sparse: Option<bool>,
+    pub default_constraint_name: String,
+    pub seed: Option<i32>,
+    pub increment: Option<i32>,
+    pub on_update_current_timestamp: Option<bool>,
+}
+
+/// Stable column collection returned by Community metadata APIs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityTableColumnList {
+    pub items: Vec<CommunityTableColumn>,
+}
+
+/// Request to list columns for one table through Community metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListCommunityColumnsRequest {
+    pub datasource_id: String,
+    pub database_type: String,
+    pub database_name: String,
+    pub schema_name: String,
+    pub table_name: String,
+}
+
+/// Secret-free metadata for one indexed column.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityTableIndexColumn {
+    pub database_name: String,
+    pub schema_name: String,
+    pub table_name: String,
+    pub index_name: String,
+    pub column_name: String,
+    pub column_type: String,
+    pub comment: String,
+    pub ordinal_position: Option<i32>,
+    pub collation: String,
+    pub non_unique: Option<bool>,
+    pub index_qualifier: String,
+    pub sort_order: String,
+    /// Index cardinality encoded as a decimal integer string.
+    pub cardinality: Option<String>,
+    /// Index page count encoded as a decimal integer string.
+    pub pages: Option<String>,
+    pub filter_condition: String,
+    /// Indexed prefix length encoded as a decimal integer string.
+    pub sub_part: Option<String>,
+}
+
+/// Secret-free Community table-index metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityTableIndex {
+    pub database_name: String,
+    pub schema_name: String,
+    pub table_name: String,
+    pub name: String,
+    pub index_type: String,
+    pub unique: Option<bool>,
+    pub comment: String,
+    pub columns: Vec<CommunityTableIndexColumn>,
+    pub concurrently: Option<bool>,
+    pub method: String,
+    pub foreign_schema_name: String,
+    pub foreign_table_name: String,
+    pub foreign_column_names: Vec<String>,
+}
+
+/// Stable index collection returned by Community metadata APIs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityTableIndexList {
+    pub items: Vec<CommunityTableIndex>,
+}
+
+/// Request to list indexes for one table through Community metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListCommunityIndexesRequest {
+    pub datasource_id: String,
+    pub database_type: String,
+    pub database_name: String,
+    pub schema_name: String,
+    pub table_name: String,
+}
+
 /// Request to build dialect-specific `CREATE SCHEMA` SQL.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -160,10 +349,14 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        BuildCommunityCreateSchemaRequest, CommunityBuiltSql, CommunityDriverConfig,
-        CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
-        CommunityPluginServices, CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis,
-        ListCommunitySchemasRequest, ParseCommunitySqlRequest,
+        BuildCommunityCreateSchemaRequest, CommunityBuiltSql, CommunityDatabase,
+        CommunityDatabaseList, CommunityDriverConfig, CommunityParsedStatement, CommunityPlugin,
+        CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices, CommunitySchema,
+        CommunitySchemaList, CommunitySqlAnalysis, CommunityTable, CommunityTableColumn,
+        CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
+        CommunityTableIndexList, CommunityTableList, ListCommunityColumnsRequest,
+        ListCommunityDatabasesRequest, ListCommunityIndexesRequest, ListCommunitySchemasRequest,
+        ListCommunityTablesRequest, ParseCommunitySqlRequest,
     };
 
     #[test]
@@ -267,18 +460,234 @@ mod tests {
     }
 
     #[test]
-    fn community_metadata_contracts_never_expose_connection_secrets() {
-        let response = CommunitySchemaList {
-            items: vec![CommunitySchema {
-                database_name: "inventory".to_owned(),
-                name: "public".to_owned(),
-                comment: String::new(),
-                owner: "app".to_owned(),
-                system: false,
-            }],
+    #[allow(clippy::too_many_lines)]
+    fn community_object_metadata_contracts_use_exact_camel_case_and_round_trip() {
+        let database_request = ListCommunityDatabasesRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_type: "H2".to_owned(),
+        };
+        let table_request = ListCommunityTablesRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            table_name_pattern: "item%".to_owned(),
+        };
+        let column_request = ListCommunityColumnsRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            table_name: "items".to_owned(),
+        };
+        let index_request = ListCommunityIndexesRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            table_name: "items".to_owned(),
         };
 
-        let encoded = serde_json::to_string(&response).expect("schema list must serialize");
+        assert_eq!(
+            serde_json::to_value(&database_request).expect("database request must serialize"),
+            json!({"datasourceId": "datasource-1", "databaseType": "H2"})
+        );
+        assert_eq!(
+            serde_json::to_value(&table_request).expect("table request must serialize"),
+            json!({
+                "datasourceId": "datasource-1",
+                "databaseType": "H2",
+                "databaseName": "inventory",
+                "schemaName": "APP",
+                "tableNamePattern": "item%"
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&column_request).expect("column request must serialize"),
+            json!({
+                "datasourceId": "datasource-1",
+                "databaseType": "H2",
+                "databaseName": "inventory",
+                "schemaName": "APP",
+                "tableName": "items"
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&index_request).expect("index request must serialize"),
+            json!({
+                "datasourceId": "datasource-1",
+                "databaseType": "H2",
+                "databaseName": "inventory",
+                "schemaName": "APP",
+                "tableName": "items"
+            })
+        );
+
+        let databases = CommunityDatabaseList {
+            items: vec![database_fixture()],
+        };
+        let tables = CommunityTableList {
+            items: vec![table_fixture()],
+        };
+        let columns = CommunityTableColumnList {
+            items: vec![column_fixture()],
+        };
+        let indexes = CommunityTableIndexList {
+            items: vec![index_fixture()],
+        };
+
+        assert_eq!(
+            serde_json::to_value(&databases).expect("database list must serialize"),
+            json!({"items": [{
+                "name": "inventory",
+                "comment": "Inventory catalog",
+                "charset": "UTF-8",
+                "collation": "en_US",
+                "owner": "app",
+                "system": false
+            }]})
+        );
+        assert_eq!(
+            serde_json::to_value(&tables).expect("table list must serialize"),
+            json!({"items": [{
+                "databaseName": "inventory",
+                "schemaName": "APP",
+                "name": "items",
+                "tableType": "TABLE",
+                "comment": "Inventory items",
+                "databaseType": "H2",
+                "pinned": true,
+                "ddl": "CREATE TABLE APP.items (...) ",
+                "engine": "MVStore",
+                "charset": "UTF-8",
+                "collation": "en_US",
+                "incrementValue": "9007199254740993",
+                "partition": "HASH(id)",
+                "tablespace": "main",
+                "rows": "9007199254740994",
+                "dataLength": "9223372036854775807",
+                "createTime": "2026-07-26T10:00:00Z",
+                "updateTime": "2026-07-26T11:00:00Z"
+            }]})
+        );
+        assert_eq!(
+            serde_json::to_value(&columns).expect("column list must serialize"),
+            json!({"items": [{
+                "databaseName": "inventory",
+                "schemaName": "APP",
+                "tableName": "items",
+                "name": "id",
+                "columnType": "BIGINT",
+                "dataType": -5,
+                "defaultValue": "NEXT VALUE FOR seq_items",
+                "autoIncrement": true,
+                "comment": "Primary identifier",
+                "primaryKey": true,
+                "primaryKeyName": "pk_items",
+                "primaryKeyOrder": 1,
+                "columnSize": 64,
+                "bufferLength": 8,
+                "decimalDigits": 0,
+                "numPrecRadix": 10,
+                "sqlDataType": -5,
+                "sqlDatetimeSub": 0,
+                "charOctetLength": 8,
+                "ordinalPosition": 1,
+                "nullable": 0,
+                "generatedColumn": false,
+                "extent": "8",
+                "charset": "UTF-8",
+                "collation": "en_US",
+                "unit": "bytes",
+                "sparse": false,
+                "defaultConstraintName": "df_items_id",
+                "seed": 1,
+                "increment": 2,
+                "onUpdateCurrentTimestamp": false
+            }]})
+        );
+        assert_eq!(
+            serde_json::to_value(&indexes).expect("index list must serialize"),
+            json!({"items": [{
+                "databaseName": "inventory",
+                "schemaName": "APP",
+                "tableName": "items",
+                "name": "idx_items_label",
+                "indexType": "BTREE",
+                "unique": true,
+                "comment": "Unique item label",
+                "columns": [{
+                    "databaseName": "inventory",
+                    "schemaName": "APP",
+                    "tableName": "items",
+                    "indexName": "idx_items_label",
+                    "columnName": "label",
+                    "columnType": "VARCHAR",
+                    "comment": "Indexed label",
+                    "ordinalPosition": 1,
+                    "collation": "A",
+                    "nonUnique": false,
+                    "indexQualifier": "inventory",
+                    "sortOrder": "ASC",
+                    "cardinality": "9007199254740995",
+                    "pages": "9007199254740996",
+                    "filterCondition": "label IS NOT NULL",
+                    "subPart": "9007199254740997"
+                }],
+                "concurrently": false,
+                "method": "BTREE",
+                "foreignSchemaName": "PUBLIC",
+                "foreignTableName": "labels",
+                "foreignColumnNames": ["id"]
+            }]})
+        );
+
+        for request in [
+            serde_json::to_value(&database_request).expect("database request must serialize"),
+            serde_json::to_value(&table_request).expect("table request must serialize"),
+            serde_json::to_value(&column_request).expect("column request must serialize"),
+            serde_json::to_value(&index_request).expect("index request must serialize"),
+        ] {
+            assert!(request.get("datasource_id").is_none());
+            assert!(request.get("database_type").is_none());
+        }
+        assert_round_trip(&database_request);
+        assert_round_trip(&table_request);
+        assert_round_trip(&column_request);
+        assert_round_trip(&index_request);
+        assert_round_trip(&databases);
+        assert_round_trip(&tables);
+        assert_round_trip(&columns);
+        assert_round_trip(&indexes);
+    }
+
+    #[test]
+    fn community_metadata_contracts_never_expose_connection_secrets() {
+        let responses = json!([
+            CommunitySchemaList {
+                items: vec![CommunitySchema {
+                    database_name: "inventory".to_owned(),
+                    name: "public".to_owned(),
+                    comment: String::new(),
+                    owner: "app".to_owned(),
+                    system: false,
+                }],
+            },
+            CommunityDatabaseList {
+                items: vec![database_fixture()],
+            },
+            CommunityTableList {
+                items: vec![table_fixture()],
+            },
+            CommunityTableColumnList {
+                items: vec![column_fixture()],
+            },
+            CommunityTableIndexList {
+                items: vec![index_fixture()],
+            }
+        ]);
+
+        let encoded = serde_json::to_string(&responses).expect("metadata lists must serialize");
         for forbidden in [
             "\"connection\"",
             "\"jdbcUrl\"",
@@ -297,5 +706,110 @@ mod tests {
         let encoded = serde_json::to_value(value).expect("contract must serialize");
         let decoded = serde_json::from_value::<T>(encoded).expect("contract must deserialize");
         assert_eq!(&decoded, value);
+    }
+
+    fn database_fixture() -> CommunityDatabase {
+        CommunityDatabase {
+            name: "inventory".to_owned(),
+            comment: "Inventory catalog".to_owned(),
+            charset: "UTF-8".to_owned(),
+            collation: "en_US".to_owned(),
+            owner: "app".to_owned(),
+            system: false,
+        }
+    }
+
+    fn table_fixture() -> CommunityTable {
+        CommunityTable {
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            name: "items".to_owned(),
+            table_type: "TABLE".to_owned(),
+            comment: "Inventory items".to_owned(),
+            database_type: "H2".to_owned(),
+            pinned: true,
+            ddl: "CREATE TABLE APP.items (...) ".to_owned(),
+            engine: "MVStore".to_owned(),
+            charset: "UTF-8".to_owned(),
+            collation: "en_US".to_owned(),
+            increment_value: Some("9007199254740993".to_owned()),
+            partition: "HASH(id)".to_owned(),
+            tablespace: "main".to_owned(),
+            rows: Some("9007199254740994".to_owned()),
+            data_length: Some("9223372036854775807".to_owned()),
+            create_time: "2026-07-26T10:00:00Z".to_owned(),
+            update_time: "2026-07-26T11:00:00Z".to_owned(),
+        }
+    }
+
+    fn column_fixture() -> CommunityTableColumn {
+        CommunityTableColumn {
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            table_name: "items".to_owned(),
+            name: "id".to_owned(),
+            column_type: "BIGINT".to_owned(),
+            data_type: Some(-5),
+            default_value: "NEXT VALUE FOR seq_items".to_owned(),
+            auto_increment: Some(true),
+            comment: "Primary identifier".to_owned(),
+            primary_key: Some(true),
+            primary_key_name: "pk_items".to_owned(),
+            primary_key_order: 1,
+            column_size: Some(64),
+            buffer_length: Some(8),
+            decimal_digits: Some(0),
+            num_prec_radix: Some(10),
+            sql_data_type: Some(-5),
+            sql_datetime_sub: Some(0),
+            char_octet_length: Some(8),
+            ordinal_position: Some(1),
+            nullable: Some(0),
+            generated_column: Some(false),
+            extent: "8".to_owned(),
+            charset: "UTF-8".to_owned(),
+            collation: "en_US".to_owned(),
+            unit: "bytes".to_owned(),
+            sparse: Some(false),
+            default_constraint_name: "df_items_id".to_owned(),
+            seed: Some(1),
+            increment: Some(2),
+            on_update_current_timestamp: Some(false),
+        }
+    }
+
+    fn index_fixture() -> CommunityTableIndex {
+        CommunityTableIndex {
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            table_name: "items".to_owned(),
+            name: "idx_items_label".to_owned(),
+            index_type: "BTREE".to_owned(),
+            unique: Some(true),
+            comment: "Unique item label".to_owned(),
+            columns: vec![CommunityTableIndexColumn {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                table_name: "items".to_owned(),
+                index_name: "idx_items_label".to_owned(),
+                column_name: "label".to_owned(),
+                column_type: "VARCHAR".to_owned(),
+                comment: "Indexed label".to_owned(),
+                ordinal_position: Some(1),
+                collation: "A".to_owned(),
+                non_unique: Some(false),
+                index_qualifier: "inventory".to_owned(),
+                sort_order: "ASC".to_owned(),
+                cardinality: Some("9007199254740995".to_owned()),
+                pages: Some("9007199254740996".to_owned()),
+                filter_condition: "label IS NOT NULL".to_owned(),
+                sub_part: Some("9007199254740997".to_owned()),
+            }],
+            concurrently: Some(false),
+            method: "BTREE".to_owned(),
+            foreign_schema_name: "PUBLIC".to_owned(),
+            foreign_table_name: "labels".to_owned(),
+            foreign_column_names: vec!["id".to_owned()],
+        }
     }
 }

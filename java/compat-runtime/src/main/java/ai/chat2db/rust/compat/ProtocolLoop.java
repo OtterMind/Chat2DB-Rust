@@ -41,6 +41,7 @@ final class ProtocolLoop {
     static final String LOCAL_TRANSACTION_CAPABILITY = "transaction.local.v1";
     static final String COMMUNITY_PLUGIN_CATALOG_CAPABILITY = "community.plugin-catalog.v1";
     static final String COMMUNITY_SCHEMA_METADATA_CAPABILITY = "community.metadata.schemas.v1";
+    static final String COMMUNITY_OBJECT_METADATA_CAPABILITY = "community.metadata.objects.v1";
     static final String COMMUNITY_SQL_BUILDER_CAPABILITY = "community.sql-builder.v1";
     static final String COMMUNITY_SQL_PARSER_CAPABILITY = "community.sql-parser.v1";
 
@@ -57,6 +58,7 @@ final class ProtocolLoop {
             LOCAL_TRANSACTION_CAPABILITY,
             COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
             COMMUNITY_SCHEMA_METADATA_CAPABILITY,
+            COMMUNITY_OBJECT_METADATA_CAPABILITY,
             COMMUNITY_SQL_BUILDER_CAPABILITY,
             COMMUNITY_SQL_PARSER_CAPABILITY);
     private static final List<ProtocolVersion> SUPPORTED_VERSIONS = List.of(version(1, 0));
@@ -217,6 +219,34 @@ final class ProtocolLoop {
                             meta,
                             () -> jdbcRuntime.listCommunitySchemas(
                                     meta, envelope.getListCommunitySchemas()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case LIST_COMMUNITY_DATABASES -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.listCommunityDatabases(
+                                    meta, envelope.getListCommunityDatabases()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case LIST_COMMUNITY_TABLES -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.listCommunityTables(
+                                    meta, envelope.getListCommunityTables()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case LIST_COMMUNITY_COLUMNS -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.listCommunityColumns(
+                                    meta, envelope.getListCommunityColumns()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case LIST_COMMUNITY_INDEXES -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.listCommunityIndexes(
+                                    meta, envelope.getListCommunityIndexes()));
                     yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
                 }
                 case BUILD_COMMUNITY_CREATE_SCHEMA -> {

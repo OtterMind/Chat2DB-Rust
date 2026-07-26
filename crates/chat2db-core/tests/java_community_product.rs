@@ -2,9 +2,11 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use chat2db_contract::{
     BuildCommunityCreateSchemaRequest, ComponentState, CreateDatasourceRequest,
-    DatasourceConnection, ListCommunitySchemasRequest, ParseCommunitySqlRequest,
+    DatasourceConnection, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
+    ListCommunityIndexesRequest, ListCommunitySchemasRequest, ListCommunityTablesRequest,
+    ParseCommunitySqlRequest,
 };
-use chat2db_core::{RuntimeHost, load_fixed_community_classpath};
+use chat2db_core::{Application, RuntimeHost, load_fixed_community_classpath};
 use chat2db_java_bridge::{
     DriverArtifact, DriverClient, DriverSpec, EngineCommand, EngineConfig, EngineSupervisor,
     SessionConfig, UpdateRequest,
@@ -20,27 +22,7 @@ async fn product_services_invoke_the_fixed_community_h2_compatibility_slice() {
     let (_directory, mut host, driver, driver_id, jdbc_url) = start_product().await;
     let application = host.application();
 
-    let community_health = application
-        .health()
-        .components
-        .into_iter()
-        .find(|component| component.id == "community-compatibility")
-        .expect("Community compatibility health must be published");
-    assert_eq!(community_health.state, ComponentState::Ready);
-
-    let catalog = application
-        .list_community_plugins()
-        .await
-        .expect("Core must expose the real Community plugin catalog");
-    assert_eq!(catalog.source_commit, COMMUNITY_COMMIT);
-    let h2 = catalog
-        .plugins
-        .iter()
-        .find(|plugin| plugin.database_type == "H2")
-        .expect("real H2 plugin must be present");
-    assert!(h2.services.metadata_available);
-    assert!(h2.services.sql_builder_available);
-    assert!(h2.services.sql_parser_available);
+    verify_community_catalog(&application).await;
 
     let datasource = application
         .create_datasource(CreateDatasourceRequest {
@@ -84,19 +66,38 @@ async fn product_services_invoke_the_fixed_community_h2_compatibility_slice() {
         .await
         .expect("built schema SQL must execute");
     setup_session
+        .execute_update(UpdateRequest {
+            sql: "CREATE TABLE APP.items (id BIGINT PRIMARY KEY, label VARCHAR(64) NOT NULL)"
+                .to_owned(),
+            parameters: Vec::new(),
+            transaction_id: None,
+        })
+        .await
+        .expect("test table must be created");
+    setup_session
+        .execute_update(UpdateRequest {
+            sql: "CREATE UNIQUE INDEX idx_items_label ON APP.items(label)".to_owned(),
+            parameters: Vec::new(),
+            transaction_id: None,
+        })
+        .await
+        .expect("test index must be created");
+    setup_session
         .close()
         .await
         .expect("setup JDBC session must close");
 
     let schemas = application
         .list_community_schemas(ListCommunitySchemasRequest {
-            datasource_id: datasource.id,
+            datasource_id: datasource.id.clone(),
             database_type: "H2".to_owned(),
             database_name: String::new(),
         })
         .await
         .expect("Core metadata service must open a forced-read-only datasource session");
     assert!(schemas.items.iter().any(|schema| schema.name == "APP"));
+
+    verify_object_metadata(&application, &datasource.id).await;
 
     let analysis = application
         .parse_community_sql(ParseCommunitySqlRequest {
@@ -114,6 +115,101 @@ async fn product_services_invoke_the_fixed_community_h2_compatibility_slice() {
     host.shutdown()
         .await
         .expect("product host must shut down cleanly");
+}
+
+async fn verify_community_catalog(application: &Application) {
+    let community_health = application
+        .health()
+        .components
+        .into_iter()
+        .find(|component| component.id == "community-compatibility")
+        .expect("Community compatibility health must be published");
+    assert_eq!(community_health.state, ComponentState::Ready);
+
+    let catalog = application
+        .list_community_plugins()
+        .await
+        .expect("Core must expose the real Community plugin catalog");
+    assert_eq!(catalog.source_commit, COMMUNITY_COMMIT);
+    let h2 = catalog
+        .plugins
+        .iter()
+        .find(|plugin| plugin.database_type == "H2")
+        .expect("real H2 plugin must be present");
+    assert!(h2.services.metadata_available);
+    assert!(h2.services.sql_builder_available);
+    assert!(h2.services.sql_parser_available);
+}
+
+async fn verify_object_metadata(application: &Application, datasource_id: &str) {
+    let databases = application
+        .list_community_databases(ListCommunityDatabasesRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: "H2".to_owned(),
+        })
+        .await
+        .expect("Core must expose Community database metadata");
+    let database = databases
+        .items
+        .iter()
+        .find(|database| !database.name.is_empty())
+        .expect("H2 must expose its current catalog");
+    let tables = application
+        .list_community_tables(ListCommunityTablesRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: database.name.clone(),
+            schema_name: "APP".to_owned(),
+            table_name_pattern: "%".to_owned(),
+        })
+        .await
+        .expect("Core must expose Community table metadata");
+    let table = tables
+        .items
+        .iter()
+        .find(|table| table.name.eq_ignore_ascii_case("items"))
+        .expect("created table must be present");
+    let columns = application
+        .list_community_columns(ListCommunityColumnsRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: database.name.clone(),
+            schema_name: "APP".to_owned(),
+            table_name: table.name.clone(),
+        })
+        .await
+        .expect("Core must expose Community column metadata");
+    assert!(
+        columns
+            .items
+            .iter()
+            .any(|column| column.name.eq_ignore_ascii_case("id"))
+    );
+    let indexes = application
+        .list_community_indexes(ListCommunityIndexesRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: database.name.clone(),
+            schema_name: "APP".to_owned(),
+            table_name: table.name.clone(),
+        })
+        .await
+        .expect("Core must expose Community index metadata");
+    assert!(indexes.items.iter().any(|index| {
+        index.name.eq_ignore_ascii_case("idx_items_label")
+            && index.unique == Some(true)
+            && index
+                .columns
+                .iter()
+                .any(|column| column.column_name.eq_ignore_ascii_case("label"))
+    }));
+    assert!(indexes.items.iter().any(|index| {
+        index.unique == Some(true)
+            && index
+                .columns
+                .iter()
+                .any(|column| column.column_name.eq_ignore_ascii_case("id"))
+    }));
 }
 
 async fn start_product() -> (TempDir, RuntimeHost, DriverClient, String, &'static str) {

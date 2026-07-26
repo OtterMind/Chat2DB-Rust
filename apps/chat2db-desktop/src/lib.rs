@@ -16,14 +16,16 @@ use chat2db_contract::{
     AgentEventEnvelope, AgentMessageList, AgentPermissionResponse, AgentRunAccepted,
     AgentRunSnapshot, AgentSession, AgentSessionList, AgentStreamMessage,
     AgentSubscriptionAccepted, ApiError, BuildCommunityCreateSchemaRequest, CancelAgentRunResponse,
-    CancelOperationResponse, CommunityBuiltSql, CommunityPluginCatalog, CommunitySchemaList,
-    CommunitySqlAnalysis, CreateAgentSessionRequest, CreateDatasourceRequest,
+    CancelOperationResponse, CommunityBuiltSql, CommunityDatabaseList, CommunityPluginCatalog,
+    CommunitySchemaList, CommunitySqlAnalysis, CommunityTableColumnList, CommunityTableIndexList,
+    CommunityTableList, CreateAgentSessionRequest, CreateDatasourceRequest,
     CreateProviderProfileRequest, Datasource, DatasourceList, DecideAgentPermissionRequest,
-    HealthResponse, JdbcDriverList, ListCommunitySchemasRequest, OperationEventEnvelope,
-    OperationSnapshot, OperationStreamMessage, OperationSubscriptionAccepted,
-    ParseCommunitySqlRequest, ProviderProfile, ProviderProfileList, QueryAccepted, ResultPage,
-    ResultPageRequest, StartAgentRunRequest, StartQueryRequest, UpdateAgentSessionRequest,
-    UpdateDatasourceRequest, UpdateProviderProfileRequest,
+    HealthResponse, JdbcDriverList, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
+    ListCommunityIndexesRequest, ListCommunitySchemasRequest, ListCommunityTablesRequest,
+    OperationEventEnvelope, OperationSnapshot, OperationStreamMessage,
+    OperationSubscriptionAccepted, ParseCommunitySqlRequest, ProviderProfile, ProviderProfileList,
+    QueryAccepted, ResultPage, ResultPageRequest, StartAgentRunRequest, StartQueryRequest,
+    UpdateAgentSessionRequest, UpdateDatasourceRequest, UpdateProviderProfileRequest,
 };
 use chat2db_core::{
     AppError, Application, RuntimeConfig, RuntimeHost, load_fixed_community_classpath,
@@ -258,6 +260,10 @@ pub fn run() -> Result<i32, DesktopError> {
             list_drivers,
             list_community_plugins,
             list_community_schemas,
+            list_community_databases,
+            list_community_tables,
+            list_community_columns,
+            list_community_indexes,
             build_community_create_schema,
             parse_community_sql,
             list_datasources,
@@ -414,6 +420,54 @@ async fn list_community_schemas(
     state
         .application
         .list_community_schemas(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn list_community_databases(
+    state: State<'_, Arc<DesktopState>>,
+    request: ListCommunityDatabasesRequest,
+) -> Result<CommunityDatabaseList, ApiError> {
+    state
+        .application
+        .list_community_databases(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn list_community_tables(
+    state: State<'_, Arc<DesktopState>>,
+    request: ListCommunityTablesRequest,
+) -> Result<CommunityTableList, ApiError> {
+    state
+        .application
+        .list_community_tables(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn list_community_columns(
+    state: State<'_, Arc<DesktopState>>,
+    request: ListCommunityColumnsRequest,
+) -> Result<CommunityTableColumnList, ApiError> {
+    state
+        .application
+        .list_community_columns(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn list_community_indexes(
+    state: State<'_, Arc<DesktopState>>,
+    request: ListCommunityIndexesRequest,
+) -> Result<CommunityTableIndexList, ApiError> {
+    state
+        .application
+        .list_community_indexes(request)
         .await
         .map_err(|error| api_error(&error))
 }

@@ -1,11 +1,11 @@
 use std::{path::PathBuf, time::Duration};
 
 use chat2db_java_bridge::{
-    COMMUNITY_PLUGIN_CATALOG_CAPABILITY, COMMUNITY_SCHEMA_METADATA_CAPABILITY,
-    COMMUNITY_SQL_BUILDER_CAPABILITY, COMMUNITY_SQL_PARSER_CAPABILITY, CommunityClasspath,
-    CommunityClient, CommunityPluginCatalog, CommunitySchema, DriverArtifact, DriverSpec,
-    EngineCommand, EngineConfig, EngineState, EngineSupervisor, Session, SessionConfig,
-    UpdateRequest,
+    COMMUNITY_OBJECT_METADATA_CAPABILITY, COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
+    COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
+    COMMUNITY_SQL_PARSER_CAPABILITY, CommunityClasspath, CommunityClient, CommunityPluginCatalog,
+    CommunitySchema, DriverArtifact, DriverSpec, EngineCommand, EngineConfig, EngineState,
+    EngineSupervisor, Session, SessionConfig, UpdateRequest,
 };
 
 const COMMUNITY_COMMIT: &str = "f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7";
@@ -39,6 +39,7 @@ async fn invokes_real_community_h2_spi_metadata_builder_and_parser() {
     for capability in [
         COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
         COMMUNITY_SCHEMA_METADATA_CAPABILITY,
+        COMMUNITY_OBJECT_METADATA_CAPABILITY,
         COMMUNITY_SQL_BUILDER_CAPABILITY,
         COMMUNITY_SQL_PARSER_CAPABILITY,
     ] {
@@ -85,6 +86,7 @@ async fn invokes_real_community_h2_spi_metadata_builder_and_parser() {
         .expect("H2 session must open");
 
     create_and_verify_schema(&community, &session).await;
+    verify_object_tree(&community, &session).await;
     verify_parser(&community).await;
 
     session.close().await.expect("H2 session must close");
@@ -143,12 +145,74 @@ async fn create_and_verify_schema(community: &CommunityClient, session: &Session
         "CREATE TABLE APP.items (id BIGINT PRIMARY KEY, label VARCHAR(64) NOT NULL)",
     )
     .await;
+    execute_update(
+        session,
+        "CREATE UNIQUE INDEX idx_items_label ON APP.items(label)",
+    )
+    .await;
 
     let schemas = community
         .list_schemas(session, "H2", "", None)
         .await
         .expect("H2Meta must list schemas through the existing JDBC session");
     assert!(schemas.iter().any(|schema| schema.name == "APP"));
+}
+
+async fn verify_object_tree(community: &CommunityClient, session: &Session) {
+    let databases = community
+        .list_databases(session, "H2", None)
+        .await
+        .expect("H2Meta must list databases");
+    let database = databases
+        .iter()
+        .find(|database| !database.name.is_empty())
+        .expect("H2 must expose its current catalog");
+
+    let tables = community
+        .list_tables(session, "H2", &database.name, "APP", "%", None)
+        .await
+        .expect("H2Meta must list tables");
+    let table = tables
+        .iter()
+        .find(|table| table.name.eq_ignore_ascii_case("items"))
+        .expect("created H2 table must be projected");
+    assert_eq!(table.schema_name, "APP");
+
+    let columns = community
+        .list_columns(session, "H2", &database.name, "APP", &table.name, None)
+        .await
+        .expect("H2Meta must list columns");
+    assert!(
+        columns
+            .iter()
+            .any(|column| column.name.eq_ignore_ascii_case("id"))
+    );
+    assert!(columns.iter().any(|column| {
+        column.name.eq_ignore_ascii_case("label") && column.column_type == "CHARACTER VARYING"
+    }));
+
+    let indexes = community
+        .list_indexes(session, "H2", &database.name, "APP", &table.name, None)
+        .await
+        .expect("H2Meta must list indexes");
+    let index = indexes
+        .iter()
+        .find(|index| index.name.eq_ignore_ascii_case("idx_items_label"))
+        .expect("created H2 index must be projected");
+    assert_eq!(index.unique, Some(true));
+    assert!(
+        index
+            .columns
+            .iter()
+            .any(|column| column.column_name.eq_ignore_ascii_case("label"))
+    );
+    assert!(indexes.iter().any(|index| {
+        index.unique == Some(true)
+            && index
+                .columns
+                .iter()
+                .any(|column| column.column_name.eq_ignore_ascii_case("id"))
+    }));
 }
 
 async fn verify_parser(community: &CommunityClient) {

@@ -20,7 +20,11 @@ import ai.chat2db.rust.compat.protocol.v1.GrantCreditsRequest;
 import ai.chat2db.rust.compat.protocol.v1.JdbcParameter;
 import ai.chat2db.rust.compat.protocol.v1.JdbcValue;
 import ai.chat2db.rust.compat.protocol.v1.LoadDriverRequest;
+import ai.chat2db.rust.compat.protocol.v1.ListCommunityColumnsRequest;
+import ai.chat2db.rust.compat.protocol.v1.ListCommunityDatabasesRequest;
+import ai.chat2db.rust.compat.protocol.v1.ListCommunityIndexesRequest;
 import ai.chat2db.rust.compat.protocol.v1.ListCommunitySchemasRequest;
+import ai.chat2db.rust.compat.protocol.v1.ListCommunityTablesRequest;
 import ai.chat2db.rust.compat.protocol.v1.OpenSessionRequest;
 import ai.chat2db.rust.compat.protocol.v1.ProtocolVersion;
 import ai.chat2db.rust.compat.protocol.v1.QueryOptions;
@@ -85,6 +89,7 @@ class JdbcProtocolLoopTest {
                             ProtocolLoop.LOCAL_TRANSACTION_CAPABILITY,
                             ProtocolLoop.COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
                             ProtocolLoop.COMMUNITY_SCHEMA_METADATA_CAPABILITY,
+                            ProtocolLoop.COMMUNITY_OBJECT_METADATA_CAPABILITY,
                             ProtocolLoop.COMMUNITY_SQL_BUILDER_CAPABILITY,
                             ProtocolLoop.COMMUNITY_SQL_PARSER_CAPABILITY),
                     hello.getHello().getCapabilitiesList());
@@ -212,6 +217,87 @@ class JdbcProtocolLoopTest {
             assertEquals(
                     SessionState.SESSION_STATE_AUTO_COMMIT,
                     oversizedCommunityDatabase.getError().getSessionState());
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("blank-community-database-type", sessionId))
+                    .setListCommunityDatabases(ListCommunityDatabasesRequest.newBuilder()
+                            .setDatabaseType("  "))
+                    .build());
+            ServerEnvelope blankCommunityDatabaseType = harness.read();
+            assertEquals(ServerEnvelope.PayloadCase.ERROR, blankCommunityDatabaseType.getPayloadCase());
+            assertEquals(
+                    "protocol.invalid_database_type",
+                    blankCommunityDatabaseType.getError().getCode());
+            assertEquals(
+                    SessionState.SESSION_STATE_AUTO_COMMIT,
+                    blankCommunityDatabaseType.getError().getSessionState());
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("oversized-community-table-pattern", sessionId))
+                    .setListCommunityTables(ListCommunityTablesRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setTableNamePattern("x".repeat(ProtocolLimits.MAX_SCALAR_BYTES + 1)))
+                    .build());
+            ServerEnvelope oversizedCommunityTablePattern = harness.read();
+            assertEquals(
+                    ServerEnvelope.PayloadCase.ERROR,
+                    oversizedCommunityTablePattern.getPayloadCase());
+            assertEquals(
+                    "protocol.limit_exceeded",
+                    oversizedCommunityTablePattern.getError().getCode());
+            assertEquals(
+                    SessionState.SESSION_STATE_AUTO_COMMIT,
+                    oversizedCommunityTablePattern.getError().getSessionState());
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("blank-community-column-table", sessionId))
+                    .setListCommunityColumns(ListCommunityColumnsRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setTableName("  "))
+                    .build());
+            ServerEnvelope blankCommunityColumnTable = harness.read();
+            assertEquals(ServerEnvelope.PayloadCase.ERROR, blankCommunityColumnTable.getPayloadCase());
+            assertEquals(
+                    "protocol.invalid_table_name",
+                    blankCommunityColumnTable.getError().getCode());
+            assertEquals(
+                    SessionState.SESSION_STATE_AUTO_COMMIT,
+                    blankCommunityColumnTable.getError().getSessionState());
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("oversized-community-index-schema", sessionId))
+                    .setListCommunityIndexes(ListCommunityIndexesRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setSchemaName("x".repeat(ProtocolLimits.MAX_SCALAR_BYTES + 1))
+                            .setTableName("items"))
+                    .build());
+            ServerEnvelope oversizedCommunityIndexSchema = harness.read();
+            assertEquals(
+                    ServerEnvelope.PayloadCase.ERROR,
+                    oversizedCommunityIndexSchema.getPayloadCase());
+            assertEquals(
+                    "protocol.limit_exceeded",
+                    oversizedCommunityIndexSchema.getError().getCode());
+            assertEquals(
+                    SessionState.SESSION_STATE_AUTO_COMMIT,
+                    oversizedCommunityIndexSchema.getError().getSessionState());
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("missing-community-object-plugin", sessionId))
+                    .setListCommunityIndexes(ListCommunityIndexesRequest.newBuilder()
+                            .setDatabaseType("MISSING")
+                            .setTableName("items"))
+                    .build());
+            ServerEnvelope missingCommunityObjectPlugin = harness.read();
+            assertEquals(
+                    ServerEnvelope.PayloadCase.ERROR,
+                    missingCommunityObjectPlugin.getPayloadCase());
+            assertEquals(
+                    "community.plugin_not_found",
+                    missingCommunityObjectPlugin.getError().getCode());
+            assertEquals(
+                    SessionState.SESSION_STATE_AUTO_COMMIT,
+                    missingCommunityObjectPlugin.getError().getSessionState());
 
             harness.send(ClientEnvelope.newBuilder()
                     .setMeta(meta("begin", sessionId))

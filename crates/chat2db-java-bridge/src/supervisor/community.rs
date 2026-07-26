@@ -20,6 +20,8 @@ use super::{
 pub const COMMUNITY_PLUGIN_CATALOG_CAPABILITY: &str = "community.plugin-catalog.v1";
 /// Reads database metadata through a Community `IDbMetaData` implementation.
 pub const COMMUNITY_SCHEMA_METADATA_CAPABILITY: &str = "community.metadata.schemas.v1";
+/// Reads databases, tables, columns, and indexes through Community metadata.
+pub const COMMUNITY_OBJECT_METADATA_CAPABILITY: &str = "community.metadata.objects.v1";
 /// Builds dialect SQL through a Community `ISqlBuilder` implementation.
 pub const COMMUNITY_SQL_BUILDER_CAPABILITY: &str = "community.sql-builder.v1";
 /// Parses SQL through a Community `ISqlSyntaxPlugin` implementation.
@@ -510,6 +512,115 @@ pub struct CommunitySchema {
     pub system: bool,
 }
 
+/// Process-neutral database metadata.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommunityDatabase {
+    pub name: String,
+    pub comment: String,
+    pub charset: String,
+    pub collation: String,
+    pub owner: String,
+    pub system: bool,
+}
+
+/// Process-neutral table metadata without nested column or index payloads.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommunityTable {
+    pub database_name: String,
+    pub schema_name: String,
+    pub name: String,
+    pub table_type: String,
+    pub comment: String,
+    pub database_type: String,
+    pub pinned: bool,
+    pub ddl: String,
+    pub engine: String,
+    pub charset: String,
+    pub collation: String,
+    pub increment_value: Option<i64>,
+    pub partition: String,
+    pub tablespace: String,
+    pub rows: Option<i64>,
+    pub data_length: Option<i64>,
+    pub create_time: String,
+    pub update_time: String,
+}
+
+/// Process-neutral table-column metadata.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommunityTableColumn {
+    pub database_name: String,
+    pub schema_name: String,
+    pub table_name: String,
+    pub name: String,
+    pub column_type: String,
+    pub data_type: Option<i32>,
+    pub default_value: String,
+    pub auto_increment: Option<bool>,
+    pub comment: String,
+    pub primary_key: Option<bool>,
+    pub primary_key_name: String,
+    pub primary_key_order: i32,
+    pub column_size: Option<i32>,
+    pub buffer_length: Option<i32>,
+    pub decimal_digits: Option<i32>,
+    pub num_prec_radix: Option<i32>,
+    pub sql_data_type: Option<i32>,
+    pub sql_datetime_sub: Option<i32>,
+    pub char_octet_length: Option<i32>,
+    pub ordinal_position: Option<i32>,
+    pub nullable: Option<i32>,
+    pub generated_column: Option<bool>,
+    pub extent: String,
+    pub charset: String,
+    pub collation: String,
+    pub unit: String,
+    pub sparse: Option<bool>,
+    pub default_constraint_name: String,
+    pub seed: Option<i32>,
+    pub increment: Option<i32>,
+    pub on_update_current_timestamp: Option<bool>,
+}
+
+/// Process-neutral metadata for one indexed column.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommunityTableIndexColumn {
+    pub database_name: String,
+    pub schema_name: String,
+    pub table_name: String,
+    pub index_name: String,
+    pub column_name: String,
+    pub column_type: String,
+    pub comment: String,
+    pub ordinal_position: Option<i32>,
+    pub collation: String,
+    pub non_unique: Option<bool>,
+    pub index_qualifier: String,
+    pub sort_order: String,
+    pub cardinality: Option<i64>,
+    pub pages: Option<i64>,
+    pub filter_condition: String,
+    pub sub_part: Option<i64>,
+}
+
+/// Process-neutral table-index metadata.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommunityTableIndex {
+    pub database_name: String,
+    pub schema_name: String,
+    pub table_name: String,
+    pub name: String,
+    pub index_type: String,
+    pub unique: Option<bool>,
+    pub comment: String,
+    pub columns: Vec<CommunityTableIndexColumn>,
+    pub concurrently: Option<bool>,
+    pub method: String,
+    pub foreign_schema_name: String,
+    pub foreign_table_name: String,
+    pub foreign_column_names: Vec<String>,
+}
+
 /// One statement returned by the retained Community parser.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommunityParsedStatement {
@@ -623,6 +734,201 @@ impl CommunityClient {
                 .await;
         };
         Ok(schemas.schemas.into_iter().map(Into::into).collect())
+    }
+
+    /// Lists databases through the selected plugin's real `IDbMetaData` object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a session from another engine,
+    /// plugin/JDBC failure, timeout, or an invalid response.
+    pub async fn list_databases(
+        &self,
+        session: &Session,
+        database_type: impl Into<String>,
+        transaction_id: Option<String>,
+    ) -> Result<Vec<CommunityDatabase>, BridgeError> {
+        let database_type = database_type.into();
+        validate_database_type(&database_type)?;
+        validate_metadata_session(&self.binding, session, transaction_id.as_deref())?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_OBJECT_METADATA_CAPABILITY,
+                Some(&session.id),
+                Some(session.state.clone()),
+                wire::client_envelope::Payload::ListCommunityDatabases(
+                    wire::ListCommunityDatabasesRequest {
+                        database_type,
+                        transaction_id,
+                    },
+                ),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityDatabaseList(databases)) =
+            response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community database-list response")
+                .await;
+        };
+        Ok(databases.databases.into_iter().map(Into::into).collect())
+    }
+
+    /// Lists tables through the selected plugin's real `IDbMetaData` object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a session from another engine,
+    /// plugin/JDBC failure, timeout, or an invalid response.
+    pub async fn list_tables(
+        &self,
+        session: &Session,
+        database_type: impl Into<String>,
+        database_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        table_name_pattern: impl Into<String>,
+        transaction_id: Option<String>,
+    ) -> Result<Vec<CommunityTable>, BridgeError> {
+        let database_type = database_type.into();
+        let database_name = database_name.into();
+        let schema_name = schema_name.into();
+        let table_name_pattern = table_name_pattern.into();
+        validate_database_type(&database_type)?;
+        validate_utf8(&database_name, MAX_SCALAR_BYTES, "database name")?;
+        validate_utf8(&schema_name, MAX_SCALAR_BYTES, "schema name")?;
+        validate_utf8(&table_name_pattern, MAX_SCALAR_BYTES, "table name pattern")?;
+        validate_metadata_session(&self.binding, session, transaction_id.as_deref())?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_OBJECT_METADATA_CAPABILITY,
+                Some(&session.id),
+                Some(session.state.clone()),
+                wire::client_envelope::Payload::ListCommunityTables(
+                    wire::ListCommunityTablesRequest {
+                        database_type,
+                        database_name,
+                        schema_name,
+                        table_name_pattern,
+                        transaction_id,
+                    },
+                ),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityTableList(tables)) = response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community table-list response")
+                .await;
+        };
+        Ok(tables.tables.into_iter().map(Into::into).collect())
+    }
+
+    /// Lists columns through the selected plugin's real `IDbMetaData` object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a session from another engine,
+    /// plugin/JDBC failure, timeout, or an invalid response.
+    pub async fn list_columns(
+        &self,
+        session: &Session,
+        database_type: impl Into<String>,
+        database_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        table_name: impl Into<String>,
+        transaction_id: Option<String>,
+    ) -> Result<Vec<CommunityTableColumn>, BridgeError> {
+        let request = metadata_table_request(
+            &self.binding,
+            session,
+            database_type.into(),
+            database_name.into(),
+            schema_name.into(),
+            table_name.into(),
+            transaction_id,
+        )?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_OBJECT_METADATA_CAPABILITY,
+                Some(&session.id),
+                Some(session.state.clone()),
+                wire::client_envelope::Payload::ListCommunityColumns(request),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityTableColumnList(columns)) =
+            response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community column-list response")
+                .await;
+        };
+        Ok(columns.columns.into_iter().map(Into::into).collect())
+    }
+
+    /// Lists indexes through the selected plugin's real `IDbMetaData` object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a session from another engine,
+    /// plugin/JDBC failure, timeout, or an invalid response.
+    pub async fn list_indexes(
+        &self,
+        session: &Session,
+        database_type: impl Into<String>,
+        database_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        table_name: impl Into<String>,
+        transaction_id: Option<String>,
+    ) -> Result<Vec<CommunityTableIndex>, BridgeError> {
+        let request = metadata_table_request(
+            &self.binding,
+            session,
+            database_type.into(),
+            database_name.into(),
+            schema_name.into(),
+            table_name.into(),
+            transaction_id,
+        )?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_OBJECT_METADATA_CAPABILITY,
+                Some(&session.id),
+                Some(session.state.clone()),
+                wire::client_envelope::Payload::ListCommunityIndexes(
+                    wire::ListCommunityIndexesRequest {
+                        database_type: request.database_type,
+                        database_name: request.database_name,
+                        schema_name: request.schema_name,
+                        table_name: request.table_name,
+                        transaction_id: request.transaction_id,
+                    },
+                ),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityTableIndexList(indexes)) =
+            response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community index-list response")
+                .await;
+        };
+        Ok(indexes.indexes.into_iter().map(Into::into).collect())
     }
 
     /// Builds `CREATE SCHEMA` through the selected plugin's SQL builder.
@@ -801,6 +1107,125 @@ impl From<CommunitySchema> for wire::CommunitySchema {
     }
 }
 
+impl From<wire::CommunityDatabase> for CommunityDatabase {
+    fn from(database: wire::CommunityDatabase) -> Self {
+        Self {
+            name: database.name,
+            comment: database.comment,
+            charset: database.charset,
+            collation: database.collation,
+            owner: database.owner,
+            system: database.system,
+        }
+    }
+}
+
+impl From<wire::CommunityTable> for CommunityTable {
+    fn from(table: wire::CommunityTable) -> Self {
+        Self {
+            database_name: table.database_name,
+            schema_name: table.schema_name,
+            name: table.name,
+            table_type: table.r#type,
+            comment: table.comment,
+            database_type: table.database_type,
+            pinned: table.pinned,
+            ddl: table.ddl,
+            engine: table.engine,
+            charset: table.charset,
+            collation: table.collation,
+            increment_value: table.increment_value,
+            partition: table.partition,
+            tablespace: table.tablespace,
+            rows: table.rows,
+            data_length: table.data_length,
+            create_time: table.create_time,
+            update_time: table.update_time,
+        }
+    }
+}
+
+impl From<wire::CommunityTableColumn> for CommunityTableColumn {
+    fn from(column: wire::CommunityTableColumn) -> Self {
+        Self {
+            database_name: column.database_name,
+            schema_name: column.schema_name,
+            table_name: column.table_name,
+            name: column.name,
+            column_type: column.column_type,
+            data_type: column.data_type,
+            default_value: column.default_value,
+            auto_increment: column.auto_increment,
+            comment: column.comment,
+            primary_key: column.primary_key,
+            primary_key_name: column.primary_key_name,
+            primary_key_order: column.primary_key_order,
+            column_size: column.column_size,
+            buffer_length: column.buffer_length,
+            decimal_digits: column.decimal_digits,
+            num_prec_radix: column.num_prec_radix,
+            sql_data_type: column.sql_data_type,
+            sql_datetime_sub: column.sql_datetime_sub,
+            char_octet_length: column.char_octet_length,
+            ordinal_position: column.ordinal_position,
+            nullable: column.nullable,
+            generated_column: column.generated_column,
+            extent: column.extent,
+            charset: column.charset,
+            collation: column.collation,
+            unit: column.unit,
+            sparse: column.sparse,
+            default_constraint_name: column.default_constraint_name,
+            seed: column.seed,
+            increment: column.increment,
+            on_update_current_timestamp: column.on_update_current_timestamp,
+        }
+    }
+}
+
+impl From<wire::CommunityTableIndexColumn> for CommunityTableIndexColumn {
+    fn from(column: wire::CommunityTableIndexColumn) -> Self {
+        Self {
+            database_name: column.database_name,
+            schema_name: column.schema_name,
+            table_name: column.table_name,
+            index_name: column.index_name,
+            column_name: column.column_name,
+            column_type: column.r#type,
+            comment: column.comment,
+            ordinal_position: column.ordinal_position,
+            collation: column.collation,
+            non_unique: column.non_unique,
+            index_qualifier: column.index_qualifier,
+            sort_order: column.sort_order,
+            cardinality: column.cardinality,
+            pages: column.pages,
+            filter_condition: column.filter_condition,
+            sub_part: column.sub_part,
+        }
+    }
+}
+
+impl From<wire::CommunityTableIndex> for CommunityTableIndex {
+    fn from(index: wire::CommunityTableIndex) -> Self {
+        Self {
+            database_name: index.database_name,
+            schema_name: index.schema_name,
+            table_name: index.table_name,
+            name: index.name,
+            index_type: index.r#type,
+            unique: index.unique,
+            comment: index.comment,
+            columns: index.columns.into_iter().map(Into::into).collect(),
+            concurrently: index.concurrently,
+            method: index.method,
+            foreign_schema_name: index.foreign_schema_name,
+            foreign_table_name: index.foreign_table_name,
+            foreign_column_names: index.foreign_column_names,
+        }
+    }
+}
+
 impl From<wire::CommunitySqlAnalysis> for CommunitySqlAnalysis {
     fn from(analysis: wire::CommunitySqlAnalysis) -> Self {
         Self {
@@ -818,6 +1243,45 @@ impl From<wire::CommunityParsedStatement> for CommunityParsedStatement {
             kind: statement.r#type,
         }
     }
+}
+
+fn validate_metadata_session(
+    binding: &EngineBinding,
+    session: &Session,
+    transaction_id: Option<&str>,
+) -> Result<(), BridgeError> {
+    if let Some(transaction_id) = transaction_id {
+        validate_non_blank_utf8(transaction_id, MAX_PROTOCOL_ID_BYTES, "transaction id")?;
+    }
+    if binding != &session.binding {
+        return Err(BridgeError::StaleHandle(
+            "Community metadata session belongs to another engine".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn metadata_table_request(
+    binding: &EngineBinding,
+    session: &Session,
+    database_type: String,
+    database_name: String,
+    schema_name: String,
+    table_name: String,
+    transaction_id: Option<String>,
+) -> Result<wire::ListCommunityColumnsRequest, BridgeError> {
+    validate_database_type(&database_type)?;
+    validate_utf8(&database_name, MAX_SCALAR_BYTES, "database name")?;
+    validate_utf8(&schema_name, MAX_SCALAR_BYTES, "schema name")?;
+    validate_non_blank_utf8(&table_name, MAX_SCALAR_BYTES, "table name")?;
+    validate_metadata_session(binding, session, transaction_id.as_deref())?;
+    Ok(wire::ListCommunityColumnsRequest {
+        database_type,
+        database_name,
+        schema_name,
+        table_name,
+        transaction_id,
+    })
 }
 
 fn hash_regular_file(path: &Path, maximum_bytes: u64) -> Result<([u8; 32], u64), BridgeError> {

@@ -2,9 +2,15 @@ package ai.chat2db.rust.compat;
 
 import ai.chat2db.rust.compat.protocol.v1.CommunityBuiltSql;
 import ai.chat2db.rust.compat.protocol.v1.CommunityByteLimit;
+import ai.chat2db.rust.compat.protocol.v1.CommunityColumnCountLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunityCountLimit;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDatabase;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDatabaseCountLimit;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDatabaseList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityDownloadUrlLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunityDriverConfig;
+import ai.chat2db.rust.compat.protocol.v1.CommunityIndexColumnCountLimit;
+import ai.chat2db.rust.compat.protocol.v1.CommunityIndexCountLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunityParsedStatement;
 import ai.chat2db.rust.compat.protocol.v1.CommunityPluginCatalog;
 import ai.chat2db.rust.compat.protocol.v1.CommunityPluginDescriptor;
@@ -12,6 +18,14 @@ import ai.chat2db.rust.compat.protocol.v1.CommunitySchema;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySchemaList;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySchemaCountLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySqlAnalysis;
+import ai.chat2db.rust.compat.protocol.v1.CommunityTable;
+import ai.chat2db.rust.compat.protocol.v1.CommunityTableColumn;
+import ai.chat2db.rust.compat.protocol.v1.CommunityTableColumnList;
+import ai.chat2db.rust.compat.protocol.v1.CommunityTableCountLimit;
+import ai.chat2db.rust.compat.protocol.v1.CommunityTableIndex;
+import ai.chat2db.rust.compat.protocol.v1.CommunityTableIndexColumn;
+import ai.chat2db.rust.compat.protocol.v1.CommunityTableIndexList;
+import ai.chat2db.rust.compat.protocol.v1.CommunityTableList;
 import ai.chat2db.rust.compat.protocol.v1.JdbcProtocolLimit;
 import ai.chat2db.rust.compat.protocol.v1.OperationOutcome;
 import java.io.IOException;
@@ -51,6 +65,10 @@ final class CommunityPluginRegistry implements AutoCloseable {
             "ai.chat2db.community.domain.api.config.DBConfig";
     private static final String SCHEMA_CLASS =
             "ai.chat2db.community.domain.api.model.metadata.Schema";
+    private static final String TABLES_REQUEST_CLASS =
+            "ai.chat2db.spi.model.request.TablesRequest";
+    private static final String TABLE_METADATA_REQUEST_CLASS =
+            "ai.chat2db.spi.model.request.TableMetadataRequest";
     private static final int MAX_CLASSPATH_ARTIFACTS =
             CommunityCountLimit.COMMUNITY_COUNT_LIMIT_MAX_CLASSPATH_ARTIFACTS.getNumber();
     private static final long MAX_CLASSPATH_BYTES =
@@ -63,6 +81,17 @@ final class CommunityPluginRegistry implements AutoCloseable {
             CommunityDownloadUrlLimit.COMMUNITY_DOWNLOAD_URL_LIMIT_MAX_DOWNLOAD_URLS.getNumber();
     private static final int MAX_SCHEMAS =
             CommunitySchemaCountLimit.COMMUNITY_SCHEMA_COUNT_LIMIT_MAX_SCHEMAS.getNumber();
+    private static final int MAX_DATABASES =
+            CommunityDatabaseCountLimit.COMMUNITY_DATABASE_COUNT_LIMIT_MAX_DATABASES.getNumber();
+    private static final int MAX_TABLES =
+            CommunityTableCountLimit.COMMUNITY_TABLE_COUNT_LIMIT_MAX_TABLES.getNumber();
+    private static final int MAX_COLUMNS =
+            CommunityColumnCountLimit.COMMUNITY_COLUMN_COUNT_LIMIT_MAX_COLUMNS.getNumber();
+    private static final int MAX_INDEXES =
+            CommunityIndexCountLimit.COMMUNITY_INDEX_COUNT_LIMIT_MAX_INDEXES.getNumber();
+    private static final int MAX_INDEX_COLUMNS =
+            CommunityIndexColumnCountLimit.COMMUNITY_INDEX_COLUMN_COUNT_LIMIT_MAX_INDEX_COLUMNS
+                    .getNumber();
     private static final int MAX_STATEMENTS =
             CommunityCountLimit.COMMUNITY_COUNT_LIMIT_MAX_STATEMENTS.getNumber();
     private static final int MAX_DATABASE_TYPE_BYTES =
@@ -81,6 +110,7 @@ final class CommunityPluginRegistry implements AutoCloseable {
             JdbcProtocolLimit.JDBC_PROTOCOL_LIMIT_MAX_PATH_BYTES.getNumber();
     private static final int LENGTH_DELIMITED_FIELD_OVERHEAD_BYTES = 6;
     private static final int BOOLEAN_FIELD_OVERHEAD_BYTES = 2;
+    private static final int NUMERIC_FIELD_OVERHEAD_BYTES = 15;
 
     private final String sourceCommit;
     private final URLClassLoader loader;
@@ -152,17 +182,7 @@ final class CommunityPluginRegistry implements AutoCloseable {
             String databaseType, Connection connection, String databaseName)
             throws RuntimeFailure {
         validateSchemasRequest(databaseType, databaseName);
-        PluginHandle handle = requirePlugin(databaseType);
-        Thread thread = Thread.currentThread();
-        ClassLoader previous = thread.getContextClassLoader();
-        thread.setContextClassLoader(loader);
-        try {
-            Object metadata = invoke(handle.plugin(), "getDbMetaData");
-            if (metadata == null) {
-                throw RuntimeFailure.validation(
-                        "community.metadata_not_supported",
-                        "the selected Community plugin does not provide metadata");
-            }
+        return withMetadata(databaseType, metadata -> {
             Object result = invoke(
                     metadata,
                     "schemas",
@@ -181,13 +201,159 @@ final class CommunityPluginRegistry implements AutoCloseable {
                 schemas.addSchemas(schema(value, budget));
             }
             return schemas.build();
-        } catch (RuntimeFailure failure) {
-            throw failure;
-        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
-            throw metadataFailure(failure);
-        } finally {
-            thread.setContextClassLoader(previous);
-        }
+        });
+    }
+
+    void validateDatabasesRequest(String databaseType) throws RuntimeFailure {
+        ensureOpen();
+        requireDatabaseType(databaseType);
+        requirePlugin(databaseType);
+    }
+
+    CommunityDatabaseList databases(String databaseType, Connection connection)
+            throws RuntimeFailure {
+        validateDatabasesRequest(databaseType);
+        return withMetadata(databaseType, metadata -> {
+            List<?> values = requireList(
+                    invoke(metadata, "databases", new Class<?>[] {Connection.class}, connection),
+                    "databases");
+            if (values.size() > MAX_DATABASES) {
+                throw RuntimeFailure.limit("community databases", MAX_DATABASES);
+            }
+            ProjectionBudget budget = ProjectionBudget.response();
+            budget.consumeMessage();
+            CommunityDatabaseList.Builder databases = CommunityDatabaseList.newBuilder();
+            for (Object value : values) {
+                budget.consumeMessage();
+                databases.addDatabases(database(value, budget));
+            }
+            return databases.build();
+        });
+    }
+
+    void validateTablesRequest(
+            String databaseType,
+            String databaseName,
+            String schemaName,
+            String tableNamePattern)
+            throws RuntimeFailure {
+        ensureOpen();
+        requireDatabaseType(databaseType);
+        requireUtf8(databaseName, MAX_SCALAR_BYTES, "database_name");
+        requireUtf8(schemaName, MAX_SCALAR_BYTES, "schema_name");
+        requireUtf8(tableNamePattern, MAX_SCALAR_BYTES, "table_name_pattern");
+        requirePlugin(databaseType);
+    }
+
+    CommunityTableList tables(
+            String databaseType,
+            Connection connection,
+            String databaseName,
+            String schemaName,
+            String tableNamePattern)
+            throws RuntimeFailure {
+        validateTablesRequest(databaseType, databaseName, schemaName, tableNamePattern);
+        return withMetadata(databaseType, metadata -> {
+            Object request = metadataRequest(
+                    TABLES_REQUEST_CLASS, databaseName, schemaName, tableNamePattern);
+            List<?> values = requireList(
+                    invoke(
+                            metadata,
+                            "tables",
+                            new Class<?>[] {Connection.class, request.getClass()},
+                            connection,
+                            request),
+                    "tables");
+            if (values.size() > MAX_TABLES) {
+                throw RuntimeFailure.limit("community tables", MAX_TABLES);
+            }
+            ProjectionBudget budget = ProjectionBudget.response();
+            budget.consumeMessage();
+            CommunityTableList.Builder tables = CommunityTableList.newBuilder();
+            for (Object value : values) {
+                budget.consumeMessage();
+                tables.addTables(table(value, budget));
+            }
+            return tables.build();
+        });
+    }
+
+    void validateTableObjectRequest(
+            String databaseType, String databaseName, String schemaName, String tableName)
+            throws RuntimeFailure {
+        ensureOpen();
+        requireDatabaseType(databaseType);
+        requireUtf8(databaseName, MAX_SCALAR_BYTES, "database_name");
+        requireUtf8(schemaName, MAX_SCALAR_BYTES, "schema_name");
+        requireNonBlank(tableName, MAX_SCALAR_BYTES, "table_name");
+        requirePlugin(databaseType);
+    }
+
+    CommunityTableColumnList columns(
+            String databaseType,
+            Connection connection,
+            String databaseName,
+            String schemaName,
+            String tableName)
+            throws RuntimeFailure {
+        validateTableObjectRequest(databaseType, databaseName, schemaName, tableName);
+        return withMetadata(databaseType, metadata -> {
+            Object request = metadataRequest(
+                    TABLE_METADATA_REQUEST_CLASS, databaseName, schemaName, tableName);
+            List<?> values = requireList(
+                    invoke(
+                            metadata,
+                            "columns",
+                            new Class<?>[] {Connection.class, request.getClass()},
+                            connection,
+                            request),
+                    "columns");
+            if (values.size() > MAX_COLUMNS) {
+                throw RuntimeFailure.limit("community columns", MAX_COLUMNS);
+            }
+            ProjectionBudget budget = ProjectionBudget.response();
+            budget.consumeMessage();
+            CommunityTableColumnList.Builder columns = CommunityTableColumnList.newBuilder();
+            for (Object value : values) {
+                budget.consumeMessage();
+                columns.addColumns(column(value, budget));
+            }
+            return columns.build();
+        });
+    }
+
+    CommunityTableIndexList indexes(
+            String databaseType,
+            Connection connection,
+            String databaseName,
+            String schemaName,
+            String tableName)
+            throws RuntimeFailure {
+        validateTableObjectRequest(databaseType, databaseName, schemaName, tableName);
+        return withMetadata(databaseType, metadata -> {
+            Object request = metadataRequest(
+                    TABLE_METADATA_REQUEST_CLASS, databaseName, schemaName, tableName);
+            List<?> values = requireList(
+                    invoke(
+                            metadata,
+                            "indexes",
+                            new Class<?>[] {Connection.class, request.getClass()},
+                            connection,
+                            request),
+                    "indexes");
+            if (values.size() > MAX_INDEXES) {
+                throw RuntimeFailure.limit("community indexes", MAX_INDEXES);
+            }
+            ProjectionBudget budget = ProjectionBudget.response();
+            budget.consumeMessage();
+            int[] projectedColumns = {0};
+            CommunityTableIndexList.Builder indexes = CommunityTableIndexList.newBuilder();
+            for (Object value : values) {
+                budget.consumeMessage();
+                indexes.addIndexes(index(value, budget, projectedColumns));
+            }
+            return indexes.build();
+        });
     }
 
     CommunityBuiltSql buildCreateSchema(String databaseType, CommunitySchema requested)
@@ -471,6 +637,287 @@ final class CommunityPluginRegistry implements AutoCloseable {
         return schema.build();
     }
 
+    private CommunityDatabase database(Object value, ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        CommunityDatabase.Builder database = CommunityDatabase.newBuilder()
+                .setName(getString(
+                        value, "getName", MAX_SCALAR_BYTES, "database_name", budget))
+                .setComment(getString(
+                        value, "getComment", MAX_COMMENT_BYTES, "database_comment", budget))
+                .setCharset(getString(
+                        value, "getCharset", MAX_SCALAR_BYTES, "database_charset", budget))
+                .setCollation(getString(
+                        value, "getCollation", MAX_SCALAR_BYTES, "database_collation", budget))
+                .setOwner(getString(
+                        value, "getOwner", MAX_SCALAR_BYTES, "database_owner", budget))
+                .setSystem(getBoolean(value, "isSystem"));
+        budget.consumeBoolean();
+        return database.build();
+    }
+
+    private CommunityTable table(Object value, ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        CommunityTable.Builder table = CommunityTable.newBuilder()
+                .setDatabaseName(getString(
+                        value, "getDatabaseName", MAX_SCALAR_BYTES, "table_database_name", budget))
+                .setSchemaName(getString(
+                        value, "getSchemaName", MAX_SCALAR_BYTES, "table_schema_name", budget))
+                .setName(getString(
+                        value, "getName", MAX_SCALAR_BYTES, "table_name", budget))
+                .setType(getString(
+                        value, "getType", MAX_SCALAR_BYTES, "table_type", budget))
+                .setComment(getString(
+                        value, "getComment", MAX_COMMENT_BYTES, "table_comment", budget))
+                .setDatabaseType(getString(
+                        value, "getDbType", MAX_DATABASE_TYPE_BYTES, "table_database_type", budget))
+                .setPinned(getBoolean(value, "isPinned"))
+                .setDdl(getString(value, "getDdl", MAX_SQL_BYTES, "table_ddl", budget))
+                .setEngine(getString(
+                        value, "getEngine", MAX_SCALAR_BYTES, "table_engine", budget))
+                .setCharset(getString(
+                        value, "getCharset", MAX_SCALAR_BYTES, "table_charset", budget))
+                .setCollation(getString(
+                        value, "getCollate", MAX_SCALAR_BYTES, "table_collation", budget))
+                .setPartition(getString(
+                        value, "getPartition", MAX_SQL_BYTES, "table_partition", budget))
+                .setTablespace(getString(
+                        value, "getTablespace", MAX_SCALAR_BYTES, "table_tablespace", budget))
+                .setCreateTime(getString(
+                        value, "getCreateTime", MAX_SCALAR_BYTES, "table_create_time", budget))
+                .setUpdateTime(getString(
+                        value, "getUpdateTime", MAX_SCALAR_BYTES, "table_update_time", budget));
+        budget.consumeBoolean();
+        setOptionalLong(table::setIncrementValue, value, "getIncrementValue", budget);
+        setOptionalLong(table::setRows, value, "getRows", budget);
+        setOptionalLong(table::setDataLength, value, "getDataLength", budget);
+        return table.build();
+    }
+
+    private CommunityTableColumn column(Object value, ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        CommunityTableColumn.Builder column = CommunityTableColumn.newBuilder()
+                .setDatabaseName(getString(
+                        value, "getDatabaseName", MAX_SCALAR_BYTES, "column_database_name", budget))
+                .setSchemaName(getString(
+                        value, "getSchemaName", MAX_SCALAR_BYTES, "column_schema_name", budget))
+                .setTableName(getString(
+                        value, "getTableName", MAX_SCALAR_BYTES, "column_table_name", budget))
+                .setName(getString(
+                        value, "getName", MAX_SCALAR_BYTES, "column_name", budget))
+                .setColumnType(getString(
+                        value, "getColumnType", MAX_SCALAR_BYTES, "column_type", budget))
+                .setDefaultValue(getString(
+                        value, "getDefaultValue", MAX_SQL_BYTES, "column_default_value", budget))
+                .setComment(getString(
+                        value, "getComment", MAX_COMMENT_BYTES, "column_comment", budget))
+                .setPrimaryKeyName(getString(
+                        value,
+                        "getPrimaryKeyName",
+                        MAX_SCALAR_BYTES,
+                        "column_primary_key_name",
+                        budget))
+                .setPrimaryKeyOrder(getRequiredInteger(value, "getPrimaryKeyOrder", budget))
+                .setExtent(getString(
+                        value, "getExtent", MAX_SCALAR_BYTES, "column_extent", budget))
+                .setCharset(getString(
+                        value, "getCharSetName", MAX_SCALAR_BYTES, "column_charset", budget))
+                .setCollation(getString(
+                        value, "getCollationName", MAX_SCALAR_BYTES, "column_collation", budget))
+                .setUnit(getString(
+                        value, "getUnit", MAX_SCALAR_BYTES, "column_unit", budget))
+                .setDefaultConstraintName(getString(
+                        value,
+                        "getDefaultConstraintName",
+                        MAX_SCALAR_BYTES,
+                        "column_default_constraint_name",
+                        budget));
+        setOptionalInteger(column::setDataType, value, "getDataType", budget);
+        setOptionalBoolean(column::setAutoIncrement, value, "getAutoIncrement", budget);
+        setOptionalBoolean(column::setPrimaryKey, value, "getPrimaryKey", budget);
+        setOptionalInteger(column::setColumnSize, value, "getColumnSize", budget);
+        setOptionalInteger(column::setBufferLength, value, "getBufferLength", budget);
+        setOptionalInteger(column::setDecimalDigits, value, "getDecimalDigits", budget);
+        setOptionalInteger(column::setNumPrecRadix, value, "getNumPrecRadix", budget);
+        setOptionalInteger(column::setSqlDataType, value, "getSqlDataType", budget);
+        setOptionalInteger(column::setSqlDatetimeSub, value, "getSqlDatetimeSub", budget);
+        setOptionalInteger(column::setCharOctetLength, value, "getCharOctetLength", budget);
+        setOptionalInteger(column::setOrdinalPosition, value, "getOrdinalPosition", budget);
+        setOptionalInteger(column::setNullable, value, "getNullable", budget);
+        setOptionalBoolean(column::setGeneratedColumn, value, "getGeneratedColumn", budget);
+        setOptionalBoolean(column::setSparse, value, "getSparse", budget);
+        setOptionalInteger(column::setSeed, value, "getSeed", budget);
+        setOptionalInteger(column::setIncrement, value, "getIncrement", budget);
+        setOptionalBoolean(
+                column::setOnUpdateCurrentTimestamp,
+                value,
+                "getOnUpdateCurrentTimestamp",
+                budget);
+        return column.build();
+    }
+
+    private CommunityTableIndex index(
+            Object value, ProjectionBudget budget, int[] projectedColumns)
+            throws ReflectiveOperationException, RuntimeFailure {
+        CommunityTableIndex.Builder index = CommunityTableIndex.newBuilder()
+                .setDatabaseName(getString(
+                        value, "getDatabaseName", MAX_SCALAR_BYTES, "index_database_name", budget))
+                .setSchemaName(getString(
+                        value, "getSchemaName", MAX_SCALAR_BYTES, "index_schema_name", budget))
+                .setTableName(getString(
+                        value, "getTableName", MAX_SCALAR_BYTES, "index_table_name", budget))
+                .setName(getString(
+                        value, "getName", MAX_SCALAR_BYTES, "index_name", budget))
+                .setType(getString(
+                        value, "getType", MAX_SCALAR_BYTES, "index_type", budget))
+                .setComment(getString(
+                        value, "getComment", MAX_COMMENT_BYTES, "index_comment", budget))
+                .setMethod(getString(
+                        value, "getMethod", MAX_SCALAR_BYTES, "index_method", budget))
+                .setForeignSchemaName(getString(
+                        value,
+                        "getForeignSchemaName",
+                        MAX_SCALAR_BYTES,
+                        "index_foreign_schema_name",
+                        budget))
+                .setForeignTableName(getString(
+                        value,
+                        "getForeignTableName",
+                        MAX_SCALAR_BYTES,
+                        "index_foreign_table_name",
+                        budget));
+        setOptionalBoolean(index::setUnique, value, "getUnique", budget);
+        setOptionalBoolean(index::setConcurrently, value, "getConcurrently", budget);
+        for (Object rawColumn : requireList(invoke(value, "getColumnList"), "index columns")) {
+            requireIndexColumnCapacity(projectedColumns);
+            budget.consumeMessage();
+            index.addColumns(indexColumn(rawColumn, budget));
+        }
+        for (Object rawName : requireList(
+                invoke(value, "getForeignColumnNamelist"), "foreign index columns")) {
+            requireIndexColumnCapacity(projectedColumns);
+            index.addForeignColumnNames(projectString(
+                    scalar(rawName),
+                    MAX_SCALAR_BYTES,
+                    "index_foreign_column_name",
+                    budget));
+        }
+        return index.build();
+    }
+
+    private CommunityTableIndexColumn indexColumn(Object value, ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        CommunityTableIndexColumn.Builder column = CommunityTableIndexColumn.newBuilder()
+                .setDatabaseName(getString(
+                        value,
+                        "getDatabaseName",
+                        MAX_SCALAR_BYTES,
+                        "index_column_database_name",
+                        budget))
+                .setSchemaName(getString(
+                        value,
+                        "getSchemaName",
+                        MAX_SCALAR_BYTES,
+                        "index_column_schema_name",
+                        budget))
+                .setTableName(getString(
+                        value,
+                        "getTableName",
+                        MAX_SCALAR_BYTES,
+                        "index_column_table_name",
+                        budget))
+                .setIndexName(getString(
+                        value,
+                        "getIndexName",
+                        MAX_SCALAR_BYTES,
+                        "index_column_index_name",
+                        budget))
+                .setColumnName(getString(
+                        value,
+                        "getColumnName",
+                        MAX_SCALAR_BYTES,
+                        "index_column_name",
+                        budget))
+                .setType(getString(
+                        value, "getType", MAX_SCALAR_BYTES, "index_column_type", budget))
+                .setComment(getString(
+                        value,
+                        "getComment",
+                        MAX_COMMENT_BYTES,
+                        "index_column_comment",
+                        budget))
+                .setCollation(getString(
+                        value,
+                        "getCollation",
+                        MAX_SCALAR_BYTES,
+                        "index_column_collation",
+                        budget))
+                .setIndexQualifier(getString(
+                        value,
+                        "getIndexQualifier",
+                        MAX_SCALAR_BYTES,
+                        "index_column_qualifier",
+                        budget))
+                .setSortOrder(getString(
+                        value,
+                        "getAscOrDesc",
+                        MAX_SCALAR_BYTES,
+                        "index_column_sort_order",
+                        budget))
+                .setFilterCondition(getString(
+                        value,
+                        "getFilterCondition",
+                        MAX_SQL_BYTES,
+                        "index_column_filter_condition",
+                        budget));
+        setOptionalInteger(column::setOrdinalPosition, value, "getOrdinalPosition", budget);
+        setOptionalBoolean(column::setNonUnique, value, "getNonUnique", budget);
+        setOptionalLong(column::setCardinality, value, "getCardinality", budget);
+        setOptionalLong(column::setPages, value, "getPages", budget);
+        setOptionalLong(column::setSubPart, value, "getSubPart", budget);
+        return column.build();
+    }
+
+    private void requireIndexColumnCapacity(int[] projectedColumns) throws RuntimeFailure {
+        projectedColumns[0]++;
+        if (projectedColumns[0] > MAX_INDEX_COLUMNS) {
+            throw RuntimeFailure.limit("community index columns", MAX_INDEX_COLUMNS);
+        }
+    }
+
+    private Object metadataRequest(
+            String className, String databaseName, String schemaName, String tableName)
+            throws ReflectiveOperationException {
+        Class<?> requestType = Class.forName(className, true, loader);
+        Object request = requestType.getDeclaredConstructor().newInstance();
+        invokeSetter(request, "setDatabaseName", String.class, databaseName);
+        invokeSetter(request, "setSchemaName", String.class, schemaName);
+        invokeSetter(request, "setTableName", String.class, tableName);
+        return request;
+    }
+
+    private <T> T withMetadata(String databaseType, MetadataInvocation<T> invocation)
+            throws RuntimeFailure {
+        PluginHandle handle = requirePlugin(databaseType);
+        Thread thread = Thread.currentThread();
+        ClassLoader previous = thread.getContextClassLoader();
+        thread.setContextClassLoader(loader);
+        try {
+            Object metadata = invoke(handle.plugin(), "getDbMetaData");
+            if (metadata == null) {
+                throw RuntimeFailure.validation(
+                        "community.metadata_not_supported",
+                        "the selected Community plugin does not provide metadata");
+            }
+            return invocation.invoke(metadata);
+        } catch (RuntimeFailure failure) {
+            throw failure;
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+            throw metadataFailure(failure);
+        } finally {
+            thread.setContextClassLoader(previous);
+        }
+    }
+
     private PluginHandle requirePlugin(String databaseType) throws RuntimeFailure {
         requireDatabaseType(databaseType);
         PluginHandle plugin = plugins.get(normalize(databaseType));
@@ -717,6 +1164,65 @@ final class CommunityPluginRegistry implements AutoCloseable {
         return booleanValue(invoke(target, getter));
     }
 
+    private static int getRequiredInteger(
+            Object target, String getter, ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        Object value = invoke(target, getter);
+        if (!(value instanceof Number number)) {
+            throw new IllegalStateException("Community plugin returned a non-numeric value");
+        }
+        budget.consumeNumeric();
+        return number.intValue();
+    }
+
+    private static void setOptionalBoolean(
+            BooleanSetter setter,
+            Object target,
+            String getter,
+            ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        Object value = invoke(target, getter);
+        if (value == null) {
+            return;
+        }
+        setter.set(booleanValue(value));
+        budget.consumeBoolean();
+    }
+
+    private static void setOptionalInteger(
+            IntegerSetter setter,
+            Object target,
+            String getter,
+            ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        Object value = invoke(target, getter);
+        if (value == null) {
+            return;
+        }
+        if (!(value instanceof Number number)) {
+            throw new IllegalStateException("Community plugin returned a non-numeric value");
+        }
+        setter.set(number.intValue());
+        budget.consumeNumeric();
+    }
+
+    private static void setOptionalLong(
+            LongSetter setter,
+            Object target,
+            String getter,
+            ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        Object value = invoke(target, getter);
+        if (value == null) {
+            return;
+        }
+        if (!(value instanceof Number number)) {
+            throw new IllegalStateException("Community plugin returned a non-numeric value");
+        }
+        setter.set(number.longValue());
+        budget.consumeNumeric();
+    }
+
     private static boolean booleanValue(Object value) {
         if (value instanceof Boolean booleanValue) {
             return booleanValue;
@@ -818,6 +1324,10 @@ final class CommunityPluginRegistry implements AutoCloseable {
             }
         }
 
+        void consumeNumeric() throws RuntimeFailure {
+            consume(NUMERIC_FIELD_OVERHEAD_BYTES);
+        }
+
         void consumeUtf8(String value) throws RuntimeFailure {
             int utf8Bytes = ProtocolLimits.utf8Length(value);
             if (remainingBytes < LENGTH_DELIMITED_FIELD_OVERHEAD_BYTES
@@ -839,6 +1349,26 @@ final class CommunityPluginRegistry implements AutoCloseable {
                     "Community response projection",
                     MAX_RESPONSE_PROJECTION_BYTES);
         }
+    }
+
+    @FunctionalInterface
+    private interface MetadataInvocation<T> {
+        T invoke(Object metadata) throws ReflectiveOperationException, RuntimeFailure;
+    }
+
+    @FunctionalInterface
+    private interface BooleanSetter {
+        void set(boolean value);
+    }
+
+    @FunctionalInterface
+    private interface IntegerSetter {
+        void set(int value);
+    }
+
+    @FunctionalInterface
+    private interface LongSetter {
+        void set(long value);
     }
 
     private record PluginHandle(String databaseType, Object plugin, Object config) {}

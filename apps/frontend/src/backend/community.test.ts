@@ -3,10 +3,18 @@ import { describe, expect, it } from 'vitest';
 import type {
   BuildCommunityCreateSchemaRequest,
   CommunityBuiltSql,
+  CommunityDatabaseList,
   CommunityPluginCatalog,
   CommunitySchemaList,
   CommunitySqlAnalysis,
+  CommunityTableColumnList,
+  CommunityTableIndexList,
+  CommunityTableList,
+  ListCommunityColumnsRequest,
+  ListCommunityDatabasesRequest,
+  ListCommunityIndexesRequest,
   ListCommunitySchemasRequest,
+  ListCommunityTablesRequest,
   ParseCommunitySqlRequest,
 } from './client';
 import { HttpBackendClient } from './http';
@@ -25,6 +33,31 @@ const schema = {
   owner: 'app',
   system: false,
 };
+
+const listDatabasesRequest = {
+  datasourceId: 'datasource-1',
+  databaseType: 'H2',
+} satisfies ListCommunityDatabasesRequest;
+
+const listTablesRequest = {
+  datasourceId: 'datasource-1',
+  databaseType: 'H2',
+  databaseName: 'inventory',
+  schemaName: 'APP',
+  tableNamePattern: '%',
+} satisfies ListCommunityTablesRequest;
+
+const listColumnsRequest = {
+  datasourceId: 'datasource-1',
+  databaseType: 'H2',
+  databaseName: 'inventory',
+  schemaName: 'APP',
+  tableName: 'ITEMS',
+} satisfies ListCommunityColumnsRequest;
+
+const listIndexesRequest = {
+  ...listColumnsRequest,
+} satisfies ListCommunityIndexesRequest;
 
 const buildSchemaRequest = {
   databaseType: 'H2',
@@ -63,13 +96,102 @@ const catalog = {
 } satisfies CommunityPluginCatalog;
 
 const schemas = { items: [schema] } satisfies CommunitySchemaList;
+const databases = {
+  items: [{
+    name: 'inventory',
+    comment: '',
+    charset: '',
+    collation: '',
+    owner: '',
+    system: false,
+  }],
+} satisfies CommunityDatabaseList;
+const tables = {
+  items: [{
+    databaseName: 'inventory',
+    schemaName: 'APP',
+    name: 'ITEMS',
+    tableType: 'BASE TABLE',
+    comment: '',
+    databaseType: '',
+    pinned: false,
+    ddl: '',
+    engine: '',
+    charset: '',
+    collation: '',
+    incrementValue: '9007199254740993',
+    partition: '',
+    tablespace: '',
+    rows: '9007199254740994',
+    dataLength: '9223372036854775807',
+    createTime: '',
+    updateTime: '',
+  }],
+} satisfies CommunityTableList;
+const columns = {
+  items: [{
+    databaseName: 'inventory',
+    schemaName: 'APP',
+    tableName: 'ITEMS',
+    name: 'ID',
+    columnType: 'BIGINT',
+    defaultValue: '',
+    comment: '',
+    primaryKeyName: 'CONSTRAINT_4',
+    primaryKeyOrder: 1,
+    extent: '',
+    charset: '',
+    collation: '',
+    unit: '',
+    defaultConstraintName: '',
+  }],
+} satisfies CommunityTableColumnList;
+const indexes = {
+  items: [{
+    databaseName: 'inventory',
+    schemaName: 'APP',
+    tableName: 'ITEMS',
+    name: 'IDX_ITEMS_LABEL',
+    indexType: 'BTREE',
+    comment: '',
+    columns: [{
+      databaseName: 'inventory',
+      schemaName: 'APP',
+      tableName: 'ITEMS',
+      indexName: 'IDX_ITEMS_LABEL',
+      columnName: 'LABEL',
+      columnType: '',
+      comment: '',
+      collation: '',
+      indexQualifier: 'inventory',
+      sortOrder: 'A',
+      cardinality: '9007199254740995',
+      pages: '9007199254740996',
+      filterCondition: '',
+      subPart: '9007199254740997',
+    }],
+    method: '',
+    foreignSchemaName: '',
+    foreignTableName: '',
+    foreignColumnNames: [],
+  }],
+} satisfies CommunityTableIndexList;
 const builtSql = { sql: 'CREATE SCHEMA reporting' } satisfies CommunityBuiltSql;
 const analysis = {
   isSelect: true,
   statements: [{ sql: 'select 1', statementType: 'SELECT', kind: 'Select' }],
 } satisfies CommunitySqlAnalysis;
 
-const responses = [catalog, schemas, builtSql, analysis] as const;
+const responses = [
+  catalog,
+  schemas,
+  databases,
+  tables,
+  columns,
+  indexes,
+  builtSql,
+  analysis,
+] as const;
 
 function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), {
@@ -79,7 +201,7 @@ function jsonResponse(value: unknown): Response {
 }
 
 describe('Community backend adapter parity', () => {
-  it('maps the shared methods to the four HTTP routes without reshaping payloads', async () => {
+  it('maps Community HTTP routes without reshaping payloads or decimal integers', async () => {
     const calls: Array<{ input: string; init?: RequestInit }> = [];
     let responseIndex = 0;
     const client = new HttpBackendClient({
@@ -96,11 +218,17 @@ describe('Community backend adapter parity', () => {
     const received = [
       await client.listCommunityPlugins(),
       await client.listCommunitySchemas(listSchemasRequest),
+      await client.listCommunityDatabases(listDatabasesRequest),
+      await client.listCommunityTables(listTablesRequest),
+      await client.listCommunityColumns(listColumnsRequest),
+      await client.listCommunityIndexes(listIndexesRequest),
       await client.buildCommunityCreateSchema(buildSchemaRequest),
       await client.parseCommunitySql(parseSqlRequest),
     ];
 
     expect(received).toEqual(responses);
+    expect(JSON.stringify(received[3])).toContain('"rows":"9007199254740994"');
+    expect(JSON.stringify(received[5])).toContain('"cardinality":"9007199254740995"');
     expect(calls.map(({ input, init }) => ({
       path: new URL(input).pathname,
       method: init?.method,
@@ -113,6 +241,26 @@ describe('Community backend adapter parity', () => {
         body: listSchemasRequest,
       },
       {
+        path: '/api/v1/community/metadata/databases',
+        method: 'POST',
+        body: listDatabasesRequest,
+      },
+      {
+        path: '/api/v1/community/metadata/tables',
+        method: 'POST',
+        body: listTablesRequest,
+      },
+      {
+        path: '/api/v1/community/metadata/columns',
+        method: 'POST',
+        body: listColumnsRequest,
+      },
+      {
+        path: '/api/v1/community/metadata/indexes',
+        method: 'POST',
+        body: listIndexesRequest,
+      },
+      {
         path: '/api/v1/community/sql/build-create-schema',
         method: 'POST',
         body: buildSchemaRequest,
@@ -121,7 +269,7 @@ describe('Community backend adapter parity', () => {
     ]);
   });
 
-  it('maps the same methods to snake-case Tauri commands without reshaping payloads', async () => {
+  it('maps Tauri commands without reshaping payloads or decimal integers', async () => {
     const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
     const client = new TauriBackendClient({
       invoke: async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
@@ -135,14 +283,24 @@ describe('Community backend adapter parity', () => {
     const received = [
       await client.listCommunityPlugins(),
       await client.listCommunitySchemas(listSchemasRequest),
+      await client.listCommunityDatabases(listDatabasesRequest),
+      await client.listCommunityTables(listTablesRequest),
+      await client.listCommunityColumns(listColumnsRequest),
+      await client.listCommunityIndexes(listIndexesRequest),
       await client.buildCommunityCreateSchema(buildSchemaRequest),
       await client.parseCommunitySql(parseSqlRequest),
     ];
 
     expect(received).toEqual(responses);
+    expect(JSON.stringify(received[3])).toContain('"dataLength":"9223372036854775807"');
+    expect(JSON.stringify(received[5])).toContain('"subPart":"9007199254740997"');
     expect(calls).toEqual([
       { command: 'list_community_plugins', args: undefined },
       { command: 'list_community_schemas', args: { request: listSchemasRequest } },
+      { command: 'list_community_databases', args: { request: listDatabasesRequest } },
+      { command: 'list_community_tables', args: { request: listTablesRequest } },
+      { command: 'list_community_columns', args: { request: listColumnsRequest } },
+      { command: 'list_community_indexes', args: { request: listIndexesRequest } },
       { command: 'build_community_create_schema', args: { request: buildSchemaRequest } },
       { command: 'parse_community_sql', args: { request: parseSqlRequest } },
     ]);

@@ -14,11 +14,13 @@ pub use state::{
     EngineIdentity, EngineState, PingReply, ProcessExit, SessionState, StderrSnapshot,
 };
 pub use supervisor::{
-    COMMUNITY_PLUGIN_CATALOG_CAPABILITY, COMMUNITY_SCHEMA_METADATA_CAPABILITY,
-    COMMUNITY_SQL_BUILDER_CAPABILITY, COMMUNITY_SQL_PARSER_CAPABILITY, CancelDisposition,
-    ColumnNullability, CommunityClasspath, CommunityClient, CommunityDriverConfig,
-    CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
-    CommunityPluginServices, CommunitySchema, CommunitySqlAnalysis, ConnectionProperty,
+    COMMUNITY_OBJECT_METADATA_CAPABILITY, COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
+    COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
+    COMMUNITY_SQL_PARSER_CAPABILITY, CancelDisposition, ColumnNullability, CommunityClasspath,
+    CommunityClient, CommunityDatabase, CommunityDriverConfig, CommunityParsedStatement,
+    CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
+    CommunitySchema, CommunitySqlAnalysis, CommunityTable, CommunityTableColumn,
+    CommunityTableIndex, CommunityTableIndexColumn, ConnectionProperty,
     DRIVER_EXTERNAL_JAR_CAPABILITY, DatabaseProduct, DriverArtifact, DriverClient, DriverSpec,
     EngineClient, EngineConfig, EngineSupervisor, FLOW_CREDIT_CAPABILITY, JdbcColumn,
     JdbcParameter, JdbcRow, JdbcValue, JdbcValueType, LoadedDriver, MAX_DRIVER_ARTIFACT_BYTES,

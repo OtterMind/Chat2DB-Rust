@@ -13,7 +13,19 @@ use tokio::{
 use crate::{ProcessExit, StderrSnapshot};
 
 const MAX_COMMUNITY_RESPONSE_BYTES: usize = wire::CommunityByteLimit::MaxResponseBytes as usize;
-const COMMUNITY_RESPONSE_TAGS: std::ops::RangeInclusive<u32> = 200..=203;
+const MAX_COMMUNITY_PLUGINS: usize = wire::CommunityCountLimit::MaxPlugins as usize;
+const MAX_COMMUNITY_DRIVERS: usize = wire::CommunityCountLimit::MaxDriverConfigs as usize;
+const MAX_COMMUNITY_DOWNLOAD_URLS: usize =
+    wire::CommunityDownloadUrlLimit::MaxDownloadUrls as usize;
+const MAX_COMMUNITY_SCHEMAS: usize = wire::CommunitySchemaCountLimit::MaxSchemas as usize;
+const MAX_COMMUNITY_DATABASES: usize = wire::CommunityDatabaseCountLimit::MaxDatabases as usize;
+const MAX_COMMUNITY_TABLES: usize = wire::CommunityTableCountLimit::MaxTables as usize;
+const MAX_COMMUNITY_COLUMNS: usize = wire::CommunityColumnCountLimit::MaxColumns as usize;
+const MAX_COMMUNITY_INDEXES: usize = wire::CommunityIndexCountLimit::MaxIndexes as usize;
+const MAX_COMMUNITY_INDEX_COLUMNS: usize =
+    wire::CommunityIndexColumnCountLimit::MaxIndexColumns as usize;
+const MAX_COMMUNITY_STATEMENTS: usize = wire::CommunityCountLimit::MaxStatements as usize;
+const COMMUNITY_RESPONSE_TAGS: std::ops::RangeInclusive<u32> = 200..=207;
 const MAX_PROTOBUF_FIELD_NUMBER: u64 = (1 << 29) - 1;
 const MAX_PROTOBUF_GROUP_DEPTH: usize = 100;
 
@@ -94,6 +106,7 @@ fn decode_server_envelope(payload: &[u8]) -> Result<wire::ServerEnvelope, String
 fn validate_community_response_wire_budget(payload: &[u8]) -> Result<(), String> {
     let mut cursor = 0;
     let mut community_bytes = 0_usize;
+    let mut counts = CommunityWireCounts::default();
     while cursor < payload.len() {
         let (field_number, wire_type) = read_key(payload, &mut cursor)?;
         if COMMUNITY_RESPONSE_TAGS.contains(&field_number) && wire_type != 2 {
@@ -102,21 +115,204 @@ fn validate_community_response_wire_budget(payload: &[u8]) -> Result<(), String>
             ));
         }
         if wire_type == 2 {
-            let length = read_length(payload, &mut cursor)?;
+            let value = read_length_delimited(payload, &mut cursor)?;
             if COMMUNITY_RESPONSE_TAGS.contains(&field_number) {
                 community_bytes = community_bytes
-                    .checked_add(length)
+                    .checked_add(value.len())
                     .ok_or_else(|| "Community response wire byte count overflowed".to_owned())?;
                 if community_bytes > MAX_COMMUNITY_RESPONSE_BYTES {
                     return Err(format!(
                         "Community response wire payloads total {community_bytes} bytes; maximum is {MAX_COMMUNITY_RESPONSE_BYTES}"
                     ));
                 }
+                validate_community_response_wire_counts(field_number, value, &mut counts)?;
             }
-            advance(payload, &mut cursor, length)?;
         } else {
             skip_wire_value(payload, &mut cursor, field_number, wire_type, 0)?;
         }
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct CommunityWireCounts {
+    plugins: usize,
+    schemas: usize,
+    databases: usize,
+    tables: usize,
+    columns: usize,
+    indexes: usize,
+    index_columns: usize,
+    statements: usize,
+}
+
+fn validate_community_response_wire_counts(
+    response_tag: u32,
+    payload: &[u8],
+    counts: &mut CommunityWireCounts,
+) -> Result<(), String> {
+    match response_tag {
+        200 => scan_community_plugin_catalog(payload, counts),
+        201 => scan_bounded_repeated_field(
+            payload,
+            1,
+            &mut counts.schemas,
+            MAX_COMMUNITY_SCHEMAS,
+            "schema",
+        ),
+        203 => scan_bounded_repeated_field(
+            payload,
+            2,
+            &mut counts.statements,
+            MAX_COMMUNITY_STATEMENTS,
+            "statement",
+        ),
+        204 => scan_bounded_repeated_field(
+            payload,
+            1,
+            &mut counts.databases,
+            MAX_COMMUNITY_DATABASES,
+            "database",
+        ),
+        205 => scan_bounded_repeated_field(
+            payload,
+            1,
+            &mut counts.tables,
+            MAX_COMMUNITY_TABLES,
+            "table",
+        ),
+        206 => scan_bounded_repeated_field(
+            payload,
+            1,
+            &mut counts.columns,
+            MAX_COMMUNITY_COLUMNS,
+            "column",
+        ),
+        207 => scan_community_index_list(payload, counts),
+        _ => Ok(()),
+    }
+}
+
+fn scan_community_plugin_catalog(
+    payload: &[u8],
+    counts: &mut CommunityWireCounts,
+) -> Result<(), String> {
+    scan_message_fields(payload, |field_number, wire_type, value| {
+        if field_number != 2 {
+            return Ok(());
+        }
+        let plugin = require_length_delimited(wire_type, value, "Community plugin")?;
+        add_wire_count(&mut counts.plugins, MAX_COMMUNITY_PLUGINS, "plugin")?;
+        scan_community_plugin(plugin)
+    })
+}
+
+fn scan_community_plugin(payload: &[u8]) -> Result<(), String> {
+    let mut drivers = 0_usize;
+    scan_message_fields(payload, |field_number, wire_type, value| {
+        if field_number != 6 {
+            return Ok(());
+        }
+        let driver = require_length_delimited(wire_type, value, "Community driver")?;
+        add_wire_count(&mut drivers, MAX_COMMUNITY_DRIVERS, "driver")?;
+        scan_community_driver(driver)
+    })
+}
+
+fn scan_community_driver(payload: &[u8]) -> Result<(), String> {
+    let mut download_urls = 0_usize;
+    scan_message_fields(payload, |field_number, wire_type, value| {
+        if field_number != 4 {
+            return Ok(());
+        }
+        require_length_delimited(wire_type, value, "Community driver download URL")?;
+        add_wire_count(
+            &mut download_urls,
+            MAX_COMMUNITY_DOWNLOAD_URLS,
+            "download-URL",
+        )
+    })
+}
+
+fn scan_community_index_list(
+    payload: &[u8],
+    counts: &mut CommunityWireCounts,
+) -> Result<(), String> {
+    scan_message_fields(payload, |field_number, wire_type, value| {
+        if field_number != 1 {
+            return Ok(());
+        }
+        let index = require_length_delimited(wire_type, value, "Community index")?;
+        add_wire_count(&mut counts.indexes, MAX_COMMUNITY_INDEXES, "index")?;
+        scan_community_index(index, &mut counts.index_columns)
+    })
+}
+
+fn scan_community_index(payload: &[u8], index_columns: &mut usize) -> Result<(), String> {
+    scan_message_fields(payload, |field_number, wire_type, value| {
+        if field_number != 8 && field_number != 13 {
+            return Ok(());
+        }
+        require_length_delimited(wire_type, value, "Community index column")?;
+        add_wire_count(index_columns, MAX_COMMUNITY_INDEX_COLUMNS, "index-column")
+    })
+}
+
+fn scan_bounded_repeated_field(
+    payload: &[u8],
+    repeated_field: u32,
+    count: &mut usize,
+    maximum: usize,
+    label: &str,
+) -> Result<(), String> {
+    scan_message_fields(payload, |field_number, wire_type, value| {
+        if field_number != repeated_field {
+            return Ok(());
+        }
+        require_length_delimited(wire_type, value, label)?;
+        add_wire_count(count, maximum, label)
+    })
+}
+
+fn scan_message_fields(
+    payload: &[u8],
+    mut inspect: impl FnMut(u32, u8, Option<&[u8]>) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut cursor = 0;
+    while cursor < payload.len() {
+        let (field_number, wire_type) = read_key(payload, &mut cursor)?;
+        if wire_type == 2 {
+            let value = read_length_delimited(payload, &mut cursor)?;
+            inspect(field_number, wire_type, Some(value))?;
+        } else {
+            inspect(field_number, wire_type, None)?;
+            skip_wire_value(payload, &mut cursor, field_number, wire_type, 0)?;
+        }
+    }
+    Ok(())
+}
+
+fn require_length_delimited<'a>(
+    wire_type: u8,
+    value: Option<&'a [u8]>,
+    label: &str,
+) -> Result<&'a [u8], String> {
+    if wire_type != 2 {
+        return Err(format!(
+            "{label} used non-length-delimited wire type {wire_type} before Protobuf decode"
+        ));
+    }
+    value.ok_or_else(|| format!("{label} had no length-delimited value before Protobuf decode"))
+}
+
+fn add_wire_count(count: &mut usize, maximum: usize, label: &str) -> Result<(), String> {
+    *count = count
+        .checked_add(1)
+        .ok_or_else(|| format!("Community response wire {label} count overflowed"))?;
+    if *count > maximum {
+        return Err(format!(
+            "Community response wire exceeded the {maximum}-{label} limit before Protobuf decode"
+        ));
     }
     Ok(())
 }
@@ -140,6 +336,18 @@ fn read_key(payload: &[u8], cursor: &mut usize) -> Result<(u32, u8), String> {
 fn read_length(payload: &[u8], cursor: &mut usize) -> Result<usize, String> {
     usize::try_from(read_varint(payload, cursor)?)
         .map_err(|_| "process frame Protobuf field length overflowed".to_owned())
+}
+
+fn read_length_delimited<'a>(payload: &'a [u8], cursor: &mut usize) -> Result<&'a [u8], String> {
+    let length = read_length(payload, cursor)?;
+    let end = cursor
+        .checked_add(length)
+        .ok_or_else(|| "process frame Protobuf cursor overflowed".to_owned())?;
+    let value = payload
+        .get(*cursor..end)
+        .ok_or_else(|| "process frame Protobuf contained a truncated field".to_owned())?;
+    *cursor = end;
+    Ok(value)
 }
 
 fn read_varint(payload: &[u8], cursor: &mut usize) -> Result<u64, String> {
@@ -292,11 +500,23 @@ mod tests {
     use tokio::{io::duplex, sync::mpsc};
 
     use super::{
-        MAX_COMMUNITY_RESPONSE_BYTES, ReaderEvent, WriterCommand, WriterEvent, reader_loop,
-        writer_loop,
+        MAX_COMMUNITY_COLUMNS, MAX_COMMUNITY_DATABASES, MAX_COMMUNITY_DOWNLOAD_URLS,
+        MAX_COMMUNITY_DRIVERS, MAX_COMMUNITY_INDEX_COLUMNS, MAX_COMMUNITY_INDEXES,
+        MAX_COMMUNITY_PLUGINS, MAX_COMMUNITY_RESPONSE_BYTES, MAX_COMMUNITY_SCHEMAS,
+        MAX_COMMUNITY_STATEMENTS, MAX_COMMUNITY_TABLES, ReaderEvent, WriterCommand, WriterEvent,
+        reader_loop, validate_community_response_wire_budget, writer_loop,
     };
 
+    const COMMUNITY_PLUGIN_CATALOG_TAG: u32 = 200;
+    const COMMUNITY_SCHEMA_LIST_TAG: u32 = 201;
     const COMMUNITY_BUILT_SQL_TAG: u32 = 202;
+    const COMMUNITY_SQL_ANALYSIS_TAG: u32 = 203;
+    const COMMUNITY_OBJECT_METADATA_TAGS: std::ops::RangeInclusive<u32> = 204..=207;
+    const COMMUNITY_DATABASE_LIST_TAG: u32 = 204;
+    const COMMUNITY_TABLE_LIST_TAG: u32 = 205;
+    const COMMUNITY_COLUMN_LIST_TAG: u32 = 206;
+    const COMMUNITY_INDEX_LIST_TAG: u32 = 207;
+    const NON_COMMUNITY_TAG: u32 = 208;
 
     fn encode_varint(mut value: u64, output: &mut Vec<u8>) {
         loop {
@@ -351,6 +571,20 @@ mod tests {
             output,
         );
         output.extend_from_slice(value);
+    }
+
+    fn repeated_empty_fields(field_number: u32, count: usize) -> Vec<u8> {
+        let mut message = Vec::with_capacity(count.saturating_mul(2));
+        for _ in 0..count {
+            push_length_delimited_field(field_number, &[], &mut message);
+        }
+        message
+    }
+
+    fn community_response(response_tag: u32, value: &[u8]) -> Vec<u8> {
+        let mut envelope = Vec::with_capacity(value.len() + 8);
+        push_length_delimited_field(response_tag, value, &mut envelope);
+        envelope
     }
 
     async fn read_payload(payload: Vec<u8>) -> ReaderEvent {
@@ -415,10 +649,182 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reader_applies_the_exact_community_budget_to_all_object_metadata_tags() {
+        for field_number in COMMUNITY_OBJECT_METADATA_TAGS {
+            let mut exact = Vec::new();
+            push_length_delimited_field(
+                field_number,
+                &unknown_nested_message(MAX_COMMUNITY_RESPONSE_BYTES),
+                &mut exact,
+            );
+            assert!(
+                matches!(read_payload(exact).await, ReaderEvent::Frame(_)),
+                "Community response tag {field_number} must accept the exact budget"
+            );
+
+            let mut oversized = Vec::new();
+            push_length_delimited_field(
+                field_number,
+                &unknown_nested_message(MAX_COMMUNITY_RESPONSE_BYTES + 1),
+                &mut oversized,
+            );
+            assert!(
+                matches!(
+                    read_payload(oversized).await,
+                    ReaderEvent::Failed(message)
+                        if message.contains("8388609 bytes")
+                            && message.contains("maximum is 8388608")
+                ),
+                "Community response tag {field_number} must reject one byte over budget"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_scanner_enforces_object_collection_limits_before_protobuf_decode() {
+        for (response_tag, maximum, label) in [
+            (
+                COMMUNITY_DATABASE_LIST_TAG,
+                MAX_COMMUNITY_DATABASES,
+                "database",
+            ),
+            (COMMUNITY_TABLE_LIST_TAG, MAX_COMMUNITY_TABLES, "table"),
+            (COMMUNITY_COLUMN_LIST_TAG, MAX_COMMUNITY_COLUMNS, "column"),
+            (COMMUNITY_INDEX_LIST_TAG, MAX_COMMUNITY_INDEXES, "index"),
+        ] {
+            let exact = community_response(response_tag, &repeated_empty_fields(1, maximum));
+            validate_community_response_wire_budget(&exact)
+                .unwrap_or_else(|error| panic!("exact {label} limit must pass: {error}"));
+
+            let oversized =
+                community_response(response_tag, &repeated_empty_fields(1, maximum + 1));
+            let error = validate_community_response_wire_budget(&oversized)
+                .expect_err("limit plus one must fail before decode");
+            assert!(error.contains(&format!("{maximum}-{label} limit")));
+            assert!(error.contains("before Protobuf decode"));
+        }
+    }
+
+    #[test]
+    fn raw_scanner_enforces_combined_index_column_limit_before_protobuf_decode() {
+        let exact_index = repeated_empty_fields(8, MAX_COMMUNITY_INDEX_COLUMNS);
+        let exact_list = community_response(
+            COMMUNITY_INDEX_LIST_TAG,
+            &community_response(1, &exact_index),
+        );
+        validate_community_response_wire_budget(&exact_list)
+            .expect("exact index-column limit must pass before decode");
+
+        let mut oversized_index = exact_index;
+        push_length_delimited_field(13, &[], &mut oversized_index);
+        let oversized_list = community_response(
+            COMMUNITY_INDEX_LIST_TAG,
+            &community_response(1, &oversized_index),
+        );
+        let error = validate_community_response_wire_budget(&oversized_list)
+            .expect_err("combined index-column limit plus one must fail before decode");
+        assert!(error.contains(&format!("{MAX_COMMUNITY_INDEX_COLUMNS}-index-column limit")));
+        assert!(error.contains("before Protobuf decode"));
+    }
+
+    #[test]
+    fn raw_scanner_enforces_existing_community_collection_limits_before_decode() {
+        for (response_tag, repeated_field, maximum, label) in [
+            (
+                COMMUNITY_PLUGIN_CATALOG_TAG,
+                2,
+                MAX_COMMUNITY_PLUGINS,
+                "plugin",
+            ),
+            (
+                COMMUNITY_SCHEMA_LIST_TAG,
+                1,
+                MAX_COMMUNITY_SCHEMAS,
+                "schema",
+            ),
+            (
+                COMMUNITY_SQL_ANALYSIS_TAG,
+                2,
+                MAX_COMMUNITY_STATEMENTS,
+                "statement",
+            ),
+        ] {
+            let exact = community_response(
+                response_tag,
+                &repeated_empty_fields(repeated_field, maximum),
+            );
+            validate_community_response_wire_budget(&exact)
+                .unwrap_or_else(|error| panic!("exact {label} limit must pass: {error}"));
+
+            let oversized = community_response(
+                response_tag,
+                &repeated_empty_fields(repeated_field, maximum + 1),
+            );
+            let error = validate_community_response_wire_budget(&oversized)
+                .expect_err("limit plus one must fail before decode");
+            assert!(error.contains(&format!("{maximum}-{label} limit")));
+        }
+
+        let exact_drivers = repeated_empty_fields(6, MAX_COMMUNITY_DRIVERS);
+        let exact_catalog = community_response(
+            COMMUNITY_PLUGIN_CATALOG_TAG,
+            &community_response(2, &exact_drivers),
+        );
+        validate_community_response_wire_budget(&exact_catalog)
+            .expect("exact driver limit must pass before decode");
+
+        let oversized_drivers = repeated_empty_fields(6, MAX_COMMUNITY_DRIVERS + 1);
+        let oversized_catalog = community_response(
+            COMMUNITY_PLUGIN_CATALOG_TAG,
+            &community_response(2, &oversized_drivers),
+        );
+        assert!(
+            validate_community_response_wire_budget(&oversized_catalog)
+                .expect_err("driver limit plus one must fail before decode")
+                .contains(&format!("{MAX_COMMUNITY_DRIVERS}-driver limit"))
+        );
+
+        let exact_urls = repeated_empty_fields(4, MAX_COMMUNITY_DOWNLOAD_URLS);
+        let exact_plugin = community_response(6, &exact_urls);
+        let exact_catalog = community_response(
+            COMMUNITY_PLUGIN_CATALOG_TAG,
+            &community_response(2, &exact_plugin),
+        );
+        validate_community_response_wire_budget(&exact_catalog)
+            .expect("exact download-URL limit must pass before decode");
+
+        let oversized_urls = repeated_empty_fields(4, MAX_COMMUNITY_DOWNLOAD_URLS + 1);
+        let oversized_plugin = community_response(6, &oversized_urls);
+        let oversized_catalog = community_response(
+            COMMUNITY_PLUGIN_CATALOG_TAG,
+            &community_response(2, &oversized_plugin),
+        );
+        assert!(
+            validate_community_response_wire_budget(&oversized_catalog)
+                .expect_err("download-URL limit plus one must fail before decode")
+                .contains(&format!("{MAX_COMMUNITY_DOWNLOAD_URLS}-download-URL limit"))
+        );
+    }
+
+    #[tokio::test]
+    async fn reader_rejects_oversized_empty_column_list_without_decoding_it() {
+        let payload = community_response(
+            COMMUNITY_COLUMN_LIST_TAG,
+            &repeated_empty_fields(1, MAX_COMMUNITY_COLUMNS + 1),
+        );
+        assert!(matches!(
+            read_payload(payload).await,
+            ReaderEvent::Failed(message)
+                if message.contains(&format!("{MAX_COMMUNITY_COLUMNS}-column limit"))
+                    && message.contains("before Protobuf decode")
+        ));
+    }
+
+    #[tokio::test]
     async fn reader_keeps_the_sixteen_megabyte_frame_budget_for_non_community_fields() {
         let mut payload = Vec::new();
         push_length_delimited_field(
-            204,
+            NON_COMMUNITY_TAG,
             &vec![0; MAX_COMMUNITY_RESPONSE_BYTES + 1],
             &mut payload,
         );

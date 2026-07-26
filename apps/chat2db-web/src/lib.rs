@@ -239,6 +239,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn community_routes_report_an_unavailable_engine() {
         let application = router(Application::new());
         let requests = [
@@ -254,6 +255,59 @@ mod tests {
                         "datasourceId": "datasource-1",
                         "databaseType": "H2",
                         "databaseName": "inventory"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/metadata/databases",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1",
+                        "databaseType": "H2"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/metadata/tables",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1",
+                        "databaseType": "H2",
+                        "databaseName": "inventory",
+                        "schemaName": "APP",
+                        "tableNamePattern": "item%"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/metadata/columns",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1",
+                        "databaseType": "H2",
+                        "databaseName": "inventory",
+                        "schemaName": "APP",
+                        "tableName": "items"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/metadata/indexes",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1",
+                        "databaseType": "H2",
+                        "databaseName": "inventory",
+                        "schemaName": "APP",
+                        "tableName": "items"
                     }),
                 ),
                 "storage_unavailable",
@@ -403,6 +457,10 @@ mod tests {
             "/api/v1/drivers",
             "/api/v1/community/plugins",
             "/api/v1/community/metadata/schemas",
+            "/api/v1/community/metadata/databases",
+            "/api/v1/community/metadata/tables",
+            "/api/v1/community/metadata/columns",
+            "/api/v1/community/metadata/indexes",
             "/api/v1/community/sql/build-create-schema",
             "/api/v1/community/sql/parse",
             "/api/v1/datasources",
@@ -432,6 +490,10 @@ mod tests {
         assert!(paths["/api/v1/community/plugins"].get("get").is_some());
         for path in [
             "/api/v1/community/metadata/schemas",
+            "/api/v1/community/metadata/databases",
+            "/api/v1/community/metadata/tables",
+            "/api/v1/community/metadata/columns",
+            "/api/v1/community/metadata/indexes",
             "/api/v1/community/sql/build-create-schema",
             "/api/v1/community/sql/parse",
         ] {
@@ -506,6 +568,8 @@ mod tests {
             "CancelAgentRunResponse",
             "BuildCommunityCreateSchemaRequest",
             "CommunityBuiltSql",
+            "CommunityDatabase",
+            "CommunityDatabaseList",
             "CommunityDriverConfig",
             "CommunityParsedStatement",
             "CommunityPlugin",
@@ -515,11 +579,22 @@ mod tests {
             "CommunitySchema",
             "CommunitySchemaList",
             "CommunitySqlAnalysis",
+            "CommunityTable",
+            "CommunityTableColumn",
+            "CommunityTableColumnList",
+            "CommunityTableIndex",
+            "CommunityTableIndexColumn",
+            "CommunityTableIndexList",
+            "CommunityTableList",
             "ContextCompactionStrategy",
             "CreateAgentSessionRequest",
             "CreateProviderProfileRequest",
             "DecideAgentPermissionRequest",
             "ListCommunitySchemasRequest",
+            "ListCommunityColumnsRequest",
+            "ListCommunityDatabasesRequest",
+            "ListCommunityIndexesRequest",
+            "ListCommunityTablesRequest",
             "ParseCommunitySqlRequest",
             "ProviderCredentials",
             "ProviderProfile",
@@ -537,6 +612,30 @@ mod tests {
         assert_eq!(
             schemas["ProviderCredentials"]["properties"]["apiKey"]["writeOnly"],
             true
+        );
+        assert!(
+            schemas["ListCommunityTablesRequest"]["properties"]["tableNamePattern"].is_object()
+        );
+        assert!(schemas["CommunityTable"]["properties"]["tableType"].is_object());
+        assert!(schemas["CommunityTableColumn"]["properties"]["primaryKey"].is_object());
+        assert!(schemas["CommunityTableIndex"]["properties"]["foreignColumnNames"].is_object());
+        for (schema_name, fields) in [
+            ("CommunityTable", ["incrementValue", "rows", "dataLength"]),
+            (
+                "CommunityTableIndexColumn",
+                ["cardinality", "pages", "subPart"],
+            ),
+        ] {
+            for field in fields {
+                let property = &schemas[schema_name]["properties"][field];
+                assert_eq!(property["type"], serde_json::json!(["string", "null"]));
+                assert!(property.get("format").is_none());
+            }
+        }
+        assert!(
+            schemas["ListCommunityTablesRequest"]["properties"]
+                .get("table_name_pattern")
+                .is_none()
         );
     }
 

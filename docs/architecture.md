@@ -22,12 +22,13 @@ for the CLI and MCP process. That same `Application` owns query and Agent run
 execution, replay, cancellation, and write-permission decisions. Strict local
 managed driver packs and immutable inventory are implemented. A fixed Community
 5.3.0 submodule now supplies a real H2 compatibility slice for plugin discovery,
-schema metadata, dialect SQL building, and retained ANTLR parsing. Product Core,
-Axum, Tauri, and both frontend backend adapters expose those four operations
-when the exact locked classpath is configured. Signing, distribution, end-user
-Community workflows, the remaining dialect estate, and packaging remain target
-components. CLI and MCP attach to a running host rather than composing a second
-product runtime.
+schema and relational object metadata, dialect SQL building, and retained ANTLR
+parsing. Product Core, Axum, Tauri, and both frontend backend adapters expose
+catalog, schemas, databases, tables, columns, indexes, schema SQL building, and
+parsing when the exact locked classpath is configured. Signing, distribution,
+end-user Community workflows, the remaining dialect estate, and packaging
+remain target components. CLI and MCP attach to a running host rather than
+composing a second product runtime.
 
 ## Ownership
 
@@ -141,10 +142,21 @@ configuration and the negotiated engine state. Core runs schema metadata work
 in a bounded independent task so transport cancellation cannot skip the session
 close path.
 
-The full database plugin inventory, metadata tree, builders, type conversion,
-non-relational operations, script execution, formatting, validation,
-completion, end-user Community UI workflows, and per-dialect conformance are not
-implemented yet. The current product slice proves H2 only.
+Stage 7D extends the same boundary with the independent
+`community.metadata.objects.v1` capability. Java invokes the selected real
+`IDbMetaData.databases`, `tables`, `columns`, and `indexes` methods and projects
+only compatibility-owned DTOs. Core exposes four matching services; every call
+resolves the vault-backed datasource, forces a read-only JDBC session, and uses
+the same cancellation-safe close path. Axum adds four POST routes, Tauri adds
+four commands, and the shared HTTP/Tauri frontend adapter keeps identical
+request and response types. Database, table, column, index, and cumulative
+index-column counts are explicit, while both Java and Rust enforce the shared
+8 MiB response ceiling.
+
+Views, functions, procedures, triggers, keys, remaining builders, type
+conversion, non-relational operations, script execution, formatting,
+validation, completion, end-user Community UI workflows, and per-dialect
+conformance are not implemented yet. The current product slice proves H2 only.
 
 Spring Boot, Spring Web, Spring AI, MCP, JCEF, product storage, and updater logic
 do not belong in the final Java engine.
@@ -260,9 +272,11 @@ generation and exposes plugin catalog, schema metadata, schema SQL building,
 and SQL parsing to Rust. The third slice exposes those calls through Core,
 Axum, Tauri, and the shared frontend backend adapters, while enforcing the exact
 embedded classpath lock at product startup and forced-read-only metadata
-sessions. Signing, installation, hot reload, downloading, compatibility
-selection, updates, rollback, end-user Community workflows, and the remaining
-compatibility operations are not implemented.
+sessions. The fourth slice adds databases, tables, columns, and indexes across
+the same Java/Core/Axum/Tauri/frontend path with independent capability
+negotiation and bounded responses. Signing, installation, hot reload,
+downloading, compatibility selection, updates, rollback, end-user Community
+workflows, and the remaining compatibility operations are not implemented.
 
 ## Local attachment and MCP boundary
 
@@ -319,11 +333,14 @@ set.
   over-budget entries before the isolated Community loader is created; Java
   also rejects manifest `Class-Path` escapes. The fixed build removes such
   dependency attributes deterministically before lock verification and verifies
-  two consecutive clean builds byte-for-byte. Configuring it requires all four
+  two consecutive clean builds byte-for-byte. Configuring it requires all five
   Community capabilities during handshake, and Community response projection
-  is capped at 8 MiB in both Java and Rust. Rust applies that budget to the raw
-  Community oneof values before Protobuf decoding, including duplicate fields,
-  then validates decoded fields again. The source build also rejects any
+  is capped at 8 MiB in both Java and Rust. Rust applies that budget to raw
+  Community response tags `200..=207` before Protobuf decoding, including
+  duplicate fields, and allocation-free scans known nested repeated fields so
+  collection limits are enforced before DTO allocation. It then validates
+  decoded collection counts, nested index columns, field sizes, aggregate
+  strings, and encoded message length again. The source build also rejects any
   artifact-set drift against its committed lock. Signing and installed-package
   verification remain Stage 8 work.
 

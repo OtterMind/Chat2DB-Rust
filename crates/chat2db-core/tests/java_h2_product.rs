@@ -9,7 +9,9 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chat2db_contract::{
     CancelDisposition, ComponentState, CreateDatasourceRequest, DatasourceConnection, JdbcValue,
-    OperationEvent, OperationStatus, QueryLimits, ResultPageRequest, StartQueryRequest,
+    ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityIndexesRequest,
+    ListCommunityTablesRequest, OperationEvent, OperationStatus, QueryLimits, ResultPageRequest,
+    StartQueryRequest,
 };
 use chat2db_core::{Application, RuntimeConfig, RuntimeHost};
 use chat2db_java_bridge::{
@@ -69,21 +71,7 @@ impl H2ProductHarness {
         let driver_id = loaded.driver_id;
         let host = RuntimeHost::from_supervisor(storage, supervisor);
         let application = host.application();
-        let community = application
-            .health()
-            .components
-            .into_iter()
-            .find(|component| component.id == "community-compatibility")
-            .expect("Community compatibility health must be explicit");
-        assert_eq!(community.state, ComponentState::Disabled);
-        let community_error = application
-            .list_community_plugins()
-            .await
-            .expect_err("unconfigured Community services must stay disabled");
-        assert_eq!(
-            community_error.api_error().code,
-            "community_compatibility_disabled"
-        );
+        assert_community_disabled(&application).await;
         Self {
             _directory: directory,
             host,
@@ -103,6 +91,77 @@ impl H2ProductHarness {
             .await
             .expect("runtime host must shut down cleanly");
     }
+}
+
+async fn assert_community_disabled(application: &Application) {
+    let community = application
+        .health()
+        .components
+        .into_iter()
+        .find(|component| component.id == "community-compatibility")
+        .expect("Community compatibility health must be explicit");
+    assert_eq!(community.state, ComponentState::Disabled);
+    let community_error = application
+        .list_community_plugins()
+        .await
+        .expect_err("unconfigured Community services must stay disabled");
+    assert_eq!(
+        community_error.api_error().code,
+        "community_compatibility_disabled"
+    );
+    let disabled_database_error = application
+        .list_community_databases(ListCommunityDatabasesRequest {
+            datasource_id: "disabled".to_owned(),
+            database_type: "H2".to_owned(),
+        })
+        .await
+        .expect_err("unconfigured Community database metadata must stay disabled");
+    assert_eq!(
+        disabled_database_error.api_error().code,
+        "community_compatibility_disabled"
+    );
+    let disabled_table_error = application
+        .list_community_tables(ListCommunityTablesRequest {
+            datasource_id: "disabled".to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: String::new(),
+            schema_name: String::new(),
+            table_name_pattern: "%".to_owned(),
+        })
+        .await
+        .expect_err("unconfigured Community table metadata must stay disabled");
+    assert_eq!(
+        disabled_table_error.api_error().code,
+        "community_compatibility_disabled"
+    );
+    let disabled_column_error = application
+        .list_community_columns(ListCommunityColumnsRequest {
+            datasource_id: "disabled".to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: String::new(),
+            schema_name: String::new(),
+            table_name: "items".to_owned(),
+        })
+        .await
+        .expect_err("unconfigured Community column metadata must stay disabled");
+    assert_eq!(
+        disabled_column_error.api_error().code,
+        "community_compatibility_disabled"
+    );
+    let disabled_index_error = application
+        .list_community_indexes(ListCommunityIndexesRequest {
+            datasource_id: "disabled".to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: String::new(),
+            schema_name: String::new(),
+            table_name: "items".to_owned(),
+        })
+        .await
+        .expect_err("unconfigured Community index metadata must stay disabled");
+    assert_eq!(
+        disabled_index_error.api_error().code,
+        "community_compatibility_disabled"
+    );
 }
 
 #[tokio::test]
