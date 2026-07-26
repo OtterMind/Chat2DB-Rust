@@ -484,6 +484,7 @@ impl From<BridgeError> for AppError {
             | BridgeError::Spawn(_)
             | BridgeError::MissingPipe(_)
             | BridgeError::DriverArtifact { .. }
+            | BridgeError::CommunityArtifact { .. }
             | BridgeError::DriverSnapshotDirectory { .. }
             | BridgeError::NonUtf8DriverArtifact(_)
             | BridgeError::StaleHandle(_)
@@ -493,6 +494,8 @@ impl From<BridgeError> for AppError {
             | BridgeError::InvalidHandshake(_)
             | BridgeError::UnexpectedResponse(_)
             | BridgeError::SupervisorTask(_)
+            | BridgeError::ProcessCleanup { .. }
+            | BridgeError::CleanupAfterFailure { .. }
             | BridgeError::Frame(_) => Self::internal(),
         }
     }
@@ -504,6 +507,7 @@ mod tests {
         AgentError, ConfigError, ExecutionOutcome, ProviderError, ProviderKind, ToolExecutionError,
     };
     use chat2db_contract::ApiErrorDetails;
+    use chat2db_java_bridge::BridgeError;
     use chat2db_storage::StorageError;
 
     use super::{AppError, AppErrorKind};
@@ -568,6 +572,42 @@ mod tests {
             false,
         );
         assert_no_sentinel(&mapped);
+    }
+
+    #[test]
+    fn community_artifact_errors_are_internal_and_hide_local_paths() {
+        let mapped = AppError::from(BridgeError::CommunityArtifact {
+            operation: "snapshot",
+            path: SENTINEL.into(),
+            source: std::io::Error::other(SENTINEL),
+        });
+
+        assert_eq!(mapped.kind(), AppErrorKind::Internal);
+        assert_eq!(mapped.api_error().code, "internal_error");
+        assert_no_sentinel(&mapped);
+    }
+
+    #[test]
+    fn process_cleanup_errors_are_internal_and_hide_retained_snapshot_paths() {
+        let errors = [
+            BridgeError::ProcessCleanup {
+                retained_snapshot: SENTINEL.into(),
+                message: SENTINEL.to_owned(),
+            },
+            BridgeError::CleanupAfterFailure {
+                primary: Box::new(BridgeError::ShutdownTimeout),
+                cleanup: Box::new(BridgeError::ProcessCleanup {
+                    retained_snapshot: SENTINEL.into(),
+                    message: SENTINEL.to_owned(),
+                }),
+            },
+        ];
+        for error in errors {
+            let mapped = AppError::from(error);
+            assert_eq!(mapped.kind(), AppErrorKind::Internal);
+            assert_eq!(mapped.api_error().code, "internal_error");
+            assert_no_sentinel(&mapped);
+        }
     }
 
     #[test]

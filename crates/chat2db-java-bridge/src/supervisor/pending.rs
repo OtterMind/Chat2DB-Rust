@@ -26,6 +26,21 @@ const MAX_BATCH_ROWS: usize = wire::JdbcProtocolLimit::MaxBatchRows as usize;
 const MAX_SCALAR_BYTES: usize = wire::JdbcProtocolLimit::MaxScalarBytes as usize;
 const MAX_BATCH_BYTES: usize = wire::JdbcProtocolLimit::MaxBatchBytes as usize;
 const DEFAULT_RESULT_BYTES: u64 = wire::JdbcResultByteLimit::DefaultResultBytes as u64;
+const MAX_COMMUNITY_PLUGINS: usize = wire::CommunityCountLimit::MaxPlugins as usize;
+const MAX_COMMUNITY_DRIVERS: usize = wire::CommunityCountLimit::MaxDriverConfigs as usize;
+const MAX_COMMUNITY_DOWNLOAD_URLS: usize =
+    wire::CommunityDownloadUrlLimit::MaxDownloadUrls as usize;
+const MAX_COMMUNITY_SCHEMAS: usize = wire::CommunitySchemaCountLimit::MaxSchemas as usize;
+const MAX_COMMUNITY_STATEMENTS: usize = wire::CommunityCountLimit::MaxStatements as usize;
+const MAX_COMMUNITY_DATABASE_TYPE_BYTES: usize =
+    wire::CommunityByteLimit::MaxDatabaseTypeBytes as usize;
+const MAX_COMMUNITY_PLUGIN_NAME_BYTES: usize =
+    wire::CommunityByteLimit::MaxPluginNameBytes as usize;
+const MAX_COMMUNITY_SOURCE_COMMIT_BYTES: usize =
+    wire::CommunityByteLimit::MaxSourceCommitBytes as usize;
+const MAX_COMMUNITY_COMMENT_BYTES: usize = wire::CommunityByteLimit::MaxCommentBytes as usize;
+const MAX_COMMUNITY_RESPONSE_BYTES: usize = wire::CommunityByteLimit::MaxResponseBytes as usize;
+const MAX_SQL_BYTES: usize = wire::JdbcProtocolLimit::MaxSqlBytes as usize;
 
 pub(super) enum PendingSink {
     Unary {
@@ -874,8 +889,123 @@ fn validate_response_payload(
                 Ok(_) => Ok(None),
             }
         }
+        wire::server_envelope::Payload::CommunityPluginCatalog(catalog) => {
+            validate_community_source_commit(&catalog.source_commit)?;
+            let mut field_bytes = 0;
+            add_community_response_field(&mut field_bytes, &catalog.source_commit)?;
+            if catalog.plugins.len() > MAX_COMMUNITY_PLUGINS {
+                return Err(format!(
+                    "Community catalog exceeded the {MAX_COMMUNITY_PLUGINS}-plugin limit"
+                ));
+            }
+            for plugin in &catalog.plugins {
+                validate_non_empty_bytes(
+                    &plugin.database_type,
+                    MAX_COMMUNITY_DATABASE_TYPE_BYTES,
+                    "Community database type",
+                )?;
+                add_community_response_field(&mut field_bytes, &plugin.database_type)?;
+                validate_non_empty_bytes(
+                    &plugin.name,
+                    MAX_COMMUNITY_PLUGIN_NAME_BYTES,
+                    "Community plugin name",
+                )?;
+                add_community_response_field(&mut field_bytes, &plugin.name)?;
+                if plugin.drivers.len() > MAX_COMMUNITY_DRIVERS {
+                    return Err(format!(
+                        "Community plugin exceeded the {MAX_COMMUNITY_DRIVERS}-driver limit"
+                    ));
+                }
+                for driver in &plugin.drivers {
+                    validate_scalar(&driver.url, "Community driver URL")?;
+                    validate_scalar(&driver.jdbc_driver, "Community JDBC driver")?;
+                    validate_scalar(&driver.jdbc_driver_class, "Community JDBC driver class")?;
+                    add_community_response_field(&mut field_bytes, &driver.url)?;
+                    add_community_response_field(&mut field_bytes, &driver.jdbc_driver)?;
+                    add_community_response_field(&mut field_bytes, &driver.jdbc_driver_class)?;
+                    if driver.download_urls.len() > MAX_COMMUNITY_DOWNLOAD_URLS {
+                        return Err(format!(
+                            "Community driver exceeded the {MAX_COMMUNITY_DOWNLOAD_URLS}-URL limit"
+                        ));
+                    }
+                    for url in &driver.download_urls {
+                        validate_scalar(url, "Community driver download URL")?;
+                        add_community_response_field(&mut field_bytes, url)?;
+                    }
+                }
+            }
+            validate_community_response_encoded_len(catalog)?;
+            Ok(None)
+        }
+        wire::server_envelope::Payload::CommunitySchemaList(schemas) => {
+            let mut field_bytes = 0;
+            if schemas.schemas.len() > MAX_COMMUNITY_SCHEMAS {
+                return Err(format!(
+                    "Community metadata exceeded the {MAX_COMMUNITY_SCHEMAS}-schema limit"
+                ));
+            }
+            for schema in &schemas.schemas {
+                validate_scalar(&schema.database_name, "Community schema database")?;
+                validate_scalar(&schema.name, "Community schema name")?;
+                validate_bytes_limit(
+                    &schema.comment,
+                    MAX_COMMUNITY_COMMENT_BYTES,
+                    "Community schema comment",
+                )?;
+                validate_scalar(&schema.owner, "Community schema owner")?;
+                add_community_response_field(&mut field_bytes, &schema.database_name)?;
+                add_community_response_field(&mut field_bytes, &schema.name)?;
+                add_community_response_field(&mut field_bytes, &schema.comment)?;
+                add_community_response_field(&mut field_bytes, &schema.owner)?;
+            }
+            validate_community_response_encoded_len(schemas)?;
+            Ok(None)
+        }
+        wire::server_envelope::Payload::CommunityBuiltSql(built) => {
+            validate_non_empty_bytes(&built.sql, MAX_SQL_BYTES, "Community built SQL")?;
+            let mut field_bytes = 0;
+            add_community_response_field(&mut field_bytes, &built.sql)?;
+            validate_community_response_encoded_len(built)?;
+            Ok(None)
+        }
+        wire::server_envelope::Payload::CommunitySqlAnalysis(analysis) => {
+            let mut field_bytes = 0;
+            if analysis.statements.len() > MAX_COMMUNITY_STATEMENTS {
+                return Err(format!(
+                    "Community parser exceeded the {MAX_COMMUNITY_STATEMENTS}-statement limit"
+                ));
+            }
+            for statement in &analysis.statements {
+                validate_bytes_limit(&statement.sql, MAX_SQL_BYTES, "Community parsed SQL")?;
+                validate_scalar(&statement.r#type, "Community parsed statement type")?;
+                validate_scalar(
+                    &statement.statement_type,
+                    "Community parsed statement category",
+                )?;
+                add_community_response_field(&mut field_bytes, &statement.sql)?;
+                add_community_response_field(&mut field_bytes, &statement.r#type)?;
+                add_community_response_field(&mut field_bytes, &statement.statement_type)?;
+            }
+            validate_community_response_encoded_len(analysis)?;
+            Ok(None)
+        }
         _ => Ok(None),
     }
+}
+
+fn validate_community_source_commit(commit: &str) -> Result<(), String> {
+    if commit.is_empty() {
+        return Ok(());
+    }
+    if commit.len() != 40
+        || commit.len() > MAX_COMMUNITY_SOURCE_COMMIT_BYTES
+        || !commit
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("Community catalog used an invalid source commit".to_owned());
+    }
+    Ok(())
 }
 
 fn validate_engine_error(error: &wire::EngineError) -> Result<Option<SessionState>, String> {
@@ -960,6 +1090,35 @@ fn validate_scalar(value: &str, field: &str) -> Result<(), String> {
     if value.len() > MAX_SCALAR_BYTES {
         return Err(format!(
             "{field} exceeded the {MAX_SCALAR_BYTES}-byte scalar limit"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_bytes_limit(value: &str, maximum: usize, field: &str) -> Result<(), String> {
+    if value.len() > maximum {
+        return Err(format!("{field} exceeded the {maximum}-byte limit"));
+    }
+    Ok(())
+}
+
+fn add_community_response_field(total: &mut usize, value: &str) -> Result<(), String> {
+    *total = total
+        .checked_add(value.len())
+        .ok_or_else(|| "Community response string byte count overflowed".to_owned())?;
+    if *total > MAX_COMMUNITY_RESPONSE_BYTES {
+        return Err(format!(
+            "Community response string fields exceeded the {MAX_COMMUNITY_RESPONSE_BYTES}-byte limit"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_community_response_encoded_len(message: &impl Message) -> Result<(), String> {
+    let encoded = message.encoded_len();
+    if encoded > MAX_COMMUNITY_RESPONSE_BYTES {
+        return Err(format!(
+            "Community response encoded length {encoded} exceeded the {MAX_COMMUNITY_RESPONSE_BYTES}-byte limit"
         ));
     }
     Ok(())
@@ -1434,6 +1593,113 @@ mod tests {
                 .expect_err("unspecified wire enums must fail routing");
             assert!(error.contains(expected), "unexpected error: {error}");
         }
+    }
+
+    #[test]
+    fn community_responses_enforce_generated_bounds() {
+        let invalid_commit =
+            wire::server_envelope::Payload::CommunityPluginCatalog(wire::CommunityPluginCatalog {
+                source_commit: "ABC".to_owned(),
+                ..Default::default()
+            });
+        assert!(
+            validate_response_payload(&invalid_commit)
+                .expect_err("invalid Community source commit must fail")
+                .contains("invalid source commit")
+        );
+
+        let oversized_catalog =
+            wire::server_envelope::Payload::CommunityPluginCatalog(wire::CommunityPluginCatalog {
+                plugins: vec![
+                    wire::CommunityPluginDescriptor::default();
+                    MAX_COMMUNITY_PLUGINS + 1
+                ],
+                ..Default::default()
+            });
+        assert!(
+            validate_response_payload(&oversized_catalog)
+                .expect_err("oversized Community plugin catalog must fail")
+                .contains("plugin limit")
+        );
+
+        let empty_sql =
+            wire::server_envelope::Payload::CommunityBuiltSql(wire::CommunityBuiltSql::default());
+        assert!(
+            validate_response_payload(&empty_sql)
+                .expect_err("empty Community SQL must fail")
+                .contains("cannot be empty")
+        );
+
+        let oversized_comment =
+            wire::server_envelope::Payload::CommunitySchemaList(wire::CommunitySchemaList {
+                schemas: vec![wire::CommunitySchema {
+                    comment: "x".repeat(MAX_COMMUNITY_COMMENT_BYTES + 1),
+                    ..Default::default()
+                }],
+            });
+        assert!(
+            validate_response_payload(&oversized_comment)
+                .expect_err("oversized Community schema comment must fail")
+                .contains("comment")
+        );
+    }
+
+    #[test]
+    fn community_responses_enforce_aggregate_and_encoded_byte_budgets() {
+        let aggregate_overflow =
+            wire::server_envelope::Payload::CommunityPluginCatalog(wire::CommunityPluginCatalog {
+                source_commit: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+                plugins: vec![wire::CommunityPluginDescriptor {
+                    database_type: "H2".to_owned(),
+                    name: "H2".to_owned(),
+                    drivers: vec![wire::CommunityDriverConfig {
+                        url: "u".repeat(MAX_SCALAR_BYTES),
+                        jdbc_driver: "d".repeat(MAX_SCALAR_BYTES),
+                        jdbc_driver_class: "c".to_owned(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            });
+        assert!(
+            validate_response_payload(&aggregate_overflow)
+                .expect_err("aggregate Community strings above the budget must fail")
+                .contains("string fields")
+        );
+
+        let mut boundary = wire::CommunitySqlAnalysis {
+            statements: vec![wire::CommunityParsedStatement {
+                sql: "SELECT 1".to_owned(),
+                r#type: "t".repeat(MAX_SCALAR_BYTES),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let remaining = MAX_COMMUNITY_RESPONSE_BYTES
+            .checked_sub(boundary.encoded_len())
+            .expect("boundary fixture must leave encoded space");
+        boundary.statements[0].statement_type = "s".repeat(remaining);
+        while boundary.encoded_len() > MAX_COMMUNITY_RESPONSE_BYTES {
+            boundary.statements[0].statement_type.pop();
+        }
+        while boundary.encoded_len() < MAX_COMMUNITY_RESPONSE_BYTES {
+            boundary.statements[0].statement_type.push('s');
+        }
+        assert_eq!(boundary.encoded_len(), MAX_COMMUNITY_RESPONSE_BYTES);
+        validate_response_payload(&wire::server_envelope::Payload::CommunitySqlAnalysis(
+            boundary.clone(),
+        ))
+        .expect("a Community response exactly at the encoded budget must pass");
+
+        boundary.statements[0].statement_type.push('s');
+        assert_eq!(boundary.encoded_len(), MAX_COMMUNITY_RESPONSE_BYTES + 1);
+        assert!(
+            validate_response_payload(&wire::server_envelope::Payload::CommunitySqlAnalysis(
+                boundary,
+            ))
+            .expect_err("a Community response one encoded byte over budget must fail")
+            .contains("encoded length")
+        );
     }
 
     #[test]

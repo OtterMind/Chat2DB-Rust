@@ -124,6 +124,10 @@ final class RuntimeFailure extends Exception {
         return code;
     }
 
+    ErrorCategory category() {
+        return category;
+    }
+
     OperationOutcome outcome() {
         return outcome;
     }

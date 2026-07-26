@@ -75,7 +75,11 @@ class ExecutableJarIT {
                             ProtocolLoop.CREDIT_FLOW_CAPABILITY,
                             ProtocolLoop.OPERATION_CANCEL_CAPABILITY,
                             ProtocolLoop.JDBC_UPDATE_CAPABILITY,
-                            ProtocolLoop.LOCAL_TRANSACTION_CAPABILITY),
+                            ProtocolLoop.LOCAL_TRANSACTION_CAPABILITY,
+                            ProtocolLoop.COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
+                            ProtocolLoop.COMMUNITY_SCHEMA_METADATA_CAPABILITY,
+                            ProtocolLoop.COMMUNITY_SQL_BUILDER_CAPABILITY,
+                            ProtocolLoop.COMMUNITY_SQL_PARSER_CAPABILITY),
                     serverHello.getHello().getCapabilitiesList());
 
             FrameCodec.writeFrame(

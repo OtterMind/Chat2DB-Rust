@@ -20,6 +20,12 @@ const JDBC_CAPABILITIES: [&str; 7] = [
     "update.jdbc.v1",
     "transaction.local.v1",
 ];
+const COMMUNITY_CAPABILITIES: [&str; 4] = [
+    "community.plugin-catalog.v1",
+    "community.metadata.schemas.v1",
+    "community.sql-builder.v1",
+    "community.sql-parser.v1",
+];
 
 #[derive(Default)]
 struct Options {
@@ -30,6 +36,7 @@ struct Options {
     reverse_pings: usize,
     max_receive_frame_bytes: Option<u32>,
     jdbc: Option<JdbcBehavior>,
+    community: CommunityBehavior,
     exit_on_update: bool,
     exit_on_commit: bool,
     hang: HangBehavior,
@@ -72,6 +79,14 @@ enum HangBehavior {
     Update,
     GrantCredits,
     Cancel,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum CommunityBehavior {
+    #[default]
+    None,
+    WrongCommit,
+    HangCatalog,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,6 +142,7 @@ async fn run(options: Options) -> Result<u8, Box<dyn std::error::Error>> {
         &mut output,
         options.max_receive_frame_bytes,
         options.jdbc.is_some(),
+        options.community != CommunityBehavior::None,
     )
     .await?
     {
@@ -415,6 +431,52 @@ async fn run(options: Options) -> Result<u8, Box<dyn std::error::Error>> {
                     write_query_completed(&mut output, &query_meta, 1, true, 0).await?;
                 }
             }
+            Some(wire::client_envelope::Payload::ListCommunityPlugins(_)) => {
+                match options.community {
+                    CommunityBehavior::WrongCommit => {
+                        write_response(
+                            &mut output,
+                            &meta,
+                            wire::server_envelope::Payload::CommunityPluginCatalog(
+                                wire::CommunityPluginCatalog {
+                                    source_commit: "1111111111111111111111111111111111111111"
+                                        .to_owned(),
+                                    plugins: Vec::new(),
+                                },
+                            ),
+                            0,
+                            true,
+                            None,
+                        )
+                        .await?;
+                    }
+                    CommunityBehavior::HangCatalog => {
+                        eprintln!("fixture received hanging Community catalog request");
+                    }
+                    CommunityBehavior::None => {
+                        write_error(
+                            &mut output,
+                            &meta,
+                            "community.not_configured",
+                            "the fixture does not provide Community compatibility",
+                        )
+                        .await?;
+                    }
+                }
+            }
+            Some(
+                wire::client_envelope::Payload::ListCommunitySchemas(_)
+                | wire::client_envelope::Payload::BuildCommunityCreateSchema(_)
+                | wire::client_envelope::Payload::ParseCommunitySql(_),
+            ) => {
+                write_error(
+                    &mut output,
+                    &meta,
+                    "community.not_configured",
+                    "the fixture does not provide Community compatibility",
+                )
+                .await?;
+            }
             None => {
                 write_error(
                     &mut output,
@@ -471,6 +533,7 @@ async fn perform_handshake<R, W>(
     output: &mut W,
     max_receive_frame_bytes: Option<u32>,
     jdbc_enabled: bool,
+    community_enabled: bool,
 ) -> Result<HandshakeResult, Box<dyn std::error::Error>>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -505,6 +568,9 @@ where
     let mut capabilities = vec![PING_CAPABILITY.to_owned(), SHUTDOWN_CAPABILITY.to_owned()];
     if jdbc_enabled {
         capabilities.extend(JDBC_CAPABILITIES.map(str::to_owned));
+    }
+    if community_enabled {
+        capabilities.extend(COMMUNITY_CAPABILITIES.map(str::to_owned));
     }
     if let Some(missing) = hello
         .required_capabilities
@@ -881,6 +947,12 @@ impl Options {
                             "cancel-hangs" => JdbcBehavior::CancelHangs,
                             _ => panic!("unknown JDBC fixture behavior: {value}"),
                         });
+                    } else if let Some(value) = argument.strip_prefix("--community=") {
+                        options.community = match value {
+                            "wrong-commit" => CommunityBehavior::WrongCommit,
+                            "hang-catalog" => CommunityBehavior::HangCatalog,
+                            _ => panic!("unknown Community fixture behavior: {value}"),
+                        };
                     } else if let Some(value) = argument.strip_prefix("--write-journal=") {
                         options.write_journal = Some(PathBuf::from(value));
                     } else {

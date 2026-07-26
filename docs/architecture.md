@@ -20,10 +20,12 @@ the React SPA; Tauri exposes commands and per-subscription channels without a
 localhost product server. Both hosts also publish an owner-only local endpoint
 for the CLI and MCP process. That same `Application` owns query and Agent run
 execution, replay, cancellation, and write-permission decisions. Strict local
-managed driver packs and immutable inventory are implemented; signing,
-distribution, the existing Chat2DB plugin/parser estate, and packaging remain
-target components. CLI and MCP attach to a running host rather than composing a
-second product runtime.
+managed driver packs and immutable inventory are implemented. A fixed Community
+5.3.0 submodule now supplies a real H2 compatibility slice for plugin discovery,
+schema metadata, dialect SQL building, and retained ANTLR parsing. Signing,
+distribution, product-service wiring for those Community operations, the
+remaining dialect estate, and packaging remain target components. CLI and MCP
+attach to a running host rather than composing a second product runtime.
 
 ## Ownership
 
@@ -92,7 +94,7 @@ Java remains the primary database implementation at the first complete release.
 Rust does not reimplement vendor wire protocols and does not introduce parallel
 native-driver behavior before the Java-backed conformance baseline passes.
 
-Stage 3 currently implements:
+The JDBC baseline implements:
 
 - verified external JAR snapshots and per-driver classloader isolation;
 - JDBC session and local-transaction ownership;
@@ -100,16 +102,33 @@ Stage 3 currently implements:
 - typed row batches with row, byte, frame, and scalar limits;
 - credit flow control, cancellation, deadlines, and conservative outcomes.
 
-The complete compatibility engine will additionally retain the existing
-Chat2DB-specific estate:
+Stage 7B additionally implements:
 
-- Chat2DB database plugins, metadata, builders, and type conversion;
-- relational and existing non-relational operations;
-- Java ANTLR parsing, splitting, formatting, validation, and completion.
+- a Git submodule fixed at Community commit
+  `f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7`;
+- a reproducible 148-JAR H2 compatibility classpath whose filenames, byte
+  lengths, and SHA-256 digests are bound to that commit by the checked-in
+  `third_party/community-h2-classpath.lock`;
+- deterministic build-time removal of dependency-manifest `Class-Path` entries,
+  with affected JARs rebuilt as sorted, commit-timestamped `STORED` archives;
+- a separately supplied Community classpath loaded by a `URLClassLoader` whose
+  parent is only the Java platform classloader;
+- `ServiceLoader<IPlugin>` discovery projected into stable Protobuf DTOs;
+- H2 schema metadata through `IDbMetaData.schemas`, `CREATE SCHEMA` through the
+  metadata-owned `ISqlBuilder`, and H2 syntax through its retained MySQL ANTLR
+  parser; and
+- a cross-language test that executes those operations against an H2 JDBC
+  session loaded through the existing external-driver path.
 
-The existing Chat2DB database plugins, metadata implementations, SQL builders,
-non-relational operations, and Java ANTLR estate are not yet integrated into
-this repository; they remain Stage 7 work.
+Community plugin objects, JDBC objects, parser objects, and exceptions remain
+inside Java. The Community classpath and each JDBC driver classloader are
+separate; JDBC driver JARs are not added to the Community classpath. Only
+bounded, process-neutral DTOs cross Protobuf.
+
+The full database plugin inventory, metadata tree, builders, type conversion,
+non-relational operations, script execution, formatting, validation,
+completion, and per-dialect conformance are not implemented yet. The current
+slice proves H2 only and is not wired into the product-facing Core APIs.
 
 Spring Boot, Spring Web, Spring AI, MCP, JCEF, product storage, and updater logic
 do not belong in the final Java engine.
@@ -220,8 +239,11 @@ The first Stage 7 compatibility slice discovers strict local driver-pack
 manifests, verifies bounded artifacts in Rust, preloads them sequentially into
 Java, and exposes immutable inventory through Core, Axum, Tauri, and generated
 frontend contracts. A real H2 pack proves the complete product query path.
-Signing, installation, hot reload, downloading, compatibility selection,
-updates, and rollback are not implemented.
+The second slice supplies the fixed Community classpath to the same Java
+generation and exposes plugin catalog, schema metadata, schema SQL building,
+and SQL parsing to Rust. Signing, installation, hot reload, downloading,
+compatibility selection, updates, rollback, and product-facing Community
+operations are not implemented.
 
 ## Local attachment and MCP boundary
 
@@ -270,8 +292,21 @@ set.
 - Java copies each staged artifact into a generation-owned private snapshot,
   verifies its SHA-256, rejects manifest `Class-Path`, and keeps it until the
   driver has no remaining session lease. Rust removes the generation root only
-  after the Java child is fully reaped and clears stale roots on the next
-  storage-locked startup.
+  after the Java child is fully reaped, preserves both primary and cleanup
+  errors, and retains the snapshot when reap cannot be proven. Stale roots are
+  cleared on the next storage-locked startup.
+- The Community classpath is fixed application code, not a JDBC driver pack.
+  Rust and Java independently reject non-canonical, symbolic-link, non-JAR, or
+  over-budget entries before the isolated Community loader is created; Java
+  also rejects manifest `Class-Path` escapes. The fixed build removes such
+  dependency attributes deterministically before lock verification and verifies
+  two consecutive clean builds byte-for-byte. Configuring it requires all four
+  Community capabilities during handshake, and Community response projection
+  is capped at 8 MiB in both Java and Rust. Rust applies that budget to the raw
+  Community oneof values before Protobuf decoding, including duplicate fields,
+  then validates decoded fields again. The source build also rejects any
+  artifact-set drift against its committed lock. Signing and installed-package
+  verification remain Stage 8 work.
 
 ## Packaging target
 
@@ -282,3 +317,10 @@ and independently rollback-capable.
 
 The installed-size target is 30% to 45% below the equivalent Community package.
 This is an acceptance target, not a measured current result.
+
+Community 5.3.0 is governed by `LicenseRef-Chat2DB`, a modified Apache 2.0
+license whose additional terms restrict Object-form distribution and external
+product or service use without written commercial authorization. No installer,
+binary archive, container image, or other Object-form release may include the
+retained Community code until that authorization is recorded and release gates
+have generated and verified the applicable license/NOTICE bundle and SBOM.

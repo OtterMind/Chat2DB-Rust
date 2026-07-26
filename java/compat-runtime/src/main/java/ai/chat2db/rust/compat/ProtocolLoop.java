@@ -39,6 +39,10 @@ final class ProtocolLoop {
     static final String OPERATION_CANCEL_CAPABILITY = "operation.cancel.v1";
     static final String JDBC_UPDATE_CAPABILITY = "update.jdbc.v1";
     static final String LOCAL_TRANSACTION_CAPABILITY = "transaction.local.v1";
+    static final String COMMUNITY_PLUGIN_CATALOG_CAPABILITY = "community.plugin-catalog.v1";
+    static final String COMMUNITY_SCHEMA_METADATA_CAPABILITY = "community.metadata.schemas.v1";
+    static final String COMMUNITY_SQL_BUILDER_CAPABILITY = "community.sql-builder.v1";
+    static final String COMMUNITY_SQL_PARSER_CAPABILITY = "community.sql-parser.v1";
 
     private static final int MINIMUM_PEER_FRAME_BYTES = 1024;
     private static final List<String> CAPABILITIES = List.of(
@@ -50,7 +54,11 @@ final class ProtocolLoop {
             CREDIT_FLOW_CAPABILITY,
             OPERATION_CANCEL_CAPABILITY,
             JDBC_UPDATE_CAPABILITY,
-            LOCAL_TRANSACTION_CAPABILITY);
+            LOCAL_TRANSACTION_CAPABILITY,
+            COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
+            COMMUNITY_SCHEMA_METADATA_CAPABILITY,
+            COMMUNITY_SQL_BUILDER_CAPABILITY,
+            COMMUNITY_SQL_PARSER_CAPABILITY);
     private static final List<ProtocolVersion> SUPPORTED_VERSIONS = List.of(version(1, 0));
 
     private final RuntimeInfo runtimeInfo;
@@ -200,6 +208,31 @@ final class ProtocolLoop {
                         meta, envelope.getGrantCredits()));
                 case CANCEL_OPERATION -> response(jdbcRuntime.cancelOperation(
                         meta, envelope.getCancelOperation()));
+                case LIST_COMMUNITY_PLUGINS -> {
+                    jdbcRuntime.schedule(meta, () -> jdbcRuntime.listCommunityPlugins(meta));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case LIST_COMMUNITY_SCHEMAS -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.listCommunitySchemas(
+                                    meta, envelope.getListCommunitySchemas()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case BUILD_COMMUNITY_CREATE_SCHEMA -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.buildCommunityCreateSchema(
+                                    meta, envelope.getBuildCommunityCreateSchema()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case PARSE_COMMUNITY_SQL -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.parseCommunitySql(
+                                    meta, envelope.getParseCommunitySql()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
                 case HELLO -> error(
                         meta,
                         "protocol.handshake_already_completed",

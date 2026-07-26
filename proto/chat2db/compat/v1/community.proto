@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+package chat2db.compat.v1;
+
+option java_multiple_files = true;
+option java_package = "ai.chat2db.rust.compat.protocol.v1";
+option java_outer_classname = "CommunityProtocol";
+
+// Hard limits for the Community SPI boundary. Every string is counted in
+// UTF-8 bytes. The Java engine and Rust client both enforce these values.
+enum CommunityCountLimit {
+  COMMUNITY_COUNT_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_COUNT_LIMIT_MAX_DRIVER_CONFIGS = 32;
+  COMMUNITY_COUNT_LIMIT_MAX_PLUGINS = 128;
+  COMMUNITY_COUNT_LIMIT_MAX_CLASSPATH_ARTIFACTS = 256;
+  COMMUNITY_COUNT_LIMIT_MAX_STATEMENTS = 4096;
+}
+
+enum CommunityDownloadUrlLimit {
+  COMMUNITY_DOWNLOAD_URL_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_DOWNLOAD_URL_LIMIT_MAX_DOWNLOAD_URLS = 32;
+}
+
+enum CommunitySchemaCountLimit {
+  COMMUNITY_SCHEMA_COUNT_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_SCHEMA_COUNT_LIMIT_MAX_SCHEMAS = 4096;
+}
+
+enum CommunityByteLimit {
+  COMMUNITY_BYTE_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_BYTE_LIMIT_MAX_SOURCE_COMMIT_BYTES = 64;
+  COMMUNITY_BYTE_LIMIT_MAX_DATABASE_TYPE_BYTES = 128;
+  COMMUNITY_BYTE_LIMIT_MAX_PLUGIN_NAME_BYTES = 512;
+  COMMUNITY_BYTE_LIMIT_MAX_COMMENT_BYTES = 65536;
+  // Receivers MUST reject a Community response when either the accumulated raw
+  // ServerEnvelope values for Community response fields, including duplicate
+  // oneof fields, or the sum of all UTF-8 string field bytes exceeds this.
+  COMMUNITY_BYTE_LIMIT_MAX_RESPONSE_BYTES = 8388608;
+  COMMUNITY_BYTE_LIMIT_MAX_CLASSPATH_BYTES = 536870912;
+}
+
+message ListCommunityPluginsRequest {}
+
+message CommunityDriverConfig {
+  string url = 1;
+  string jdbc_driver = 2;
+  string jdbc_driver_class = 3;
+  repeated string download_urls = 4;
+  bool custom = 5;
+  bool default_driver = 6;
+}
+
+message CommunityPluginDescriptor {
+  string database_type = 1;
+  string name = 2;
+  bool supports_database = 3;
+  bool supports_schema = 4;
+  bool preserves_script_batch_execution = 5;
+  repeated CommunityDriverConfig drivers = 6;
+  bool metadata_available = 7;
+  bool sql_builder_available = 8;
+  bool sql_parser_available = 9;
+}
+
+message CommunityPluginCatalog {
+  // Exact 40-character lowercase Git commit used to build the compatibility
+  // classpath. Empty only when no Community classpath is configured.
+  string source_commit = 1;
+  repeated CommunityPluginDescriptor plugins = 2;
+}
+
+message ListCommunitySchemasRequest {
+  string database_type = 1;
+  // Empty asks JDBC DatabaseMetaData for every visible catalog.
+  string database_name = 2;
+  optional string transaction_id = 3;
+}
+
+message CommunitySchema {
+  string database_name = 1;
+  string name = 2;
+  string comment = 3;
+  string owner = 4;
+  bool system = 5;
+}
+
+message CommunitySchemaList {
+  repeated CommunitySchema schemas = 1;
+}
+
+message BuildCommunityCreateSchemaRequest {
+  string database_type = 1;
+  CommunitySchema schema = 2;
+}
+
+message CommunityBuiltSql {
+  string sql = 1;
+}
+
+message ParseCommunitySqlRequest {
+  string database_type = 1;
+  string sql = 2;
+}
+
+message CommunityParsedStatement {
+  string sql = 1;
+  string type = 2;
+  string statement_type = 3;
+}
+
+message CommunitySqlAnalysis {
+  bool is_select = 1;
+  repeated CommunityParsedStatement statements = 2;
+}

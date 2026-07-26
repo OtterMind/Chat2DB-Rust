@@ -4,7 +4,8 @@ Private implementation of the Chat2DB Community hybrid runtime.
 
 ## Current state
 
-The repository has completed the first six buildable stages:
+The repository has completed Stages 1 through 6 and the first two independently
+buildable Stage 7 slices:
 
 - canonical Rust API contracts;
 - a transport-neutral Rust application service root;
@@ -50,16 +51,24 @@ The repository has completed the first six buildable stages:
   plus a JSON CLI for datasource discovery, forced-read-only query lifecycle,
   cancellation, and retained-result paging; and
 - an `rmcp` 2.2 stdio server with five bounded datasource/query tools backed by
-  that same running `Application`.
+  that same running `Application`;
+- strict local JDBC driver-pack discovery, hash verification, startup preload,
+  and immutable Core/Axum/Tauri inventory; and
+- a fixed Community 5.3.0 compatibility classpath that discovers real
+  `IPlugin` implementations and exposes H2 plugin catalog, schema metadata,
+  `CREATE SCHEMA` builder, and retained ANTLR parser operations over Protobuf,
+  with every one of its 148 JARs bound to the source commit by a checked-in
+  filename, byte-length, and SHA-256 lock.
 
 Stage 6 is complete. Web and desktop own the product runtime and publish its
 owner-only local endpoint; CLI and MCP attach to that host and never contact
 Java directly. The current MCP surface is deliberately read-only and does not
 accept JDBC bind parameters. A complete end-user Agent workspace and
-CLI-started headless host remain follow-on product work. The first Stage 7
-slice adds strict local driver-pack manifests, bounded hash verification,
-startup preload, and Core/Axum/Tauri inventory. Signing, downloading, updating,
-rollback, and the existing Chat2DB plugin/ANTLR estate remain Stage 7 work.
+CLI-started headless host remain follow-on product work. Stage 7A implements
+strict local driver packs. Stage 7B pins Community source, loads its runtime in
+an isolated Java classloader, and proves one real H2 SPI/ANTLR vertical slice.
+Signing, downloading, updating, rollback, product wiring for Community
+metadata, and full per-dialect compatibility remain Stage 7 work.
 
 ## Architecture
 
@@ -100,9 +109,25 @@ Java verification downloads H2 `2.3.232` into
 `java/compat-runtime/target/test-drivers/` as an external Stage 3 test fixture.
 H2 is not a runtime dependency of the compatibility engine, and the packaged
 JAR integration test rejects any build that embeds `org/h2/Driver.class`.
-The H2 gates cover both the Stage 3 bridge and the Stage 5 product path from a
-vault-backed datasource through Java streaming into retained-result paging and
-cancellation. H2 is a test fixture rather than a bundled product driver.
+The H2 gates cover the Stage 3 JDBC bridge, the Stage 5 product path from a
+vault-backed datasource through retained-result paging and cancellation, and
+the Stage 7B Community path through real `IPlugin`, `IDbMetaData`,
+`ISqlBuilder`, and ANTLR parser implementations. H2 remains an external test
+driver rather than a runtime dependency of either Java classpath.
+
+Build and run only the fixed Community H2 compatibility gate with:
+
+```bash
+make community-h2-integration
+```
+
+That target requires a clean submodule at the fixed commit, builds through the
+checked-in Maven Wrapper and a repository-local Maven cache, derives archive
+timestamps from the commit, excludes the H2 JDBC driver, and deterministically
+removes dependency-manifest `Class-Path` entries before rejecting any JAR set
+that differs from `third_party/community-h2-classpath.lock`. Run
+`make community-h2-reproducibility` to compare every artifact byte across two
+consecutive clean builds.
 
 Generate or verify the external contracts:
 

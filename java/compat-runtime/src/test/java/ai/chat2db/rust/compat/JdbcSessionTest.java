@@ -1,13 +1,17 @@
 package ai.chat2db.rust.compat;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.chat2db.rust.compat.protocol.v1.CommunitySchemaList;
 import ai.chat2db.rust.compat.protocol.v1.DatabaseProduct;
 import ai.chat2db.rust.compat.protocol.v1.DriverArtifact;
 import ai.chat2db.rust.compat.protocol.v1.LoadDriverRequest;
 import ai.chat2db.rust.compat.protocol.v1.OperationOutcome;
+import ai.chat2db.rust.compat.protocol.v1.SessionState;
 import ai.chat2db.rust.compat.protocol.v1.TransactionIsolation;
 import com.google.protobuf.ByteString;
 import java.lang.reflect.InvocationHandler;
@@ -17,12 +21,128 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 class JdbcSessionTest {
+
+    @Test
+    void communityMetadataFailuresAfterClaimRequireTransactionRollback(
+            @TempDir Path temporaryDirectory) throws Exception {
+        Path snapshotRoot = Files.createDirectory(temporaryDirectory.resolve("snapshots"));
+        try (DriverRegistry registry = new DriverRegistry(snapshotRoot)) {
+            DriverRegistry.DriverDescriptor descriptor = loadH2(registry);
+            Connection connection = connection((proxy, method, arguments) -> switch (method.getName()) {
+                case "getAutoCommit" -> true;
+                case "getTransactionIsolation" -> Connection.TRANSACTION_READ_COMMITTED;
+                case "isReadOnly" -> false;
+                default -> defaultValue(method.getReturnType());
+            });
+            JdbcSession session = session(connection, registry.acquire(descriptor.driverId()));
+            List<RuntimeFailure> failures = List.of(
+                    RuntimeFailure.validation(
+                            "community.metadata_validation_after_claim", "validation failure"),
+                    RuntimeFailure.limit("community schemas", 1),
+                    RuntimeFailure.internal(
+                            "community.metadata_internal_after_claim",
+                            "internal failure",
+                            new IllegalStateException("metadata projection failed")));
+
+            for (int index = 0; index < failures.size(); index++) {
+                RuntimeFailure expected = failures.get(index);
+                String requestId = "community-metadata-" + index;
+                JdbcSession.TransactionDescriptor transaction = session.begin(
+                        TransactionIsolation.TRANSACTION_ISOLATION_DEFAULT, false);
+
+                RuntimeFailure actual = assertThrows(
+                        RuntimeFailure.class,
+                        () -> JdbcRuntime.invokeCommunitySchemas(
+                                session,
+                                requestId,
+                                Optional.of(transaction.transactionId()),
+                                claimed -> {
+                                    assertSame(connection, claimed);
+                                    throw expected;
+                                }));
+
+                assertEquals(expected.code(), actual.code());
+                assertEquals(JdbcSession.State.ROLLBACK_REQUIRED, session.state());
+                assertEquals(
+                        SessionState.SESSION_STATE_ROLLBACK_REQUIRED,
+                        actual.toEngineError().getSessionState());
+                assertEquals(
+                        OperationOutcome.OPERATION_OUTCOME_KNOWN_FAILED,
+                        actual.outcome());
+                assertTrue(session.activeOperationId().isEmpty());
+                session.rollback(transaction.transactionId());
+            }
+
+            JdbcSession.TransactionDescriptor uncheckedTransaction = session.begin(
+                    TransactionIsolation.TRANSACTION_ISOLATION_DEFAULT, false);
+            RuntimeFailure unchecked = assertThrows(
+                    RuntimeFailure.class,
+                    () -> JdbcRuntime.invokeCommunitySchemas(
+                            session,
+                            "community-metadata-unchecked",
+                            Optional.of(uncheckedTransaction.transactionId()),
+                            claimed -> {
+                                assertSame(connection, claimed);
+                                throw new IllegalStateException("metadata projection failed");
+                            }));
+            assertEquals("community.metadata_failed", unchecked.code());
+            assertEquals(
+                    OperationOutcome.OPERATION_OUTCOME_KNOWN_FAILED,
+                    unchecked.outcome());
+            assertEquals(JdbcSession.State.ROLLBACK_REQUIRED, session.state());
+            session.rollback(uncheckedTransaction.transactionId());
+
+            session.close();
+            registry.unload(descriptor.driverId());
+        }
+    }
+
+    @Test
+    void communityMetadataClaimFailureDoesNotPolluteTransaction(
+            @TempDir Path temporaryDirectory) throws Exception {
+        Path snapshotRoot = Files.createDirectory(temporaryDirectory.resolve("snapshots"));
+        try (DriverRegistry registry = new DriverRegistry(snapshotRoot)) {
+            DriverRegistry.DriverDescriptor descriptor = loadH2(registry);
+            Connection connection = connection((proxy, method, arguments) -> switch (method.getName()) {
+                case "getAutoCommit" -> true;
+                case "getTransactionIsolation" -> Connection.TRANSACTION_READ_COMMITTED;
+                case "isReadOnly" -> false;
+                default -> defaultValue(method.getReturnType());
+            });
+            JdbcSession session = session(connection, registry.acquire(descriptor.driverId()));
+            JdbcSession.TransactionDescriptor transaction = session.begin(
+                    TransactionIsolation.TRANSACTION_ISOLATION_DEFAULT, false);
+            AtomicBoolean invoked = new AtomicBoolean();
+
+            RuntimeFailure failure = assertThrows(
+                    RuntimeFailure.class,
+                    () -> JdbcRuntime.invokeCommunitySchemas(
+                            session,
+                            "community-metadata-invalid-claim",
+                            Optional.of("wrong-transaction"),
+                            claimed -> {
+                                invoked.set(true);
+                                return CommunitySchemaList.getDefaultInstance();
+                            }));
+
+            assertEquals("transaction.id_mismatch", failure.code());
+            assertEquals(OperationOutcome.OPERATION_OUTCOME_NOT_STARTED, failure.outcome());
+            assertFalse(invoked.get());
+            assertEquals(JdbcSession.State.IN_TRANSACTION, session.state());
+            assertTrue(session.activeOperationId().isEmpty());
+            session.rollback(transaction.transactionId());
+            session.close();
+            registry.unload(descriptor.driverId());
+        }
+    }
 
     @Test
     void uncheckedBeginFailureIsUnknownAndBreaksSession(

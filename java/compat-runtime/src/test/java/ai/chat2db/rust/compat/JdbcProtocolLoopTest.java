@@ -20,6 +20,7 @@ import ai.chat2db.rust.compat.protocol.v1.GrantCreditsRequest;
 import ai.chat2db.rust.compat.protocol.v1.JdbcParameter;
 import ai.chat2db.rust.compat.protocol.v1.JdbcValue;
 import ai.chat2db.rust.compat.protocol.v1.LoadDriverRequest;
+import ai.chat2db.rust.compat.protocol.v1.ListCommunitySchemasRequest;
 import ai.chat2db.rust.compat.protocol.v1.OpenSessionRequest;
 import ai.chat2db.rust.compat.protocol.v1.ProtocolVersion;
 import ai.chat2db.rust.compat.protocol.v1.QueryOptions;
@@ -81,7 +82,11 @@ class JdbcProtocolLoopTest {
                             ProtocolLoop.CREDIT_FLOW_CAPABILITY,
                             ProtocolLoop.OPERATION_CANCEL_CAPABILITY,
                             ProtocolLoop.JDBC_UPDATE_CAPABILITY,
-                            ProtocolLoop.LOCAL_TRANSACTION_CAPABILITY),
+                            ProtocolLoop.LOCAL_TRANSACTION_CAPABILITY,
+                            ProtocolLoop.COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
+                            ProtocolLoop.COMMUNITY_SCHEMA_METADATA_CAPABILITY,
+                            ProtocolLoop.COMMUNITY_SQL_BUILDER_CAPABILITY,
+                            ProtocolLoop.COMMUNITY_SQL_PARSER_CAPABILITY),
                     hello.getHello().getCapabilitiesList());
 
             harness.send(ClientEnvelope.newBuilder()
@@ -196,6 +201,19 @@ class JdbcProtocolLoopTest {
             assertFalse(exactCompleted.getQueryCompleted().getTruncatedByMaxResultBytes());
 
             harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("oversized-community-database", sessionId))
+                    .setListCommunitySchemas(ListCommunitySchemasRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setDatabaseName("x".repeat(ProtocolLimits.MAX_SCALAR_BYTES + 1)))
+                    .build());
+            ServerEnvelope oversizedCommunityDatabase = harness.read();
+            assertEquals(ServerEnvelope.PayloadCase.ERROR, oversizedCommunityDatabase.getPayloadCase());
+            assertEquals("protocol.limit_exceeded", oversizedCommunityDatabase.getError().getCode());
+            assertEquals(
+                    SessionState.SESSION_STATE_AUTO_COMMIT,
+                    oversizedCommunityDatabase.getError().getSessionState());
+
+            harness.send(ClientEnvelope.newBuilder()
                     .setMeta(meta("begin", sessionId))
                     .setBeginTransaction(BeginTransactionRequest.newBuilder()
                             .setIsolation(TransactionIsolation.TRANSACTION_ISOLATION_READ_COMMITTED))
@@ -209,6 +227,37 @@ class JdbcProtocolLoopTest {
                     SessionState.SESSION_STATE_TRANSACTION_ACTIVE,
                     transaction.getTransactionStarted().getSessionState());
             String transactionId = transaction.getTransactionStarted().getTransactionId();
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("oversized-community-database-in-transaction", sessionId))
+                    .setListCommunitySchemas(ListCommunitySchemasRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setDatabaseName("x".repeat(ProtocolLimits.MAX_SCALAR_BYTES + 1))
+                            .setTransactionId(transactionId))
+                    .build());
+            ServerEnvelope oversizedCommunityDatabaseInTransaction = harness.read();
+            assertEquals(
+                    ServerEnvelope.PayloadCase.ERROR,
+                    oversizedCommunityDatabaseInTransaction.getPayloadCase());
+            assertEquals(
+                    "protocol.limit_exceeded",
+                    oversizedCommunityDatabaseInTransaction.getError().getCode());
+            assertEquals(
+                    SessionState.SESSION_STATE_TRANSACTION_ACTIVE,
+                    oversizedCommunityDatabaseInTransaction.getError().getSessionState());
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("missing-community-plugin", sessionId))
+                    .setListCommunitySchemas(ListCommunitySchemasRequest.newBuilder()
+                            .setDatabaseType("MISSING")
+                            .setTransactionId(transactionId))
+                    .build());
+            ServerEnvelope missingCommunityPlugin = harness.read();
+            assertEquals(ServerEnvelope.PayloadCase.ERROR, missingCommunityPlugin.getPayloadCase());
+            assertEquals("community.plugin_not_found", missingCommunityPlugin.getError().getCode());
+            assertEquals(
+                    SessionState.SESSION_STATE_TRANSACTION_ACTIVE,
+                    missingCommunityPlugin.getError().getSessionState());
 
             harness.send(ClientEnvelope.newBuilder()
                     .setMeta(meta("tx-insert", sessionId))

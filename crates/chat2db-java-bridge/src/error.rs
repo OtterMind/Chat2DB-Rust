@@ -152,6 +152,13 @@ pub enum BridgeError {
         #[source]
         source: io::Error,
     },
+    #[error("unable to {operation} Community classpath artifact {path}: {source}")]
+    CommunityArtifact {
+        operation: &'static str,
+        path: std::path::PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("unable to {operation} JDBC snapshot directory {path}: {source}")]
     DriverSnapshotDirectory {
         operation: &'static str,
@@ -193,6 +200,19 @@ pub enum BridgeError {
     ShutdownTimeout,
     #[error("compatibility engine supervisor task failed: {0}")]
     SupervisorTask(String),
+    #[error(
+        "failed to terminate and reap compatibility engine; retained generation snapshot {retained_snapshot}: {message}"
+    )]
+    ProcessCleanup {
+        retained_snapshot: std::path::PathBuf,
+        message: String,
+    },
+    #[error("{primary}; cleanup after that failure also failed: {cleanup}")]
+    CleanupAfterFailure {
+        #[source]
+        primary: Box<BridgeError>,
+        cleanup: Box<BridgeError>,
+    },
     #[error(transparent)]
     Frame(#[from] FrameError),
 }

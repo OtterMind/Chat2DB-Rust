@@ -12,8 +12,8 @@ in runtime health until then.
 | 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
 | 5 | Complete | Product transports | Generated OpenAPI/TypeScript contract, Axum JSON/SSE, Tauri 2 commands/channels, shared SQL workbench, product H2 tests |
 | 6 | Complete | Agent, MCP, and CLI | Direct providers, durable bounded tool loop, SQL tools/permissions, compaction, Web/Tauri run transports, owner-only local attachment, read-query CLI, and bounded `rmcp` stdio tools |
-| 7 | Planned | Chat2DB compatibility estate | Existing database SPI/plugins, JDBC packs, Java ANTLR parsers, metadata/builders, per-dialect conformance |
-| 8 | Planned | Packaging and release | jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
+| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs and 7B fixed Community H2 SPI/ANTLR slice implemented; remaining plugin operations and per-dialect conformance explicit |
+| 8 | Planned | Packaging and release | License authorization, NOTICE/SBOM, jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
 
 Stage 3 completion means the versioned Rust-Java bridge can load an external
 JDBC driver, own sessions and local transactions, execute updates, and stream
@@ -63,6 +63,41 @@ polling and paging. MCP retention is capped at 10,000 rows, 16 MiB, and 900
 seconds; pages are capped at 1,000 rows and 512 KiB. The current MCP contract is
 read-only and accepts no JDBC bind parameters; it does not claim the built-in
 Agent's write tool.
+
+Stage 7A implements strict local JDBC driver-pack discovery, bounded artifact
+hashing, startup preload, and immutable inventory through Core, Axum, Tauri,
+and generated frontend contracts. Downloading, signing, installation, update,
+rollback, and hot reload remain incomplete.
+
+Stage 7B fixes the Community source at commit
+`f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7`, builds its H2 compatibility
+classpath reproducibly, and locks all 148 JAR filenames, lengths, and SHA-256
+digests. Before lock verification, the fixed build strips dependency-manifest
+`Class-Path` entries deterministically and proves two clean builds have
+identical artifact bytes. Rust snapshots and re-verifies those JARs for one
+supervised Java generation. Java isolates them behind a platform-parent
+`URLClassLoader`, rejects manifest `Class-Path` escapes, discovers real `IPlugin`
+services, and exposes plugin catalog, H2 schema metadata, `CREATE SCHEMA`, and
+retained ANTLR parsing DTOs over Protobuf. Configuring the classpath requires all
+four Community capabilities at handshake, and Java plus Rust enforce the
+generated 8 MiB cumulative response budget. Rust counts raw Community oneof
+values before decoding, including duplicate fields, and retains a generation
+snapshot whenever child reap cannot be proven. The real vertical test keeps the
+H2 JDBC driver in its separate driver loader.
+
+Stage 7 remains incomplete: the Community operations are not yet wired into
+product-facing Core services, and the full metadata tree, type conversion,
+script execution, import/export, formatting, validation, completion,
+non-relational behavior, remaining builders, plugin inventory, and per-dialect
+conformance are not implemented.
+
+Before Stage 8 may produce any Object-form distribution containing Community
+5.3.0 code, the release must record written commercial authorization compatible
+with `LicenseRef-Chat2DB`. It must also generate and verify the complete
+license/NOTICE attribution bundle and SBOM for the exact locked artifacts.
+Signing, installed-package verification, atomic update/rollback, and measured
+installed-size acceptance remain mandatory independent gates. A private source
+build passing Stage 7 does not satisfy these release conditions.
 
 ## Commit policy
 

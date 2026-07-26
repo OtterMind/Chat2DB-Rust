@@ -69,6 +69,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          submodules: recursive
       - name: Install Linux keyring dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
@@ -83,6 +85,10 @@ jobs:
           cache-dependency-path: |
             java/pom.xml
             java/compat-runtime/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-bom/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-spi/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-plugins/chat2db-community-mysql/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-plugins/chat2db-community-h2/pom.xml
       - name: Package Java engine
         working-directory: java
         run: ./mvnw -B -DskipTests package
@@ -96,6 +102,14 @@ jobs:
           CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
           CHAT2DB_H2_DRIVER_JAR: "${{ github.workspace }}/java/compat-runtime/target/test-drivers/h2-2.3.232.jar"
         run: cargo test -p chat2db-java-bridge --features java-integration --test java_jdbc_h2 --locked
+      - name: Verify fixed Community H2 classpath reproducibility
+        run: ./scripts/verify-community-h2-reproducibility.sh
+      - name: Verify real Community H2 SPI vertical slice
+        env:
+          CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
+          CHAT2DB_H2_DRIVER_JAR: "${{ github.workspace }}/java/compat-runtime/target/test-drivers/h2-2.3.232.jar"
+          CHAT2DB_COMMUNITY_CLASSPATH_DIR: "${{ github.workspace }}/target/community-h2-classpath"
+        run: cargo test -p chat2db-java-bridge --features java-integration --test java_community_h2 --locked
       - name: Verify product H2 vertical slice
         env:
           CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
@@ -179,6 +193,9 @@ jobs:
       - name: Test Windows Java bridge path contracts
         if: runner.os == 'Windows'
         run: cargo test -p chat2db-java-bridge --lib --locked
+      - name: Initialize fixed Community source on Windows
+        if: runner.os == 'Windows'
+        run: git submodule update --init --recursive third_party/chat2db-community
       - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.7.1
         if: runner.os == 'Windows'
         with:
@@ -188,6 +205,10 @@ jobs:
           cache-dependency-path: |
             java/pom.xml
             java/compat-runtime/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-bom/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-spi/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-plugins/chat2db-community-mysql/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-plugins/chat2db-community-h2/pom.xml
       - name: Package Java engine for Windows managed-driver test
         if: runner.os == 'Windows'
         working-directory: java
@@ -201,6 +222,20 @@ jobs:
         run: >-
           cargo test -p chat2db-core --features java-integration
           --test java_h2_product --locked
+      - name: Build fixed Community H2 compatibility classpath on Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: ./scripts/build-community-h2-classpath.sh
+      - name: Verify Windows real Community H2 SPI vertical slice
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
+          CHAT2DB_H2_DRIVER_JAR: "${{ github.workspace }}/java/compat-runtime/target/test-drivers/h2-2.3.232.jar"
+          CHAT2DB_COMMUNITY_CLASSPATH_DIR: "${{ github.workspace }}/target/community-h2-classpath"
+        run: >-
+          cargo test -p chat2db-java-bridge --features java-integration
+          --test java_community_h2 --locked
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22.22.2"

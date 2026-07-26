@@ -1086,12 +1086,12 @@ impl DriverClient {
 
 #[derive(Clone)]
 pub struct Session {
-    client: EngineClient,
-    binding: EngineBinding,
-    id: String,
+    pub(super) client: EngineClient,
+    pub(super) binding: EngineBinding,
+    pub(super) id: String,
     database: DatabaseProduct,
     read_only: bool,
-    state: Arc<SessionStateCell>,
+    pub(super) state: Arc<SessionStateCell>,
 }
 
 impl Session {

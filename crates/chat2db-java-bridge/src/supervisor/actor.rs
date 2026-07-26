@@ -425,7 +425,7 @@ fn reject_registration(
 }
 
 #[allow(clippy::too_many_lines)]
-pub(super) async fn run_actor(context: ActorContext) {
+pub(super) async fn run_actor(context: ActorContext) -> Result<(), String> {
     let ActorContext {
         generation,
         child,
@@ -487,13 +487,22 @@ pub(super) async fn run_actor(context: ActorContext) {
                     None => break FinalDisposition::Stopped,
                 }
             }
-            child_event = child_events.recv() => {
-                child_status = child_event;
-                break if session.phase == SessionPhase::Stopping {
-                    FinalDisposition::Stopped
-                } else {
-                    FinalDisposition::Crashed
-                };
+            child_event = child_events.recv(), if child_status.is_none() => {
+                let status = child_event.unwrap_or_else(|| {
+                    Err(io::Error::other(
+                        "compatibility-engine child monitor stopped before reporting exit",
+                    ))
+                });
+                let drain_shutdown_output =
+                    session.phase == SessionPhase::Stopping && status.is_ok();
+                child_status = Some(status);
+                if !drain_shutdown_output {
+                    break if session.phase == SessionPhase::Stopping {
+                        FinalDisposition::Stopped
+                    } else {
+                        FinalDisposition::Crashed
+                    };
+                }
             }
             () = wait_for_deadline(next_deadline) => {
                 if let Some(disposition) = session.expire_requests(Instant::now()) {
@@ -573,7 +582,7 @@ pub(super) async fn run_actor(context: ActorContext) {
         disposition,
     }
     .finish()
-    .await;
+    .await
 }
 
 struct ActorCompletion {
@@ -593,7 +602,7 @@ struct ActorCompletion {
 }
 
 impl ActorCompletion {
-    async fn finish(self) {
+    async fn finish(self) -> Result<(), String> {
         let Self {
             generation,
             child_control,
@@ -619,6 +628,7 @@ impl ActorCompletion {
                 ))
             })
         };
+        let process_cleanup_error = status_result.as_ref().err().map(ToString::to_string);
         drop(child_control);
         drop(writer_sender);
         settle_task(child_task).await;
@@ -644,6 +654,7 @@ impl ActorCompletion {
             },
         };
         state.send_replace(final_state);
+        process_cleanup_error.map_or(Ok(()), Err)
     }
 }
 
@@ -726,6 +737,9 @@ mod tests {
         .await
         .expect("stdout EOF must not leave the actor waiting on a live child");
         assert!(matches!(terminal, EngineState::Crashed { .. }));
-        actor.await.expect("actor task must join after reaping");
+        actor
+            .await
+            .expect("actor task must join after reaping")
+            .expect("actor must reap the child successfully");
     }
 }

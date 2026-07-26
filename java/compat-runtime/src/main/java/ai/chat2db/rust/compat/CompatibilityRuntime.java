@@ -9,6 +9,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ServiceConfigurationError;
 
 /** Process entrypoint for the private Java database compatibility engine. */
 public final class CompatibilityRuntime {
@@ -73,7 +74,7 @@ public final class CompatibilityRuntime {
         } catch (IOException exception) {
             standardError.println("[compat-runtime] protocol I/O failed");
             return EXIT_IO;
-        } catch (RuntimeException exception) {
+        } catch (RuntimeException | LinkageError | ServiceConfigurationError exception) {
             standardError.println("[compat-runtime] internal protocol failure");
             return EXIT_INTERNAL;
         }

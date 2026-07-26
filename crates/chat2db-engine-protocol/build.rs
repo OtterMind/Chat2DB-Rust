@@ -6,15 +6,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let proto_directory = repository_root.join("proto");
     let compatibility_protocol = proto_directory.join("chat2db/compat/v1/compat.proto");
     let jdbc_protocol = proto_directory.join("chat2db/compat/v1/jdbc.proto");
+    let community_protocol = proto_directory.join("chat2db/compat/v1/community.proto");
 
     println!(
         "cargo:rerun-if-changed={}",
         compatibility_protocol.display()
     );
     println!("cargo:rerun-if-changed={}", jdbc_protocol.display());
+    println!("cargo:rerun-if-changed={}", community_protocol.display());
 
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc_bin_vendored::protoc_bin_path()?);
-    config.compile_protos(&[compatibility_protocol, jdbc_protocol], &[proto_directory])?;
+    config.compile_protos(
+        &[compatibility_protocol, jdbc_protocol, community_protocol],
+        &[proto_directory],
+    )?;
     Ok(())
 }

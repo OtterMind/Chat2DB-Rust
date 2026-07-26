@@ -3,6 +3,7 @@ syntax = "proto3";
 package chat2db.compat.v1;
 
 import "chat2db/compat/v1/jdbc.proto";
+import "chat2db/compat/v1/community.proto";
 
 option java_multiple_files = true;
 option java_package = "ai.chat2db.rust.compat.protocol.v1";
@@ -48,6 +49,10 @@ message ClientEnvelope {
     ExecuteUpdateRequest execute_update = 131;
     GrantCreditsRequest grant_credits = 132;
     CancelOperationRequest cancel_operation = 133;
+    ListCommunityPluginsRequest list_community_plugins = 200;
+    ListCommunitySchemasRequest list_community_schemas = 201;
+    BuildCommunityCreateSchemaRequest build_community_create_schema = 202;
+    ParseCommunitySqlRequest parse_community_sql = 203;
   }
 }
 
@@ -72,6 +77,10 @@ message ServerEnvelope {
     UpdateCompleted update_completed = 133;
     CreditsGranted credits_granted = 134;
     OperationCancelled operation_cancelled = 135;
+    CommunityPluginCatalog community_plugin_catalog = 200;
+    CommunitySchemaList community_schema_list = 201;
+    CommunityBuiltSql community_built_sql = 202;
+    CommunitySqlAnalysis community_sql_analysis = 203;
   }
 }
 

@@ -80,6 +80,29 @@ where
     R: AsyncRead + Unpin,
     M: Message + Default,
 {
+    let Some(payload) = read_frame_payload_with_limit(reader, local_maximum).await? else {
+        return Ok(None);
+    };
+    Ok(Some(M::decode(payload.as_slice())?))
+}
+
+/// Reads one frame and returns its undecoded Protobuf payload.
+///
+/// This is intended for callers that must inspect the original wire data
+/// before decoding can discard unknown or duplicate fields. The configured
+/// limit is always capped by [`MAX_FRAME_BYTES`].
+///
+/// # Errors
+///
+/// Returns [`FrameError`] when the pipe fails, the length violates either
+/// receive limit, or the frame is truncated.
+pub async fn read_frame_payload_with_limit<R>(
+    reader: &mut R,
+    local_maximum: usize,
+) -> Result<Option<Vec<u8>>, FrameError>
+where
+    R: AsyncRead + Unpin,
+{
     let mut header = [0_u8; 4];
     let bytes_read = reader.read(&mut header[..1]).await?;
     if bytes_read == 0 {
@@ -92,7 +115,7 @@ where
 
     let mut payload = vec![0_u8; payload_length];
     reader.read_exact(&mut payload).await?;
-    Ok(Some(M::decode(payload.as_slice())?))
+    Ok(Some(payload))
 }
 
 /// Writes one four-byte big-endian length-prefixed Protobuf frame.
@@ -164,8 +187,8 @@ mod tests {
     use tokio::io::{AsyncWriteExt, duplex};
 
     use super::{
-        FrameError, MAX_FRAME_BYTES, current_version, read_frame, read_frame_with_limit, wire,
-        write_frame, write_frame_with_limit,
+        FrameError, MAX_FRAME_BYTES, current_version, read_frame, read_frame_payload_with_limit,
+        read_frame_with_limit, wire, write_frame, write_frame_with_limit,
     };
 
     #[tokio::test]
@@ -249,6 +272,40 @@ mod tests {
             Err(FrameError::TooLarge { actual, maximum })
                 if actual == configured_maximum + 1 && maximum == configured_maximum
         ));
+    }
+
+    #[tokio::test]
+    async fn raw_frame_reader_preserves_the_exact_protobuf_payload() {
+        let payload = wire::ClientEnvelope {
+            meta: Some(wire::RequestMeta {
+                request_id: "raw-frame".to_owned(),
+                trace_id: "raw-frame".to_owned(),
+                ..Default::default()
+            }),
+            payload: Some(wire::client_envelope::Payload::Ping(wire::Ping {
+                nonce: 9,
+            })),
+        }
+        .encode_to_vec();
+        let (mut writer, mut reader) = duplex(256);
+        writer
+            .write_all(
+                &u32::try_from(payload.len())
+                    .expect("test payload length must fit u32")
+                    .to_be_bytes(),
+            )
+            .await
+            .expect("header must write");
+        writer
+            .write_all(&payload)
+            .await
+            .expect("payload must write");
+
+        let raw = read_frame_payload_with_limit(&mut reader, MAX_FRAME_BYTES)
+            .await
+            .expect("raw frame must read")
+            .expect("raw frame must be present");
+        assert_eq!(raw, payload);
     }
 
     #[tokio::test]

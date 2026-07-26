@@ -30,9 +30,18 @@ use self::{
 };
 
 mod actor;
+mod community;
 mod io;
 mod jdbc;
 mod pending;
+
+pub use community::{
+    COMMUNITY_PLUGIN_CATALOG_CAPABILITY, COMMUNITY_SCHEMA_METADATA_CAPABILITY,
+    COMMUNITY_SQL_BUILDER_CAPABILITY, COMMUNITY_SQL_PARSER_CAPABILITY, CommunityClasspath,
+    CommunityClient, CommunityDriverConfig, CommunityParsedStatement, CommunityPlugin,
+    CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices, CommunitySchema,
+    CommunitySqlAnalysis,
+};
 
 pub use jdbc::{
     CancelDisposition, ColumnNullability, ConnectionProperty, DRIVER_EXTERNAL_JAR_CAPABILITY,
@@ -72,6 +81,7 @@ pub struct EngineConfig {
     stderr_tail_bytes: usize,
     registration_ack_delay: Duration,
     driver_snapshot_parent: Option<PathBuf>,
+    community_classpath: Option<CommunityClasspath>,
 }
 
 impl EngineConfig {
@@ -91,6 +101,7 @@ impl EngineConfig {
             stderr_tail_bytes: DEFAULT_STDERR_TAIL_BYTES,
             registration_ack_delay: Duration::ZERO,
             driver_snapshot_parent: None,
+            community_classpath: None,
         }
     }
 
@@ -150,6 +161,27 @@ impl EngineConfig {
         self
     }
 
+    /// Supplies the fixed Community compatibility classpath for this process.
+    #[must_use]
+    pub fn with_community_classpath(mut self, classpath: CommunityClasspath) -> Self {
+        for capability in [
+            COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
+            COMMUNITY_SCHEMA_METADATA_CAPABILITY,
+            COMMUNITY_SQL_BUILDER_CAPABILITY,
+            COMMUNITY_SQL_PARSER_CAPABILITY,
+        ] {
+            if !self
+                .required_capabilities
+                .iter()
+                .any(|required| required == capability)
+            {
+                self.required_capabilities.push(capability.to_owned());
+            }
+        }
+        self.community_classpath = Some(classpath);
+        self
+    }
+
     #[cfg(feature = "test-fixture")]
     #[doc(hidden)]
     #[must_use]
@@ -199,6 +231,41 @@ impl EngineConfig {
         }
         Ok(())
     }
+
+    fn build_process_command(
+        &self,
+        snapshot_root: &DriverSnapshotRoot,
+    ) -> Result<(tokio::process::Command, String), BridgeError> {
+        let community_snapshot = self
+            .community_classpath
+            .as_ref()
+            .map(|classpath| classpath.snapshot_into(&snapshot_root.canonical_path))
+            .transpose()?;
+        let community_source_commit = self
+            .community_classpath
+            .as_ref()
+            .map_or_else(String::new, |classpath| {
+                classpath.source_commit().to_owned()
+            });
+
+        let mut command = self.command.build();
+        command
+            .env(JDBC_SNAPSHOT_ROOT_ENV, &snapshot_root.wire_path)
+            .env_remove(community::COMMUNITY_CLASSPATH_ENV)
+            .env_remove(community::COMMUNITY_SOURCE_COMMIT_ENV)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        if let Some(snapshot) = community_snapshot {
+            command.env(community::COMMUNITY_CLASSPATH_ENV, snapshot);
+            command.env(
+                community::COMMUNITY_SOURCE_COMMIT_ENV,
+                &community_source_commit,
+            );
+        }
+        Ok((command, community_source_commit))
+    }
 }
 
 /// Single owner of one supervised Java process generation.
@@ -226,6 +293,22 @@ impl DriverSnapshotRoot {
                 path: parent.map_or_else(std::env::temp_dir, Path::to_path_buf),
                 source,
             })?;
+        let (canonical_path, wire_path) = match Self::resolve(&directory) {
+            Ok(paths) => paths,
+            Err(primary) => {
+                let cleanup_path = directory.path().to_path_buf();
+                let cleanup = close_snapshot_directory(directory, cleanup_path);
+                return Err(attach_cleanup_error(primary, cleanup));
+            }
+        };
+        Ok(Self {
+            directory,
+            canonical_path,
+            wire_path,
+        })
+    }
+
+    fn resolve(directory: &tempfile::TempDir) -> Result<(PathBuf, String), BridgeError> {
         let canonical_path = std::fs::canonicalize(directory.path()).map_err(|source| {
             BridgeError::DriverSnapshotDirectory {
                 operation: "resolve",
@@ -245,22 +328,174 @@ impl DriverSnapshotRoot {
                     ),
                 })?;
         let wire_path = jdbc::driver_artifact_wire_path(canonical_text)?;
-        Ok(Self {
-            directory,
-            canonical_path,
-            wire_path,
-        })
+        Ok((canonical_path, wire_path))
     }
 
     fn close(self) -> Result<(), BridgeError> {
-        self.directory
-            .close()
-            .map_err(|source| BridgeError::DriverSnapshotDirectory {
-                operation: "clean",
-                path: self.canonical_path,
-                source,
-            })
+        close_snapshot_directory(self.directory, self.canonical_path)
     }
+
+    fn close_after(self, primary: BridgeError) -> BridgeError {
+        attach_cleanup_error(primary, self.close())
+    }
+
+    fn retain_after_process_failure(self, message: String) -> BridgeError {
+        let retained_snapshot = self.retain();
+        BridgeError::ProcessCleanup {
+            retained_snapshot,
+            message,
+        }
+    }
+
+    fn retain(self) -> PathBuf {
+        let Self {
+            directory,
+            canonical_path,
+            ..
+        } = self;
+        let _ = directory.keep();
+        canonical_path
+    }
+}
+
+fn close_snapshot_directory(
+    directory: tempfile::TempDir,
+    path: PathBuf,
+) -> Result<(), BridgeError> {
+    directory
+        .close()
+        .map_err(|source| BridgeError::DriverSnapshotDirectory {
+            operation: "clean",
+            path,
+            source,
+        })
+}
+
+struct SpawnedProcess {
+    child: tokio::process::Child,
+    process_id: Option<u32>,
+    stdin: tokio::process::ChildStdin,
+    stdout: tokio::process::ChildStdout,
+    stderr: tokio::process::ChildStderr,
+    community_source_commit: String,
+    snapshot_root: DriverSnapshotRoot,
+}
+
+fn attach_cleanup_error(primary: BridgeError, cleanup: Result<(), BridgeError>) -> BridgeError {
+    match cleanup {
+        Ok(()) => primary,
+        Err(cleanup) => BridgeError::CleanupAfterFailure {
+            primary: Box::new(primary),
+            cleanup: Box::new(cleanup),
+        },
+    }
+}
+
+fn resolve_with_cleanup<T>(
+    result: Result<T, BridgeError>,
+    cleanup: Result<(), BridgeError>,
+) -> Result<T, BridgeError> {
+    match result {
+        Ok(value) => cleanup.map(|()| value),
+        Err(primary) => Err(attach_cleanup_error(primary, cleanup)),
+    }
+}
+
+async fn join_actor_task(task: JoinHandle<Result<(), BridgeError>>) -> Result<(), BridgeError> {
+    task.await
+        .map_err(|error| BridgeError::SupervisorTask(error.to_string()))?
+}
+
+async fn resolve_start_failure(
+    primary: BridgeError,
+    actor_task: JoinHandle<Result<(), BridgeError>>,
+) -> BridgeError {
+    attach_cleanup_error(primary, join_actor_task(actor_task).await)
+}
+
+async fn supervise_actor_task(
+    actor_task: JoinHandle<Result<(), String>>,
+    snapshot_root: DriverSnapshotRoot,
+) -> Result<(), BridgeError> {
+    match actor_task.await {
+        Ok(Ok(())) => snapshot_root.close(),
+        Ok(Err(message)) => Err(snapshot_root.retain_after_process_failure(message)),
+        Err(error) => {
+            let retained_snapshot = snapshot_root.retain();
+            Err(BridgeError::SupervisorTask(format!(
+                "{error}; retained generation snapshot {} because child reap was not proven",
+                retained_snapshot.display()
+            )))
+        }
+    }
+}
+
+async fn terminate_child_before_actor(child: &mut tokio::process::Child) -> Result<(), String> {
+    if let Err(kill_error) = child.start_kill() {
+        return match child.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(format!(
+                "failed to kill compatibility engine before supervisor startup: {kill_error}"
+            )),
+            Err(status_error) => Err(format!(
+                "failed to kill compatibility engine before supervisor startup: {kill_error}; status check failed: {status_error}"
+            )),
+        };
+    }
+    child.wait().await.map(|_| ()).map_err(|error| {
+        format!("failed to reap compatibility engine before supervisor startup: {error}")
+    })
+}
+
+async fn spawn_process(
+    config: &EngineConfig,
+    generation: u64,
+) -> Result<SpawnedProcess, BridgeError> {
+    let snapshot_root =
+        DriverSnapshotRoot::create(config.driver_snapshot_parent.as_deref(), generation)?;
+    let (mut command, community_source_commit) = match config.build_process_command(&snapshot_root)
+    {
+        Ok(command) => command,
+        Err(error) => return Err(snapshot_root.close_after(error)),
+    };
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(source) => return Err(snapshot_root.close_after(BridgeError::Spawn(source))),
+    };
+    let process_id = child.id();
+    let stdin = child.stdin.take();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let (stdin, stdout, stderr) = match (stdin, stdout, stderr) {
+        (Some(stdin), Some(stdout), Some(stderr)) => (stdin, stdout, stderr),
+        (stdin, stdout, stderr) => {
+            let missing = if stdin.is_none() {
+                "stdin"
+            } else if stdout.is_none() {
+                "stdout"
+            } else {
+                debug_assert!(stderr.is_none());
+                "stderr"
+            };
+            let cleanup = match terminate_child_before_actor(&mut child).await {
+                Ok(()) => snapshot_root.close(),
+                Err(message) => Err(snapshot_root.retain_after_process_failure(message)),
+            };
+            return Err(attach_cleanup_error(
+                BridgeError::MissingPipe(missing),
+                cleanup,
+            ));
+        }
+    };
+    Ok(SpawnedProcess {
+        child,
+        process_id,
+        stdin,
+        stdout,
+        stderr,
+        community_source_commit,
+        snapshot_root,
+    })
 }
 
 impl EngineSupervisor {
@@ -273,30 +508,15 @@ impl EngineSupervisor {
     pub async fn spawn(config: EngineConfig) -> Result<Self, BridgeError> {
         config.validate()?;
         let generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let snapshot_root =
-            DriverSnapshotRoot::create(config.driver_snapshot_parent.as_deref(), generation)?;
-
-        let mut command = config.command.build();
-        command
-            .env(JDBC_SNAPSHOT_ROOT_ENV, &snapshot_root.wire_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = command.spawn().map_err(BridgeError::Spawn)?;
-        let process_id = child.id();
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or(BridgeError::MissingPipe("stdin"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or(BridgeError::MissingPipe("stdout"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or(BridgeError::MissingPipe("stderr"))?;
+        let SpawnedProcess {
+            child,
+            process_id,
+            stdin,
+            stdout,
+            stderr,
+            community_source_commit,
+            snapshot_root,
+        } = spawn_process(&config, generation).await?;
 
         let stderr_tail = StderrTail::new(config.stderr_tail_bytes);
         let drain_tail = stderr_tail.clone();
@@ -309,27 +529,24 @@ impl EngineSupervisor {
         let (control_sender, control_receiver) = mpsc::unbounded_channel();
         let actor_stderr_tail = stderr_tail.clone();
 
-        let actor_task = tokio::spawn(async move {
-            run_actor(ActorContext {
-                generation,
-                child,
-                stdin,
-                stdout,
-                stderr_task,
-                stderr_tail: actor_stderr_tail,
-                state: state_sender,
-                commands: command_receiver,
-                control_commands: control_command_receiver,
-                controls: control_receiver,
-                max_in_flight: config.max_in_flight,
-                control_lane_capacity: DEFAULT_CONTROL_LANE_CAPACITY,
-                registration_ack_delay: config.registration_ack_delay,
-                max_receive_frame_bytes: usize::try_from(config.max_receive_frame_bytes)
-                    .unwrap_or(MAX_FRAME_BYTES),
-            })
-            .await;
-            snapshot_root.close()
-        });
+        let actor = tokio::spawn(run_actor(ActorContext {
+            generation,
+            child,
+            stdin,
+            stdout,
+            stderr_task,
+            stderr_tail: actor_stderr_tail,
+            state: state_sender,
+            commands: command_receiver,
+            control_commands: control_command_receiver,
+            controls: control_receiver,
+            max_in_flight: config.max_in_flight,
+            control_lane_capacity: DEFAULT_CONTROL_LANE_CAPACITY,
+            registration_ack_delay: config.registration_ack_delay,
+            max_receive_frame_bytes: usize::try_from(config.max_receive_frame_bytes)
+                .unwrap_or(MAX_FRAME_BYTES),
+        }));
+        let actor_task = tokio::spawn(supervise_actor_task(actor, snapshot_root));
 
         let inner = Arc::new(EngineInner {
             generation,
@@ -342,6 +559,7 @@ impl EngineSupervisor {
             request_timeout: config.request_timeout,
             shutdown_timeout: config.shutdown_timeout,
             stream_event_capacity: config.stream_event_capacity,
+            community_source_commit,
             stderr_tail,
             shutdown_lock: Mutex::new(()),
         });
@@ -358,15 +576,13 @@ impl EngineSupervisor {
                 client
                     .terminate_start_failure(public_error.to_string())
                     .await;
-                let _ = actor_task.await;
-                return Err(public_error);
+                return Err(resolve_start_failure(public_error, actor_task).await);
             }
         };
 
         if let Err(error) = client.promote_ready(identity).await {
             client.terminate_start_failure(error.to_string()).await;
-            let _ = actor_task.await;
-            return Err(error);
+            return Err(resolve_start_failure(error, actor_task).await);
         }
 
         Ok(Self {
@@ -413,16 +629,14 @@ impl EngineSupervisor {
     /// does not exit before the forced-termination deadline.
     pub async fn shutdown(&self) -> Result<ProcessExit, BridgeError> {
         let result = self.client.shutdown().await;
-        self.join_actor().await?;
-        result
+        resolve_with_cleanup(result, self.join_actor().await)
     }
 
     async fn join_actor(&self) -> Result<(), BridgeError> {
         let Some(task) = self.actor_task.lock().await.take() else {
             return Ok(());
         };
-        task.await
-            .map_err(|error| BridgeError::SupervisorTask(error.to_string()))?
+        join_actor_task(task).await
     }
 }
 
@@ -451,6 +665,7 @@ struct EngineInner {
     request_timeout: Duration,
     shutdown_timeout: Duration,
     stream_event_capacity: usize,
+    community_source_commit: String,
     stderr_tail: StderrTail,
     shutdown_lock: Mutex<()>,
 }
@@ -638,21 +853,10 @@ impl EngineClient {
             }
         }
 
-        if self
-            .inner
-            .commands
-            .send(ActorCommand::CloseInput)
-            .await
-            .is_err()
-        {
-            self.force_stop_and_wait().await;
-            if self.state().is_terminal() {
-                termination_guard.disarm();
-            }
-            return Err(BridgeError::CommandChannelClosed {
-                outcome: DeliveryOutcome::Unknown,
-            });
-        }
+        // The process may exit immediately after flushing the ack. In that case the actor can
+        // reach EOF and close this channel before the client resumes; the terminal state is the
+        // authoritative shutdown result.
+        let _ = self.inner.commands.send(ActorCommand::CloseInput).await;
         let result = match self.wait_for_terminal(self.inner.shutdown_timeout).await {
             Ok(EngineState::Stopped { exit, .. }) => Ok(exit),
             Ok(state) => Err(BridgeError::ProcessUnavailable {
@@ -1169,5 +1373,107 @@ impl Drop for ShutdownTerminationGuard {
                 disposition: FinalDisposition::Stopped,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn startup_failure_preserves_snapshot_cleanup_failure() {
+        let cleanup_path = PathBuf::from("fixture-snapshot");
+        let task_path = cleanup_path.clone();
+        let actor_task = tokio::spawn(async move {
+            Err(BridgeError::DriverSnapshotDirectory {
+                operation: "clean",
+                path: task_path,
+                source: std::io::Error::other("fixture cleanup failure"),
+            })
+        });
+
+        let error = resolve_start_failure(
+            BridgeError::InvalidHandshake("fixture handshake failure".to_owned()),
+            actor_task,
+        )
+        .await;
+        let BridgeError::CleanupAfterFailure { primary, cleanup } = error else {
+            panic!("startup and cleanup failures must both be retained");
+        };
+        assert!(matches!(
+            *primary,
+            BridgeError::InvalidHandshake(message) if message == "fixture handshake failure"
+        ));
+        assert!(matches!(
+            *cleanup,
+            BridgeError::DriverSnapshotDirectory {
+                operation: "clean",
+                path,
+                ..
+            } if path == cleanup_path
+        ));
+    }
+
+    #[tokio::test]
+    async fn actor_join_failure_is_reported_as_a_supervisor_task_error() {
+        let actor_task = tokio::spawn(std::future::pending::<Result<(), BridgeError>>());
+        actor_task.abort();
+
+        assert!(matches!(
+            join_actor_task(actor_task).await,
+            Err(BridgeError::SupervisorTask(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn process_cleanup_failure_retains_the_generation_snapshot() {
+        let parent = tempfile::tempdir().expect("fixture parent must exist");
+        let snapshot = DriverSnapshotRoot::create(Some(parent.path()), 1)
+            .expect("fixture snapshot must exist");
+        let expected_path = snapshot.canonical_path.clone();
+        let actor_task =
+            tokio::spawn(async { Err("fixture child could not be reaped".to_owned()) });
+
+        let error = supervise_actor_task(actor_task, snapshot)
+            .await
+            .expect_err("process cleanup failure must surface");
+        let BridgeError::ProcessCleanup {
+            retained_snapshot,
+            message,
+        } = error
+        else {
+            panic!("process cleanup failure must retain its dedicated error type");
+        };
+        assert_eq!(retained_snapshot, expected_path);
+        assert_eq!(message, "fixture child could not be reaped");
+        assert!(retained_snapshot.is_dir());
+        std::fs::remove_dir_all(retained_snapshot)
+            .expect("retained fixture snapshot must be removed");
+    }
+
+    #[test]
+    fn shutdown_failure_preserves_a_concurrent_actor_cleanup_failure() {
+        let cleanup_path = PathBuf::from("fixture-shutdown-snapshot");
+        let result: Result<(), BridgeError> = Err(BridgeError::ShutdownTimeout);
+        let cleanup = Err(BridgeError::DriverSnapshotDirectory {
+            operation: "clean",
+            path: cleanup_path.clone(),
+            source: std::io::Error::other("fixture cleanup failure"),
+        });
+
+        let error = resolve_with_cleanup(result, cleanup)
+            .expect_err("shutdown and cleanup failures must both surface");
+        let BridgeError::CleanupAfterFailure { primary, cleanup } = error else {
+            panic!("shutdown and cleanup failures must use the composite error");
+        };
+        assert!(matches!(*primary, BridgeError::ShutdownTimeout));
+        assert!(matches!(
+            *cleanup,
+            BridgeError::DriverSnapshotDirectory {
+                operation: "clean",
+                path,
+                ..
+            } if path == cleanup_path
+        ));
     }
 }

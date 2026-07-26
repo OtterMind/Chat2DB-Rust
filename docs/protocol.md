@@ -6,20 +6,31 @@ Implemented and cross-language tested: protocol 1.0 framing, handshake, exact
 version selection, required-capability validation, lifecycle supervision,
 external JDBC driver loading, sessions, local transactions, prepared queries
 and updates, typed row streams, credit flow control, cancellation, deadlines,
-bounded errors, and conservative delivery outcomes.
+bounded errors, conservative delivery outcomes, Community plugin inventory,
+H2 schema metadata, `CREATE SCHEMA` building, and retained SQL parsing.
 
-Not implemented in the compatibility protocol: Chat2DB plugin inventory,
-generic database metadata operations, script execution, import/export, SQL
-parser or completion operations, or retained result handles. Driver-pack
-discovery and inventory are product-level Rust contracts; the process protocol
-continues to receive only ordered canonical JAR paths and expected digests.
+Not implemented in the compatibility protocol: metadata beyond schemas,
+general-purpose SQL builder operations, script execution, import/export,
+formatting, completion, non-relational operations, or retained result handles.
+Driver-pack discovery and inventory are product-level Rust contracts; the
+process protocol continues to receive only ordered canonical JDBC JAR paths and
+expected digests.
 
 ## Source of truth
 
-`proto/chat2db/compat/v1/compat.proto` and its imported `jdbc.proto` are the
-canonical wire schema. Rust generates types in `chat2db-engine-protocol` with
-`prost-build`; Maven generates Java from the same files with Protobuf 4.31.1.
-Generated sources stay in build directories and are not committed.
+`proto/chat2db/compat/v1/compat.proto` and its imported `jdbc.proto` and
+`community.proto` are the canonical wire schema. Rust generates types in
+`chat2db-engine-protocol` with `prost-build`; Maven generates Java from the same
+files with Protobuf 4.31.1. Generated sources stay in build directories and are
+not committed.
+
+The retained Community SPI and its implementations come from the Community
+5.3.0 submodule fixed at commit
+`f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7`. The Protobuf messages are
+compatibility-layer-owned DTOs, not serialized Community Java types; Community
+plugin, JDBC, parser, and exception objects remain inside Java. The catalog's
+`source_commit` is provenance that Rust checks against the configured commit.
+It is not an artifact digest, cryptographic signature, or trust decision.
 
 ## Framing
 
@@ -58,10 +69,20 @@ The implemented capability names are:
 - `operation.cancel.v1`
 - `update.jdbc.v1`
 - `transaction.local.v1`
+- `community.plugin-catalog.v1`
+- `community.metadata.schemas.v1`
+- `community.sql-builder.v1`
+- `community.sql-parser.v1`
 
 No common version or missing required capability returns a fatal structured
 error and terminates the engine. Rust rejects a selected version it did not
 offer and rejects an incomplete engine identity.
+
+Every startup failure signals termination and joins the actor before returning.
+If startup and actor or snapshot cleanup both fail, the bridge preserves both
+errors. A generation snapshot is deleted only after the child is confirmed
+reaped; an uncertain terminate/reap result returns an explicit process-cleanup
+error and retains the canonical snapshot path for later cleanup.
 
 ## Correlation and outcomes
 
@@ -167,6 +188,60 @@ Every checked or unchecked failure after that point, including an invalid
 negative update count or statement-close failure, reports outcome `UNKNOWN`.
 Transactions and writes are never automatically replayed.
 
+## Community compatibility
+
+Rust accepts a Community classpath only with a full lowercase source commit,
+at most 256 non-symbolic regular JARs, and at most 512 MiB in total. It opens
+every artifact without following links, records its length and SHA-256, then
+copies and re-verifies it into the Java generation's private directory. The
+parent process's Community environment variables are removed before the
+validated directory and commit are supplied to the child. Java independently
+requires one canonical directory containing only bounded, readable JARs and
+loads it through a `URLClassLoader` whose parent is the platform classloader.
+Java rejects every JAR whose manifest declares a non-empty `Class-Path`, so the
+loader cannot resolve an artifact outside the generation snapshot.
+The fixed source build removes dependency-manifest `Class-Path` attributes
+before lock verification by rebuilding only affected JARs with sorted entries,
+the source-commit timestamp, and the `STORED` method. A two-clean-build gate
+compares every resulting JAR digest and length.
+
+Configuring the classpath automatically makes all four Community capabilities
+required during handshake. A sidecar that lacks any one of them fails startup
+and is reaped before the generation becomes ready.
+
+`ServiceLoader<IPlugin>` discovery and every Community invocation run with that
+loader as the thread context loader. Catalog responses project plugin identity,
+database/schema behavior, declared JDBC configuration, and available metadata,
+builder, and parser services into bounded Protobuf DTOs. Java stops projection
+when cumulative UTF-8 plus conservative encoding accounting exceeds 8 MiB;
+Rust independently scans the undecoded `ServerEnvelope` wire and accumulates
+the raw length-delimited values of every Community response field, including
+unknown nested bytes and duplicate oneof fields. More than 8 MiB is fatal while
+non-Community responses retain the negotiated limit up to 16 MiB. Decoded
+string totals and message sizes are checked again against the same generated
+8 MiB limit. Rust requires the catalog's source commit to equal the configured
+commit; a mismatch is a fatal protocol violation.
+
+Schema metadata reuses an existing generation-bound JDBC session and optional
+transaction. Java validates the request and selected plugin before claiming the
+session operation. Any `RuntimeFailure`, unchecked failure, or linkage failure
+after the claim conservatively marks an active transaction
+`ROLLBACK_REQUIRED`. A claim-stage `NOT_STARTED` outcome is promoted to
+`KNOWN_FAILED`, while an existing `UNKNOWN` outcome remains unknown; failures
+rejected before the claim leave the transaction active and retain
+`NOT_STARTED`.
+`CREATE SCHEMA` uses the SQL builder owned by the plugin's `IDbMetaData`;
+parsing uses the plugin's retained syntax parser. No Community, JDBC, ANTLR, or
+exception object crosses the process boundary.
+
+All four Community operations use the fatal-on-unknown lane. Once delivered, a
+timeout or abandoned response terminates and reaps the Java generation because
+the host can no longer prove the plugin invocation's state. The checked-in
+`third_party/community-h2-classpath.lock` additionally binds the current
+source build to exactly 148 filenames, lengths, and SHA-256 values. This lock is
+a reproducibility and drift gate, not a package signature or distribution
+authorization.
+
 ## Supervision
 
 One actor owns each process generation. It coordinates a bounded stdin writer,
@@ -189,4 +264,9 @@ desktop checks. The H2 tests cover external driver loading, managed-pack
 preload and cleanup, typed multi-batch streaming, zero-credit backpressure,
 transactions, rollback on close, cancellation recovery, and retained results.
 CI runs the same cross-language H2 gates without conditional skips and adds a
-Windows managed-pack runtime test.
+Windows managed-pack runtime test. The Stage 7B gate performs a clean build of
+the fixed Community source with a commit-derived archive timestamp and a
+repository-local Maven cache, rejects classpath lock drift, keeps the H2 JDBC
+driver external, and executes catalog, schema metadata, schema builder, and
+ANTLR parser calls through the real Community H2 plugin. CI runs that same
+Community sidecar path on Linux and Windows.

@@ -2,11 +2,13 @@ use std::{sync::Arc, time::Duration};
 
 use chat2db_engine_protocol::{MAX_FRAME_BYTES, MIN_FRAME_BYTES, wire::ProtocolVersion};
 use chat2db_java_bridge::{
-    BridgeError, CancelDisposition, DeliveryOutcome, DriverArtifact, DriverSpec, EngineClient,
-    EngineCommand, EngineConfig, EngineState, EngineSupervisor, JdbcValue, QueryEvent,
-    QueryOptions, QueryRequest, SESSION_JDBC_CAPABILITY, Session, SessionConfig, SessionState,
-    TransactionOptions, UpdateRequest,
+    BridgeError, CancelDisposition, CommunityClasspath, DeliveryOutcome, DriverArtifact,
+    DriverSpec, EngineClient, EngineCommand, EngineConfig, EngineState, EngineSupervisor,
+    JdbcValue, QueryEvent, QueryOptions, QueryRequest, SESSION_JDBC_CAPABILITY, Session,
+    SessionConfig, SessionState, TransactionOptions, UpdateRequest,
 };
+
+const COMMUNITY_COMMIT: &str = "f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7";
 
 fn fixture_command(arguments: &[&str]) -> EngineCommand {
     arguments.iter().fold(
@@ -16,6 +18,14 @@ fn fixture_command(arguments: &[&str]) -> EngineCommand {
 }
 
 fn fast_config(command: EngineCommand) -> EngineConfig {
+    EngineConfig::new(command).with_timeouts(
+        Duration::from_secs(2),
+        Duration::from_secs(2),
+        Duration::from_secs(2),
+    )
+}
+
+fn short_shutdown_config(command: EngineCommand) -> EngineConfig {
     EngineConfig::new(command).with_timeouts(
         Duration::from_secs(2),
         Duration::from_secs(2),
@@ -83,6 +93,88 @@ async fn startup_timeout_kills_and_reaps_the_child() {
 }
 
 #[tokio::test]
+async fn configured_community_classpath_requires_capabilities_and_reaps_the_child() {
+    let directory = tempfile::tempdir().expect("fixture directory must exist");
+    let jar = directory.path().join("community-fixture.jar");
+    std::fs::write(&jar, b"fixture").expect("fixture JAR must write");
+    let snapshot_parent = directory.path().join("snapshots");
+    std::fs::create_dir(&snapshot_parent).expect("snapshot parent must exist");
+    let classpath = CommunityClasspath::from_paths(COMMUNITY_COMMIT, [jar])
+        .expect("fixture Community classpath must validate");
+
+    let result = EngineSupervisor::spawn(
+        fast_config(fixture_command(&[]))
+            .with_driver_snapshot_parent(&snapshot_parent)
+            .with_community_classpath(classpath),
+    )
+    .await;
+    let Err(error) = result else {
+        panic!("an engine without Community capabilities must fail startup");
+    };
+    assert!(matches!(
+        error,
+        BridgeError::Remote(remote)
+            if remote.code == "protocol.unsupported_capability" && remote.fatal
+    ));
+    assert!(
+        std::fs::read_dir(&snapshot_parent)
+            .expect("snapshot parent must remain readable")
+            .next()
+            .is_none(),
+        "failed startup must reap the child and remove its generation snapshot"
+    );
+}
+
+#[tokio::test]
+async fn command_build_failure_removes_the_partial_generation_snapshot() {
+    let directory = tempfile::tempdir().expect("fixture directory must exist");
+    let jar = directory.path().join("community-fixture.jar");
+    std::fs::write(&jar, b"fixture").expect("fixture JAR must write");
+    let classpath = CommunityClasspath::from_paths(COMMUNITY_COMMIT, [jar.clone()])
+        .expect("fixture Community classpath must validate");
+    std::fs::remove_file(&jar).expect("fixture JAR must be removed before snapshotting");
+    let snapshot_parent = directory.path().join("snapshots");
+    std::fs::create_dir(&snapshot_parent).expect("snapshot parent must exist");
+
+    let result = EngineSupervisor::spawn(
+        fast_config(fixture_command(&[]))
+            .with_driver_snapshot_parent(&snapshot_parent)
+            .with_community_classpath(classpath),
+    )
+    .await;
+    assert!(matches!(result, Err(BridgeError::CommunityArtifact { .. })));
+    assert!(
+        std::fs::read_dir(&snapshot_parent)
+            .expect("snapshot parent must remain readable")
+            .next()
+            .is_none(),
+        "command construction failure must remove its partial generation snapshot"
+    );
+}
+
+#[tokio::test]
+async fn process_spawn_failure_removes_the_generation_snapshot() {
+    let directory = tempfile::tempdir().expect("fixture directory must exist");
+    let snapshot_parent = directory.path().join("snapshots");
+    std::fs::create_dir(&snapshot_parent).expect("snapshot parent must exist");
+    let missing_executable = directory.path().join("missing-engine-executable");
+
+    let result = EngineSupervisor::spawn(
+        fast_config(EngineCommand::new(missing_executable))
+            .with_driver_snapshot_parent(&snapshot_parent),
+    )
+    .await;
+    assert!(matches!(result, Err(BridgeError::Spawn(_))));
+    assert!(
+        std::fs::read_dir(&snapshot_parent)
+            .expect("snapshot parent must remain readable")
+            .next()
+            .is_none(),
+        "spawn failure must remove its generation snapshot"
+    );
+}
+
+#[tokio::test]
 async fn correlates_concurrent_responses_that_arrive_in_reverse_order() {
     let supervisor = EngineSupervisor::spawn(fast_config(fixture_command(&["--reverse-pings=32"])))
         .await
@@ -137,10 +229,11 @@ async fn unexpected_exit_fails_the_request_with_unknown_outcome() {
 
 #[tokio::test]
 async fn shutdown_timeout_force_kills_and_reaps_the_child() {
-    let supervisor =
-        EngineSupervisor::spawn(fast_config(fixture_command(&["--hang-after-shutdown-ack"])))
-            .await
-            .expect("fixture must handshake");
+    let supervisor = EngineSupervisor::spawn(short_shutdown_config(fixture_command(&[
+        "--hang-after-shutdown-ack",
+    ])))
+    .await
+    .expect("fixture must handshake");
     let error = supervisor
         .shutdown()
         .await
@@ -163,6 +256,74 @@ async fn invalid_pong_fails_and_reaps_the_generation() {
         .await
         .expect_err("wrong nonce must violate the protocol");
     assert!(matches!(error, BridgeError::Protocol(_)));
+    assert!(matches!(
+        wait_for_terminal(&supervisor).await,
+        EngineState::Failed { .. }
+    ));
+}
+
+#[tokio::test]
+async fn mismatched_community_commit_fails_and_reaps_the_generation() {
+    let directory = tempfile::tempdir().expect("fixture directory must exist");
+    let jar = directory.path().join("community-fixture.jar");
+    std::fs::write(&jar, b"fixture").expect("fixture JAR must write");
+    let classpath = CommunityClasspath::from_paths(COMMUNITY_COMMIT, [jar])
+        .expect("fixture Community classpath must validate");
+    let supervisor = EngineSupervisor::spawn(
+        fast_config(fixture_command(&["--community=wrong-commit"]))
+            .with_community_classpath(classpath),
+    )
+    .await
+    .expect("Community fixture must handshake");
+
+    let error = supervisor
+        .client()
+        .community_client()
+        .expect("Community client must bind")
+        .list_plugins()
+        .await
+        .expect_err("a mismatched source commit must violate the protocol");
+    assert!(matches!(error, BridgeError::Protocol(_)));
+    assert!(matches!(
+        wait_for_terminal(&supervisor).await,
+        EngineState::Failed { .. }
+    ));
+}
+
+#[tokio::test]
+async fn delivered_community_timeout_fails_and_reaps_the_generation() {
+    let directory = tempfile::tempdir().expect("fixture directory must exist");
+    let jar = directory.path().join("community-fixture.jar");
+    std::fs::write(&jar, b"fixture").expect("fixture JAR must write");
+    let classpath = CommunityClasspath::from_paths(COMMUNITY_COMMIT, [jar])
+        .expect("fixture Community classpath must validate");
+    let config = EngineConfig::new(fixture_command(&["--community=hang-catalog"]))
+        .with_timeouts(
+            Duration::from_secs(2),
+            Duration::from_millis(120),
+            Duration::from_millis(200),
+        )
+        .with_community_classpath(classpath);
+    let supervisor = EngineSupervisor::spawn(config)
+        .await
+        .expect("Community fixture must handshake");
+
+    let error = supervisor
+        .client()
+        .community_client()
+        .expect("Community client must bind")
+        .list_plugins()
+        .await
+        .expect_err("a delivered hanging Community request must time out");
+    assert!(
+        unknown_delivery(&error),
+        "Community timeout must have unknown delivery: {error}"
+    );
+    wait_for_stderr(
+        &supervisor,
+        "fixture received hanging Community catalog request",
+    )
+    .await;
     assert!(matches!(
         wait_for_terminal(&supervisor).await,
         EngineState::Failed { .. }
@@ -280,9 +441,11 @@ async fn exit_immediately_after_handshake_cannot_leave_a_ready_state() {
 
 #[tokio::test]
 async fn shutdown_without_an_ack_is_reaped_before_returning() {
-    let supervisor = EngineSupervisor::spawn(fast_config(fixture_command(&["--ignore-shutdown"])))
-        .await
-        .expect("fixture must handshake");
+    let supervisor = EngineSupervisor::spawn(short_shutdown_config(fixture_command(&[
+        "--ignore-shutdown",
+    ])))
+    .await
+    .expect("fixture must handshake");
     let error = supervisor
         .shutdown()
         .await
@@ -983,14 +1146,13 @@ async fn dropped_query_sends_one_cancel_and_validates_until_terminal() {
     drop(stream);
 
     wait_for_stderr(&supervisor, "fixture query cancel count 1").await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let stderr = supervisor.stderr_snapshot().await.to_string_lossy();
-    assert_eq!(stderr.matches("fixture query cancel count").count(), 1);
     supervisor
         .client()
         .ping(99)
         .await
         .expect("generation must remain usable after abandoned stream terminates");
+    let stderr = supervisor.stderr_snapshot().await.to_string_lossy();
+    assert_eq!(stderr.matches("fixture query cancel count").count(), 1);
     supervisor.shutdown().await.expect("shutdown must succeed");
 }
 

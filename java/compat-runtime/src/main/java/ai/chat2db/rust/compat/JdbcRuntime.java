@@ -2,7 +2,11 @@ package ai.chat2db.rust.compat;
 
 import ai.chat2db.rust.compat.protocol.v1.BeginTransactionRequest;
 import ai.chat2db.rust.compat.protocol.v1.CancelOperationRequest;
+import ai.chat2db.rust.compat.protocol.v1.BuildCommunityCreateSchemaRequest;
 import ai.chat2db.rust.compat.protocol.v1.CloseSessionRequest;
+import ai.chat2db.rust.compat.protocol.v1.CommunityPluginCatalog;
+import ai.chat2db.rust.compat.protocol.v1.CommunitySchemaList;
+import ai.chat2db.rust.compat.protocol.v1.CommunitySqlAnalysis;
 import ai.chat2db.rust.compat.protocol.v1.CommitTransactionRequest;
 import ai.chat2db.rust.compat.protocol.v1.CreditsGranted;
 import ai.chat2db.rust.compat.protocol.v1.DriverLoaded;
@@ -12,9 +16,11 @@ import ai.chat2db.rust.compat.protocol.v1.ExecuteUpdateRequest;
 import ai.chat2db.rust.compat.protocol.v1.GrantCreditsRequest;
 import ai.chat2db.rust.compat.protocol.v1.JdbcRow;
 import ai.chat2db.rust.compat.protocol.v1.LoadDriverRequest;
+import ai.chat2db.rust.compat.protocol.v1.ListCommunitySchemasRequest;
 import ai.chat2db.rust.compat.protocol.v1.OpenSessionRequest;
 import ai.chat2db.rust.compat.protocol.v1.OperationCancelled;
 import ai.chat2db.rust.compat.protocol.v1.OperationOutcome;
+import ai.chat2db.rust.compat.protocol.v1.ParseCommunitySqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.QueryCompleted;
 import ai.chat2db.rust.compat.protocol.v1.QueryOptions;
 import ai.chat2db.rust.compat.protocol.v1.QueryStarted;
@@ -31,6 +37,7 @@ import ai.chat2db.rust.compat.protocol.v1.UnloadDriverRequest;
 import ai.chat2db.rust.compat.protocol.v1.UpdateCompleted;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -61,6 +68,7 @@ final class JdbcRuntime implements AutoCloseable {
     private final DriverRegistry drivers = new DriverRegistry();
     private final SessionRegistry sessions = new SessionRegistry(drivers);
     private final OperationRegistry operations = new OperationRegistry();
+    private final CommunityPluginRegistry community = CommunityPluginRegistry.openConfigured();
     private final ThreadPoolExecutor controlWorkers;
     private final ProtocolWriter writer;
     private final PrintStream diagnostics;
@@ -126,7 +134,7 @@ final class JdbcRuntime implements AutoCloseable {
                             meta.getRequestId());
                     response = ProtocolResponses.failure(
                             meta, 0, failure, writer.peerMaximumFrameBytes());
-                } catch (RuntimeException failure) {
+                } catch (RuntimeException | LinkageError failure) {
                     RuntimeFailure translated = attachSessionState(
                             meta,
                             RuntimeFailure.internal(
@@ -279,6 +287,81 @@ final class JdbcRuntime implements AutoCloseable {
                 .build();
     }
 
+    ServerEnvelope listCommunityPlugins(RequestMeta meta) throws RuntimeFailure {
+        CommunityPluginCatalog catalog = community.catalog();
+        return terminal(meta).setCommunityPluginCatalog(catalog).build();
+    }
+
+    ServerEnvelope listCommunitySchemas(
+            RequestMeta meta, ListCommunitySchemasRequest request) throws RuntimeFailure {
+        String sessionId = requireSessionId(meta);
+        JdbcSession session = sessions.require(sessionId);
+        community.validateSchemasRequest(
+                request.getDatabaseType(), request.getDatabaseName());
+        Optional<String> transactionId = request.hasTransactionId()
+                ? Optional.of(request.getTransactionId())
+                : Optional.empty();
+        CommunitySchemaList schemas = invokeCommunitySchemas(
+                session,
+                meta.getRequestId(),
+                transactionId,
+                connection -> community.schemas(
+                        request.getDatabaseType(), connection, request.getDatabaseName()));
+        return terminal(meta).setCommunitySchemaList(schemas).build();
+    }
+
+    static CommunitySchemaList invokeCommunitySchemas(
+            JdbcSession session,
+            String requestId,
+            Optional<String> transactionId,
+            CommunitySchemaInvocation invocation)
+            throws RuntimeFailure {
+        Connection connection = session.claimOperation(requestId, transactionId);
+        try {
+            return invocation.invoke(connection);
+        } catch (RuntimeFailure failure) {
+            session.markQueryFailure();
+            throw session.decorate(afterOperationClaim(failure));
+        } catch (RuntimeException | LinkageError failure) {
+            session.markQueryFailure();
+            throw session.decorate(afterOperationClaim(RuntimeFailure.internal(
+                    "community.metadata_failed",
+                    "the Community metadata request failed internally",
+                    failure)));
+        } finally {
+            session.finishOperation(requestId);
+        }
+    }
+
+    private static RuntimeFailure afterOperationClaim(RuntimeFailure failure) {
+        if (failure.outcome() == OperationOutcome.OPERATION_OUTCOME_NOT_STARTED) {
+            return failure.withOutcome(OperationOutcome.OPERATION_OUTCOME_KNOWN_FAILED);
+        }
+        return failure;
+    }
+
+    @FunctionalInterface
+    interface CommunitySchemaInvocation {
+        CommunitySchemaList invoke(Connection connection) throws RuntimeFailure;
+    }
+
+    ServerEnvelope buildCommunityCreateSchema(
+            RequestMeta meta, BuildCommunityCreateSchemaRequest request)
+            throws RuntimeFailure {
+        return terminal(meta)
+                .setCommunityBuiltSql(community.buildCreateSchema(
+                        request.getDatabaseType(),
+                        request.hasSchema() ? request.getSchema() : null))
+                .build();
+    }
+
+    ServerEnvelope parseCommunitySql(RequestMeta meta, ParseCommunitySqlRequest request)
+            throws RuntimeFailure {
+        CommunitySqlAnalysis analysis =
+                community.parse(request.getDatabaseType(), request.getSql());
+        return terminal(meta).setCommunitySqlAnalysis(analysis).build();
+    }
+
     RuntimeFailure attachSessionState(RequestMeta meta, RuntimeFailure failure) {
         if (!meta.hasSessionId() || meta.getSessionId().isBlank()) {
             return failure;
@@ -318,6 +401,7 @@ final class JdbcRuntime implements AutoCloseable {
             if (Thread.currentThread().isInterrupted() || System.nanoTime() >= deadlineNanos) {
                 return false;
             }
+            community.close();
             drivers.close();
             return true;
         });
