@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
@@ -32,9 +33,12 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
 
-/** Deterministically removes unsafe manifest Class-Path entries from Community JARs. */
+/** Deterministically canonicalizes the fixed Community compatibility classpath. */
 public final class CommunityClasspathSanitizer {
     private static final String MANIFEST_PATH = "META-INF/MANIFEST.MF";
+    private static final String COMMUNITY_MAVEN_ROOT = "META-INF/maven/ai.chat2db/";
+    private static final String COMMUNITY_GROUP_ID = "ai.chat2db";
+    private static final String COMMUNITY_VERSION = "5.3.0";
     private static final long MAX_ENTRY_BYTES = 64L * 1024 * 1024;
     private static final long MAX_ARCHIVE_BYTES = 512L * 1024 * 1024;
     private static final long MAX_MANIFEST_BYTES = 8L * 1024 * 1024;
@@ -45,6 +49,17 @@ public final class CommunityClasspathSanitizer {
             new SourceArtifact(
                     1_093_432L,
                     "45fecfa5c8217ce1f3652ab95179790ec8cc0dec0384bca51cbeb94a293d9f2f"));
+    private static final Map<String, CommunityArtifact> COMMUNITY_ARTIFACTS = Map.of(
+            "chat2db-community-domain-api-5.3.0.jar",
+            new CommunityArtifact("chat2db-community-domain-api"),
+            "chat2db-community-h2-5.3.0.jar",
+            new CommunityArtifact("chat2db-community-h2"),
+            "chat2db-community-mysql-5.3.0.jar",
+            new CommunityArtifact("chat2db-community-mysql"),
+            "chat2db-community-spi-5.3.0.jar",
+            new CommunityArtifact("chat2db-community-spi"),
+            "chat2db-community-tools-5.3.0.jar",
+            new CommunityArtifact("chat2db-community-tools"));
 
     private CommunityClasspathSanitizer() {}
 
@@ -120,9 +135,13 @@ public final class CommunityClasspathSanitizer {
     private static void sanitize(Path directory, long timestamp) throws IOException {
         LocalDateTime archiveTime =
                 LocalDateTime.ofInstant(Instant.ofEpochSecond(timestamp), ZoneOffset.UTC);
-        int changed = 0;
+        Set<String> missingCommunityArtifacts = new HashSet<>(COMMUNITY_ARTIFACTS.keySet());
+        int sanitizedManifests = 0;
+        int canonicalizedCommunityArtifacts = 0;
         for (Path artifact : artifacts(directory)) {
-            SourceArtifact expected = EXPECTED_SOURCES.get(artifact.getFileName().toString());
+            String filename = artifact.getFileName().toString();
+            SourceArtifact expected = EXPECTED_SOURCES.get(filename);
+            CommunityArtifact communityArtifact = COMMUNITY_ARTIFACTS.get(filename);
             if (expected != null) {
                 requireExpectedSource(artifact, expected);
                 if (!hasNonEmptyManifestClassPath(artifact)) {
@@ -130,27 +149,45 @@ public final class CommunityClasspathSanitizer {
                             "expected source JAR no longer declares Class-Path: "
                                     + artifact.getFileName());
                 }
-                rebuild(artifact, archiveTime);
-                changed++;
+                rebuild(artifact, archiveTime, RebuildPlan.manifestClassPath());
+                sanitizedManifests++;
                 System.out.println("Sanitized manifest Class-Path: " + artifact.getFileName());
+            } else if (communityArtifact != null) {
+                if (hasNonEmptyManifestClassPath(artifact)) {
+                    throw new IOException(
+                            "Community project JAR unexpectedly declares Class-Path: "
+                                    + artifact.getFileName());
+                }
+                rebuild(artifact, archiveTime, RebuildPlan.community(communityArtifact));
+                missingCommunityArtifacts.remove(filename);
+                canonicalizedCommunityArtifacts++;
+                System.out.println("Canonicalized Community project JAR: " + artifact.getFileName());
             } else if (hasNonEmptyManifestClassPath(artifact)) {
                 throw new IOException(
                         "unexpected JAR declares Class-Path and has no pinned transformation: "
                                 + artifact.getFileName());
             }
         }
-        if (changed != EXPECTED_SOURCES.size()) {
+        if (sanitizedManifests != EXPECTED_SOURCES.size()) {
             throw new IOException(
                     "expected to sanitize "
                             + EXPECTED_SOURCES.size()
                             + " pinned JAR(s); found "
-                            + changed);
+                            + sanitizedManifests);
         }
-        System.out.println("Sanitized " + changed + " Community classpath JAR(s)");
+        if (!missingCommunityArtifacts.isEmpty()) {
+            throw new IOException(
+                    "missing Community project JAR(s): "
+                            + String.join(", ", missingCommunityArtifacts.stream().sorted().toList()));
+        }
+        System.out.println(
+                "Sanitized " + sanitizedManifests + " manifest Class-Path JAR(s) and canonicalized "
+                        + canonicalizedCommunityArtifacts + " Community project JAR(s)");
     }
 
     private static void verify(Path directory) throws IOException {
         int count = 0;
+        Set<String> missingCommunityArtifacts = new HashSet<>(COMMUNITY_ARTIFACTS.keySet());
         for (Path artifact : artifacts(directory)) {
             count++;
             if (hasNonEmptyManifestClassPath(artifact)) {
@@ -158,10 +195,21 @@ public final class CommunityClasspathSanitizer {
                         "manifest still declares a non-empty Class-Path: "
                                 + artifact.getFileName());
             }
+            String filename = artifact.getFileName().toString();
+            CommunityArtifact communityArtifact = COMMUNITY_ARTIFACTS.get(filename);
+            if (communityArtifact != null) {
+                verifyCommunityDescriptor(artifact, communityArtifact);
+                missingCommunityArtifacts.remove(filename);
+            }
+        }
+        if (!missingCommunityArtifacts.isEmpty()) {
+            throw new IOException(
+                    "missing Community project JAR(s): "
+                            + String.join(", ", missingCommunityArtifacts.stream().sorted().toList()));
         }
         System.out.println(
                 "Verified " + count
-                        + " Community classpath JAR manifest(s) without Class-Path escapes");
+                        + " Community classpath JAR manifest(s) and canonical project descriptor(s)");
     }
 
     private static List<Path> artifacts(Path directory) throws IOException {
@@ -218,34 +266,45 @@ public final class CommunityClasspathSanitizer {
         }
     }
 
-    private static void rebuild(Path artifact, LocalDateTime archiveTime) throws IOException {
+    private static void rebuild(
+            Path artifact, LocalDateTime archiveTime, RebuildPlan plan) throws IOException {
         Path temporary = Files.createTempFile(
                 artifact.getParent(), "." + artifact.getFileName() + ".sanitize-", ".tmp");
         try {
             try (ZipFile source = new ZipFile(artifact.toFile(), StandardCharsets.UTF_8)) {
                 List<? extends ZipEntry> entries = orderedEntries(source);
                 rejectSignedArchive(entries, artifact);
-                ZipEntry manifestEntry = source.getEntry(MANIFEST_PATH);
-                if (manifestEntry == null || manifestEntry.isDirectory()) {
-                    throw new IOException(
-                            "Class-Path was reported without a regular manifest: " + artifact);
+                Map<String, byte[]> replacements = new HashMap<>();
+                if (plan.stripManifestClassPath()) {
+                    ZipEntry manifestEntry = source.getEntry(MANIFEST_PATH);
+                    if (manifestEntry == null || manifestEntry.isDirectory()) {
+                        throw new IOException(
+                                "Class-Path was reported without a regular manifest: " + artifact);
+                    }
+                    if (manifestEntry.getSize() < 0
+                            || manifestEntry.getSize() > MAX_MANIFEST_BYTES) {
+                        throw new IOException("invalid or oversized JAR manifest: " + artifact);
+                    }
+                    byte[] sanitizedManifest;
+                    try (InputStream input = source.getInputStream(manifestEntry)) {
+                        sanitizedManifest = stripMainClassPath(input.readAllBytes());
+                    }
+                    assertManifestSanitized(sanitizedManifest, artifact);
+                    replacements.put(MANIFEST_PATH, sanitizedManifest);
                 }
-                byte[] sanitizedManifest;
-                if (manifestEntry.getSize() < 0 || manifestEntry.getSize() > MAX_MANIFEST_BYTES) {
-                    throw new IOException("invalid or oversized JAR manifest: " + artifact);
+                if (plan.communityArtifact() != null) {
+                    replacements.putAll(communityDescriptorReplacements(
+                            source, entries, artifact, plan.communityArtifact(), false));
                 }
-                try (InputStream input = source.getInputStream(manifestEntry)) {
-                    sanitizedManifest = stripMainClassPath(input.readAllBytes());
-                }
-                assertManifestSanitized(sanitizedManifest, artifact);
 
                 try (OutputStream file = Files.newOutputStream(temporary);
                         ZipOutputStream target = new ZipOutputStream(
                                 new BufferedOutputStream(file), StandardCharsets.UTF_8)) {
                     for (ZipEntry sourceEntry : entries) {
                         byte[] contents;
-                        if (sourceEntry.getName().equals(MANIFEST_PATH)) {
-                            contents = sanitizedManifest;
+                        byte[] replacement = replacements.get(sourceEntry.getName());
+                        if (replacement != null) {
+                            contents = replacement;
                         } else {
                             try (InputStream input = source.getInputStream(sourceEntry)) {
                                 contents = input.readAllBytes();
@@ -254,7 +313,7 @@ public final class CommunityClasspathSanitizer {
                         writeStoredEntry(target, sourceEntry.getName(), contents, archiveTime);
                     }
                 }
-                verifyRebuiltArchive(source, entries, temporary, sanitizedManifest, archiveTime);
+                verifyRebuiltArchive(source, entries, temporary, replacements, archiveTime);
             }
             try {
                 Files.move(
@@ -267,6 +326,84 @@ public final class CommunityClasspathSanitizer {
             }
         } finally {
             Files.deleteIfExists(temporary);
+        }
+    }
+
+    private static Map<String, byte[]> communityDescriptorReplacements(
+            ZipFile source,
+            List<? extends ZipEntry> entries,
+            Path artifact,
+            CommunityArtifact communityArtifact,
+            boolean requireCanonical)
+            throws IOException {
+        String descriptorDirectory = communityArtifact.descriptorDirectory();
+        String pomPath = descriptorDirectory + "pom.xml";
+        String propertiesPath = descriptorDirectory + "pom.properties";
+        for (ZipEntry entry : entries) {
+            String name = entry.getName();
+            if (!entry.isDirectory()
+                    && name.startsWith(COMMUNITY_MAVEN_ROOT)
+                    && !name.equals(pomPath)
+                    && !name.equals(propertiesPath)) {
+                throw new IOException(
+                        "Community project JAR contains an unexpected Maven descriptor: "
+                                + artifact.getFileName() + "!" + name);
+            }
+        }
+        ZipEntry pomEntry = requireRegularEntry(source, pomPath, artifact);
+        byte[] pom;
+        try (InputStream input = source.getInputStream(pomEntry)) {
+            pom = input.readAllBytes();
+        }
+        for (byte value : pom) {
+            if (value == '\r') {
+                throw new IOException(
+                        "Community Maven pom.xml is not LF-canonical: "
+                                + artifact.getFileName() + "!" + pomPath);
+            }
+        }
+        ZipEntry propertiesEntry = requireRegularEntry(source, propertiesPath, artifact);
+        byte[] properties;
+        try (InputStream input = source.getInputStream(propertiesEntry)) {
+            properties = input.readAllBytes();
+        }
+        byte[] canonical = canonicalCommunityProperties(communityArtifact, properties, artifact);
+        if (requireCanonical && !Arrays.equals(properties, canonical)) {
+            throw new IOException(
+                    "Community Maven descriptor is not LF-canonical: "
+                            + artifact.getFileName() + "!" + propertiesPath);
+        }
+        return Map.of(propertiesPath, canonical);
+    }
+
+    private static ZipEntry requireRegularEntry(ZipFile source, String name, Path artifact)
+            throws IOException {
+        ZipEntry entry = source.getEntry(name);
+        if (entry == null || entry.isDirectory()) {
+            throw new IOException(
+                    "Community project JAR is missing Maven descriptor: "
+                            + artifact.getFileName() + "!" + name);
+        }
+        return entry;
+    }
+
+    private static byte[] canonicalCommunityProperties(
+            CommunityArtifact communityArtifact, byte[] actual, Path artifact) throws IOException {
+        byte[] canonical = communityArtifact.properties("\n");
+        byte[] windows = communityArtifact.properties("\r\n");
+        if (!Arrays.equals(actual, canonical) && !Arrays.equals(actual, windows)) {
+            throw new IOException(
+                    "invalid Community Maven descriptor contents: "
+                            + artifact.getFileName() + "!" + communityArtifact.propertiesPath());
+        }
+        return canonical;
+    }
+
+    private static void verifyCommunityDescriptor(
+            Path artifact, CommunityArtifact communityArtifact) throws IOException {
+        try (ZipFile source = new ZipFile(artifact.toFile(), StandardCharsets.UTF_8)) {
+            List<? extends ZipEntry> entries = orderedEntries(source);
+            communityDescriptorReplacements(source, entries, artifact, communityArtifact, true);
         }
     }
 
@@ -432,7 +569,7 @@ public final class CommunityClasspathSanitizer {
             ZipFile source,
             List<? extends ZipEntry> orderedSourceEntries,
             Path rebuilt,
-            byte[] sanitizedManifest,
+            Map<String, byte[]> replacements,
             LocalDateTime archiveTime)
             throws IOException {
         try (ZipFile target = new ZipFile(rebuilt.toFile(), StandardCharsets.UTF_8)) {
@@ -457,8 +594,9 @@ public final class CommunityClasspathSanitizer {
                                     + targetEntry.getName());
                 }
                 byte[] expected;
-                if (sourceEntry.getName().equals(MANIFEST_PATH)) {
-                    expected = sanitizedManifest;
+                byte[] replacement = replacements.get(sourceEntry.getName());
+                if (replacement != null) {
+                    expected = replacement;
                 } else {
                     try (InputStream input = source.getInputStream(sourceEntry)) {
                         expected = input.readAllBytes();
@@ -504,8 +642,8 @@ public final class CommunityClasspathSanitizer {
             Path second = directory.resolve("second.jar");
             writeFixture(first, null, false, archiveTime);
             Files.copy(first, second);
-            rebuild(first, archiveTime);
-            rebuild(second, archiveTime);
+            rebuild(first, archiveTime, RebuildPlan.manifestClassPath());
+            rebuild(second, archiveTime, RebuildPlan.manifestClassPath());
             if (!Arrays.equals(Files.readAllBytes(first), Files.readAllBytes(second))) {
                 throw new IOException("identical sanitizer inputs produced different bytes");
             }
@@ -521,15 +659,126 @@ public final class CommunityClasspathSanitizer {
 
             Path signed = directory.resolve("signed.jar");
             writeFixture(signed, "TEST.SF", false, archiveTime);
-            expectRejected(signed, archiveTime, "signed JAR");
+            expectRejected(
+                    signed, archiveTime, RebuildPlan.manifestClassPath(), "signed JAR");
 
             Path sigPrefix = directory.resolve("sig-prefix.jar");
             writeFixture(sigPrefix, "SIG-TEST", false, archiveTime);
-            expectRejected(sigPrefix, archiveTime, "signed JAR");
+            expectRejected(
+                    sigPrefix, archiveTime, RebuildPlan.manifestClassPath(), "signed JAR");
 
             Path traversal = directory.resolve("traversal.jar");
             writeFixture(traversal, null, true, archiveTime);
-            expectRejected(traversal, archiveTime, "traversal entry");
+            expectRejected(
+                    traversal,
+                    archiveTime,
+                    RebuildPlan.manifestClassPath(),
+                    "traversal entry");
+
+            CommunityArtifact communityArtifact = new CommunityArtifact("fixture-artifact");
+            Path lfDescriptor = directory.resolve("descriptor-lf.jar");
+            Path crlfDescriptor = directory.resolve("descriptor-crlf.jar");
+            writeCommunityFixture(
+                    lfDescriptor, communityArtifact, communityArtifact.properties("\n"), archiveTime);
+            writeCommunityFixture(
+                    crlfDescriptor,
+                    communityArtifact,
+                    communityArtifact.properties("\r\n"),
+                    archiveTime);
+            RebuildPlan communityPlan = RebuildPlan.community(communityArtifact);
+            rebuild(lfDescriptor, archiveTime, communityPlan);
+            rebuild(crlfDescriptor, archiveTime, communityPlan);
+            if (!Arrays.equals(
+                    Files.readAllBytes(lfDescriptor), Files.readAllBytes(crlfDescriptor))) {
+                throw new IOException("LF and CRLF descriptors produced different bytes");
+            }
+            byte[] canonicalBytes = Files.readAllBytes(lfDescriptor);
+            rebuild(lfDescriptor, archiveTime, communityPlan);
+            if (!Arrays.equals(canonicalBytes, Files.readAllBytes(lfDescriptor))) {
+                throw new IOException("Community project JAR canonicalization is not idempotent");
+            }
+            verifyCommunityDescriptor(lfDescriptor, communityArtifact);
+
+            Path mixedNewlines = directory.resolve("descriptor-mixed-newlines.jar");
+            byte[] invalidNewlines = ("artifactId=fixture-artifact\r\n"
+                            + "groupId=ai.chat2db\n"
+                            + "version=5.3.0\r\n")
+                    .getBytes(StandardCharsets.UTF_8);
+            writeCommunityFixture(
+                    mixedNewlines, communityArtifact, invalidNewlines, archiveTime);
+            expectRejected(
+                    mixedNewlines,
+                    archiveTime,
+                    communityPlan,
+                    "invalid Community Maven descriptor contents");
+
+            Path wrongCoordinates = directory.resolve("descriptor-wrong-coordinates.jar");
+            byte[] invalidCoordinates = ("artifactId=wrong-artifact\n"
+                            + "groupId=ai.chat2db\n"
+                            + "version=5.3.0\n")
+                    .getBytes(StandardCharsets.UTF_8);
+            writeCommunityFixture(
+                    wrongCoordinates, communityArtifact, invalidCoordinates, archiveTime);
+            expectRejected(
+                    wrongCoordinates,
+                    archiveTime,
+                    communityPlan,
+                    "invalid Community Maven descriptor contents");
+
+            Path crlfPom = directory.resolve("descriptor-crlf-pom.jar");
+            writeCommunityFixture(
+                    crlfPom,
+                    communityArtifact,
+                    communityArtifact.properties("\n"),
+                    "<project/>\r\n".getBytes(StandardCharsets.UTF_8),
+                    true,
+                    null,
+                    archiveTime);
+            expectRejected(
+                    crlfPom, archiveTime, communityPlan, "pom.xml is not LF-canonical");
+
+            Path mixedPom = directory.resolve("descriptor-mixed-pom.jar");
+            writeCommunityFixture(
+                    mixedPom,
+                    communityArtifact,
+                    communityArtifact.properties("\n"),
+                    "<project>\r\n<name>fixture</name>\n</project>\r\n"
+                            .getBytes(StandardCharsets.UTF_8),
+                    true,
+                    null,
+                    archiveTime);
+            expectRejected(
+                    mixedPom, archiveTime, communityPlan, "pom.xml is not LF-canonical");
+
+            Path missingDescriptor = directory.resolve("descriptor-missing.jar");
+            writeCommunityFixture(
+                    missingDescriptor,
+                    communityArtifact,
+                    communityArtifact.properties("\n"),
+                    "<project/>\n".getBytes(StandardCharsets.UTF_8),
+                    false,
+                    null,
+                    archiveTime);
+            expectRejected(
+                    missingDescriptor,
+                    archiveTime,
+                    communityPlan,
+                    "missing Maven descriptor");
+
+            Path extraDescriptor = directory.resolve("descriptor-extra.jar");
+            writeCommunityFixture(
+                    extraDescriptor,
+                    communityArtifact,
+                    communityArtifact.properties("\n"),
+                    "<project/>\n".getBytes(StandardCharsets.UTF_8),
+                    true,
+                    COMMUNITY_MAVEN_ROOT + "unexpected/pom.xml",
+                    archiveTime);
+            expectRejected(
+                    extraDescriptor,
+                    archiveTime,
+                    communityPlan,
+                    "unexpected Maven descriptor");
         } finally {
             try (var entries = Files.list(directory)) {
                 for (Path entry : entries.toList()) {
@@ -539,6 +788,57 @@ public final class CommunityClasspathSanitizer {
             Files.deleteIfExists(directory);
         }
         System.out.println("Community classpath sanitizer self-test passed");
+    }
+
+    private static void writeCommunityFixture(
+            Path path,
+            CommunityArtifact communityArtifact,
+            byte[] properties,
+            LocalDateTime archiveTime)
+            throws IOException {
+        writeCommunityFixture(
+                path,
+                communityArtifact,
+                properties,
+                "<project/>\n".getBytes(StandardCharsets.UTF_8),
+                true,
+                null,
+                archiveTime);
+    }
+
+    private static void writeCommunityFixture(
+            Path path,
+            CommunityArtifact communityArtifact,
+            byte[] properties,
+            byte[] pom,
+            boolean includeProperties,
+            String extraDescriptor,
+            LocalDateTime archiveTime)
+            throws IOException {
+        byte[] manifest = "Manifest-Version: 1.0\r\n\r\n".getBytes(StandardCharsets.UTF_8);
+        try (OutputStream file = Files.newOutputStream(path);
+                ZipOutputStream output = new ZipOutputStream(
+                        new BufferedOutputStream(file), StandardCharsets.UTF_8)) {
+            writeStoredEntry(
+                    output, "fixture.txt", "fixture".getBytes(StandardCharsets.UTF_8), archiveTime);
+            writeStoredEntry(output, MANIFEST_PATH, manifest, archiveTime);
+            writeStoredEntry(
+                    output,
+                    communityArtifact.descriptorDirectory() + "pom.xml",
+                    pom,
+                    archiveTime);
+            if (includeProperties) {
+                writeStoredEntry(
+                        output, communityArtifact.propertiesPath(), properties, archiveTime);
+            }
+            if (extraDescriptor != null) {
+                writeStoredEntry(
+                        output,
+                        extraDescriptor,
+                        "unexpected".getBytes(StandardCharsets.UTF_8),
+                        archiveTime);
+            }
+        }
     }
 
     private static void writeFixture(
@@ -610,9 +910,13 @@ public final class CommunityClasspathSanitizer {
     }
 
     private static void expectRejected(
-            Path artifact, LocalDateTime archiveTime, String expectedMessage) throws IOException {
+            Path artifact,
+            LocalDateTime archiveTime,
+            RebuildPlan plan,
+            String expectedMessage)
+            throws IOException {
         try {
-            rebuild(artifact, archiveTime);
+            rebuild(artifact, archiveTime, plan);
         } catch (IOException failure) {
             if (failure.getMessage() != null && failure.getMessage().contains(expectedMessage)) {
                 return;
@@ -636,4 +940,32 @@ public final class CommunityClasspathSanitizer {
     }
 
     private record SourceArtifact(long size, String sha256) {}
+
+    private record CommunityArtifact(String artifactId) {
+        private String descriptorDirectory() {
+            return COMMUNITY_MAVEN_ROOT + artifactId + "/";
+        }
+
+        private String propertiesPath() {
+            return descriptorDirectory() + "pom.properties";
+        }
+
+        private byte[] properties(String newline) {
+            return ("artifactId=" + artifactId + newline
+                            + "groupId=" + COMMUNITY_GROUP_ID + newline
+                            + "version=" + COMMUNITY_VERSION + newline)
+                    .getBytes(StandardCharsets.UTF_8);
+        }
+    }
+
+    private record RebuildPlan(
+            boolean stripManifestClassPath, CommunityArtifact communityArtifact) {
+        private static RebuildPlan manifestClassPath() {
+            return new RebuildPlan(true, null);
+        }
+
+        private static RebuildPlan community(CommunityArtifact communityArtifact) {
+            return new RebuildPlan(false, communityArtifact);
+        }
+    }
 }

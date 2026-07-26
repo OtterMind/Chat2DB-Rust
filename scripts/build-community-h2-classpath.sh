@@ -29,6 +29,20 @@ if [[ -n "$(git -C "${community_root}" status --porcelain --untracked-files=all)
   exit 1
 fi
 
+non_lf_checkout_count="$(
+  git -C "${community_root}" ls-files --eol -- chat2db-community-server |
+    LC_ALL=C awk '$1 == "i/lf" && $2 != "w/lf" { count++ } END { print count + 0 }'
+)"
+if [[ ! "${non_lf_checkout_count}" =~ ^[0-9]+$ ]]; then
+  echo "Could not validate Community server checkout line endings" >&2
+  exit 1
+fi
+if ((non_lf_checkout_count > 0)); then
+  echo "Community server checkout contains ${non_lf_checkout_count} non-LF checkout(s) for LF source file(s)" >&2
+  echo "Reinitialize the clean submodule with Git core.autocrlf=false before building" >&2
+  exit 1
+fi
+
 community_output_timestamp="$(git -C "${community_root}" show -s --format=%ct "${expected_commit}")"
 mkdir -p "${maven_repository}"
 
