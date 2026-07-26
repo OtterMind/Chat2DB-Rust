@@ -195,7 +195,9 @@ jobs:
         run: cargo test -p chat2db-java-bridge --lib --locked
       - name: Initialize fixed Community source on Windows
         if: runner.os == 'Windows'
-        run: git submodule update --init --recursive third_party/chat2db-community
+        run: |
+          git config --global core.longpaths true
+          git submodule update --init --recursive third_party/chat2db-community
       - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.7.1
         if: runner.os == 'Windows'
         with:
