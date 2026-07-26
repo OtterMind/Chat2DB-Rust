@@ -11,17 +11,21 @@ use chat2db_contract::{
     AgentMessageRole, AgentPermissionDecision, AgentPermissionRequest, AgentPermissionResponse,
     AgentPermissionStatus, AgentResultHandle, AgentRunAccepted, AgentRunSnapshot, AgentRunStatus,
     AgentSession, AgentSessionList, AgentStreamMessage, AgentSubscriptionAccepted, AgentToolCall,
-    AgentToolOutput, AgentUsage, ApiError, ApiErrorDetails, CancelAgentRunResponse,
-    CancelDisposition, CancelOperationResponse, ColumnNullability, ComponentHealth, ComponentState,
+    AgentToolOutput, AgentUsage, ApiError, ApiErrorDetails, BuildCommunityCreateSchemaRequest,
+    CancelAgentRunResponse, CancelDisposition, CancelOperationResponse, ColumnNullability,
+    CommunityBuiltSql, CommunityDriverConfig, CommunityParsedStatement, CommunityPlugin,
+    CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices, CommunitySchema,
+    CommunitySchemaList, CommunitySqlAnalysis, ComponentHealth, ComponentState,
     ContextCompactionStrategy, CreateAgentSessionRequest, CreateDatasourceRequest,
     CreateProviderProfileRequest, Datasource, DatasourceConnection, DatasourceConnectionProperty,
     DatasourceList, DatasourceSecretChange, DecideAgentPermissionRequest, HealthResponse,
-    JdbcDriver, JdbcDriverList, JdbcValue, JdbcValueType, OperationEvent, OperationEventEnvelope,
-    OperationSnapshot, OperationStatus, OperationStreamMessage, OperationSubscriptionAccepted,
-    ProductInfo, ProviderCredentials, ProviderKind, ProviderProfile, ProviderProfileList,
-    ProviderSecretChange, QueryAccepted, QueryLimits, QueryParameter, ResultColumn, ResultMetadata,
-    ResultPage, ResultPageRequest, ResultRow, RuntimeStatus, SqlPermissionMode,
-    StartAgentRunRequest, StartQueryRequest, UpdateAgentSessionRequest, UpdateDatasourceRequest,
+    JdbcDriver, JdbcDriverList, JdbcValue, JdbcValueType, ListCommunitySchemasRequest,
+    OperationEvent, OperationEventEnvelope, OperationSnapshot, OperationStatus,
+    OperationStreamMessage, OperationSubscriptionAccepted, ParseCommunitySqlRequest, ProductInfo,
+    ProviderCredentials, ProviderKind, ProviderProfile, ProviderProfileList, ProviderSecretChange,
+    QueryAccepted, QueryLimits, QueryParameter, ResultColumn, ResultMetadata, ResultPage,
+    ResultPageRequest, ResultRow, RuntimeStatus, SqlPermissionMode, StartAgentRunRequest,
+    StartQueryRequest, UpdateAgentSessionRequest, UpdateDatasourceRequest,
     UpdateProviderProfileRequest,
 };
 use chat2db_core::{AppError, Application};
@@ -47,6 +51,7 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
     tags(
         (name = "system", description = "Runtime identity and readiness"),
         (name = "drivers", description = "Hash-verified JDBC driver inventory"),
+        (name = "community", description = "Community compatibility plugin, metadata, and SQL services"),
         (name = "datasources", description = "Secret-safe datasource lifecycle"),
         (name = "queries", description = "Asynchronous query submission"),
         (name = "operations", description = "Query progress, replay, and cancellation"),
@@ -83,6 +88,17 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         ColumnNullability,
         ComponentHealth,
         ComponentState,
+        BuildCommunityCreateSchemaRequest,
+        CommunityBuiltSql,
+        CommunityDriverConfig,
+        CommunityParsedStatement,
+        CommunityPlugin,
+        CommunityPluginBehavior,
+        CommunityPluginCatalog,
+        CommunityPluginServices,
+        CommunitySchema,
+        CommunitySchemaList,
+        CommunitySqlAnalysis,
         ContextCompactionStrategy,
         CreateAgentSessionRequest,
         CreateDatasourceRequest,
@@ -98,12 +114,14 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         JdbcDriverList,
         JdbcValue,
         JdbcValueType,
+        ListCommunitySchemasRequest,
         OperationEvent,
         OperationEventEnvelope,
         OperationSnapshot,
         OperationStatus,
         OperationStreamMessage,
         OperationSubscriptionAccepted,
+        ParseCommunitySqlRequest,
         ProductInfo,
         ProviderCredentials,
         ProviderKind,
@@ -147,6 +165,10 @@ fn documented_router() -> OpenApiRouter<Application> {
         .routes(routes!(health))
         .routes(routes!(info))
         .routes(routes!(list_drivers))
+        .routes(routes!(list_community_plugins))
+        .routes(routes!(list_community_schemas))
+        .routes(routes!(build_community_create_schema))
+        .routes(routes!(parse_community_sql))
         .routes(routes!(list_datasources, create_datasource))
         .routes(routes!(
             get_datasource,
@@ -228,6 +250,95 @@ async fn info(State(application): State<Application>) -> Json<ProductInfo> {
 )]
 async fn list_drivers(State(application): State<Application>) -> Json<JdbcDriverList> {
     Json(application.list_drivers())
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/community/plugins",
+    tag = "community",
+    responses(
+        (status = 200, description = "Community plugin catalog", body = CommunityPluginCatalog),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community plugin failure", body = ApiError)
+    )
+)]
+async fn list_community_plugins(
+    State(application): State<Application>,
+) -> Result<Json<CommunityPluginCatalog>, WebError> {
+    application
+        .list_community_plugins()
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/metadata/schemas",
+    tag = "community",
+    request_body = ListCommunitySchemasRequest,
+    responses(
+        (status = 200, description = "Community schema metadata", body = CommunitySchemaList),
+        (status = 400, description = "Invalid Community metadata request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community metadata failure", body = ApiError)
+    )
+)]
+async fn list_community_schemas(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<ListCommunitySchemasRequest>,
+) -> Result<Json<CommunitySchemaList>, WebError> {
+    application
+        .list_community_schemas(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/sql/build-create-schema",
+    tag = "community",
+    request_body = BuildCommunityCreateSchemaRequest,
+    responses(
+        (status = 200, description = "Community CREATE SCHEMA SQL", body = CommunityBuiltSql),
+        (status = 400, description = "Invalid Community SQL-builder request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community SQL-builder failure", body = ApiError)
+    )
+)]
+async fn build_community_create_schema(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<BuildCommunityCreateSchemaRequest>,
+) -> Result<Json<CommunityBuiltSql>, WebError> {
+    application
+        .build_community_create_schema(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/sql/parse",
+    tag = "community",
+    request_body = ParseCommunitySqlRequest,
+    responses(
+        (status = 200, description = "Community SQL analysis", body = CommunitySqlAnalysis),
+        (status = 400, description = "Invalid Community SQL-parser request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community SQL-parser failure", body = ApiError)
+    )
+)]
+async fn parse_community_sql(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<ParseCommunitySqlRequest>,
+) -> Result<Json<CommunitySqlAnalysis>, WebError> {
+    application
+        .parse_community_sql(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
 }
 
 #[utoipa::path(

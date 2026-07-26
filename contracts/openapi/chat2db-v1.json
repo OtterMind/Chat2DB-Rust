@@ -1184,6 +1184,226 @@
         }
       }
     },
+    "/api/v1/community/metadata/schemas": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "list_community_schemas",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListCommunitySchemasRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community schema metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunitySchemaList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community metadata request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community metadata failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/community/plugins": {
+      "get": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "list_community_plugins",
+        "responses": {
+          "200": {
+            "description": "Community plugin catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityPluginCatalog"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community plugin failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/community/sql/build-create-schema": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "build_community_create_schema",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BuildCommunityCreateSchemaRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community CREATE SCHEMA SQL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityBuiltSql"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community SQL-builder request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community SQL-builder failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/community/sql/parse": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "parse_community_sql",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParseCommunitySqlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community SQL analysis",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunitySqlAnalysis"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community SQL-parser request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community SQL-parser failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/datasources": {
       "get": {
         "tags": [
@@ -3057,6 +3277,24 @@
         ],
         "description": "Bounded structured details for externally visible API failures."
       },
+      "BuildCommunityCreateSchemaRequest": {
+        "type": "object",
+        "description": "Request to build dialect-specific `CREATE SCHEMA` SQL.",
+        "required": [
+          "databaseType",
+          "schema"
+        ],
+        "properties": {
+          "databaseType": {
+            "type": "string",
+            "description": "Community database type used to select the SQL builder."
+          },
+          "schema": {
+            "$ref": "#/components/schemas/CommunitySchema",
+            "description": "Schema description passed to the retained builder."
+          }
+        }
+      },
       "CancelAgentRunResponse": {
         "type": "object",
         "description": "Result of an idempotent agent-run cancellation request.",
@@ -3110,6 +3348,256 @@
           "no_nulls",
           "nullable"
         ]
+      },
+      "CommunityBuiltSql": {
+        "type": "object",
+        "description": "SQL built by a retained Community dialect service.",
+        "required": [
+          "sql"
+        ],
+        "properties": {
+          "sql": {
+            "type": "string",
+            "description": "Complete SQL generated by Community."
+          }
+        }
+      },
+      "CommunityDriverConfig": {
+        "type": "object",
+        "description": "One JDBC driver declaration retained from a Community plugin.",
+        "required": [
+          "url",
+          "jdbcDriver",
+          "jdbcDriverClass",
+          "downloadUrls",
+          "custom",
+          "defaultDriver"
+        ],
+        "properties": {
+          "custom": {
+            "type": "boolean",
+            "description": "Whether this is a user-supplied driver declaration."
+          },
+          "defaultDriver": {
+            "type": "boolean",
+            "description": "Whether this is the plugin's default driver declaration."
+          },
+          "downloadUrls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ordered upstream download locations declared by Community."
+          },
+          "jdbcDriver": {
+            "type": "string",
+            "description": "Driver artifact name declared by Community."
+          },
+          "jdbcDriverClass": {
+            "type": "string",
+            "description": "JDBC driver implementation class."
+          },
+          "url": {
+            "type": "string",
+            "description": "JDBC URL template declared by the plugin."
+          }
+        }
+      },
+      "CommunityParsedStatement": {
+        "type": "object",
+        "description": "One statement returned by the retained Community parser.",
+        "required": [
+          "sql",
+          "statementType",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "Bounded parser-specific statement kind."
+          },
+          "sql": {
+            "type": "string",
+            "description": "Statement SQL projected by Community."
+          },
+          "statementType": {
+            "type": "string",
+            "description": "Community statement type."
+          }
+        }
+      },
+      "CommunityPlugin": {
+        "type": "object",
+        "description": "Stable product projection of one Community plugin.",
+        "required": [
+          "databaseType",
+          "name",
+          "behavior",
+          "drivers",
+          "services"
+        ],
+        "properties": {
+          "behavior": {
+            "$ref": "#/components/schemas/CommunityPluginBehavior",
+            "description": "Database-model and script behavior."
+          },
+          "databaseType": {
+            "type": "string",
+            "description": "Community database type used to select the plugin."
+          },
+          "drivers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityDriverConfig"
+            },
+            "description": "JDBC driver declarations in Community order."
+          },
+          "name": {
+            "type": "string",
+            "description": "User-visible plugin name."
+          },
+          "services": {
+            "$ref": "#/components/schemas/CommunityPluginServices",
+            "description": "Optional retained Community services."
+          }
+        }
+      },
+      "CommunityPluginBehavior": {
+        "type": "object",
+        "description": "Database-model and script behavior declared by one Community plugin.",
+        "required": [
+          "supportsDatabase",
+          "supportsSchema",
+          "preservesScriptBatchExecution"
+        ],
+        "properties": {
+          "preservesScriptBatchExecution": {
+            "type": "boolean",
+            "description": "Whether the plugin preserves script batches during execution."
+          },
+          "supportsDatabase": {
+            "type": "boolean",
+            "description": "Whether the plugin models databases as metadata containers."
+          },
+          "supportsSchema": {
+            "type": "boolean",
+            "description": "Whether the plugin models schemas as metadata containers."
+          }
+        }
+      },
+      "CommunityPluginCatalog": {
+        "type": "object",
+        "description": "Community plugin inventory for one fixed source commit.",
+        "required": [
+          "sourceCommit",
+          "plugins"
+        ],
+        "properties": {
+          "plugins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityPlugin"
+            },
+            "description": "Plugins in deterministic discovery order."
+          },
+          "sourceCommit": {
+            "type": "string",
+            "description": "Full source commit backing the compatibility classpath."
+          }
+        }
+      },
+      "CommunityPluginServices": {
+        "type": "object",
+        "description": "Optional Community services exposed by one plugin.",
+        "required": [
+          "metadataAvailable",
+          "sqlBuilderAvailable",
+          "sqlParserAvailable"
+        ],
+        "properties": {
+          "metadataAvailable": {
+            "type": "boolean",
+            "description": "Whether schema metadata is available."
+          },
+          "sqlBuilderAvailable": {
+            "type": "boolean",
+            "description": "Whether dialect SQL building is available."
+          },
+          "sqlParserAvailable": {
+            "type": "boolean",
+            "description": "Whether retained SQL parsing is available."
+          }
+        }
+      },
+      "CommunitySchema": {
+        "type": "object",
+        "description": "Secret-free database schema metadata returned by Community.",
+        "required": [
+          "databaseName",
+          "name",
+          "comment",
+          "owner",
+          "system"
+        ],
+        "properties": {
+          "comment": {
+            "type": "string",
+            "description": "Schema comment when supplied by the database."
+          },
+          "databaseName": {
+            "type": "string",
+            "description": "Database containing the schema."
+          },
+          "name": {
+            "type": "string",
+            "description": "Schema name."
+          },
+          "owner": {
+            "type": "string",
+            "description": "Schema owner when supplied by the database."
+          },
+          "system": {
+            "type": "boolean",
+            "description": "Whether Community classifies the schema as system-owned."
+          }
+        }
+      },
+      "CommunitySchemaList": {
+        "type": "object",
+        "description": "Stable schema collection returned by Community metadata APIs.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunitySchema"
+            },
+            "description": "Schemas in compatibility-engine order."
+          }
+        }
+      },
+      "CommunitySqlAnalysis": {
+        "type": "object",
+        "description": "Bounded Community parser projection for one SQL input.",
+        "required": [
+          "isSelect",
+          "statements"
+        ],
+        "properties": {
+          "isSelect": {
+            "type": "boolean",
+            "description": "Whether Community classifies the complete input as a select operation."
+          },
+          "statements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityParsedStatement"
+            },
+            "description": "Parsed statements in source order."
+          }
+        }
       },
       "ComponentHealth": {
         "type": "object",
@@ -3898,6 +4386,29 @@
           "opaque"
         ]
       },
+      "ListCommunitySchemasRequest": {
+        "type": "object",
+        "description": "Request to list schemas through one datasource connection.",
+        "required": [
+          "datasourceId",
+          "databaseType",
+          "databaseName"
+        ],
+        "properties": {
+          "databaseName": {
+            "type": "string",
+            "description": "Database name supplied to Community metadata."
+          },
+          "databaseType": {
+            "type": "string",
+            "description": "Community database type used to select the metadata plugin."
+          },
+          "datasourceId": {
+            "type": "string",
+            "description": "Datasource whose installed connection descriptor is used."
+          }
+        }
+      },
       "OperationEvent": {
         "oneOf": [
           {
@@ -4178,6 +4689,24 @@
           "subscriptionId": {
             "type": "string",
             "description": "Opaque observer id used only to release this subscription."
+          }
+        }
+      },
+      "ParseCommunitySqlRequest": {
+        "type": "object",
+        "description": "Request to analyze SQL through a retained Community parser.",
+        "required": [
+          "databaseType",
+          "sql"
+        ],
+        "properties": {
+          "databaseType": {
+            "type": "string",
+            "description": "Community database type used to select the parser."
+          },
+          "sql": {
+            "type": "string",
+            "description": "SQL text to analyze."
           }
         }
       },
@@ -4840,6 +5369,10 @@
     {
       "name": "drivers",
       "description": "Hash-verified JDBC driver inventory"
+    },
+    {
+      "name": "community",
+      "description": "Community compatibility plugin, metadata, and SQL services"
     },
     {
       "name": "datasources",

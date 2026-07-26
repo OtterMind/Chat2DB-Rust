@@ -8,8 +8,8 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chat2db_contract::{
-    CancelDisposition, CreateDatasourceRequest, DatasourceConnection, JdbcValue, OperationEvent,
-    OperationStatus, QueryLimits, ResultPageRequest, StartQueryRequest,
+    CancelDisposition, ComponentState, CreateDatasourceRequest, DatasourceConnection, JdbcValue,
+    OperationEvent, OperationStatus, QueryLimits, ResultPageRequest, StartQueryRequest,
 };
 use chat2db_core::{Application, RuntimeConfig, RuntimeHost};
 use chat2db_java_bridge::{
@@ -69,6 +69,21 @@ impl H2ProductHarness {
         let driver_id = loaded.driver_id;
         let host = RuntimeHost::from_supervisor(storage, supervisor);
         let application = host.application();
+        let community = application
+            .health()
+            .components
+            .into_iter()
+            .find(|component| component.id == "community-compatibility")
+            .expect("Community compatibility health must be explicit");
+        assert_eq!(community.state, ComponentState::Disabled);
+        let community_error = application
+            .list_community_plugins()
+            .await
+            .expect_err("unconfigured Community services must stay disabled");
+        assert_eq!(
+            community_error.api_error().code,
+            "community_compatibility_disabled"
+        );
         Self {
             _directory: directory,
             host,

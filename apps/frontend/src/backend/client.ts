@@ -7,6 +7,11 @@ export type AgentSession = Schema<'AgentSession'>;
 export type AgentSessionList = Schema<'AgentSessionList'>;
 export type ApiError = Schema<'ApiError'>;
 export type CancelOperationResponse = Schema<'CancelOperationResponse'>;
+export type BuildCommunityCreateSchemaRequest = Schema<'BuildCommunityCreateSchemaRequest'>;
+export type CommunityBuiltSql = Schema<'CommunityBuiltSql'>;
+export type CommunityPluginCatalog = Schema<'CommunityPluginCatalog'>;
+export type CommunitySchemaList = Schema<'CommunitySchemaList'>;
+export type CommunitySqlAnalysis = Schema<'CommunitySqlAnalysis'>;
 export type CreateAgentSessionRequest = Schema<'CreateAgentSessionRequest'>;
 export type CreateDatasourceRequest = Schema<'CreateDatasourceRequest'>;
 export type CreateProviderProfileRequest = Schema<'CreateProviderProfileRequest'>;
@@ -19,12 +24,14 @@ export type HealthResponse = Schema<'HealthResponse'>;
 export type JdbcDriver = Schema<'JdbcDriver'>;
 export type JdbcDriverList = Schema<'JdbcDriverList'>;
 export type JdbcValue = Schema<'JdbcValue'>;
+export type ListCommunitySchemasRequest = Schema<'ListCommunitySchemasRequest'>;
 export type OperationEventEnvelope = Schema<'OperationEventEnvelope'>;
 export type OperationSnapshot = Schema<'OperationSnapshot'>;
 export type OperationStreamMessage = Schema<'OperationStreamMessage'>;
 export type OperationSubscriptionAccepted = Schema<'OperationSubscriptionAccepted'>;
 export type ProviderProfile = Schema<'ProviderProfile'>;
 export type ProviderProfileList = Schema<'ProviderProfileList'>;
+export type ParseCommunitySqlRequest = Schema<'ParseCommunitySqlRequest'>;
 export type QueryAccepted = Schema<'QueryAccepted'>;
 export type ResultPage = Schema<'ResultPage'>;
 export type ResultPageRequest = Schema<'ResultPageRequest'>;
@@ -81,6 +88,19 @@ export interface BackendClient {
   readonly transport: 'http' | 'tauri';
   health(signal?: AbortSignal): Promise<HealthResponse>;
   listDrivers(signal?: AbortSignal): Promise<JdbcDriverList>;
+  listCommunityPlugins(signal?: AbortSignal): Promise<CommunityPluginCatalog>;
+  listCommunitySchemas(
+    request: ListCommunitySchemasRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunitySchemaList>;
+  buildCommunityCreateSchema(
+    request: BuildCommunityCreateSchemaRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityBuiltSql>;
+  parseCommunitySql(
+    request: ParseCommunitySqlRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunitySqlAnalysis>;
   listDatasources(signal?: AbortSignal): Promise<DatasourceList>;
   createDatasource(
     request: CreateDatasourceRequest,

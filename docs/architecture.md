@@ -22,10 +22,12 @@ for the CLI and MCP process. That same `Application` owns query and Agent run
 execution, replay, cancellation, and write-permission decisions. Strict local
 managed driver packs and immutable inventory are implemented. A fixed Community
 5.3.0 submodule now supplies a real H2 compatibility slice for plugin discovery,
-schema metadata, dialect SQL building, and retained ANTLR parsing. Signing,
-distribution, product-service wiring for those Community operations, the
-remaining dialect estate, and packaging remain target components. CLI and MCP
-attach to a running host rather than composing a second product runtime.
+schema metadata, dialect SQL building, and retained ANTLR parsing. Product Core,
+Axum, Tauri, and both frontend backend adapters expose those four operations
+when the exact locked classpath is configured. Signing, distribution, end-user
+Community workflows, the remaining dialect estate, and packaging remain target
+components. CLI and MCP attach to a running host rather than composing a second
+product runtime.
 
 ## Ownership
 
@@ -125,10 +127,24 @@ inside Java. The Community classpath and each JDBC driver classloader are
 separate; JDBC driver JARs are not added to the Community classpath. Only
 bounded, process-neutral DTOs cross Protobuf.
 
+Stage 7C composes that boundary into the product runtime. The Web and desktop
+bootstrap paths accept `CHAT2DB_COMMUNITY_CLASSPATH_DIR`, but the source commit
+and 148 filenames, byte lengths, and SHA-256 digests come only from the lock
+embedded in `chat2db-core`; environment configuration cannot replace them.
+Core exposes catalog, schema metadata, `CREATE SCHEMA`, and parser services.
+Schema metadata resolves the encrypted datasource connection and always opens
+a forced-read-only JDBC session. Axum publishes four JSON routes with generated
+OpenAPI/TypeScript contracts; Tauri and the shared frontend backend client
+publish matching calls. The runtime health component distinguishes ready,
+disabled, and unavailable compatibility states from both fixed-classpath
+configuration and the negotiated engine state. Core runs schema metadata work
+in a bounded independent task so transport cancellation cannot skip the session
+close path.
+
 The full database plugin inventory, metadata tree, builders, type conversion,
 non-relational operations, script execution, formatting, validation,
-completion, and per-dialect conformance are not implemented yet. The current
-slice proves H2 only and is not wired into the product-facing Core APIs.
+completion, end-user Community UI workflows, and per-dialect conformance are not
+implemented yet. The current product slice proves H2 only.
 
 Spring Boot, Spring Web, Spring AI, MCP, JCEF, product storage, and updater logic
 do not belong in the final Java engine.
@@ -241,9 +257,12 @@ Java, and exposes immutable inventory through Core, Axum, Tauri, and generated
 frontend contracts. A real H2 pack proves the complete product query path.
 The second slice supplies the fixed Community classpath to the same Java
 generation and exposes plugin catalog, schema metadata, schema SQL building,
-and SQL parsing to Rust. Signing, installation, hot reload, downloading,
-compatibility selection, updates, rollback, and product-facing Community
-operations are not implemented.
+and SQL parsing to Rust. The third slice exposes those calls through Core,
+Axum, Tauri, and the shared frontend backend adapters, while enforcing the exact
+embedded classpath lock at product startup and forced-read-only metadata
+sessions. Signing, installation, hot reload, downloading, compatibility
+selection, updates, rollback, end-user Community workflows, and the remaining
+compatibility operations are not implemented.
 
 ## Local attachment and MCP boundary
 

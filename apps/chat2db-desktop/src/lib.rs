@@ -15,22 +15,27 @@ use std::{
 use chat2db_contract::{
     AgentEventEnvelope, AgentMessageList, AgentPermissionResponse, AgentRunAccepted,
     AgentRunSnapshot, AgentSession, AgentSessionList, AgentStreamMessage,
-    AgentSubscriptionAccepted, ApiError, CancelAgentRunResponse, CancelOperationResponse,
-    CreateAgentSessionRequest, CreateDatasourceRequest, CreateProviderProfileRequest, Datasource,
-    DatasourceList, DecideAgentPermissionRequest, HealthResponse, JdbcDriverList,
-    OperationEventEnvelope, OperationSnapshot, OperationStreamMessage,
-    OperationSubscriptionAccepted, ProviderProfile, ProviderProfileList, QueryAccepted, ResultPage,
+    AgentSubscriptionAccepted, ApiError, BuildCommunityCreateSchemaRequest, CancelAgentRunResponse,
+    CancelOperationResponse, CommunityBuiltSql, CommunityPluginCatalog, CommunitySchemaList,
+    CommunitySqlAnalysis, CreateAgentSessionRequest, CreateDatasourceRequest,
+    CreateProviderProfileRequest, Datasource, DatasourceList, DecideAgentPermissionRequest,
+    HealthResponse, JdbcDriverList, ListCommunitySchemasRequest, OperationEventEnvelope,
+    OperationSnapshot, OperationStreamMessage, OperationSubscriptionAccepted,
+    ParseCommunitySqlRequest, ProviderProfile, ProviderProfileList, QueryAccepted, ResultPage,
     ResultPageRequest, StartAgentRunRequest, StartQueryRequest, UpdateAgentSessionRequest,
     UpdateDatasourceRequest, UpdateProviderProfileRequest,
 };
-use chat2db_core::{AppError, Application, RuntimeConfig, RuntimeHost};
-use chat2db_java_bridge::{EngineCommand, EngineConfig};
+use chat2db_core::{
+    AppError, Application, RuntimeConfig, RuntimeHost, load_fixed_community_classpath,
+};
+use chat2db_java_bridge::{BridgeError, EngineCommand, EngineConfig};
 use chat2db_local::{LocalError, LocalServer};
 use tauri::{State, ipc::Channel};
 use tokio::sync::{Mutex, oneshot};
 
 const DATA_DIR_ENV: &str = "CHAT2DB_DATA_DIR";
 const DRIVER_PACK_DIR_ENV: &str = "CHAT2DB_DRIVER_PACK_DIR";
+const COMMUNITY_CLASSPATH_DIR_ENV: &str = "CHAT2DB_COMMUNITY_CLASSPATH_DIR";
 const JAVA_BIN_ENV: &str = "CHAT2DB_JAVA_BIN";
 const JAVA_ENGINE_JAR_ENV: &str = "CHAT2DB_JAVA_ENGINE_JAR";
 const VAULT_MASTER_KEY_ENV: &str = "CHAT2DB_VAULT_MASTER_KEY";
@@ -162,6 +167,7 @@ pub enum DesktopError {
         source: std::io::Error,
     },
     InvalidVaultMasterKeyEncoding,
+    CommunityClasspath(Box<BridgeError>),
     Local(Box<LocalError>),
     Runtime(Box<AppError>),
     Tauri(Box<tauri::Error>),
@@ -205,6 +211,12 @@ impl std::fmt::Display for DesktopError {
                 formatter,
                 "{VAULT_MASTER_KEY_ENV} must be UTF-8 standard base64 for exactly 32 bytes"
             ),
+            Self::CommunityClasspath(error) => {
+                write!(
+                    formatter,
+                    "fixed Community classpath failed validation: {error}"
+                )
+            }
             Self::Local(error) => write!(formatter, "local attachment failed: {error}"),
             Self::Runtime(error) => write!(formatter, "Chat2DB runtime failed: {error}"),
             Self::Tauri(error) => write!(formatter, "Tauri desktop failed: {error}"),
@@ -216,6 +228,7 @@ impl std::error::Error for DesktopError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::JavaEngineJarMetadata { source, .. } => Some(source),
+            Self::CommunityClasspath(error) => Some(error.as_ref()),
             Self::Local(error) => Some(error.as_ref()),
             Self::Runtime(error) => Some(error.as_ref()),
             Self::Tauri(error) => Some(error.as_ref()),
@@ -243,6 +256,10 @@ pub fn run() -> Result<i32, DesktopError> {
         .invoke_handler(tauri::generate_handler![
             health,
             list_drivers,
+            list_community_plugins,
+            list_community_schemas,
+            build_community_create_schema,
+            parse_community_sql,
             list_datasources,
             create_datasource,
             get_datasource,
@@ -289,7 +306,12 @@ pub fn run() -> Result<i32, DesktopError> {
 fn runtime_config_from_environment() -> Result<RuntimeConfig, DesktopError> {
     let engine_jar = required_java_engine_jar()?;
     let java = optional_nonempty_os_env(JAVA_BIN_ENV)?.unwrap_or_else(|| OsString::from("java"));
-    let engine = EngineConfig::new(EngineCommand::java_jar(java, engine_jar));
+    let mut engine = EngineConfig::new(EngineCommand::java_jar(java, engine_jar));
+    if let Some(community_classpath_dir) = optional_nonempty_os_env(COMMUNITY_CLASSPATH_DIR_ENV)? {
+        let classpath = load_fixed_community_classpath(PathBuf::from(community_classpath_dir))
+            .map_err(|error| DesktopError::CommunityClasspath(Box::new(error)))?;
+        engine = engine.with_community_classpath(classpath);
+    }
     let mut config = RuntimeConfig::new(engine);
 
     if let Some(data_dir) = optional_nonempty_os_env(DATA_DIR_ENV)? {
@@ -371,6 +393,53 @@ fn health(state: State<'_, Arc<DesktopState>>) -> HealthResponse {
 #[allow(clippy::needless_pass_by_value)]
 fn list_drivers(state: State<'_, Arc<DesktopState>>) -> JdbcDriverList {
     state.application.list_drivers()
+}
+
+#[tauri::command]
+async fn list_community_plugins(
+    state: State<'_, Arc<DesktopState>>,
+) -> Result<CommunityPluginCatalog, ApiError> {
+    state
+        .application
+        .list_community_plugins()
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn list_community_schemas(
+    state: State<'_, Arc<DesktopState>>,
+    request: ListCommunitySchemasRequest,
+) -> Result<CommunitySchemaList, ApiError> {
+    state
+        .application
+        .list_community_schemas(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn build_community_create_schema(
+    state: State<'_, Arc<DesktopState>>,
+    request: BuildCommunityCreateSchemaRequest,
+) -> Result<CommunityBuiltSql, ApiError> {
+    state
+        .application
+        .build_community_create_schema(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn parse_community_sql(
+    state: State<'_, Arc<DesktopState>>,
+    request: ParseCommunitySqlRequest,
+) -> Result<CommunitySqlAnalysis, ApiError> {
+    state
+        .application
+        .parse_community_sql(request)
+        .await
+        .map_err(|error| api_error(&error))
 }
 
 #[tauri::command]

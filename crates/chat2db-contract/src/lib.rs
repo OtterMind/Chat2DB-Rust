@@ -1,6 +1,7 @@
 //! Canonical product contracts shared by every `Chat2DB` Rust delivery surface.
 
 pub mod agent;
+pub mod community;
 pub mod datasource;
 pub mod driver;
 pub mod error;
@@ -19,6 +20,12 @@ pub use agent::{
     ProviderCredentials, ProviderKind, ProviderProfile, ProviderProfileList, ProviderSecretChange,
     SqlPermissionMode, StartAgentRunRequest, UpdateAgentSessionRequest,
     UpdateProviderProfileRequest,
+};
+pub use community::{
+    BuildCommunityCreateSchemaRequest, CommunityBuiltSql, CommunityDriverConfig,
+    CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
+    CommunityPluginServices, CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis,
+    ListCommunitySchemasRequest, ParseCommunitySqlRequest,
 };
 pub use datasource::{
     CreateDatasourceRequest, Datasource, DatasourceConnection, DatasourceConnectionProperty,
@@ -48,18 +55,21 @@ mod tests {
         AgentPermissionStatus, AgentResultHandle, AgentRunAccepted, AgentRunSnapshot,
         AgentRunStatus, AgentSession, AgentSessionList, AgentStreamMessage,
         AgentSubscriptionAccepted, AgentToolCall, AgentToolOutput, AgentUsage, ApiError,
-        ApiErrorDetails, CancelAgentRunResponse, CancelDisposition, CancelOperationResponse,
-        ColumnNullability, ComponentHealth, ComponentState, ContextCompactionStrategy,
+        ApiErrorDetails, BuildCommunityCreateSchemaRequest, CancelAgentRunResponse,
+        CancelDisposition, CancelOperationResponse, ColumnNullability, CommunityBuiltSql,
+        CommunityDriverConfig, CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior,
+        CommunityPluginCatalog, CommunityPluginServices, CommunitySchema, CommunitySchemaList,
+        CommunitySqlAnalysis, ComponentHealth, ComponentState, ContextCompactionStrategy,
         CreateAgentSessionRequest, CreateDatasourceRequest, CreateProviderProfileRequest,
         Datasource, DatasourceConnection, DatasourceConnectionProperty, DatasourceList,
         DatasourceSecretChange, DecideAgentPermissionRequest, HealthResponse, JdbcDriver,
-        JdbcDriverList, JdbcValue, JdbcValueType, OperationEvent, OperationEventEnvelope,
-        OperationSnapshot, OperationStatus, OperationStreamMessage, OperationSubscriptionAccepted,
-        ProductInfo, ProviderCredentials, ProviderKind, ProviderProfile, ProviderProfileList,
-        ProviderSecretChange, QueryAccepted, QueryLimits, QueryParameter, ResultColumn,
-        ResultMetadata, ResultPage, ResultPageRequest, ResultRow, RuntimeStatus, SqlPermissionMode,
-        StartAgentRunRequest, StartQueryRequest, UpdateAgentSessionRequest,
-        UpdateDatasourceRequest, UpdateProviderProfileRequest,
+        JdbcDriverList, JdbcValue, JdbcValueType, ListCommunitySchemasRequest, OperationEvent,
+        OperationEventEnvelope, OperationSnapshot, OperationStatus, OperationStreamMessage,
+        OperationSubscriptionAccepted, ParseCommunitySqlRequest, ProductInfo, ProviderCredentials,
+        ProviderKind, ProviderProfile, ProviderProfileList, ProviderSecretChange, QueryAccepted,
+        QueryLimits, QueryParameter, ResultColumn, ResultMetadata, ResultPage, ResultPageRequest,
+        ResultRow, RuntimeStatus, SqlPermissionMode, StartAgentRunRequest, StartQueryRequest,
+        UpdateAgentSessionRequest, UpdateDatasourceRequest, UpdateProviderProfileRequest,
     };
 
     #[derive(OpenApi)]
@@ -90,10 +100,21 @@ mod tests {
         CancelAgentRunResponse,
         CancelDisposition,
         CancelOperationResponse,
+        CommunityBuiltSql,
+        CommunityDriverConfig,
+        CommunityParsedStatement,
+        CommunityPlugin,
+        CommunityPluginBehavior,
+        CommunityPluginCatalog,
+        CommunityPluginServices,
+        CommunitySchema,
+        CommunitySchemaList,
+        CommunitySqlAnalysis,
         ColumnNullability,
         ComponentHealth,
         ComponentState,
         ContextCompactionStrategy,
+        BuildCommunityCreateSchemaRequest,
         CreateAgentSessionRequest,
         CreateDatasourceRequest,
         CreateProviderProfileRequest,
@@ -108,12 +129,14 @@ mod tests {
         JdbcDriverList,
         JdbcValue,
         JdbcValueType,
+        ListCommunitySchemasRequest,
         OperationEvent,
         OperationEventEnvelope,
         OperationSnapshot,
         OperationStatus,
         OperationStreamMessage,
         OperationSubscriptionAccepted,
+        ParseCommunitySqlRequest,
         ProductInfo,
         ProviderCredentials,
         ProviderKind,
@@ -153,6 +176,9 @@ mod tests {
             "AgentEventEnvelope",
             "AgentRunSnapshot",
             "Datasource",
+            "CommunityPluginCatalog",
+            "CommunitySchemaList",
+            "CommunitySqlAnalysis",
             "JdbcDriverList",
             "JdbcValue",
             "OperationEventEnvelope",
@@ -181,6 +207,16 @@ mod tests {
         assert!(
             !encoded_document.contains("\"tool_call_id\""),
             "agent tagged fields must not expose snake_case in OpenAPI"
+        );
+        assert!(
+            encoded_document.contains("\"databaseType\"")
+                && encoded_document.contains("\"datasourceId\""),
+            "Community fields must use camelCase in OpenAPI"
+        );
+        assert!(
+            !encoded_document.contains("\"database_type\"")
+                && !encoded_document.contains("\"datasource_id\""),
+            "Community fields must not expose snake_case in OpenAPI"
         );
     }
 

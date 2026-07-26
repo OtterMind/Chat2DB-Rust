@@ -13,8 +13,13 @@ import type {
   AgentSubscriptionAccepted,
   AgentSubscriptionOptions,
   BackendClient,
+  BuildCommunityCreateSchemaRequest,
   CancelAgentRunResponse,
   CancelOperationResponse,
+  CommunityBuiltSql,
+  CommunityPluginCatalog,
+  CommunitySchemaList,
+  CommunitySqlAnalysis,
   CreateAgentSessionRequest,
   CreateDatasourceRequest,
   CreateProviderProfileRequest,
@@ -23,12 +28,14 @@ import type {
   DecideAgentPermissionRequest,
   HealthResponse,
   JdbcDriverList,
+  ListCommunitySchemasRequest,
   OperationEventEnvelope,
   OperationSnapshot,
   OperationStreamMessage,
   OperationSubscription,
   OperationSubscriptionAccepted,
   OperationSubscriptionOptions,
+  ParseCommunitySqlRequest,
   ProviderProfile,
   ProviderProfileList,
   QueryAccepted,
@@ -93,6 +100,31 @@ export class TauriBackendClient implements BackendClient {
 
   listDrivers(signal?: AbortSignal): Promise<JdbcDriverList> {
     return this.#request('list_drivers', undefined, signal);
+  }
+
+  listCommunityPlugins(signal?: AbortSignal): Promise<CommunityPluginCatalog> {
+    return this.#request('list_community_plugins', undefined, signal);
+  }
+
+  listCommunitySchemas(
+    request: ListCommunitySchemasRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunitySchemaList> {
+    return this.#request('list_community_schemas', { request }, signal);
+  }
+
+  buildCommunityCreateSchema(
+    request: BuildCommunityCreateSchemaRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityBuiltSql> {
+    return this.#request('build_community_create_schema', { request }, signal);
+  }
+
+  parseCommunitySql(
+    request: ParseCommunitySqlRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunitySqlAnalysis> {
+    return this.#request('parse_community_sql', { request }, signal);
   }
 
   listDatasources(signal?: AbortSignal): Promise<DatasourceList> {

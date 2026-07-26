@@ -34,6 +34,11 @@ name = "java_h2_product"
 path = "tests/java_h2_product.rs"
 required-features = ["java-integration"]
 
+[[test]]
+name = "java_community_product"
+path = "tests/java_community_product.rs"
+required-features = ["java-integration"]
+
 [features]
 default = []
 java-integration = []

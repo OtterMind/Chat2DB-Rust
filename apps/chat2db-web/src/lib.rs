@@ -239,6 +239,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn community_routes_report_an_unavailable_engine() {
+        let application = router(Application::new());
+        let requests = [
+            (
+                request(Method::GET, "/api/v1/community/plugins"),
+                "database_engine_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/metadata/schemas",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1",
+                        "databaseType": "H2",
+                        "databaseName": "inventory"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/sql/build-create-schema",
+                    &serde_json::json!({
+                        "databaseType": "H2",
+                        "schema": {
+                            "databaseName": "inventory",
+                            "name": "reporting",
+                            "comment": "",
+                            "owner": "",
+                            "system": false
+                        }
+                    }),
+                ),
+                "database_engine_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/sql/parse",
+                    &serde_json::json!({
+                        "databaseType": "H2",
+                        "sql": "select 1"
+                    }),
+                ),
+                "database_engine_unavailable",
+            ),
+        ];
+
+        for (request, expected_code) in requests {
+            let response = application
+                .clone()
+                .oneshot(request)
+                .await
+                .expect("router must respond");
+
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let error: ApiError = response_json(response).await;
+            assert_eq!(error.code, expected_code);
+        }
+    }
+
+    #[tokio::test]
     async fn unknown_routes_use_the_error_contract() {
         let response = router(Application::new())
             .oneshot(request(Method::GET, "/api/v1/missing"))
@@ -338,6 +401,10 @@ mod tests {
         for path in [
             "/api/v1/system/health",
             "/api/v1/drivers",
+            "/api/v1/community/plugins",
+            "/api/v1/community/metadata/schemas",
+            "/api/v1/community/sql/build-create-schema",
+            "/api/v1/community/sql/parse",
             "/api/v1/datasources",
             "/api/v1/datasources/{datasource_id}",
             "/api/v1/agent/providers",
@@ -362,6 +429,14 @@ mod tests {
 
         assert!(paths["/api/v1/datasources"].get("get").is_some());
         assert!(paths["/api/v1/datasources"].get("post").is_some());
+        assert!(paths["/api/v1/community/plugins"].get("get").is_some());
+        for path in [
+            "/api/v1/community/metadata/schemas",
+            "/api/v1/community/sql/build-create-schema",
+            "/api/v1/community/sql/parse",
+        ] {
+            assert!(paths[path].get("post").is_some());
+        }
         assert!(
             paths["/api/v1/datasources/{datasource_id}"]
                 .get("delete")
@@ -429,10 +504,23 @@ mod tests {
             "AgentSessionList",
             "AgentUsage",
             "CancelAgentRunResponse",
+            "BuildCommunityCreateSchemaRequest",
+            "CommunityBuiltSql",
+            "CommunityDriverConfig",
+            "CommunityParsedStatement",
+            "CommunityPlugin",
+            "CommunityPluginBehavior",
+            "CommunityPluginCatalog",
+            "CommunityPluginServices",
+            "CommunitySchema",
+            "CommunitySchemaList",
+            "CommunitySqlAnalysis",
             "ContextCompactionStrategy",
             "CreateAgentSessionRequest",
             "CreateProviderProfileRequest",
             "DecideAgentPermissionRequest",
+            "ListCommunitySchemasRequest",
+            "ParseCommunitySqlRequest",
             "ProviderCredentials",
             "ProviderProfile",
             "ProviderProfileList",

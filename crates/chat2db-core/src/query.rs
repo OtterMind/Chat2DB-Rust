@@ -7,11 +7,18 @@ use chat2db_java_bridge::{
     JdbcParameter, QueryEvent, QueryOptions, QueryRequest, QueryStream, SessionConfig,
     UpdateRequest,
 };
-use chat2db_storage::{ResultWriter, SecretValue, Storage, StorageError};
+use chat2db_storage::{ResultWriter, Storage, StorageError};
 use tokio::sync::{oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
-use crate::{AppError, AppErrorKind, Application, convert, operation::CancellationRequest};
+use crate::{
+    AppError, AppErrorKind, Application, convert,
+    datasource_session::{
+        ResolvedDatasourceConnection, SessionReadOnly, open_datasource_session,
+        resolve_datasource_connection,
+    },
+    operation::CancellationRequest,
+};
 
 struct PreparedQuery {
     datasource_id: String,
@@ -186,44 +193,18 @@ impl Application {
         storage: Storage,
         engine: EngineClient,
     ) -> Result<chat2db_contract::ResultMetadata, QueryTaskError> {
-        let datasource_id = query.datasource_id.clone();
-        let datasource_storage = storage.clone();
-        let (datasource, secret) =
-            run_blocking(move || datasource_storage.get_datasource_with_secret(&datasource_id))
-                .await?;
-        let secret = secret.ok_or_else(|| {
-            QueryTaskError::Failed(AppError::new(
-                AppErrorKind::Conflict,
-                ApiError::new(
-                    "datasource_connection_missing",
-                    "The datasource has no installed connection descriptor",
-                ),
-            ))
-        })?;
-        let connection = decode_connection(&secret)?;
+        let resolved = resolve_datasource_connection(&storage, &query.datasource_id).await?;
 
         if let CancellationRequest::Requested { reason } = cancellation.borrow().clone() {
             return Err(QueryTaskError::Cancelled(reason));
         }
 
-        let driver = engine.driver_client().map_err(AppError::from)?;
-        let session = driver
-            .open_session(SessionConfig {
-                driver_id: datasource.driver_id,
-                jdbc_url: connection.jdbc_url,
-                properties: connection
-                    .properties
-                    .into_iter()
-                    .map(|property| ConnectionProperty {
-                        key: property.key,
-                        value: property.value,
-                        sensitive: property.sensitive,
-                    })
-                    .collect(),
-                read_only: query.force_read_only || connection.read_only,
-            })
-            .await
-            .map_err(AppError::from)?;
+        let read_only = if query.force_read_only {
+            SessionReadOnly::Forced
+        } else {
+            SessionReadOnly::Configured
+        };
+        let session = open_datasource_session(&engine, resolved, read_only).await?;
 
         let cancellation_request = { cancellation.borrow().clone() };
         if let CancellationRequest::Requested { reason } = cancellation_request {
@@ -397,22 +378,12 @@ impl Application {
         let engine = self
             .require_engine()
             .map_err(DatabaseWriteError::not_started)?;
-        let datasource_storage = storage.clone();
-        let loaded =
-            run_blocking(move || datasource_storage.get_datasource_with_secret(&datasource_id))
-                .await
-                .map_err(DatabaseWriteError::not_started)?;
-        let (datasource, secret) = loaded;
-        let secret = secret.ok_or_else(|| {
-            DatabaseWriteError::not_started(AppError::new(
-                AppErrorKind::Conflict,
-                ApiError::new(
-                    "datasource_connection_missing",
-                    "The datasource has no installed connection descriptor",
-                ),
-            ))
-        })?;
-        let connection = decode_connection(&secret).map_err(DatabaseWriteError::not_started)?;
+        let ResolvedDatasourceConnection {
+            driver_id,
+            connection,
+        } = resolve_datasource_connection(&storage, &datasource_id)
+            .await
+            .map_err(DatabaseWriteError::not_started)?;
         if connection.read_only {
             return Err(DatabaseWriteError::not_started(AppError::new(
                 AppErrorKind::Conflict,
@@ -428,7 +399,7 @@ impl Application {
             .map_err(DatabaseWriteError::not_started)?;
         let session = driver
             .open_session(SessionConfig {
-                driver_id: datasource.driver_id,
+                driver_id,
                 jdbc_url: connection.jdbc_url,
                 properties: connection
                     .properties
@@ -588,20 +559,6 @@ impl RetainedWriter {
         }
         Ok(())
     }
-}
-
-fn decode_connection(
-    secret: &SecretValue,
-) -> Result<chat2db_contract::DatasourceConnection, AppError> {
-    serde_json::from_slice(secret.expose_secret()).map_err(|_| {
-        AppError::new(
-            AppErrorKind::Internal,
-            ApiError::new(
-                "datasource_connection_invalid",
-                "The stored datasource connection descriptor is invalid",
-            ),
-        )
-    })
 }
 
 fn database_write_outcome(error: &BridgeError, dispatched: bool) -> DatabaseWriteOutcome {

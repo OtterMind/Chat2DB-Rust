@@ -1,7 +1,9 @@
 //! Transport-neutral product services.
 
 mod agent;
+mod community;
 mod convert;
+mod datasource_session;
 mod driver_pack;
 mod error;
 mod operation;
@@ -20,7 +22,11 @@ use chat2db_contract::{
     OperationSnapshot, ProductInfo, ResultPage, ResultPageRequest, RuntimeStatus,
     UpdateDatasourceRequest,
 };
-use chat2db_java_bridge::{EngineClient, EngineConfig, EngineState, EngineSupervisor};
+use chat2db_java_bridge::{
+    COMMUNITY_PLUGIN_CATALOG_CAPABILITY, COMMUNITY_SCHEMA_METADATA_CAPABILITY,
+    COMMUNITY_SQL_BUILDER_CAPABILITY, COMMUNITY_SQL_PARSER_CAPABILITY, EngineClient, EngineConfig,
+    EngineState, EngineSupervisor,
+};
 use chat2db_storage::{
     CreateDatasource, EncryptedFileVault, PageRequest, SecretChange, SecretValue, SecretVault,
     Storage, StorageError, UpdateDatasource,
@@ -29,6 +35,7 @@ use tokio::{sync::Mutex, task::JoinHandle};
 
 use agent::AgentRunHub;
 pub use agent::AgentRunSubscription;
+pub use community::load_fixed_community_classpath;
 pub use error::{AppError, AppErrorKind};
 pub use operation::OperationSubscription;
 
@@ -273,6 +280,7 @@ impl Application {
         } else {
             self.inner.runtime_status
         };
+        let community_component = community_health(self.inner.engine.as_ref());
         HealthResponse {
             product: ProductInfo::community(env!("CARGO_PKG_VERSION")),
             status,
@@ -285,6 +293,7 @@ impl Application {
                     detail: "Ready".to_owned(),
                 },
                 engine_component,
+                community_component,
                 if self.inner.drivers.is_empty() {
                     ComponentHealth {
                         id: "jdbc-drivers".to_owned(),
@@ -714,6 +723,62 @@ impl RuntimeHost {
     }
 }
 
+fn community_health(engine: Option<&EngineClient>) -> ComponentHealth {
+    engine.map_or_else(
+        || ComponentHealth {
+            id: "community-compatibility".to_owned(),
+            label: "Community compatibility".to_owned(),
+            state: ComponentState::Disabled,
+            detail: "Fixed Community classpath not configured".to_owned(),
+        },
+        |engine| match engine.state() {
+            EngineState::Ready { .. } if !engine.community_compatibility_configured() => {
+                ComponentHealth {
+                    id: "community-compatibility".to_owned(),
+                    label: "Community compatibility".to_owned(),
+                    state: ComponentState::Disabled,
+                    detail: "Fixed Community classpath not configured".to_owned(),
+                }
+            }
+            EngineState::Ready { identity, .. }
+                if [
+                    COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
+                    COMMUNITY_SCHEMA_METADATA_CAPABILITY,
+                    COMMUNITY_SQL_BUILDER_CAPABILITY,
+                    COMMUNITY_SQL_PARSER_CAPABILITY,
+                ]
+                .iter()
+                .all(|required| {
+                    identity
+                        .capabilities
+                        .iter()
+                        .any(|capability| capability == required)
+                }) =>
+            {
+                ComponentHealth {
+                    id: "community-compatibility".to_owned(),
+                    label: "Community compatibility".to_owned(),
+                    state: ComponentState::Ready,
+                    detail: "Fixed Community plugin, metadata, builder, and parser services ready"
+                        .to_owned(),
+                }
+            }
+            EngineState::Ready { .. } => ComponentHealth {
+                id: "community-compatibility".to_owned(),
+                label: "Community compatibility".to_owned(),
+                state: ComponentState::Unavailable,
+                detail: "Required Community capabilities are unavailable".to_owned(),
+            },
+            state => ComponentHealth {
+                id: "community-compatibility".to_owned(),
+                label: "Community compatibility".to_owned(),
+                state: ComponentState::Unavailable,
+                detail: format!("Compatibility engine is {}", state.label()),
+            },
+        },
+    )
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn production_os_vault(data_dir: &std::path::Path) -> Result<Arc<dyn SecretVault>, AppError> {
     chat2db_storage::OsSecretVault::new(data_dir)
@@ -802,6 +867,12 @@ mod tests {
                 .iter()
                 .any(|component| component.id == "database-engine")
         );
+        let community = health
+            .components
+            .iter()
+            .find(|component| component.id == "community-compatibility")
+            .expect("Community compatibility health must be explicit");
+        assert_eq!(community.state, ComponentState::Disabled);
     }
 
     #[derive(Debug)]

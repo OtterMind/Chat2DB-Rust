@@ -11,8 +11,13 @@ import type {
   AgentSubscription,
   AgentSubscriptionOptions,
   BackendClient,
+  BuildCommunityCreateSchemaRequest,
   CancelAgentRunResponse,
   CancelOperationResponse,
+  CommunityBuiltSql,
+  CommunityPluginCatalog,
+  CommunitySchemaList,
+  CommunitySqlAnalysis,
   CreateAgentSessionRequest,
   CreateDatasourceRequest,
   CreateProviderProfileRequest,
@@ -21,9 +26,11 @@ import type {
   DecideAgentPermissionRequest,
   HealthResponse,
   JdbcDriverList,
+  ListCommunitySchemasRequest,
   OperationSnapshot,
   OperationSubscription,
   OperationSubscriptionOptions,
+  ParseCommunitySqlRequest,
   ProviderProfile,
   ProviderProfileList,
   QueryAccepted,
@@ -110,6 +117,43 @@ export class HttpBackendClient implements BackendClient {
 
   listDrivers(signal?: AbortSignal): Promise<JdbcDriverList> {
     return this.#json('/api/v1/drivers', { method: 'GET', signal }, [200]);
+  }
+
+  listCommunityPlugins(signal?: AbortSignal): Promise<CommunityPluginCatalog> {
+    return this.#json('/api/v1/community/plugins', { method: 'GET', signal }, [200]);
+  }
+
+  listCommunitySchemas(
+    request: ListCommunitySchemasRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunitySchemaList> {
+    return this.#json(
+      '/api/v1/community/metadata/schemas',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  buildCommunityCreateSchema(
+    request: BuildCommunityCreateSchemaRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityBuiltSql> {
+    return this.#json(
+      '/api/v1/community/sql/build-create-schema',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  parseCommunitySql(
+    request: ParseCommunitySqlRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunitySqlAnalysis> {
+    return this.#json(
+      '/api/v1/community/sql/parse',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
   }
 
   listDatasources(signal?: AbortSignal): Promise<DatasourceList> {

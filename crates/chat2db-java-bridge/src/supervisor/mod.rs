@@ -677,6 +677,13 @@ impl EngineClient {
         self.inner.state.borrow().clone()
     }
 
+    /// Returns whether this generation was started with a fixed Community
+    /// compatibility classpath.
+    #[must_use]
+    pub fn community_compatibility_configured(&self) -> bool {
+        !self.inner.community_source_commit.is_empty()
+    }
+
     /// Subscribes to lifecycle changes for this process generation.
     #[must_use]
     pub fn subscribe_state(&self) -> watch::Receiver<EngineState> {

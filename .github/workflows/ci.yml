@@ -110,6 +110,12 @@ jobs:
           CHAT2DB_H2_DRIVER_JAR: "${{ github.workspace }}/java/compat-runtime/target/test-drivers/h2-2.3.232.jar"
           CHAT2DB_COMMUNITY_CLASSPATH_DIR: "${{ github.workspace }}/target/community-h2-classpath"
         run: cargo test -p chat2db-java-bridge --features java-integration --test java_community_h2 --locked
+      - name: Verify Community H2 product service boundary
+        env:
+          CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
+          CHAT2DB_H2_DRIVER_JAR: "${{ github.workspace }}/java/compat-runtime/target/test-drivers/h2-2.3.232.jar"
+          CHAT2DB_COMMUNITY_CLASSPATH_DIR: "${{ github.workspace }}/target/community-h2-classpath"
+        run: cargo test -p chat2db-core --features java-integration --test java_community_product --locked
       - name: Verify product H2 vertical slice
         env:
           CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
@@ -239,6 +245,16 @@ jobs:
         run: >-
           cargo test -p chat2db-java-bridge --features java-integration
           --test java_community_h2 --locked
+      - name: Verify Windows Community H2 product service boundary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
+          CHAT2DB_H2_DRIVER_JAR: "${{ github.workspace }}/java/compat-runtime/target/test-drivers/h2-2.3.232.jar"
+          CHAT2DB_COMMUNITY_CLASSPATH_DIR: "${{ github.workspace }}/target/community-h2-classpath"
+        run: >-
+          cargo test -p chat2db-core --features java-integration
+          --test java_community_product --locked
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22.22.2"

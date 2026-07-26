@@ -10,6 +10,8 @@ use chat2db_java_bridge::{
 
 const COMMUNITY_COMMIT: &str = "f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7";
 const H2_DRIVER_CLASS: &str = "org.h2.Driver";
+const COMMUNITY_CLASSPATH_LOCK: &str =
+    include_str!("../../../third_party/community-h2-classpath.lock");
 
 #[tokio::test]
 async fn invokes_real_community_h2_spi_metadata_builder_and_parser() {
@@ -17,8 +19,8 @@ async fn invokes_real_community_h2_spi_metadata_builder_and_parser() {
     let h2_jar = required_path("CHAT2DB_H2_DRIVER_JAR");
     let community_directory = required_path("CHAT2DB_COMMUNITY_CLASSPATH_DIR");
     let classpath =
-        CommunityClasspath::from_paths(COMMUNITY_COMMIT, classpath_jars(&community_directory))
-            .expect("Community classpath must satisfy the process contract");
+        CommunityClasspath::from_locked_directory(&community_directory, COMMUNITY_CLASSPATH_LOCK)
+            .expect("Community classpath must exactly match the fixed lock");
 
     let supervisor = EngineSupervisor::spawn(
         EngineConfig::new(EngineCommand::java_jar("java", engine_jar))
@@ -184,19 +186,4 @@ fn required_path(name: &str) -> PathBuf {
         || panic!("{name} must point to the integration fixture"),
         PathBuf::from,
     )
-}
-
-fn classpath_jars(directory: &PathBuf) -> Vec<PathBuf> {
-    let mut jars = std::fs::read_dir(directory)
-        .expect("Community classpath directory must exist")
-        .map(|entry| entry.expect("classpath entry must be readable").path())
-        .filter(|path| {
-            path.extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("jar"))
-        })
-        .collect::<Vec<_>>();
-    jars.sort();
-    assert!(!jars.is_empty(), "Community classpath cannot be empty");
-    jars
 }

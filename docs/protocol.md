@@ -242,6 +242,15 @@ source build to exactly 148 filenames, lengths, and SHA-256 values. This lock is
 a reproducibility and drift gate, not a package signature or distribution
 authorization.
 
+The product runtime embeds that lock and accepts only a directory matching it
+exactly. `CHAT2DB_COMMUNITY_CLASSPATH_DIR` selects the directory but cannot
+override its source commit or inventory. Core maps the four protocol operations
+to stable external DTOs; schema metadata resolves a vault-backed datasource and
+uses a forced-read-only JDBC session before invoking this protocol. Core keeps
+that bounded operation alive if its transport waiter is cancelled so it can
+consume the response and close the session. These product rules sit above the
+compatibility wire contract.
+
 ## Supervision
 
 One actor owns each process generation. It coordinates a bounded stdin writer,
@@ -269,4 +278,7 @@ the fixed Community source with a commit-derived archive timestamp and a
 repository-local Maven cache, rejects classpath lock drift, keeps the H2 JDBC
 driver external, and executes catalog, schema metadata, schema builder, and
 ANTLR parser calls through the real Community H2 plugin. CI runs that same
-Community sidecar path on Linux and Windows.
+Community sidecar path on Linux and Windows. The Stage 7C product gate starts
+from the exact embedded lock, stores an encrypted H2 datasource, invokes all
+four operations through Core, and verifies metadata-session and driver cleanup;
+CI runs this product boundary on Linux and Windows as well.

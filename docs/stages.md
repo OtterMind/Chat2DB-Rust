@@ -12,7 +12,7 @@ in runtime health until then.
 | 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
 | 5 | Complete | Product transports | Generated OpenAPI/TypeScript contract, Axum JSON/SSE, Tauri 2 commands/channels, shared SQL workbench, product H2 tests |
 | 6 | Complete | Agent, MCP, and CLI | Direct providers, durable bounded tool loop, SQL tools/permissions, compaction, Web/Tauri run transports, owner-only local attachment, read-query CLI, and bounded `rmcp` stdio tools |
-| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs and 7B fixed Community H2 SPI/ANTLR slice implemented; remaining plugin operations and per-dialect conformance explicit |
+| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs, 7B fixed Community H2 SPI/ANTLR, and 7C product Core/Web/Tauri contracts implemented; remaining plugin/UI operations and per-dialect conformance explicit |
 | 8 | Planned | Packaging and release | License authorization, NOTICE/SBOM, jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
 
 Stage 3 completion means the versioned Rust-Java bridge can load an external
@@ -85,11 +85,26 @@ values before decoding, including duplicate fields, and retains a generation
 snapshot whenever child reap cannot be proven. The real vertical test keeps the
 H2 JDBC driver in its separate driver loader.
 
-Stage 7 remains incomplete: the Community operations are not yet wired into
-product-facing Core services, and the full metadata tree, type conversion,
-script execution, import/export, formatting, validation, completion,
-non-relational behavior, remaining builders, plugin inventory, and per-dialect
-conformance are not implemented.
+Stage 7C embeds that exact 148-JAR lock in the product Core and allows Web or
+desktop startup to opt into it through `CHAT2DB_COMMUNITY_CLASSPATH_DIR`. Any
+missing, extra, renamed, symbolic-link, length-drifted, or digest-drifted entry
+fails startup before Java launches. Core projects the four compatibility calls
+into stable product DTOs, resolves schema metadata through encrypted datasource
+storage, and opens that metadata session in forced-read-only mode. Axum exposes
+four generated-contract routes; Tauri and the shared frontend backend client
+expose the same operations. Health reports the compatibility component as
+ready, disabled, or unavailable from both configuration and negotiated engine
+state. Metadata work continues in a bounded Core task after a transport waiter
+is cancelled, so the JDBC session still reaches its explicit close path. A real
+H2 product test covers locked startup, catalog, encrypted datasource resolution,
+builder execution, metadata, parser, session cleanup, and driver unload on
+Linux and Windows CI.
+
+Stage 7 remains incomplete: no end-user Community workflow uses the new
+frontend backend methods yet. The full metadata tree, type conversion, script
+execution, import/export, formatting, validation, completion, non-relational
+behavior, remaining builders and plugin inventory, driver distribution, and
+per-dialect conformance are not implemented.
 
 Before Stage 8 may produce any Object-form distribution containing Community
 5.3.0 code, the release must record written commercial authorization compatible

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
@@ -45,6 +45,13 @@ struct CommunityArtifact {
     byte_len: u64,
 }
 
+#[derive(Debug)]
+struct LockedCommunityArtifact {
+    file_name: String,
+    sha256: [u8; 32],
+    byte_len: u64,
+}
+
 /// Validated, immutable Community compatibility classpath for one engine process.
 #[derive(Clone, Debug)]
 pub struct CommunityClasspath {
@@ -53,6 +60,102 @@ pub struct CommunityClasspath {
 }
 
 impl CommunityClasspath {
+    /// Resolves a fixed Community build from an exact filename, length, and
+    /// SHA-256 lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lock is malformed, the directory contains a
+    /// missing or extra entry, an entry is unsafe, or any locked artifact does
+    /// not match its expected byte length and digest.
+    pub fn from_locked_directory(
+        directory: impl AsRef<Path>,
+        lock: &str,
+    ) -> Result<Self, BridgeError> {
+        let directory = directory.as_ref();
+        let metadata =
+            fs::symlink_metadata(directory).map_err(|source| BridgeError::CommunityArtifact {
+                operation: "inspect locked directory",
+                path: directory.to_path_buf(),
+                source,
+            })?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(BridgeError::InvalidConfig(
+                "Community classpath lock root must be a regular directory".to_owned(),
+            ));
+        }
+
+        let (source_commit, expected) = parse_classpath_lock(lock)?;
+        let expected_by_name = expected
+            .iter()
+            .map(|artifact| (artifact.file_name.as_str(), artifact))
+            .collect::<HashMap<_, _>>();
+        let mut discovered = HashSet::with_capacity(expected.len());
+        for entry in fs::read_dir(directory).map_err(|source| BridgeError::CommunityArtifact {
+            operation: "read locked directory",
+            path: directory.to_path_buf(),
+            source,
+        })? {
+            let entry = entry.map_err(|source| BridgeError::CommunityArtifact {
+                operation: "read locked directory entry",
+                path: directory.to_path_buf(),
+                source,
+            })?;
+            let file_name = entry.file_name().into_string().map_err(|_| {
+                BridgeError::InvalidConfig(
+                    "Community classpath directory entries must be valid UTF-8".to_owned(),
+                )
+            })?;
+            if !expected_by_name.contains_key(file_name.as_str()) {
+                return Err(BridgeError::InvalidConfig(format!(
+                    "Community classpath contains unlocked entry {file_name}"
+                )));
+            }
+            if !discovered.insert(file_name.clone()) {
+                return Err(BridgeError::InvalidConfig(format!(
+                    "Community classpath contains duplicate entry {file_name}"
+                )));
+            }
+        }
+        if discovered.len() != expected.len() {
+            let missing = expected
+                .iter()
+                .find(|artifact| !discovered.contains(&artifact.file_name))
+                .map_or("unknown", |artifact| artifact.file_name.as_str());
+            return Err(BridgeError::InvalidConfig(format!(
+                "Community classpath is missing locked artifact {missing}"
+            )));
+        }
+
+        let requested = expected
+            .iter()
+            .map(|artifact| directory.join(&artifact.file_name))
+            .collect::<Vec<_>>();
+        let classpath = Self::from_paths(source_commit, requested)?;
+        for artifact in &classpath.artifacts {
+            let file_name = artifact
+                .canonical_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| {
+                    BridgeError::InvalidConfig(
+                        "Community classpath artifact filename is not valid UTF-8".to_owned(),
+                    )
+                })?;
+            let locked = expected_by_name.get(file_name).ok_or_else(|| {
+                BridgeError::InvalidConfig(format!(
+                    "Community classpath artifact {file_name} is not locked"
+                ))
+            })?;
+            if artifact.byte_len != locked.byte_len || artifact.sha256 != locked.sha256 {
+                return Err(BridgeError::InvalidConfig(format!(
+                    "Community classpath artifact {file_name} does not match its lock"
+                )));
+            }
+        }
+        Ok(classpath)
+    }
+
     /// Resolves a fixed Community build and its JARs for one engine generation.
     ///
     /// # Errors
@@ -206,6 +309,151 @@ impl CommunityClasspath {
             .iter()
             .map(|artifact| artifact.canonical_path.as_path())
     }
+}
+
+fn parse_classpath_lock(lock: &str) -> Result<(String, Vec<LockedCommunityArtifact>), BridgeError> {
+    let mut lines = lock.lines();
+    require_lock_header(lines.next(), "format_version", "1")?;
+    let source_commit = lock_header_value(lines.next(), "source_commit")?.to_owned();
+    validate_source_commit(&source_commit)?;
+    let artifact_count = lock_header_value(lines.next(), "artifact_count")?
+        .parse::<usize>()
+        .map_err(|_| invalid_classpath_lock("artifact_count must be an unsigned integer"))?;
+    if artifact_count == 0 || artifact_count > MAX_CLASSPATH_ARTIFACTS {
+        return Err(invalid_classpath_lock(format!(
+            "artifact_count must be between 1 and {MAX_CLASSPATH_ARTIFACTS}"
+        )));
+    }
+
+    let mut artifacts = Vec::with_capacity(artifact_count);
+    let mut names = HashSet::with_capacity(artifact_count);
+    let mut previous_name: Option<String> = None;
+    for line in lines {
+        if line.is_empty() {
+            return Err(invalid_classpath_lock("blank lines are not allowed"));
+        }
+        let fields = line.split('\t').collect::<Vec<_>>();
+        if fields.len() != 4 || fields[0] != "artifact" {
+            return Err(invalid_classpath_lock(
+                "artifact rows must contain name, SHA-256, and byte length",
+            ));
+        }
+        let file_name = fields[1];
+        if !is_safe_locked_jar_name(file_name) {
+            return Err(invalid_classpath_lock(
+                "artifact names must be plain UTF-8 JAR filenames",
+            ));
+        }
+        if previous_name
+            .as_deref()
+            .is_some_and(|previous| previous >= file_name)
+        {
+            return Err(invalid_classpath_lock(
+                "artifact rows must be strictly sorted by filename",
+            ));
+        }
+        if !names.insert(file_name.to_owned()) {
+            return Err(invalid_classpath_lock("artifact names must be unique"));
+        }
+        let byte_len = fields[3]
+            .parse::<u64>()
+            .map_err(|_| invalid_classpath_lock("artifact byte length must be an integer"))?;
+        if byte_len == 0 {
+            return Err(invalid_classpath_lock(
+                "artifact byte length must be greater than zero",
+            ));
+        }
+        artifacts.push(LockedCommunityArtifact {
+            file_name: file_name.to_owned(),
+            sha256: decode_lock_sha256(fields[2])?,
+            byte_len,
+        });
+        previous_name = Some(file_name.to_owned());
+    }
+    if artifacts.len() != artifact_count {
+        return Err(invalid_classpath_lock(format!(
+            "artifact_count declared {artifact_count} entries but {} were present",
+            artifacts.len()
+        )));
+    }
+    Ok((source_commit, artifacts))
+}
+
+fn require_lock_header(
+    line: Option<&str>,
+    expected_key: &str,
+    expected_value: &str,
+) -> Result<(), BridgeError> {
+    let value = lock_header_value(line, expected_key)?;
+    if value == expected_value {
+        Ok(())
+    } else {
+        Err(invalid_classpath_lock(format!(
+            "{expected_key} must be {expected_value}"
+        )))
+    }
+}
+
+fn lock_header_value<'a>(
+    line: Option<&'a str>,
+    expected_key: &str,
+) -> Result<&'a str, BridgeError> {
+    let line =
+        line.ok_or_else(|| invalid_classpath_lock(format!("missing {expected_key} header")))?;
+    let mut fields = line.split('\t');
+    let key = fields.next();
+    let value = fields.next();
+    if key != Some(expected_key) || value.is_none() || fields.next().is_some() {
+        return Err(invalid_classpath_lock(format!(
+            "invalid {expected_key} header"
+        )));
+    }
+    Ok(value.expect("value checked above"))
+}
+
+fn is_safe_locked_jar_name(file_name: &str) -> bool {
+    !file_name.is_empty()
+        && !file_name.contains(['/', '\\', '\0'])
+        && file_name != "."
+        && file_name != ".."
+        && Path::new(file_name).components().count() == 1
+        && Path::new(file_name)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("jar"))
+}
+
+fn decode_lock_sha256(value: &str) -> Result<[u8; 32], BridgeError> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(invalid_classpath_lock(
+            "artifact SHA-256 must contain 64 lowercase hexadecimal characters",
+        ));
+    }
+    if value.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return Err(invalid_classpath_lock(
+            "artifact SHA-256 must contain 64 lowercase hexadecimal characters",
+        ));
+    }
+    let mut digest = [0_u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        digest[index] = (hex_nibble(pair[0]) << 4) | hex_nibble(pair[1]);
+    }
+    Ok(digest)
+}
+
+const fn hex_nibble(value: u8) -> u8 {
+    match value {
+        b'0'..=b'9' => value - b'0',
+        b'a'..=b'f' => value - b'a' + 10,
+        _ => 0,
+    }
+}
+
+fn invalid_classpath_lock(message: impl Into<String>) -> BridgeError {
+    BridgeError::InvalidConfig(format!(
+        "invalid Community classpath lock: {}",
+        message.into()
+    ))
 }
 
 /// One Community JDBC driver declaration.
@@ -471,8 +719,14 @@ impl EngineClient {
     ///
     /// # Errors
     ///
-    /// Returns an error when the engine is not ready.
+    /// Returns an error when the fixed Community classpath is not configured or
+    /// the engine is not ready.
     pub fn community_client(&self) -> Result<CommunityClient, BridgeError> {
+        if !self.community_compatibility_configured() {
+            return Err(BridgeError::InvalidConfig(
+                "Community compatibility classpath is not configured".to_owned(),
+            ));
+        }
         Ok(CommunityClient {
             client: self.clone(),
             binding: self.capture_binding()?,
@@ -771,7 +1025,9 @@ fn validate_non_blank_utf8(value: &str, maximum: usize, field: &str) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::{fmt::Write as _, fs, path::PathBuf};
+
+    use sha2::{Digest, Sha256};
 
     use tempfile::TempDir;
 
@@ -786,6 +1042,34 @@ mod tests {
         (directory, path)
     }
 
+    fn locked_directory() -> (TempDir, String) {
+        let directory = tempfile::tempdir().expect("test directory must exist");
+        let artifacts = [
+            ("first.jar", b"first".as_slice()),
+            ("second.jar", b"second"),
+        ];
+        let mut lock = format!(
+            "format_version\t1\nsource_commit\t{COMMIT}\nartifact_count\t{}\n",
+            artifacts.len()
+        );
+        for (file_name, contents) in artifacts {
+            fs::write(directory.path().join(file_name), contents)
+                .expect("locked fixture must write");
+            let digest = Sha256::digest(contents);
+            let mut digest_hex = String::with_capacity(64);
+            for byte in digest {
+                write!(&mut digest_hex, "{byte:02x}").expect("digest formatting cannot fail");
+            }
+            writeln!(
+                &mut lock,
+                "artifact\t{file_name}\t{digest_hex}\t{}",
+                contents.len()
+            )
+            .expect("lock formatting cannot fail");
+        }
+        (directory, lock)
+    }
+
     #[test]
     fn classpath_is_canonical_and_deterministic() {
         let (_second_directory, second) = temp_file("second", "jar");
@@ -797,6 +1081,37 @@ mod tests {
         assert_eq!(artifacts.len(), 2);
         assert!(artifacts[0] < artifacts[1]);
         assert!(artifacts.iter().all(|path| path.is_absolute()));
+    }
+
+    #[test]
+    fn locked_classpath_requires_the_exact_artifact_set() {
+        let (directory, lock) = locked_directory();
+        let classpath = CommunityClasspath::from_locked_directory(directory.path(), &lock)
+            .expect("matching lock must load");
+        assert_eq!(classpath.source_commit(), COMMIT);
+        assert_eq!(classpath.artifacts().len(), 2);
+
+        fs::write(directory.path().join("extra.jar"), b"extra").expect("extra fixture must write");
+        assert!(CommunityClasspath::from_locked_directory(directory.path(), &lock).is_err());
+    }
+
+    #[test]
+    fn locked_classpath_rejects_digest_and_length_drift() {
+        let (directory, lock) = locked_directory();
+        fs::write(directory.path().join("first.jar"), b"changed").expect("fixture must change");
+        assert!(CommunityClasspath::from_locked_directory(directory.path(), &lock).is_err());
+    }
+
+    #[test]
+    fn locked_classpath_rejects_unsafe_or_malformed_rows() {
+        let (directory, lock) = locked_directory();
+        for invalid in [
+            lock.replace("first.jar", "../first.jar"),
+            lock.replace("artifact_count\t2", "artifact_count\t3"),
+            lock.replace("format_version\t1", "format_version\t2"),
+        ] {
+            assert!(CommunityClasspath::from_locked_directory(directory.path(), &invalid).is_err());
+        }
     }
 
     #[test]

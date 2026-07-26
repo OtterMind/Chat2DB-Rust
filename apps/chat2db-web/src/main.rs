@@ -1,6 +1,6 @@
 use std::{env, ffi::OsString, io, net::SocketAddr, path::PathBuf, process::ExitCode};
 
-use chat2db_core::{RuntimeConfig, RuntimeHost};
+use chat2db_core::{RuntimeConfig, RuntimeHost, load_fixed_community_classpath};
 use chat2db_java_bridge::{EngineCommand, EngineConfig};
 use chat2db_local::LocalServer;
 use tokio::net::TcpListener;
@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1:4200";
 const DEFAULT_FRONTEND_DIR: &str = "apps/frontend/dist";
+const COMMUNITY_CLASSPATH_DIR_ENV: &str = "CHAT2DB_COMMUNITY_CLASSPATH_DIR";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -87,7 +88,12 @@ fn runtime_config_from_env() -> Result<RuntimeConfig, Box<dyn std::error::Error>
     let engine_jar = PathBuf::from(required_nonempty_os_env("CHAT2DB_JAVA_ENGINE_JAR")?);
     let java =
         optional_nonempty_os_env("CHAT2DB_JAVA_BIN")?.unwrap_or_else(|| OsString::from("java"));
-    let engine = EngineConfig::new(EngineCommand::java_jar(java, engine_jar));
+    let mut engine = EngineConfig::new(EngineCommand::java_jar(java, engine_jar));
+    if let Some(community_classpath_dir) = optional_nonempty_os_env(COMMUNITY_CLASSPATH_DIR_ENV)? {
+        engine = engine.with_community_classpath(load_fixed_community_classpath(PathBuf::from(
+            community_classpath_dir,
+        ))?);
+    }
     let mut config = RuntimeConfig::new(engine);
 
     if let Some(data_dir) = optional_nonempty_os_env("CHAT2DB_DATA_DIR")? {
