@@ -36,6 +36,16 @@ enum CommunityTableCountLimit {
   COMMUNITY_TABLE_COUNT_LIMIT_MAX_TABLES = 65536;
 }
 
+enum CommunityViewCountLimit {
+  COMMUNITY_VIEW_COUNT_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_VIEW_COUNT_LIMIT_MAX_VIEWS = 65536;
+}
+
+enum CommunityKeyCountLimit {
+  COMMUNITY_KEY_COUNT_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_KEY_COUNT_LIMIT_MAX_KEYS = 65536;
+}
+
 enum CommunityColumnCountLimit {
   COMMUNITY_COLUMN_COUNT_LIMIT_UNSPECIFIED = 0;
   COMMUNITY_COLUMN_COUNT_LIMIT_MAX_COLUMNS = 65536;
@@ -164,6 +174,18 @@ message CommunityTableList {
   repeated CommunityTable tables = 1;
 }
 
+message ListCommunityViewsRequest {
+  string database_type = 1;
+  string database_name = 2;
+  string schema_name = 3;
+  string view_name_pattern = 4;
+  optional string transaction_id = 5;
+}
+
+message CommunityViewList {
+  repeated CommunityTable views = 1;
+}
+
 message ListCommunityColumnsRequest {
   string database_type = 1;
   string database_name = 2;
@@ -255,6 +277,47 @@ message CommunityTableIndex {
 
 message CommunityTableIndexList {
   repeated CommunityTableIndex indexes = 1;
+}
+
+message ListCommunityTableKeysRequest {
+  string database_type = 1;
+  string database_name = 2;
+  string schema_name = 3;
+  string table_name = 4;
+  optional string transaction_id = 5;
+}
+
+message CommunityForeignKey {
+  string primary_table_database = 1;
+  string primary_table_schema = 2;
+  string primary_table_name = 3;
+  string primary_column_name = 4;
+  string foreign_table_database = 5;
+  string foreign_table_schema = 6;
+  string foreign_table_name = 7;
+  string foreign_column_name = 8;
+  int32 key_sequence = 9;
+  int32 update_rule = 10;
+  int32 delete_rule = 11;
+  string foreign_key_name = 12;
+  string primary_key_name = 13;
+  int32 deferrability = 14;
+}
+
+message CommunityForeignKeyList {
+  repeated CommunityForeignKey keys = 1;
+}
+
+message CommunityPrimaryKey {
+  string database_name = 1;
+  string schema_name = 2;
+  string table_name = 3;
+  string column_name = 4;
+  string name = 5;
+}
+
+message CommunityPrimaryKeyList {
+  repeated CommunityPrimaryKey keys = 1;
 }
 
 message BuildCommunityCreateSchemaRequest {

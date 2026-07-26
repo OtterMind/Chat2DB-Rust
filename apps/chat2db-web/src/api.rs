@@ -14,17 +14,19 @@ use chat2db_contract::{
     AgentToolOutput, AgentUsage, ApiError, ApiErrorDetails, BuildCommunityCreateSchemaRequest,
     CancelAgentRunResponse, CancelDisposition, CancelOperationResponse, ColumnNullability,
     CommunityBuiltSql, CommunityDatabase, CommunityDatabaseList, CommunityDriverConfig,
-    CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
-    CommunityPluginServices, CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis,
+    CommunityForeignKey, CommunityForeignKeyList, CommunityParsedStatement, CommunityPlugin,
+    CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices, CommunityPrimaryKey,
+    CommunityPrimaryKeyList, CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis,
     CommunityTable, CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex,
-    CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList, ComponentHealth,
-    ComponentState, ContextCompactionStrategy, CreateAgentSessionRequest, CreateDatasourceRequest,
-    CreateProviderProfileRequest, Datasource, DatasourceConnection, DatasourceConnectionProperty,
-    DatasourceList, DatasourceSecretChange, DecideAgentPermissionRequest, HealthResponse,
-    JdbcDriver, JdbcDriverList, JdbcValue, JdbcValueType, ListCommunityColumnsRequest,
-    ListCommunityDatabasesRequest, ListCommunityIndexesRequest, ListCommunitySchemasRequest,
-    ListCommunityTablesRequest, OperationEvent, OperationEventEnvelope, OperationSnapshot,
-    OperationStatus, OperationStreamMessage, OperationSubscriptionAccepted,
+    CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList, CommunityViewList,
+    ComponentHealth, ComponentState, ContextCompactionStrategy, CreateAgentSessionRequest,
+    CreateDatasourceRequest, CreateProviderProfileRequest, Datasource, DatasourceConnection,
+    DatasourceConnectionProperty, DatasourceList, DatasourceSecretChange,
+    DecideAgentPermissionRequest, HealthResponse, JdbcDriver, JdbcDriverList, JdbcValue,
+    JdbcValueType, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
+    ListCommunityIndexesRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
+    ListCommunityTablesRequest, ListCommunityViewsRequest, OperationEvent, OperationEventEnvelope,
+    OperationSnapshot, OperationStatus, OperationStreamMessage, OperationSubscriptionAccepted,
     ParseCommunitySqlRequest, ProductInfo, ProviderCredentials, ProviderKind, ProviderProfile,
     ProviderProfileList, ProviderSecretChange, QueryAccepted, QueryLimits, QueryParameter,
     ResultColumn, ResultMetadata, ResultPage, ResultPageRequest, ResultRow, RuntimeStatus,
@@ -96,11 +98,15 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         CommunityDatabase,
         CommunityDatabaseList,
         CommunityDriverConfig,
+        CommunityForeignKey,
+        CommunityForeignKeyList,
         CommunityParsedStatement,
         CommunityPlugin,
         CommunityPluginBehavior,
         CommunityPluginCatalog,
         CommunityPluginServices,
+        CommunityPrimaryKey,
+        CommunityPrimaryKeyList,
         CommunitySchema,
         CommunitySchemaList,
         CommunitySqlAnalysis,
@@ -111,6 +117,7 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         CommunityTableIndexColumn,
         CommunityTableIndexList,
         CommunityTableList,
+        CommunityViewList,
         ContextCompactionStrategy,
         CreateAgentSessionRequest,
         CreateDatasourceRequest,
@@ -130,7 +137,9 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         ListCommunityDatabasesRequest,
         ListCommunityIndexesRequest,
         ListCommunitySchemasRequest,
+        ListCommunityTableKeysRequest,
         ListCommunityTablesRequest,
+        ListCommunityViewsRequest,
         OperationEvent,
         OperationEventEnvelope,
         OperationSnapshot,
@@ -187,6 +196,10 @@ fn documented_router() -> OpenApiRouter<Application> {
         .routes(routes!(list_community_tables))
         .routes(routes!(list_community_columns))
         .routes(routes!(list_community_indexes))
+        .routes(routes!(list_community_views))
+        .routes(routes!(list_community_imported_keys))
+        .routes(routes!(list_community_exported_keys))
+        .routes(routes!(list_community_primary_keys))
         .routes(routes!(build_community_create_schema))
         .routes(routes!(parse_community_sql))
         .routes(routes!(list_datasources, create_datasource))
@@ -402,6 +415,98 @@ async fn list_community_indexes(
 ) -> Result<Json<CommunityTableIndexList>, WebError> {
     application
         .list_community_indexes(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/metadata/views",
+    tag = "community",
+    request_body = ListCommunityViewsRequest,
+    responses(
+        (status = 200, description = "Community view metadata", body = CommunityViewList),
+        (status = 400, description = "Invalid Community metadata request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community metadata failure", body = ApiError)
+    )
+)]
+async fn list_community_views(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<ListCommunityViewsRequest>,
+) -> Result<Json<CommunityViewList>, WebError> {
+    application
+        .list_community_views(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/metadata/imported-keys",
+    tag = "community",
+    request_body = ListCommunityTableKeysRequest,
+    responses(
+        (status = 200, description = "Community imported foreign-key metadata", body = CommunityForeignKeyList),
+        (status = 400, description = "Invalid Community metadata request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community metadata failure", body = ApiError)
+    )
+)]
+async fn list_community_imported_keys(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<ListCommunityTableKeysRequest>,
+) -> Result<Json<CommunityForeignKeyList>, WebError> {
+    application
+        .list_community_imported_keys(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/metadata/exported-keys",
+    tag = "community",
+    request_body = ListCommunityTableKeysRequest,
+    responses(
+        (status = 200, description = "Community exported foreign-key metadata", body = CommunityForeignKeyList),
+        (status = 400, description = "Invalid Community metadata request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community metadata failure", body = ApiError)
+    )
+)]
+async fn list_community_exported_keys(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<ListCommunityTableKeysRequest>,
+) -> Result<Json<CommunityForeignKeyList>, WebError> {
+    application
+        .list_community_exported_keys(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/metadata/primary-keys",
+    tag = "community",
+    request_body = ListCommunityTableKeysRequest,
+    responses(
+        (status = 200, description = "Community primary-key metadata", body = CommunityPrimaryKeyList),
+        (status = 400, description = "Invalid Community metadata request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community metadata failure", body = ApiError)
+    )
+)]
+async fn list_community_primary_keys(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<ListCommunityTableKeysRequest>,
+) -> Result<Json<CommunityPrimaryKeyList>, WebError> {
+    application
+        .list_community_primary_keys(request)
         .await
         .map(Json)
         .map_err(Into::into)

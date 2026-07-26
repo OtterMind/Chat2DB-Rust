@@ -5,12 +5,15 @@ import ai.chat2db.rust.compat.protocol.v1.CancelOperationRequest;
 import ai.chat2db.rust.compat.protocol.v1.BuildCommunityCreateSchemaRequest;
 import ai.chat2db.rust.compat.protocol.v1.CloseSessionRequest;
 import ai.chat2db.rust.compat.protocol.v1.CommunityDatabaseList;
+import ai.chat2db.rust.compat.protocol.v1.CommunityForeignKeyList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityPluginCatalog;
+import ai.chat2db.rust.compat.protocol.v1.CommunityPrimaryKeyList;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySchemaList;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySqlAnalysis;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableColumnList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableIndexList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableList;
+import ai.chat2db.rust.compat.protocol.v1.CommunityViewList;
 import ai.chat2db.rust.compat.protocol.v1.CommitTransactionRequest;
 import ai.chat2db.rust.compat.protocol.v1.CreditsGranted;
 import ai.chat2db.rust.compat.protocol.v1.DriverLoaded;
@@ -24,7 +27,9 @@ import ai.chat2db.rust.compat.protocol.v1.ListCommunityColumnsRequest;
 import ai.chat2db.rust.compat.protocol.v1.ListCommunityDatabasesRequest;
 import ai.chat2db.rust.compat.protocol.v1.ListCommunityIndexesRequest;
 import ai.chat2db.rust.compat.protocol.v1.ListCommunitySchemasRequest;
+import ai.chat2db.rust.compat.protocol.v1.ListCommunityTableKeysRequest;
 import ai.chat2db.rust.compat.protocol.v1.ListCommunityTablesRequest;
+import ai.chat2db.rust.compat.protocol.v1.ListCommunityViewsRequest;
 import ai.chat2db.rust.compat.protocol.v1.OpenSessionRequest;
 import ai.chat2db.rust.compat.protocol.v1.OperationCancelled;
 import ai.chat2db.rust.compat.protocol.v1.OperationOutcome;
@@ -456,6 +461,124 @@ final class JdbcRuntime implements AutoCloseable {
                         request.getSchemaName(),
                         request.getTableName()));
         return terminal(meta).setCommunityTableIndexList(indexes).build();
+    }
+
+    ServerEnvelope listCommunityViews(
+            RequestMeta meta, ListCommunityViewsRequest request) throws RuntimeFailure {
+        String sessionId = requireSessionId(meta);
+        JdbcSession session = sessions.require(sessionId);
+        community.validateViewsRequest(
+                request.getDatabaseType(),
+                request.getDatabaseName(),
+                request.getSchemaName(),
+                request.getViewNamePattern());
+        Optional<String> transactionId = request.hasTransactionId()
+                ? Optional.of(request.getTransactionId())
+                : Optional.empty();
+        CommunityViewList views = invokeCommunityMetadata(
+                session,
+                meta.getRequestId(),
+                transactionId,
+                connection -> community.views(
+                        request.getDatabaseType(),
+                        connection,
+                        request.getDatabaseName(),
+                        request.getSchemaName(),
+                        request.getViewNamePattern()));
+        return terminal(meta).setCommunityViewList(views).build();
+    }
+
+    ServerEnvelope listCommunityImportedKeys(
+            RequestMeta meta, ListCommunityTableKeysRequest request) throws RuntimeFailure {
+        CommunityForeignKeyList keys = invokeCommunityTableKeys(
+                meta,
+                request,
+                (connection, databaseType, databaseName, schemaName, tableName) ->
+                        community.importedKeys(
+                                databaseType,
+                                connection,
+                                databaseName,
+                                schemaName,
+                                tableName));
+        return terminal(meta).setCommunityImportedKeyList(keys).build();
+    }
+
+    ServerEnvelope listCommunityExportedKeys(
+            RequestMeta meta, ListCommunityTableKeysRequest request) throws RuntimeFailure {
+        CommunityForeignKeyList keys = invokeCommunityTableKeys(
+                meta,
+                request,
+                (connection, databaseType, databaseName, schemaName, tableName) ->
+                        community.exportedKeys(
+                                databaseType,
+                                connection,
+                                databaseName,
+                                schemaName,
+                                tableName));
+        return terminal(meta).setCommunityExportedKeyList(keys).build();
+    }
+
+    ServerEnvelope listCommunityPrimaryKeys(
+            RequestMeta meta, ListCommunityTableKeysRequest request) throws RuntimeFailure {
+        String sessionId = requireSessionId(meta);
+        JdbcSession session = sessions.require(sessionId);
+        community.validateTableObjectRequest(
+                request.getDatabaseType(),
+                request.getDatabaseName(),
+                request.getSchemaName(),
+                request.getTableName());
+        Optional<String> transactionId = request.hasTransactionId()
+                ? Optional.of(request.getTransactionId())
+                : Optional.empty();
+        CommunityPrimaryKeyList keys = invokeCommunityMetadata(
+                session,
+                meta.getRequestId(),
+                transactionId,
+                connection -> community.primaryKeys(
+                        request.getDatabaseType(),
+                        connection,
+                        request.getDatabaseName(),
+                        request.getSchemaName(),
+                        request.getTableName()));
+        return terminal(meta).setCommunityPrimaryKeyList(keys).build();
+    }
+
+    private CommunityForeignKeyList invokeCommunityTableKeys(
+            RequestMeta meta,
+            ListCommunityTableKeysRequest request,
+            CommunityForeignKeyInvocation invocation)
+            throws RuntimeFailure {
+        String sessionId = requireSessionId(meta);
+        JdbcSession session = sessions.require(sessionId);
+        community.validateTableObjectRequest(
+                request.getDatabaseType(),
+                request.getDatabaseName(),
+                request.getSchemaName(),
+                request.getTableName());
+        Optional<String> transactionId = request.hasTransactionId()
+                ? Optional.of(request.getTransactionId())
+                : Optional.empty();
+        return invokeCommunityMetadata(
+                session,
+                meta.getRequestId(),
+                transactionId,
+                connection -> invocation.invoke(
+                        connection,
+                        request.getDatabaseType(),
+                        request.getDatabaseName(),
+                        request.getSchemaName(),
+                        request.getTableName()));
+    }
+
+    @FunctionalInterface
+    private interface CommunityForeignKeyInvocation {
+        CommunityForeignKeyList invoke(
+                Connection connection,
+                String databaseType,
+                String databaseName,
+                String schemaName,
+                String tableName)
+                throws RuntimeFailure;
     }
 
     ServerEnvelope buildCommunityCreateSchema(

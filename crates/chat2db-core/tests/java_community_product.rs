@@ -3,8 +3,8 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use chat2db_contract::{
     BuildCommunityCreateSchemaRequest, ComponentState, CreateDatasourceRequest,
     DatasourceConnection, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
-    ListCommunityIndexesRequest, ListCommunitySchemasRequest, ListCommunityTablesRequest,
-    ParseCommunitySqlRequest,
+    ListCommunityIndexesRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
+    ListCommunityTablesRequest, ListCommunityViewsRequest, ParseCommunitySqlRequest,
 };
 use chat2db_core::{Application, RuntimeHost, load_fixed_community_classpath};
 use chat2db_java_bridge::{
@@ -48,44 +48,7 @@ async fn product_services_invoke_the_fixed_community_h2_compatibility_slice() {
         .expect("Core must invoke the retained H2 SQL builder");
     assert_eq!(built.sql, "CREATE SCHEMA \"APP\";");
 
-    let setup_session = driver
-        .open_session(SessionConfig {
-            driver_id: driver_id.clone(),
-            jdbc_url: jdbc_url.to_owned(),
-            properties: Vec::new(),
-            read_only: false,
-        })
-        .await
-        .expect("setup JDBC session must open");
-    setup_session
-        .execute_update(UpdateRequest {
-            sql: built.sql,
-            parameters: Vec::new(),
-            transaction_id: None,
-        })
-        .await
-        .expect("built schema SQL must execute");
-    setup_session
-        .execute_update(UpdateRequest {
-            sql: "CREATE TABLE APP.items (id BIGINT PRIMARY KEY, label VARCHAR(64) NOT NULL)"
-                .to_owned(),
-            parameters: Vec::new(),
-            transaction_id: None,
-        })
-        .await
-        .expect("test table must be created");
-    setup_session
-        .execute_update(UpdateRequest {
-            sql: "CREATE UNIQUE INDEX idx_items_label ON APP.items(label)".to_owned(),
-            parameters: Vec::new(),
-            transaction_id: None,
-        })
-        .await
-        .expect("test index must be created");
-    setup_session
-        .close()
-        .await
-        .expect("setup JDBC session must close");
+    create_metadata_fixture(&driver, &driver_id, jdbc_url, &built.sql).await;
 
     let schemas = application
         .list_community_schemas(ListCommunitySchemasRequest {
@@ -115,6 +78,66 @@ async fn product_services_invoke_the_fixed_community_h2_compatibility_slice() {
     host.shutdown()
         .await
         .expect("product host must shut down cleanly");
+}
+
+async fn create_metadata_fixture(
+    driver: &DriverClient,
+    driver_id: &str,
+    jdbc_url: &str,
+    schema_sql: &str,
+) {
+    let setup_session = driver
+        .open_session(SessionConfig {
+            driver_id: driver_id.to_owned(),
+            jdbc_url: jdbc_url.to_owned(),
+            properties: Vec::new(),
+            read_only: false,
+        })
+        .await
+        .expect("setup JDBC session must open");
+    setup_session
+        .execute_update(UpdateRequest {
+            sql: schema_sql.to_owned(),
+            parameters: Vec::new(),
+            transaction_id: None,
+        })
+        .await
+        .expect("built schema SQL must execute");
+    setup_session
+        .execute_update(UpdateRequest {
+            sql: "CREATE TABLE APP.items (id BIGINT PRIMARY KEY, label VARCHAR(64) NOT NULL)"
+                .to_owned(),
+            parameters: Vec::new(),
+            transaction_id: None,
+        })
+        .await
+        .expect("test table must be created");
+    setup_session
+        .execute_update(UpdateRequest {
+            sql: "CREATE UNIQUE INDEX idx_items_label ON APP.items(label)".to_owned(),
+            parameters: Vec::new(),
+            transaction_id: None,
+        })
+        .await
+        .expect("test index must be created");
+    for sql in [
+        "CREATE TABLE APP.parents (id BIGINT NOT NULL, CONSTRAINT pk_parents PRIMARY KEY (id))",
+        "CREATE TABLE APP.children (id BIGINT NOT NULL, parent_id BIGINT NOT NULL, CONSTRAINT pk_children PRIMARY KEY (id), CONSTRAINT fk_children_parent FOREIGN KEY (parent_id) REFERENCES APP.parents(id))",
+        "CREATE VIEW APP.item_view AS SELECT id, label FROM APP.items",
+    ] {
+        setup_session
+            .execute_update(UpdateRequest {
+                sql: sql.to_owned(),
+                parameters: Vec::new(),
+                transaction_id: None,
+            })
+            .await
+            .unwrap_or_else(|error| panic!("relation fixture SQL must execute: {error}"));
+    }
+    setup_session
+        .close()
+        .await
+        .expect("setup JDBC session must close");
 }
 
 async fn verify_community_catalog(application: &Application) {
@@ -209,6 +232,78 @@ async fn verify_object_metadata(application: &Application, datasource_id: &str) 
                 .columns
                 .iter()
                 .any(|column| column.column_name.eq_ignore_ascii_case("id"))
+    }));
+
+    verify_relation_metadata(application, datasource_id, &database.name).await;
+}
+
+async fn verify_relation_metadata(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+) {
+    let views = application
+        .list_community_views(ListCommunityViewsRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: "APP".to_owned(),
+            view_name_pattern: "%".to_owned(),
+        })
+        .await
+        .expect("Core must expose Community view metadata");
+    let view = views
+        .items
+        .iter()
+        .find(|view| view.name.eq_ignore_ascii_case("item_view"))
+        .expect("created H2 view must be present");
+    assert_eq!(view.schema_name, "APP");
+    assert!(view.table_type.eq_ignore_ascii_case("VIEW"));
+
+    let child_request = ListCommunityTableKeysRequest {
+        datasource_id: datasource_id.to_owned(),
+        database_type: "H2".to_owned(),
+        database_name: database_name.to_owned(),
+        schema_name: "APP".to_owned(),
+        table_name: "CHILDREN".to_owned(),
+    };
+    let imported = application
+        .list_community_imported_keys(child_request.clone())
+        .await
+        .expect("Core must expose imported-key metadata");
+    assert!(imported.items.iter().any(|key| {
+        key.foreign_key_name
+            .eq_ignore_ascii_case("fk_children_parent")
+            && key.primary_table_name.eq_ignore_ascii_case("parents")
+            && key.primary_column_name.eq_ignore_ascii_case("id")
+            && key.foreign_table_name.eq_ignore_ascii_case("children")
+            && key.foreign_column_name.eq_ignore_ascii_case("parent_id")
+            && key.key_sequence == 1
+    }));
+
+    let parent_request = ListCommunityTableKeysRequest {
+        table_name: "PARENTS".to_owned(),
+        ..child_request
+    };
+    let exported = application
+        .list_community_exported_keys(parent_request.clone())
+        .await
+        .expect("Core must expose exported-key metadata");
+    assert!(exported.items.iter().any(|key| {
+        key.foreign_key_name
+            .eq_ignore_ascii_case("fk_children_parent")
+            && key.primary_table_name.eq_ignore_ascii_case("parents")
+            && key.foreign_table_name.eq_ignore_ascii_case("children")
+    }));
+
+    let primary = application
+        .list_community_primary_keys(parent_request)
+        .await
+        .expect("Core must expose primary-key metadata");
+    assert!(primary.items.iter().any(|key| {
+        key.name.eq_ignore_ascii_case("pk_parents")
+            && key.table_name.eq_ignore_ascii_case("parents")
+            && key.column_name.eq_ignore_ascii_case("id")
     }));
 }
 

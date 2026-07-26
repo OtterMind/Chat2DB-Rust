@@ -22,6 +22,8 @@ pub const COMMUNITY_PLUGIN_CATALOG_CAPABILITY: &str = "community.plugin-catalog.
 pub const COMMUNITY_SCHEMA_METADATA_CAPABILITY: &str = "community.metadata.schemas.v1";
 /// Reads databases, tables, columns, and indexes through Community metadata.
 pub const COMMUNITY_OBJECT_METADATA_CAPABILITY: &str = "community.metadata.objects.v1";
+/// Reads views and relational key metadata through Community metadata.
+pub const COMMUNITY_RELATION_METADATA_CAPABILITY: &str = "community.metadata.relations.v1";
 /// Builds dialect SQL through a Community `ISqlBuilder` implementation.
 pub const COMMUNITY_SQL_BUILDER_CAPABILITY: &str = "community.sql-builder.v1";
 /// Parses SQL through a Community `ISqlSyntaxPlugin` implementation.
@@ -621,6 +623,35 @@ pub struct CommunityTableIndex {
     pub foreign_column_names: Vec<String>,
 }
 
+/// Process-neutral foreign-key metadata.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommunityForeignKey {
+    pub primary_table_database: String,
+    pub primary_table_schema: String,
+    pub primary_table_name: String,
+    pub primary_column_name: String,
+    pub foreign_table_database: String,
+    pub foreign_table_schema: String,
+    pub foreign_table_name: String,
+    pub foreign_column_name: String,
+    pub key_sequence: i32,
+    pub update_rule: i32,
+    pub delete_rule: i32,
+    pub foreign_key_name: String,
+    pub primary_key_name: String,
+    pub deferrability: i32,
+}
+
+/// Process-neutral primary-key metadata.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommunityPrimaryKey {
+    pub database_name: String,
+    pub schema_name: String,
+    pub table_name: String,
+    pub column_name: String,
+    pub name: String,
+}
+
 /// One statement returned by the retained Community parser.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommunityParsedStatement {
@@ -931,6 +962,194 @@ impl CommunityClient {
         Ok(indexes.indexes.into_iter().map(Into::into).collect())
     }
 
+    /// Lists views through the selected plugin's real `IDbMetaData` object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a session from another engine,
+    /// plugin/JDBC failure, timeout, or an invalid response.
+    pub async fn list_views(
+        &self,
+        session: &Session,
+        database_type: impl Into<String>,
+        database_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        view_name_pattern: impl Into<String>,
+        transaction_id: Option<String>,
+    ) -> Result<Vec<CommunityTable>, BridgeError> {
+        let database_type = database_type.into();
+        let database_name = database_name.into();
+        let schema_name = schema_name.into();
+        let view_name_pattern = view_name_pattern.into();
+        validate_database_type(&database_type)?;
+        validate_utf8(&database_name, MAX_SCALAR_BYTES, "database name")?;
+        validate_utf8(&schema_name, MAX_SCALAR_BYTES, "schema name")?;
+        validate_utf8(&view_name_pattern, MAX_SCALAR_BYTES, "view name pattern")?;
+        validate_metadata_session(&self.binding, session, transaction_id.as_deref())?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_RELATION_METADATA_CAPABILITY,
+                Some(&session.id),
+                Some(session.state.clone()),
+                wire::client_envelope::Payload::ListCommunityViews(
+                    wire::ListCommunityViewsRequest {
+                        database_type,
+                        database_name,
+                        schema_name,
+                        view_name_pattern,
+                        transaction_id,
+                    },
+                ),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityViewList(views)) = response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community view-list response")
+                .await;
+        };
+        Ok(views.views.into_iter().map(Into::into).collect())
+    }
+
+    /// Lists foreign keys imported by one table through Community metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a session from another engine,
+    /// plugin/JDBC failure, timeout, or an invalid response.
+    pub async fn list_imported_keys(
+        &self,
+        session: &Session,
+        database_type: impl Into<String>,
+        database_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        table_name: impl Into<String>,
+        transaction_id: Option<String>,
+    ) -> Result<Vec<CommunityForeignKey>, BridgeError> {
+        let request = metadata_key_request(
+            &self.binding,
+            session,
+            database_type.into(),
+            database_name.into(),
+            schema_name.into(),
+            table_name.into(),
+            transaction_id,
+        )?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_RELATION_METADATA_CAPABILITY,
+                Some(&session.id),
+                Some(session.state.clone()),
+                wire::client_envelope::Payload::ListCommunityImportedKeys(request),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityImportedKeyList(keys)) = response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community imported-key-list response")
+                .await;
+        };
+        Ok(keys.keys.into_iter().map(Into::into).collect())
+    }
+
+    /// Lists foreign keys exported by one table through Community metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a session from another engine,
+    /// plugin/JDBC failure, timeout, or an invalid response.
+    pub async fn list_exported_keys(
+        &self,
+        session: &Session,
+        database_type: impl Into<String>,
+        database_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        table_name: impl Into<String>,
+        transaction_id: Option<String>,
+    ) -> Result<Vec<CommunityForeignKey>, BridgeError> {
+        let request = metadata_key_request(
+            &self.binding,
+            session,
+            database_type.into(),
+            database_name.into(),
+            schema_name.into(),
+            table_name.into(),
+            transaction_id,
+        )?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_RELATION_METADATA_CAPABILITY,
+                Some(&session.id),
+                Some(session.state.clone()),
+                wire::client_envelope::Payload::ListCommunityExportedKeys(request),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityExportedKeyList(keys)) = response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community exported-key-list response")
+                .await;
+        };
+        Ok(keys.keys.into_iter().map(Into::into).collect())
+    }
+
+    /// Lists primary-key columns for one table through Community metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a session from another engine,
+    /// plugin/JDBC failure, timeout, or an invalid response.
+    pub async fn list_primary_keys(
+        &self,
+        session: &Session,
+        database_type: impl Into<String>,
+        database_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        table_name: impl Into<String>,
+        transaction_id: Option<String>,
+    ) -> Result<Vec<CommunityPrimaryKey>, BridgeError> {
+        let request = metadata_key_request(
+            &self.binding,
+            session,
+            database_type.into(),
+            database_name.into(),
+            schema_name.into(),
+            table_name.into(),
+            transaction_id,
+        )?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_RELATION_METADATA_CAPABILITY,
+                Some(&session.id),
+                Some(session.state.clone()),
+                wire::client_envelope::Payload::ListCommunityPrimaryKeys(request),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityPrimaryKeyList(keys)) = response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community primary-key-list response")
+                .await;
+        };
+        Ok(keys.keys.into_iter().map(Into::into).collect())
+    }
+
     /// Builds `CREATE SCHEMA` through the selected plugin's SQL builder.
     ///
     /// # Errors
@@ -1226,6 +1445,39 @@ impl From<wire::CommunityTableIndex> for CommunityTableIndex {
     }
 }
 
+impl From<wire::CommunityForeignKey> for CommunityForeignKey {
+    fn from(key: wire::CommunityForeignKey) -> Self {
+        Self {
+            primary_table_database: key.primary_table_database,
+            primary_table_schema: key.primary_table_schema,
+            primary_table_name: key.primary_table_name,
+            primary_column_name: key.primary_column_name,
+            foreign_table_database: key.foreign_table_database,
+            foreign_table_schema: key.foreign_table_schema,
+            foreign_table_name: key.foreign_table_name,
+            foreign_column_name: key.foreign_column_name,
+            key_sequence: key.key_sequence,
+            update_rule: key.update_rule,
+            delete_rule: key.delete_rule,
+            foreign_key_name: key.foreign_key_name,
+            primary_key_name: key.primary_key_name,
+            deferrability: key.deferrability,
+        }
+    }
+}
+
+impl From<wire::CommunityPrimaryKey> for CommunityPrimaryKey {
+    fn from(key: wire::CommunityPrimaryKey) -> Self {
+        Self {
+            database_name: key.database_name,
+            schema_name: key.schema_name,
+            table_name: key.table_name,
+            column_name: key.column_name,
+            name: key.name,
+        }
+    }
+}
+
 impl From<wire::CommunitySqlAnalysis> for CommunitySqlAnalysis {
     fn from(analysis: wire::CommunitySqlAnalysis) -> Self {
         Self {
@@ -1276,6 +1528,29 @@ fn metadata_table_request(
     validate_non_blank_utf8(&table_name, MAX_SCALAR_BYTES, "table name")?;
     validate_metadata_session(binding, session, transaction_id.as_deref())?;
     Ok(wire::ListCommunityColumnsRequest {
+        database_type,
+        database_name,
+        schema_name,
+        table_name,
+        transaction_id,
+    })
+}
+
+fn metadata_key_request(
+    binding: &EngineBinding,
+    session: &Session,
+    database_type: String,
+    database_name: String,
+    schema_name: String,
+    table_name: String,
+    transaction_id: Option<String>,
+) -> Result<wire::ListCommunityTableKeysRequest, BridgeError> {
+    validate_database_type(&database_type)?;
+    validate_utf8(&database_name, MAX_SCALAR_BYTES, "database name")?;
+    validate_utf8(&schema_name, MAX_SCALAR_BYTES, "schema name")?;
+    validate_non_blank_utf8(&table_name, MAX_SCALAR_BYTES, "table name")?;
+    validate_metadata_session(binding, session, transaction_id.as_deref())?;
+    Ok(wire::ListCommunityTableKeysRequest {
         database_type,
         database_name,
         schema_name,
@@ -1491,13 +1766,71 @@ fn validate_non_blank_utf8(value: &str, maximum: usize, field: &str) -> Result<(
 mod tests {
     use std::{fmt::Write as _, fs, path::PathBuf};
 
+    use chat2db_engine_protocol::wire;
     use sha2::{Digest, Sha256};
 
     use tempfile::TempDir;
 
-    use super::CommunityClasspath;
+    use super::{CommunityClasspath, CommunityForeignKey, CommunityPrimaryKey};
 
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn relation_metadata_wire_mapping_preserves_every_field() {
+        let foreign_key = wire::CommunityForeignKey {
+            primary_table_database: "inventory".to_owned(),
+            primary_table_schema: "APP".to_owned(),
+            primary_table_name: "parent".to_owned(),
+            primary_column_name: "id".to_owned(),
+            foreign_table_database: "inventory".to_owned(),
+            foreign_table_schema: "APP".to_owned(),
+            foreign_table_name: "child".to_owned(),
+            foreign_column_name: "parent_id".to_owned(),
+            key_sequence: 2,
+            update_rule: 3,
+            delete_rule: 4,
+            foreign_key_name: "fk_child_parent".to_owned(),
+            primary_key_name: "pk_parent".to_owned(),
+            deferrability: 5,
+        };
+        assert_eq!(
+            CommunityForeignKey::from(foreign_key),
+            CommunityForeignKey {
+                primary_table_database: "inventory".to_owned(),
+                primary_table_schema: "APP".to_owned(),
+                primary_table_name: "parent".to_owned(),
+                primary_column_name: "id".to_owned(),
+                foreign_table_database: "inventory".to_owned(),
+                foreign_table_schema: "APP".to_owned(),
+                foreign_table_name: "child".to_owned(),
+                foreign_column_name: "parent_id".to_owned(),
+                key_sequence: 2,
+                update_rule: 3,
+                delete_rule: 4,
+                foreign_key_name: "fk_child_parent".to_owned(),
+                primary_key_name: "pk_parent".to_owned(),
+                deferrability: 5,
+            }
+        );
+
+        let primary_key = wire::CommunityPrimaryKey {
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            table_name: "parent".to_owned(),
+            column_name: "id".to_owned(),
+            name: "pk_parent".to_owned(),
+        };
+        assert_eq!(
+            CommunityPrimaryKey::from(primary_key),
+            CommunityPrimaryKey {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                table_name: "parent".to_owned(),
+                column_name: "id".to_owned(),
+                name: "pk_parent".to_owned(),
+            }
+        );
+    }
 
     fn temp_file(name: &str, extension: &str) -> (TempDir, PathBuf) {
         let directory = tempfile::tempdir().expect("test directory must exist");

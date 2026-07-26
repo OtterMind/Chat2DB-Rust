@@ -20,12 +20,14 @@ const MAX_COMMUNITY_DOWNLOAD_URLS: usize =
 const MAX_COMMUNITY_SCHEMAS: usize = wire::CommunitySchemaCountLimit::MaxSchemas as usize;
 const MAX_COMMUNITY_DATABASES: usize = wire::CommunityDatabaseCountLimit::MaxDatabases as usize;
 const MAX_COMMUNITY_TABLES: usize = wire::CommunityTableCountLimit::MaxTables as usize;
+const MAX_COMMUNITY_VIEWS: usize = wire::CommunityViewCountLimit::MaxViews as usize;
+const MAX_COMMUNITY_KEYS: usize = wire::CommunityKeyCountLimit::MaxKeys as usize;
 const MAX_COMMUNITY_COLUMNS: usize = wire::CommunityColumnCountLimit::MaxColumns as usize;
 const MAX_COMMUNITY_INDEXES: usize = wire::CommunityIndexCountLimit::MaxIndexes as usize;
 const MAX_COMMUNITY_INDEX_COLUMNS: usize =
     wire::CommunityIndexColumnCountLimit::MaxIndexColumns as usize;
 const MAX_COMMUNITY_STATEMENTS: usize = wire::CommunityCountLimit::MaxStatements as usize;
-const COMMUNITY_RESPONSE_TAGS: std::ops::RangeInclusive<u32> = 200..=207;
+const COMMUNITY_RESPONSE_TAGS: std::ops::RangeInclusive<u32> = 200..=211;
 const MAX_PROTOBUF_FIELD_NUMBER: u64 = (1 << 29) - 1;
 const MAX_PROTOBUF_GROUP_DEPTH: usize = 100;
 
@@ -143,6 +145,9 @@ struct CommunityWireCounts {
     columns: usize,
     indexes: usize,
     index_columns: usize,
+    views: usize,
+    foreign_keys: usize,
+    primary_keys: usize,
     statements: usize,
 }
 
@@ -189,6 +194,23 @@ fn validate_community_response_wire_counts(
             "column",
         ),
         207 => scan_community_index_list(payload, counts),
+        208 => {
+            scan_bounded_repeated_field(payload, 1, &mut counts.views, MAX_COMMUNITY_VIEWS, "view")
+        }
+        209 | 210 => scan_bounded_repeated_field(
+            payload,
+            1,
+            &mut counts.foreign_keys,
+            MAX_COMMUNITY_KEYS,
+            "foreign-key",
+        ),
+        211 => scan_bounded_repeated_field(
+            payload,
+            1,
+            &mut counts.primary_keys,
+            MAX_COMMUNITY_KEYS,
+            "primary-key",
+        ),
         _ => Ok(()),
     }
 }
@@ -502,9 +524,10 @@ mod tests {
     use super::{
         MAX_COMMUNITY_COLUMNS, MAX_COMMUNITY_DATABASES, MAX_COMMUNITY_DOWNLOAD_URLS,
         MAX_COMMUNITY_DRIVERS, MAX_COMMUNITY_INDEX_COLUMNS, MAX_COMMUNITY_INDEXES,
-        MAX_COMMUNITY_PLUGINS, MAX_COMMUNITY_RESPONSE_BYTES, MAX_COMMUNITY_SCHEMAS,
-        MAX_COMMUNITY_STATEMENTS, MAX_COMMUNITY_TABLES, ReaderEvent, WriterCommand, WriterEvent,
-        reader_loop, validate_community_response_wire_budget, writer_loop,
+        MAX_COMMUNITY_KEYS, MAX_COMMUNITY_PLUGINS, MAX_COMMUNITY_RESPONSE_BYTES,
+        MAX_COMMUNITY_SCHEMAS, MAX_COMMUNITY_STATEMENTS, MAX_COMMUNITY_TABLES, MAX_COMMUNITY_VIEWS,
+        ReaderEvent, WriterCommand, WriterEvent, reader_loop,
+        validate_community_response_wire_budget, writer_loop,
     };
 
     const COMMUNITY_PLUGIN_CATALOG_TAG: u32 = 200;
@@ -516,7 +539,12 @@ mod tests {
     const COMMUNITY_TABLE_LIST_TAG: u32 = 205;
     const COMMUNITY_COLUMN_LIST_TAG: u32 = 206;
     const COMMUNITY_INDEX_LIST_TAG: u32 = 207;
-    const NON_COMMUNITY_TAG: u32 = 208;
+    const COMMUNITY_RELATION_METADATA_TAGS: std::ops::RangeInclusive<u32> = 208..=211;
+    const COMMUNITY_VIEW_LIST_TAG: u32 = 208;
+    const COMMUNITY_IMPORTED_KEY_LIST_TAG: u32 = 209;
+    const COMMUNITY_EXPORTED_KEY_LIST_TAG: u32 = 210;
+    const COMMUNITY_PRIMARY_KEY_LIST_TAG: u32 = 211;
+    const NON_COMMUNITY_TAG: u32 = 212;
 
     fn encode_varint(mut value: u64, output: &mut Vec<u8>) {
         loop {
@@ -650,7 +678,7 @@ mod tests {
 
     #[tokio::test]
     async fn reader_applies_the_exact_community_budget_to_all_object_metadata_tags() {
-        for field_number in COMMUNITY_OBJECT_METADATA_TAGS {
+        for field_number in COMMUNITY_OBJECT_METADATA_TAGS.chain(COMMUNITY_RELATION_METADATA_TAGS) {
             let mut exact = Vec::new();
             push_length_delimited_field(
                 field_number,
@@ -703,6 +731,47 @@ mod tests {
             assert!(error.contains(&format!("{maximum}-{label} limit")));
             assert!(error.contains("before Protobuf decode"));
         }
+    }
+
+    #[test]
+    fn raw_scanner_enforces_relation_collection_limits_before_protobuf_decode() {
+        for (response_tag, maximum, label) in [
+            (COMMUNITY_VIEW_LIST_TAG, MAX_COMMUNITY_VIEWS, "view"),
+            (
+                COMMUNITY_IMPORTED_KEY_LIST_TAG,
+                MAX_COMMUNITY_KEYS,
+                "foreign-key",
+            ),
+            (
+                COMMUNITY_PRIMARY_KEY_LIST_TAG,
+                MAX_COMMUNITY_KEYS,
+                "primary-key",
+            ),
+        ] {
+            let exact = community_response(response_tag, &repeated_empty_fields(1, maximum));
+            validate_community_response_wire_budget(&exact)
+                .unwrap_or_else(|error| panic!("exact {label} limit must pass: {error}"));
+
+            let oversized =
+                community_response(response_tag, &repeated_empty_fields(1, maximum + 1));
+            let error = validate_community_response_wire_budget(&oversized)
+                .expect_err("limit plus one must fail before decode");
+            assert!(error.contains(&format!("{maximum}-{label} limit")));
+            assert!(error.contains("before Protobuf decode"));
+        }
+
+        let mut combined = community_response(
+            COMMUNITY_IMPORTED_KEY_LIST_TAG,
+            &repeated_empty_fields(1, MAX_COMMUNITY_KEYS),
+        );
+        push_length_delimited_field(
+            COMMUNITY_EXPORTED_KEY_LIST_TAG,
+            &repeated_empty_fields(1, 1),
+            &mut combined,
+        );
+        let error = validate_community_response_wire_budget(&combined)
+            .expect_err("imported and exported keys must share the raw foreign-key limit");
+        assert!(error.contains(&format!("{MAX_COMMUNITY_KEYS}-foreign-key limit")));
     }
 
     #[test]

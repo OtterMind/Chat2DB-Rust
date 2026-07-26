@@ -33,6 +33,8 @@ const MAX_COMMUNITY_DOWNLOAD_URLS: usize =
 const MAX_COMMUNITY_SCHEMAS: usize = wire::CommunitySchemaCountLimit::MaxSchemas as usize;
 const MAX_COMMUNITY_DATABASES: usize = wire::CommunityDatabaseCountLimit::MaxDatabases as usize;
 const MAX_COMMUNITY_TABLES: usize = wire::CommunityTableCountLimit::MaxTables as usize;
+const MAX_COMMUNITY_VIEWS: usize = wire::CommunityViewCountLimit::MaxViews as usize;
+const MAX_COMMUNITY_KEYS: usize = wire::CommunityKeyCountLimit::MaxKeys as usize;
 const MAX_COMMUNITY_COLUMNS: usize = wire::CommunityColumnCountLimit::MaxColumns as usize;
 const MAX_COMMUNITY_INDEXES: usize = wire::CommunityIndexCountLimit::MaxIndexes as usize;
 const MAX_COMMUNITY_INDEX_COLUMNS: usize =
@@ -983,6 +985,19 @@ fn validate_response_payload(
             validate_community_table_index_list(indexes)?;
             Ok(None)
         }
+        wire::server_envelope::Payload::CommunityViewList(views) => {
+            validate_community_view_list(views)?;
+            Ok(None)
+        }
+        wire::server_envelope::Payload::CommunityImportedKeyList(keys)
+        | wire::server_envelope::Payload::CommunityExportedKeyList(keys) => {
+            validate_community_foreign_key_list(keys)?;
+            Ok(None)
+        }
+        wire::server_envelope::Payload::CommunityPrimaryKeyList(keys) => {
+            validate_community_primary_key_list(keys)?;
+            Ok(None)
+        }
         wire::server_envelope::Payload::CommunityBuiltSql(built) => {
             validate_non_empty_bytes(&built.sql, MAX_SQL_BYTES, "Community built SQL")?;
             let mut field_bytes = 0;
@@ -1058,13 +1073,27 @@ fn validate_community_database_list(databases: &wire::CommunityDatabaseList) -> 
 }
 
 fn validate_community_table_list(tables: &wire::CommunityTableList) -> Result<(), String> {
-    if tables.tables.len() > MAX_COMMUNITY_TABLES {
+    validate_community_table_values(&tables.tables, MAX_COMMUNITY_TABLES, "table")?;
+    validate_community_response_encoded_len(tables)
+}
+
+fn validate_community_view_list(views: &wire::CommunityViewList) -> Result<(), String> {
+    validate_community_table_values(&views.views, MAX_COMMUNITY_VIEWS, "view")?;
+    validate_community_response_encoded_len(views)
+}
+
+fn validate_community_table_values(
+    tables: &[wire::CommunityTable],
+    maximum: usize,
+    label: &str,
+) -> Result<(), String> {
+    if tables.len() > maximum {
         return Err(format!(
-            "Community metadata exceeded the {MAX_COMMUNITY_TABLES}-table limit"
+            "Community metadata exceeded the {maximum}-{label} limit"
         ));
     }
     let mut field_bytes = 0;
-    for table in &tables.tables {
+    for table in tables {
         for (value, field) in [
             (&table.database_name, "Community table database"),
             (&table.schema_name, "Community table schema"),
@@ -1112,7 +1141,81 @@ fn validate_community_table_list(tables: &wire::CommunityTableList) -> Result<()
             validate_community_response_field(&mut field_bytes, value, MAX_SCALAR_BYTES, field)?;
         }
     }
-    validate_community_response_encoded_len(tables)
+    Ok(())
+}
+
+fn validate_community_foreign_key_list(keys: &wire::CommunityForeignKeyList) -> Result<(), String> {
+    if keys.keys.len() > MAX_COMMUNITY_KEYS {
+        return Err(format!(
+            "Community metadata exceeded the {MAX_COMMUNITY_KEYS}-foreign-key limit"
+        ));
+    }
+    let mut field_bytes = 0;
+    for key in &keys.keys {
+        for (value, field) in [
+            (
+                &key.primary_table_database,
+                "Community foreign-key primary database",
+            ),
+            (
+                &key.primary_table_schema,
+                "Community foreign-key primary schema",
+            ),
+            (
+                &key.primary_table_name,
+                "Community foreign-key primary table",
+            ),
+            (
+                &key.primary_column_name,
+                "Community foreign-key primary column",
+            ),
+            (
+                &key.foreign_table_database,
+                "Community foreign-key foreign database",
+            ),
+            (
+                &key.foreign_table_schema,
+                "Community foreign-key foreign schema",
+            ),
+            (
+                &key.foreign_table_name,
+                "Community foreign-key foreign table",
+            ),
+            (
+                &key.foreign_column_name,
+                "Community foreign-key foreign column",
+            ),
+            (&key.foreign_key_name, "Community foreign-key name"),
+            (
+                &key.primary_key_name,
+                "Community foreign-key primary-key name",
+            ),
+        ] {
+            validate_community_response_field(&mut field_bytes, value, MAX_SCALAR_BYTES, field)?;
+        }
+    }
+    validate_community_response_encoded_len(keys)
+}
+
+fn validate_community_primary_key_list(keys: &wire::CommunityPrimaryKeyList) -> Result<(), String> {
+    if keys.keys.len() > MAX_COMMUNITY_KEYS {
+        return Err(format!(
+            "Community metadata exceeded the {MAX_COMMUNITY_KEYS}-primary-key limit"
+        ));
+    }
+    let mut field_bytes = 0;
+    for key in &keys.keys {
+        for (value, field) in [
+            (&key.database_name, "Community primary-key database"),
+            (&key.schema_name, "Community primary-key schema"),
+            (&key.table_name, "Community primary-key table"),
+            (&key.column_name, "Community primary-key column"),
+            (&key.name, "Community primary-key name"),
+        ] {
+            validate_community_response_field(&mut field_bytes, value, MAX_SCALAR_BYTES, field)?;
+        }
+    }
+    validate_community_response_encoded_len(keys)
 }
 
 fn validate_community_table_column_list(
@@ -1969,6 +2072,87 @@ mod tests {
             validate_response_payload(&oversized_indexes)
                 .expect_err("oversized Community index list must fail")
                 .contains("index limit")
+        );
+    }
+
+    #[test]
+    fn community_relation_metadata_responses_enforce_collection_bounds() {
+        let oversized_views =
+            wire::server_envelope::Payload::CommunityViewList(wire::CommunityViewList {
+                views: vec![wire::CommunityTable::default(); MAX_COMMUNITY_VIEWS + 1],
+            });
+        assert!(
+            validate_response_payload(&oversized_views)
+                .expect_err("oversized Community view list must fail")
+                .contains("view limit")
+        );
+        drop(oversized_views);
+
+        let oversized_imported = wire::server_envelope::Payload::CommunityImportedKeyList(
+            wire::CommunityForeignKeyList {
+                keys: vec![wire::CommunityForeignKey::default(); MAX_COMMUNITY_KEYS + 1],
+            },
+        );
+        assert!(
+            validate_response_payload(&oversized_imported)
+                .expect_err("oversized Community foreign-key list must fail")
+                .contains("foreign-key limit")
+        );
+        drop(oversized_imported);
+
+        let oversized_primary = wire::server_envelope::Payload::CommunityPrimaryKeyList(
+            wire::CommunityPrimaryKeyList {
+                keys: vec![wire::CommunityPrimaryKey::default(); MAX_COMMUNITY_KEYS + 1],
+            },
+        );
+        assert!(
+            validate_response_payload(&oversized_primary)
+                .expect_err("oversized Community primary-key list must fail")
+                .contains("primary-key limit")
+        );
+    }
+
+    #[test]
+    fn community_relation_metadata_responses_enforce_field_bounds() {
+        let oversized_view_ddl =
+            wire::server_envelope::Payload::CommunityViewList(wire::CommunityViewList {
+                views: vec![wire::CommunityTable {
+                    ddl: "x".repeat(MAX_SQL_BYTES + 1),
+                    ..Default::default()
+                }],
+            });
+        assert!(
+            validate_response_payload(&oversized_view_ddl)
+                .expect_err("oversized Community view DDL must fail")
+                .contains("table DDL")
+        );
+
+        let oversized_foreign_column = wire::server_envelope::Payload::CommunityExportedKeyList(
+            wire::CommunityForeignKeyList {
+                keys: vec![wire::CommunityForeignKey {
+                    foreign_column_name: "x".repeat(MAX_SCALAR_BYTES + 1),
+                    ..Default::default()
+                }],
+            },
+        );
+        assert!(
+            validate_response_payload(&oversized_foreign_column)
+                .expect_err("oversized Community foreign-key field must fail")
+                .contains("foreign column")
+        );
+
+        let oversized_primary_name = wire::server_envelope::Payload::CommunityPrimaryKeyList(
+            wire::CommunityPrimaryKeyList {
+                keys: vec![wire::CommunityPrimaryKey {
+                    name: "x".repeat(MAX_SCALAR_BYTES + 1),
+                    ..Default::default()
+                }],
+            },
+        );
+        assert!(
+            validate_response_payload(&oversized_primary_name)
+                .expect_err("oversized Community primary-key field must fail")
+                .contains("primary-key name")
         );
     }
 

@@ -177,6 +177,25 @@ pub struct ListCommunityTablesRequest {
     pub table_name_pattern: String,
 }
 
+/// Stable view collection returned by Community metadata APIs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityViewList {
+    /// Views represented by the same bounded metadata projection as tables.
+    pub items: Vec<CommunityTable>,
+}
+
+/// Request to list views through one datasource connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListCommunityViewsRequest {
+    pub datasource_id: String,
+    pub database_type: String,
+    pub database_name: String,
+    pub schema_name: String,
+    pub view_name_pattern: String,
+}
+
 /// Secret-free Community table-column metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -294,6 +313,62 @@ pub struct ListCommunityIndexesRequest {
     pub table_name: String,
 }
 
+/// Secret-free metadata for one imported or exported foreign-key column pair.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityForeignKey {
+    pub primary_table_database: String,
+    pub primary_table_schema: String,
+    pub primary_table_name: String,
+    pub primary_column_name: String,
+    pub foreign_table_database: String,
+    pub foreign_table_schema: String,
+    pub foreign_table_name: String,
+    pub foreign_column_name: String,
+    pub key_sequence: i32,
+    pub update_rule: i32,
+    pub delete_rule: i32,
+    pub foreign_key_name: String,
+    pub primary_key_name: String,
+    pub deferrability: i32,
+}
+
+/// Stable imported or exported foreign-key collection.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityForeignKeyList {
+    pub items: Vec<CommunityForeignKey>,
+}
+
+/// Secret-free metadata for one primary-key column.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityPrimaryKey {
+    pub database_name: String,
+    pub schema_name: String,
+    pub table_name: String,
+    pub column_name: String,
+    pub name: String,
+}
+
+/// Stable primary-key collection returned by Community metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityPrimaryKeyList {
+    pub items: Vec<CommunityPrimaryKey>,
+}
+
+/// Request to list imported, exported, or primary keys for one table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListCommunityTableKeysRequest {
+    pub datasource_id: String,
+    pub database_type: String,
+    pub database_name: String,
+    pub schema_name: String,
+    pub table_name: String,
+}
+
 /// Request to build dialect-specific `CREATE SCHEMA` SQL.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -350,13 +425,15 @@ mod tests {
 
     use super::{
         BuildCommunityCreateSchemaRequest, CommunityBuiltSql, CommunityDatabase,
-        CommunityDatabaseList, CommunityDriverConfig, CommunityParsedStatement, CommunityPlugin,
-        CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices, CommunitySchema,
+        CommunityDatabaseList, CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList,
+        CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
+        CommunityPluginServices, CommunityPrimaryKey, CommunityPrimaryKeyList, CommunitySchema,
         CommunitySchemaList, CommunitySqlAnalysis, CommunityTable, CommunityTableColumn,
         CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
-        CommunityTableIndexList, CommunityTableList, ListCommunityColumnsRequest,
-        ListCommunityDatabasesRequest, ListCommunityIndexesRequest, ListCommunitySchemasRequest,
-        ListCommunityTablesRequest, ParseCommunitySqlRequest,
+        CommunityTableIndexList, CommunityTableList, CommunityViewList,
+        ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityIndexesRequest,
+        ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
+        ListCommunityViewsRequest, ParseCommunitySqlRequest,
     };
 
     #[test]
@@ -662,6 +739,97 @@ mod tests {
     }
 
     #[test]
+    fn community_relation_metadata_contracts_use_exact_camel_case_and_round_trip() {
+        let view_request = ListCommunityViewsRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            view_name_pattern: "item%".to_owned(),
+        };
+        let key_request = ListCommunityTableKeysRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            table_name: "child".to_owned(),
+        };
+        let views = CommunityViewList {
+            items: vec![CommunityTable {
+                name: "item_view".to_owned(),
+                table_type: "VIEW".to_owned(),
+                ..table_fixture()
+            }],
+        };
+        let foreign_keys = CommunityForeignKeyList {
+            items: vec![foreign_key_fixture()],
+        };
+        let primary_keys = CommunityPrimaryKeyList {
+            items: vec![primary_key_fixture()],
+        };
+
+        assert_eq!(
+            serde_json::to_value(&view_request).expect("view request must serialize"),
+            json!({
+                "datasourceId": "datasource-1",
+                "databaseType": "H2",
+                "databaseName": "inventory",
+                "schemaName": "APP",
+                "viewNamePattern": "item%"
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&key_request).expect("key request must serialize"),
+            json!({
+                "datasourceId": "datasource-1",
+                "databaseType": "H2",
+                "databaseName": "inventory",
+                "schemaName": "APP",
+                "tableName": "child"
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&foreign_keys).expect("foreign keys must serialize"),
+            json!({"items": [{
+                "primaryTableDatabase": "inventory",
+                "primaryTableSchema": "APP",
+                "primaryTableName": "parent",
+                "primaryColumnName": "id",
+                "foreignTableDatabase": "inventory",
+                "foreignTableSchema": "APP",
+                "foreignTableName": "child",
+                "foreignColumnName": "parent_id",
+                "keySequence": 1,
+                "updateRule": 3,
+                "deleteRule": 1,
+                "foreignKeyName": "fk_child_parent",
+                "primaryKeyName": "pk_parent",
+                "deferrability": 7
+            }]})
+        );
+        assert_eq!(
+            serde_json::to_value(&primary_keys).expect("primary keys must serialize"),
+            json!({"items": [{
+                "databaseName": "inventory",
+                "schemaName": "APP",
+                "tableName": "parent",
+                "columnName": "id",
+                "name": "pk_parent"
+            }]})
+        );
+        assert_eq!(
+            serde_json::to_value(&views).expect("views must serialize")["items"][0]["tableType"],
+            "VIEW"
+        );
+
+        assert_round_trip(&view_request);
+        assert_round_trip(&key_request);
+        assert_round_trip(&views);
+        assert_round_trip(&foreign_keys);
+        assert_round_trip(&primary_keys);
+    }
+
+    #[test]
     fn community_metadata_contracts_never_expose_connection_secrets() {
         let responses = json!([
             CommunitySchemaList {
@@ -684,6 +852,19 @@ mod tests {
             },
             CommunityTableIndexList {
                 items: vec![index_fixture()],
+            },
+            CommunityViewList {
+                items: vec![CommunityTable {
+                    name: "item_view".to_owned(),
+                    table_type: "VIEW".to_owned(),
+                    ..table_fixture()
+                }],
+            },
+            CommunityForeignKeyList {
+                items: vec![foreign_key_fixture()],
+            },
+            CommunityPrimaryKeyList {
+                items: vec![primary_key_fixture()],
             }
         ]);
 
@@ -716,6 +897,35 @@ mod tests {
             collation: "en_US".to_owned(),
             owner: "app".to_owned(),
             system: false,
+        }
+    }
+
+    fn foreign_key_fixture() -> CommunityForeignKey {
+        CommunityForeignKey {
+            primary_table_database: "inventory".to_owned(),
+            primary_table_schema: "APP".to_owned(),
+            primary_table_name: "parent".to_owned(),
+            primary_column_name: "id".to_owned(),
+            foreign_table_database: "inventory".to_owned(),
+            foreign_table_schema: "APP".to_owned(),
+            foreign_table_name: "child".to_owned(),
+            foreign_column_name: "parent_id".to_owned(),
+            key_sequence: 1,
+            update_rule: 3,
+            delete_rule: 1,
+            foreign_key_name: "fk_child_parent".to_owned(),
+            primary_key_name: "pk_parent".to_owned(),
+            deferrability: 7,
+        }
+    }
+
+    fn primary_key_fixture() -> CommunityPrimaryKey {
+        CommunityPrimaryKey {
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            table_name: "parent".to_owned(),
+            column_name: "id".to_owned(),
+            name: "pk_parent".to_owned(),
         }
     }
 

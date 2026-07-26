@@ -37,10 +37,11 @@ mod pending;
 
 pub use community::{
     COMMUNITY_OBJECT_METADATA_CAPABILITY, COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
-    COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
-    COMMUNITY_SQL_PARSER_CAPABILITY, CommunityClasspath, CommunityClient, CommunityDatabase,
-    CommunityDriverConfig, CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior,
-    CommunityPluginCatalog, CommunityPluginServices, CommunitySchema, CommunitySqlAnalysis,
+    COMMUNITY_RELATION_METADATA_CAPABILITY, COMMUNITY_SCHEMA_METADATA_CAPABILITY,
+    COMMUNITY_SQL_BUILDER_CAPABILITY, COMMUNITY_SQL_PARSER_CAPABILITY, CommunityClasspath,
+    CommunityClient, CommunityDatabase, CommunityDriverConfig, CommunityForeignKey,
+    CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
+    CommunityPluginServices, CommunityPrimaryKey, CommunitySchema, CommunitySqlAnalysis,
     CommunityTable, CommunityTableColumn, CommunityTableIndex, CommunityTableIndexColumn,
 };
 
@@ -169,6 +170,7 @@ impl EngineConfig {
             COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
             COMMUNITY_SCHEMA_METADATA_CAPABILITY,
             COMMUNITY_OBJECT_METADATA_CAPABILITY,
+            COMMUNITY_RELATION_METADATA_CAPABILITY,
             COMMUNITY_SQL_BUILDER_CAPABILITY,
             COMMUNITY_SQL_PARSER_CAPABILITY,
         ] {

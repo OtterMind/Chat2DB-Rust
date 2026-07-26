@@ -42,6 +42,7 @@ final class ProtocolLoop {
     static final String COMMUNITY_PLUGIN_CATALOG_CAPABILITY = "community.plugin-catalog.v1";
     static final String COMMUNITY_SCHEMA_METADATA_CAPABILITY = "community.metadata.schemas.v1";
     static final String COMMUNITY_OBJECT_METADATA_CAPABILITY = "community.metadata.objects.v1";
+    static final String COMMUNITY_RELATION_METADATA_CAPABILITY = "community.metadata.relations.v1";
     static final String COMMUNITY_SQL_BUILDER_CAPABILITY = "community.sql-builder.v1";
     static final String COMMUNITY_SQL_PARSER_CAPABILITY = "community.sql-parser.v1";
 
@@ -59,6 +60,7 @@ final class ProtocolLoop {
             COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
             COMMUNITY_SCHEMA_METADATA_CAPABILITY,
             COMMUNITY_OBJECT_METADATA_CAPABILITY,
+            COMMUNITY_RELATION_METADATA_CAPABILITY,
             COMMUNITY_SQL_BUILDER_CAPABILITY,
             COMMUNITY_SQL_PARSER_CAPABILITY);
     private static final List<ProtocolVersion> SUPPORTED_VERSIONS = List.of(version(1, 0));
@@ -247,6 +249,34 @@ final class ProtocolLoop {
                             meta,
                             () -> jdbcRuntime.listCommunityIndexes(
                                     meta, envelope.getListCommunityIndexes()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case LIST_COMMUNITY_VIEWS -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.listCommunityViews(
+                                    meta, envelope.getListCommunityViews()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case LIST_COMMUNITY_IMPORTED_KEYS -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.listCommunityImportedKeys(
+                                    meta, envelope.getListCommunityImportedKeys()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case LIST_COMMUNITY_EXPORTED_KEYS -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.listCommunityExportedKeys(
+                                    meta, envelope.getListCommunityExportedKeys()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case LIST_COMMUNITY_PRIMARY_KEYS -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.listCommunityPrimaryKeys(
+                                    meta, envelope.getListCommunityPrimaryKeys()));
                     yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
                 }
                 case BUILD_COMMUNITY_CREATE_SCHEMA -> {

@@ -15,10 +15,11 @@ pub use state::{
 };
 pub use supervisor::{
     COMMUNITY_OBJECT_METADATA_CAPABILITY, COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
-    COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
-    COMMUNITY_SQL_PARSER_CAPABILITY, CancelDisposition, ColumnNullability, CommunityClasspath,
-    CommunityClient, CommunityDatabase, CommunityDriverConfig, CommunityParsedStatement,
-    CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
+    COMMUNITY_RELATION_METADATA_CAPABILITY, COMMUNITY_SCHEMA_METADATA_CAPABILITY,
+    COMMUNITY_SQL_BUILDER_CAPABILITY, COMMUNITY_SQL_PARSER_CAPABILITY, CancelDisposition,
+    ColumnNullability, CommunityClasspath, CommunityClient, CommunityDatabase,
+    CommunityDriverConfig, CommunityForeignKey, CommunityParsedStatement, CommunityPlugin,
+    CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices, CommunityPrimaryKey,
     CommunitySchema, CommunitySqlAnalysis, CommunityTable, CommunityTableColumn,
     CommunityTableIndex, CommunityTableIndexColumn, ConnectionProperty,
     DRIVER_EXTERNAL_JAR_CAPABILITY, DatabaseProduct, DriverArtifact, DriverClient, DriverSpec,

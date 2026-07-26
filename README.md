@@ -4,7 +4,7 @@ Private implementation of the Chat2DB Community hybrid runtime.
 
 ## Current state
 
-The repository has completed Stages 1 through 6 and the first four independently
+The repository has completed Stages 1 through 6 and the first five independently
 buildable Stage 7 slices:
 
 - canonical Rust API contracts;
@@ -55,10 +55,11 @@ buildable Stage 7 slices:
 - strict local JDBC driver-pack discovery, hash verification, startup preload,
   and immutable Core/Axum/Tauri inventory; and
 - a fixed Community 5.3.0 compatibility classpath that discovers real
-  `IPlugin` implementations and exposes H2 plugin catalog, schema and object
-  metadata, `CREATE SCHEMA` builder, and retained ANTLR parser operations over
-  Protobuf, with every one of its 148 JARs bound to the source commit by a
-  checked-in filename, byte-length, and SHA-256 lock; and
+  `IPlugin` implementations and exposes H2 plugin catalog, schema, object,
+  view, foreign-key, and primary-key metadata, `CREATE SCHEMA` builder, and
+  retained ANTLR parser operations over Protobuf, with every one of its 148
+  JARs bound to the source commit by a checked-in filename, byte-length, and
+  SHA-256 lock; and
 - product-owned Community DTOs and Core services exposed consistently through
   Axum, Tauri, and the shared HTTP/Tauri frontend backend contract, with exact
   locked-classpath startup and forced-read-only metadata sessions.
@@ -72,10 +73,11 @@ strict local driver packs. Stage 7B pins Community source, loads its runtime in
 an isolated Java classloader, and proves one real H2 SPI/ANTLR vertical slice.
 Stage 7C composes those four operations into the product Core and both delivery
 transports. Stage 7D adds database, table, column, and index metadata through a
-separate capability and the same Core/Axum/Tauri/frontend boundary. Signing,
-downloading, updating, rollback, end-user Community UI workflows, the remaining
-metadata/build/parser estate, and full per-dialect compatibility remain Stage 7
-work.
+separate capability. Stage 7E adds views, imported and exported foreign keys,
+and primary keys through another capability and the same
+Core/Axum/Tauri/frontend boundary. Signing, downloading, updating, rollback,
+end-user Community UI workflows, the remaining metadata/build/parser estate,
+and full per-dialect compatibility remain Stage 7 work.
 
 ## Architecture
 
@@ -119,9 +121,10 @@ JAR integration test rejects any build that embeds `org/h2/Driver.class`.
 The H2 gates cover the Stage 3 JDBC bridge, the Stage 5 product path from a
 vault-backed datasource through retained-result paging and cancellation, and
 the Stage 7B Community path through real `IPlugin`, `IDbMetaData`,
-`ISqlBuilder`, and ANTLR parser implementations. The Stage 7C/7D product gate
+`ISqlBuilder`, and ANTLR parser implementations. The Stage 7C-7E product gate
 repeats those calls through encrypted datasource storage and Core services,
-including forced-read-only schema and object-metadata session cleanup. H2
+including forced-read-only schema, object, view, and key-metadata session
+cleanup. H2
 remains an external test driver rather than a runtime dependency of either Java
 classpath.
 
@@ -148,7 +151,7 @@ make check-contracts
 ```
 
 Build the Java engine, fixed Community classpath, and shared frontend, then run
-the Web product host with the Stage 7C/7D services enabled:
+the Web product host with the Stage 7C-7E services enabled:
 
 ```bash
 make java community-h2-classpath frontend

@@ -12,7 +12,7 @@ in runtime health until then.
 | 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
 | 5 | Complete | Product transports | Generated OpenAPI/TypeScript contract, Axum JSON/SSE, Tauri 2 commands/channels, shared SQL workbench, product H2 tests |
 | 6 | Complete | Agent, MCP, and CLI | Direct providers, durable bounded tool loop, SQL tools/permissions, compaction, Web/Tauri run transports, owner-only local attachment, read-query CLI, and bounded `rmcp` stdio tools |
-| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs, 7B fixed Community H2 SPI/ANTLR, 7C product Core/Web/Tauri contracts, and 7D relational object metadata implemented; remaining plugin/UI operations and per-dialect conformance explicit |
+| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs, 7B fixed Community H2 SPI/ANTLR, 7C product Core/Web/Tauri contracts, 7D relational object metadata, and 7E relation metadata implemented; remaining plugin/UI operations and per-dialect conformance explicit |
 | 8 | Planned | Packaging and release | License authorization, NOTICE/SBOM, jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
 
 Stage 3 completion means the versioned Rust-Java bridge can load an external
@@ -79,7 +79,7 @@ supervised Java generation. Java isolates them behind a platform-parent
 `URLClassLoader`, rejects manifest `Class-Path` escapes, discovers real `IPlugin`
 services, and exposes plugin catalog, H2 schema metadata, `CREATE SCHEMA`, and
 retained ANTLR parsing DTOs over Protobuf. Configuring the classpath requires all
-five current Community capabilities at handshake, and Java plus Rust enforce the
+six current Community capabilities at handshake, and Java plus Rust enforce the
 generated 8 MiB cumulative response budget. Rust counts raw Community oneof
 values before decoding, including duplicate fields, and retains a generation
 snapshot whenever child reap cannot be proven. The real vertical test keeps the
@@ -115,11 +115,23 @@ frontend backend expose matching contracts. Real H2 bridge and product tests
 verify the current catalog, created table and columns, primary index, and custom
 unique index through the exact fixed 148-JAR classpath.
 
+Stage 7E adds the independent `community.metadata.relations.v1` capability and
+preserves every existing wire field number by assigning `208..=211` to views,
+imported keys, exported keys, and primary keys. Java invokes the real
+`IDbMetaData.views`, `getImportedKeys`, `getExportedKeys`, and `getPrimaryKeys`
+methods. Rust applies allocation-free repeated-field limits before Protobuf
+decode and validates decoded fields, collection sizes, aggregate strings, and
+encoded bytes again. Core exposes four forced-read-only, cancellation-safe
+services; Axum, Tauri, and the shared HTTP/Tauri frontend backend expose the
+same generated contracts. Real H2 bridge and product gates create a view,
+named primary key, and named foreign key, verify both foreign-key directions,
+and prove metadata-session cleanup still permits driver unload.
+
 Stage 7 remains incomplete: no end-user Community workflow uses the new
-frontend backend methods yet. Views, functions, procedures, triggers, keys,
-type conversion, script execution, import/export, formatting, validation,
-completion, non-relational behavior, remaining builders and plugin inventory,
-driver distribution, and per-dialect conformance are not implemented.
+frontend backend methods yet. Functions, procedures, triggers, type conversion,
+script execution, data import/export, formatting, validation, completion,
+non-relational behavior, remaining builders and plugin inventory, driver
+distribution, and per-dialect conformance are not implemented.
 
 Before Stage 8 may produce any Object-form distribution containing Community
 5.3.0 code, the release must record written commercial authorization compatible

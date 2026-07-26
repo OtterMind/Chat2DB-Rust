@@ -2,10 +2,11 @@ use std::{path::PathBuf, time::Duration};
 
 use chat2db_java_bridge::{
     COMMUNITY_OBJECT_METADATA_CAPABILITY, COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
-    COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
-    COMMUNITY_SQL_PARSER_CAPABILITY, CommunityClasspath, CommunityClient, CommunityPluginCatalog,
-    CommunitySchema, DriverArtifact, DriverSpec, EngineCommand, EngineConfig, EngineState,
-    EngineSupervisor, Session, SessionConfig, UpdateRequest,
+    COMMUNITY_RELATION_METADATA_CAPABILITY, COMMUNITY_SCHEMA_METADATA_CAPABILITY,
+    COMMUNITY_SQL_BUILDER_CAPABILITY, COMMUNITY_SQL_PARSER_CAPABILITY, CommunityClasspath,
+    CommunityClient, CommunityPluginCatalog, CommunitySchema, DriverArtifact, DriverSpec,
+    EngineCommand, EngineConfig, EngineState, EngineSupervisor, Session, SessionConfig,
+    UpdateRequest,
 };
 
 const COMMUNITY_COMMIT: &str = "f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7";
@@ -40,6 +41,7 @@ async fn invokes_real_community_h2_spi_metadata_builder_and_parser() {
         COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
         COMMUNITY_SCHEMA_METADATA_CAPABILITY,
         COMMUNITY_OBJECT_METADATA_CAPABILITY,
+        COMMUNITY_RELATION_METADATA_CAPABILITY,
         COMMUNITY_SQL_BUILDER_CAPABILITY,
         COMMUNITY_SQL_PARSER_CAPABILITY,
     ] {
@@ -150,6 +152,21 @@ async fn create_and_verify_schema(community: &CommunityClient, session: &Session
         "CREATE UNIQUE INDEX idx_items_label ON APP.items(label)",
     )
     .await;
+    execute_update(
+        session,
+        "CREATE TABLE APP.parents (id BIGINT NOT NULL, CONSTRAINT pk_parents PRIMARY KEY (id))",
+    )
+    .await;
+    execute_update(
+        session,
+        "CREATE TABLE APP.children (id BIGINT NOT NULL, parent_id BIGINT NOT NULL, CONSTRAINT pk_children PRIMARY KEY (id), CONSTRAINT fk_children_parent FOREIGN KEY (parent_id) REFERENCES APP.parents(id))",
+    )
+    .await;
+    execute_update(
+        session,
+        "CREATE VIEW APP.item_view AS SELECT id, label FROM APP.items",
+    )
+    .await;
 
     let schemas = community
         .list_schemas(session, "H2", "", None)
@@ -212,6 +229,75 @@ async fn verify_object_tree(community: &CommunityClient, session: &Session) {
                 .columns
                 .iter()
                 .any(|column| column.column_name.eq_ignore_ascii_case("id"))
+    }));
+
+    verify_relation_metadata(community, session, &database.name).await;
+}
+
+async fn verify_relation_metadata(
+    community: &CommunityClient,
+    session: &Session,
+    database_name: &str,
+) {
+    let views = community
+        .list_views(session, "H2", database_name, "APP", "%", None)
+        .await
+        .expect("H2Meta must list views");
+    let view = views
+        .iter()
+        .find(|view| view.name.eq_ignore_ascii_case("item_view"))
+        .expect("created H2 view must be projected");
+    assert_eq!(view.schema_name, "APP");
+    assert!(view.table_type.eq_ignore_ascii_case("VIEW"));
+
+    let imported = community
+        .list_imported_keys(session, "H2", database_name, "APP", "CHILDREN", None)
+        .await
+        .expect("H2Meta must list imported keys");
+    let imported_key = imported
+        .iter()
+        .find(|key| {
+            key.foreign_key_name
+                .eq_ignore_ascii_case("fk_children_parent")
+        })
+        .unwrap_or_else(|| panic!("named child foreign key must be imported: {imported:#?}"));
+    assert!(
+        imported_key
+            .primary_table_name
+            .eq_ignore_ascii_case("parents")
+    );
+    assert!(imported_key.primary_column_name.eq_ignore_ascii_case("id"));
+    assert!(
+        imported_key
+            .foreign_table_name
+            .eq_ignore_ascii_case("children")
+    );
+    assert!(
+        imported_key
+            .foreign_column_name
+            .eq_ignore_ascii_case("parent_id")
+    );
+    assert_eq!(imported_key.key_sequence, 1);
+
+    let exported = community
+        .list_exported_keys(session, "H2", database_name, "APP", "PARENTS", None)
+        .await
+        .expect("H2Meta must list exported keys");
+    assert!(exported.iter().any(|key| {
+        key.foreign_key_name
+            .eq_ignore_ascii_case("fk_children_parent")
+            && key.primary_table_name.eq_ignore_ascii_case("parents")
+            && key.foreign_table_name.eq_ignore_ascii_case("children")
+    }));
+
+    let primary = community
+        .list_primary_keys(session, "H2", database_name, "APP", "PARENTS", None)
+        .await
+        .expect("H2Meta must list primary keys");
+    assert!(primary.iter().any(|key| {
+        key.name.eq_ignore_ascii_case("pk_parents")
+            && key.table_name.eq_ignore_ascii_case("parents")
+            && key.column_name.eq_ignore_ascii_case("id")
     }));
 }
 

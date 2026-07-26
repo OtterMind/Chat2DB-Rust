@@ -2,21 +2,25 @@ use std::future::Future;
 
 use chat2db_contract::{
     BuildCommunityCreateSchemaRequest, CommunityBuiltSql, CommunityDatabase, CommunityDatabaseList,
-    CommunityDriverConfig, CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior,
-    CommunityPluginCatalog, CommunityPluginServices, CommunitySchema, CommunitySchemaList,
+    CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList, CommunityParsedStatement,
+    CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
+    CommunityPrimaryKey, CommunityPrimaryKeyList, CommunitySchema, CommunitySchemaList,
     CommunitySqlAnalysis, CommunityTable, CommunityTableColumn, CommunityTableColumnList,
     CommunityTableIndex, CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList,
-    ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityIndexesRequest,
-    ListCommunitySchemasRequest, ListCommunityTablesRequest, ParseCommunitySqlRequest,
+    CommunityViewList, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
+    ListCommunityIndexesRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
+    ListCommunityTablesRequest, ListCommunityViewsRequest, ParseCommunitySqlRequest,
 };
 use chat2db_java_bridge::{
     BridgeError, CommunityClasspath, CommunityDatabase as BridgeCommunityDatabase,
     CommunityDriverConfig as BridgeCommunityDriverConfig,
+    CommunityForeignKey as BridgeCommunityForeignKey,
     CommunityParsedStatement as BridgeCommunityParsedStatement,
     CommunityPlugin as BridgeCommunityPlugin,
     CommunityPluginCatalog as BridgeCommunityPluginCatalog,
-    CommunitySchema as BridgeCommunitySchema, CommunitySqlAnalysis as BridgeCommunitySqlAnalysis,
-    CommunityTable as BridgeCommunityTable, CommunityTableColumn as BridgeCommunityTableColumn,
+    CommunityPrimaryKey as BridgeCommunityPrimaryKey, CommunitySchema as BridgeCommunitySchema,
+    CommunitySqlAnalysis as BridgeCommunitySqlAnalysis, CommunityTable as BridgeCommunityTable,
+    CommunityTableColumn as BridgeCommunityTableColumn,
     CommunityTableIndex as BridgeCommunityTableIndex,
     CommunityTableIndexColumn as BridgeCommunityTableIndexColumn, EngineClient, Session,
 };
@@ -254,6 +258,182 @@ impl Application {
                     .await
                     .map(|indexes| CommunityTableIndexList {
                         items: indexes.into_iter().map(community_table_index).collect(),
+                    })
+                    .map_err(AppError::from)
+            },
+        )
+        .await
+    }
+
+    /// Lists views through Community metadata using a forced read-only session.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, metadata, or session-cleanup errors.
+    pub async fn list_community_views(
+        &self,
+        request: ListCommunityViewsRequest,
+    ) -> Result<CommunityViewList, AppError> {
+        let storage = self.require_storage()?;
+        let engine = self.require_community_engine()?;
+        let ListCommunityViewsRequest {
+            datasource_id,
+            database_type,
+            database_name,
+            schema_name,
+            view_name_pattern,
+        } = request;
+        let client = engine.community_client().map_err(AppError::from)?;
+        run_community_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_view_session",
+            move |session| async move {
+                client
+                    .list_views(
+                        &session,
+                        database_type,
+                        database_name,
+                        schema_name,
+                        view_name_pattern,
+                        None,
+                    )
+                    .await
+                    .map(|views| CommunityViewList {
+                        items: views.into_iter().map(community_table).collect(),
+                    })
+                    .map_err(AppError::from)
+            },
+        )
+        .await
+    }
+
+    /// Lists foreign keys imported by one table using a forced read-only session.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, metadata, or session-cleanup errors.
+    pub async fn list_community_imported_keys(
+        &self,
+        request: ListCommunityTableKeysRequest,
+    ) -> Result<CommunityForeignKeyList, AppError> {
+        let storage = self.require_storage()?;
+        let engine = self.require_community_engine()?;
+        let ListCommunityTableKeysRequest {
+            datasource_id,
+            database_type,
+            database_name,
+            schema_name,
+            table_name,
+        } = request;
+        let client = engine.community_client().map_err(AppError::from)?;
+        run_community_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_imported_key_session",
+            move |session| async move {
+                client
+                    .list_imported_keys(
+                        &session,
+                        database_type,
+                        database_name,
+                        schema_name,
+                        table_name,
+                        None,
+                    )
+                    .await
+                    .map(|keys| CommunityForeignKeyList {
+                        items: keys.into_iter().map(community_foreign_key).collect(),
+                    })
+                    .map_err(AppError::from)
+            },
+        )
+        .await
+    }
+
+    /// Lists foreign keys exported by one table using a forced read-only session.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, metadata, or session-cleanup errors.
+    pub async fn list_community_exported_keys(
+        &self,
+        request: ListCommunityTableKeysRequest,
+    ) -> Result<CommunityForeignKeyList, AppError> {
+        let storage = self.require_storage()?;
+        let engine = self.require_community_engine()?;
+        let ListCommunityTableKeysRequest {
+            datasource_id,
+            database_type,
+            database_name,
+            schema_name,
+            table_name,
+        } = request;
+        let client = engine.community_client().map_err(AppError::from)?;
+        run_community_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_exported_key_session",
+            move |session| async move {
+                client
+                    .list_exported_keys(
+                        &session,
+                        database_type,
+                        database_name,
+                        schema_name,
+                        table_name,
+                        None,
+                    )
+                    .await
+                    .map(|keys| CommunityForeignKeyList {
+                        items: keys.into_iter().map(community_foreign_key).collect(),
+                    })
+                    .map_err(AppError::from)
+            },
+        )
+        .await
+    }
+
+    /// Lists primary-key columns for one table using a forced read-only session.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, metadata, or session-cleanup errors.
+    pub async fn list_community_primary_keys(
+        &self,
+        request: ListCommunityTableKeysRequest,
+    ) -> Result<CommunityPrimaryKeyList, AppError> {
+        let storage = self.require_storage()?;
+        let engine = self.require_community_engine()?;
+        let ListCommunityTableKeysRequest {
+            datasource_id,
+            database_type,
+            database_name,
+            schema_name,
+            table_name,
+        } = request;
+        let client = engine.community_client().map_err(AppError::from)?;
+        run_community_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_primary_key_session",
+            move |session| async move {
+                client
+                    .list_primary_keys(
+                        &session,
+                        database_type,
+                        database_name,
+                        schema_name,
+                        table_name,
+                        None,
+                    )
+                    .await
+                    .map(|keys| CommunityPrimaryKeyList {
+                        items: keys.into_iter().map(community_primary_key).collect(),
                     })
                     .map_err(AppError::from)
             },
@@ -542,6 +722,35 @@ fn community_table_index_column(
     }
 }
 
+fn community_foreign_key(key: BridgeCommunityForeignKey) -> CommunityForeignKey {
+    CommunityForeignKey {
+        primary_table_database: key.primary_table_database,
+        primary_table_schema: key.primary_table_schema,
+        primary_table_name: key.primary_table_name,
+        primary_column_name: key.primary_column_name,
+        foreign_table_database: key.foreign_table_database,
+        foreign_table_schema: key.foreign_table_schema,
+        foreign_table_name: key.foreign_table_name,
+        foreign_column_name: key.foreign_column_name,
+        key_sequence: key.key_sequence,
+        update_rule: key.update_rule,
+        delete_rule: key.delete_rule,
+        foreign_key_name: key.foreign_key_name,
+        primary_key_name: key.primary_key_name,
+        deferrability: key.deferrability,
+    }
+}
+
+fn community_primary_key(key: BridgeCommunityPrimaryKey) -> CommunityPrimaryKey {
+    CommunityPrimaryKey {
+        database_name: key.database_name,
+        schema_name: key.schema_name,
+        table_name: key.table_name,
+        column_name: key.column_name,
+        name: key.name,
+    }
+}
+
 fn bridge_schema(schema: CommunitySchema) -> BridgeCommunitySchema {
     BridgeCommunitySchema {
         database_name: schema.database_name,
@@ -597,21 +806,24 @@ fn preserve_primary_result<T>(
 #[cfg(test)]
 mod tests {
     use chat2db_contract::{
-        CommunityDatabase, CommunityDriverConfig, CommunityParsedStatement, CommunityPlugin,
-        CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices, CommunitySchema,
-        CommunitySqlAnalysis, CommunityTable, CommunityTableColumn, CommunityTableIndex,
-        CommunityTableIndexColumn, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
-        ListCommunityIndexesRequest, ListCommunitySchemasRequest, ListCommunityTablesRequest,
+        CommunityDatabase, CommunityDriverConfig, CommunityForeignKey, CommunityParsedStatement,
+        CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
+        CommunityPrimaryKey, CommunitySchema, CommunitySqlAnalysis, CommunityTable,
+        CommunityTableColumn, CommunityTableIndex, CommunityTableIndexColumn,
+        ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityIndexesRequest,
+        ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
+        ListCommunityViewsRequest,
     };
     use chat2db_java_bridge::{
         CommunityDatabase as BridgeCommunityDatabase,
         CommunityDriverConfig as BridgeCommunityDriverConfig,
+        CommunityForeignKey as BridgeCommunityForeignKey,
         CommunityParsedStatement as BridgeCommunityParsedStatement,
         CommunityPlugin as BridgeCommunityPlugin,
         CommunityPluginBehavior as BridgeCommunityPluginBehavior,
         CommunityPluginCatalog as BridgeCommunityPluginCatalog,
         CommunityPluginServices as BridgeCommunityPluginServices,
-        CommunitySchema as BridgeCommunitySchema,
+        CommunityPrimaryKey as BridgeCommunityPrimaryKey, CommunitySchema as BridgeCommunitySchema,
         CommunitySqlAnalysis as BridgeCommunitySqlAnalysis, CommunityTable as BridgeCommunityTable,
         CommunityTableColumn as BridgeCommunityTableColumn,
         CommunityTableIndex as BridgeCommunityTableIndex,
@@ -623,9 +835,10 @@ mod tests {
     use tokio::{sync::oneshot, time};
 
     use super::{
-        Application, bridge_schema, community_database, community_plugin_catalog, community_schema,
-        community_sql_analysis, community_table, community_table_column, community_table_index,
-        preserve_primary_result, run_cancellation_safe, run_cancellation_safe_with_cleanup,
+        Application, bridge_schema, community_database, community_foreign_key,
+        community_plugin_catalog, community_primary_key, community_schema, community_sql_analysis,
+        community_table, community_table_column, community_table_index, preserve_primary_result,
+        run_cancellation_safe, run_cancellation_safe_with_cleanup,
     };
     use crate::{AppError, AppErrorKind};
 
@@ -911,6 +1124,60 @@ mod tests {
     }
 
     #[test]
+    fn relation_metadata_mapping_preserves_every_field() {
+        assert_eq!(
+            community_foreign_key(BridgeCommunityForeignKey {
+                primary_table_database: "inventory".to_owned(),
+                primary_table_schema: "APP".to_owned(),
+                primary_table_name: "parent".to_owned(),
+                primary_column_name: "id".to_owned(),
+                foreign_table_database: "inventory".to_owned(),
+                foreign_table_schema: "APP".to_owned(),
+                foreign_table_name: "child".to_owned(),
+                foreign_column_name: "parent_id".to_owned(),
+                key_sequence: 1,
+                update_rule: 3,
+                delete_rule: 1,
+                foreign_key_name: "fk_child_parent".to_owned(),
+                primary_key_name: "pk_parent".to_owned(),
+                deferrability: 7,
+            }),
+            CommunityForeignKey {
+                primary_table_database: "inventory".to_owned(),
+                primary_table_schema: "APP".to_owned(),
+                primary_table_name: "parent".to_owned(),
+                primary_column_name: "id".to_owned(),
+                foreign_table_database: "inventory".to_owned(),
+                foreign_table_schema: "APP".to_owned(),
+                foreign_table_name: "child".to_owned(),
+                foreign_column_name: "parent_id".to_owned(),
+                key_sequence: 1,
+                update_rule: 3,
+                delete_rule: 1,
+                foreign_key_name: "fk_child_parent".to_owned(),
+                primary_key_name: "pk_parent".to_owned(),
+                deferrability: 7,
+            }
+        );
+        assert_eq!(
+            community_primary_key(BridgeCommunityPrimaryKey {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                table_name: "parent".to_owned(),
+                column_name: "id".to_owned(),
+                name: "pk_parent".to_owned(),
+            }),
+            CommunityPrimaryKey {
+                database_name: "inventory".to_owned(),
+                schema_name: "APP".to_owned(),
+                table_name: "parent".to_owned(),
+                column_name: "id".to_owned(),
+                name: "pk_parent".to_owned(),
+            }
+        );
+    }
+
+    #[test]
     fn sql_analysis_mapping_preserves_every_field() {
         let analysis = BridgeCommunitySqlAnalysis {
             is_select: true,
@@ -1091,7 +1358,6 @@ mod tests {
             .expect_err("index metadata requires storage");
         assert_eq!(index_storage_error.kind(), AppErrorKind::Unavailable);
         assert_eq!(index_storage_error.api_error().code, "storage_unavailable");
-
         let directory = TempDir::new().expect("temporary data directory must open");
         let vault = Arc::new(
             EncryptedFileVault::new(directory.path(), [0x4d; 32]).expect("test vault must open"),
@@ -1136,6 +1402,65 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn community_relation_services_report_unconfigured_dependencies_safely() {
+        let application = Application::new();
+        let view_error = application
+            .list_community_views(view_request())
+            .await
+            .expect_err("view metadata requires storage");
+        assert_unavailable(&view_error, "storage_unavailable");
+        for error in [
+            application
+                .list_community_imported_keys(key_request())
+                .await
+                .expect_err("imported-key metadata requires storage"),
+            application
+                .list_community_exported_keys(key_request())
+                .await
+                .expect_err("exported-key metadata requires storage"),
+            application
+                .list_community_primary_keys(key_request())
+                .await
+                .expect_err("primary-key metadata requires storage"),
+        ] {
+            assert_unavailable(&error, "storage_unavailable");
+        }
+
+        let directory = TempDir::new().expect("temporary data directory must open");
+        let vault = Arc::new(
+            EncryptedFileVault::new(directory.path(), [0x5d; 32]).expect("test vault must open"),
+        );
+        let storage = Storage::open(directory.path(), vault).expect("test storage must open");
+        let application = Application::with_storage(storage);
+        let view_error = application
+            .list_community_views(view_request())
+            .await
+            .expect_err("view metadata requires the engine");
+        assert_unavailable(&view_error, "database_engine_unavailable");
+        for error in [
+            application
+                .list_community_imported_keys(key_request())
+                .await
+                .expect_err("imported-key metadata requires the engine"),
+            application
+                .list_community_exported_keys(key_request())
+                .await
+                .expect_err("exported-key metadata requires the engine"),
+            application
+                .list_community_primary_keys(key_request())
+                .await
+                .expect_err("primary-key metadata requires the engine"),
+        ] {
+            assert_unavailable(&error, "database_engine_unavailable");
+        }
+    }
+
+    fn assert_unavailable(error: &AppError, code: &str) {
+        assert_eq!(error.kind(), AppErrorKind::Unavailable);
+        assert_eq!(error.api_error().code, code);
+    }
+
     fn database_request() -> ListCommunityDatabasesRequest {
         ListCommunityDatabasesRequest {
             datasource_id: "datasource-1".to_owned(),
@@ -1170,6 +1495,26 @@ mod tests {
             database_name: "inventory".to_owned(),
             schema_name: "APP".to_owned(),
             table_name: "items".to_owned(),
+        }
+    }
+
+    fn view_request() -> ListCommunityViewsRequest {
+        ListCommunityViewsRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            view_name_pattern: "%".to_owned(),
+        }
+    }
+
+    fn key_request() -> ListCommunityTableKeysRequest {
+        ListCommunityTableKeysRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: "APP".to_owned(),
+            table_name: "child".to_owned(),
         }
     }
 }

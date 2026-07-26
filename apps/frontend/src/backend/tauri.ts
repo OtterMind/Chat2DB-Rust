@@ -18,12 +18,15 @@ import type {
   CancelOperationResponse,
   CommunityBuiltSql,
   CommunityDatabaseList,
+  CommunityForeignKeyList,
   CommunityPluginCatalog,
+  CommunityPrimaryKeyList,
   CommunitySchemaList,
   CommunitySqlAnalysis,
   CommunityTableColumnList,
   CommunityTableIndexList,
   CommunityTableList,
+  CommunityViewList,
   CreateAgentSessionRequest,
   CreateDatasourceRequest,
   CreateProviderProfileRequest,
@@ -36,7 +39,9 @@ import type {
   ListCommunityDatabasesRequest,
   ListCommunityIndexesRequest,
   ListCommunitySchemasRequest,
+  ListCommunityTableKeysRequest,
   ListCommunityTablesRequest,
+  ListCommunityViewsRequest,
   OperationEventEnvelope,
   OperationSnapshot,
   OperationStreamMessage,
@@ -147,6 +152,34 @@ export class TauriBackendClient implements BackendClient {
     signal?: AbortSignal,
   ): Promise<CommunityTableIndexList> {
     return this.#request('list_community_indexes', { request }, signal);
+  }
+
+  listCommunityViews(
+    request: ListCommunityViewsRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityViewList> {
+    return this.#request('list_community_views', { request }, signal);
+  }
+
+  listCommunityImportedKeys(
+    request: ListCommunityTableKeysRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityForeignKeyList> {
+    return this.#request('list_community_imported_keys', { request }, signal);
+  }
+
+  listCommunityExportedKeys(
+    request: ListCommunityTableKeysRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityForeignKeyList> {
+    return this.#request('list_community_exported_keys', { request }, signal);
+  }
+
+  listCommunityPrimaryKeys(
+    request: ListCommunityTableKeysRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityPrimaryKeyList> {
+    return this.#request('list_community_primary_keys', { request }, signal);
   }
 
   buildCommunityCreateSchema(

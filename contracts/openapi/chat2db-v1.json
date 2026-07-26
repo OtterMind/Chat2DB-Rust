@@ -1304,6 +1304,126 @@
         }
       }
     },
+    "/api/v1/community/metadata/exported-keys": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "list_community_exported_keys",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListCommunityTableKeysRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community exported foreign-key metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityForeignKeyList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community metadata request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community metadata failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/community/metadata/imported-keys": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "list_community_imported_keys",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListCommunityTableKeysRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community imported foreign-key metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityForeignKeyList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community metadata request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community metadata failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/community/metadata/indexes": {
       "post": {
         "tags": [
@@ -1327,6 +1447,66 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CommunityTableIndexList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community metadata request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community metadata failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/community/metadata/primary-keys": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "list_community_primary_keys",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListCommunityTableKeysRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community primary-key metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityPrimaryKeyList"
                 }
               }
             }
@@ -1447,6 +1627,66 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CommunityTableList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community metadata request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community metadata failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/community/metadata/views": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "list_community_views",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListCommunityViewsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community view metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityViewList"
                 }
               }
             }
@@ -3690,6 +3930,89 @@
           }
         }
       },
+      "CommunityForeignKey": {
+        "type": "object",
+        "description": "Secret-free metadata for one imported or exported foreign-key column pair.",
+        "required": [
+          "primaryTableDatabase",
+          "primaryTableSchema",
+          "primaryTableName",
+          "primaryColumnName",
+          "foreignTableDatabase",
+          "foreignTableSchema",
+          "foreignTableName",
+          "foreignColumnName",
+          "keySequence",
+          "updateRule",
+          "deleteRule",
+          "foreignKeyName",
+          "primaryKeyName",
+          "deferrability"
+        ],
+        "properties": {
+          "deferrability": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "deleteRule": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "foreignColumnName": {
+            "type": "string"
+          },
+          "foreignKeyName": {
+            "type": "string"
+          },
+          "foreignTableDatabase": {
+            "type": "string"
+          },
+          "foreignTableName": {
+            "type": "string"
+          },
+          "foreignTableSchema": {
+            "type": "string"
+          },
+          "keySequence": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "primaryColumnName": {
+            "type": "string"
+          },
+          "primaryKeyName": {
+            "type": "string"
+          },
+          "primaryTableDatabase": {
+            "type": "string"
+          },
+          "primaryTableName": {
+            "type": "string"
+          },
+          "primaryTableSchema": {
+            "type": "string"
+          },
+          "updateRule": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "CommunityForeignKeyList": {
+        "type": "object",
+        "description": "Stable imported or exported foreign-key collection.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityForeignKey"
+            }
+          }
+        }
+      },
       "CommunityParsedStatement": {
         "type": "object",
         "description": "One statement returned by the retained Community parser.",
@@ -3813,6 +4136,49 @@
           "sqlParserAvailable": {
             "type": "boolean",
             "description": "Whether retained SQL parsing is available."
+          }
+        }
+      },
+      "CommunityPrimaryKey": {
+        "type": "object",
+        "description": "Secret-free metadata for one primary-key column.",
+        "required": [
+          "databaseName",
+          "schemaName",
+          "tableName",
+          "columnName",
+          "name"
+        ],
+        "properties": {
+          "columnName": {
+            "type": "string"
+          },
+          "databaseName": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "schemaName": {
+            "type": "string"
+          },
+          "tableName": {
+            "type": "string"
+          }
+        }
+      },
+      "CommunityPrimaryKeyList": {
+        "type": "object",
+        "description": "Stable primary-key collection returned by Community metadata.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityPrimaryKey"
+            }
           }
         }
       },
@@ -4352,6 +4718,22 @@
             "items": {
               "$ref": "#/components/schemas/CommunityTable"
             }
+          }
+        }
+      },
+      "CommunityViewList": {
+        "type": "object",
+        "description": "Stable view collection returned by Community metadata APIs.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityTable"
+            },
+            "description": "Views represented by the same bounded metadata projection as tables."
           }
         }
       },
@@ -5237,6 +5619,34 @@
           }
         }
       },
+      "ListCommunityTableKeysRequest": {
+        "type": "object",
+        "description": "Request to list imported, exported, or primary keys for one table.",
+        "required": [
+          "datasourceId",
+          "databaseType",
+          "databaseName",
+          "schemaName",
+          "tableName"
+        ],
+        "properties": {
+          "databaseName": {
+            "type": "string"
+          },
+          "databaseType": {
+            "type": "string"
+          },
+          "datasourceId": {
+            "type": "string"
+          },
+          "schemaName": {
+            "type": "string"
+          },
+          "tableName": {
+            "type": "string"
+          }
+        }
+      },
       "ListCommunityTablesRequest": {
         "type": "object",
         "description": "Request to list tables through one datasource connection.",
@@ -5261,6 +5671,34 @@
             "type": "string"
           },
           "tableNamePattern": {
+            "type": "string"
+          }
+        }
+      },
+      "ListCommunityViewsRequest": {
+        "type": "object",
+        "description": "Request to list views through one datasource connection.",
+        "required": [
+          "datasourceId",
+          "databaseType",
+          "databaseName",
+          "schemaName",
+          "viewNamePattern"
+        ],
+        "properties": {
+          "databaseName": {
+            "type": "string"
+          },
+          "databaseType": {
+            "type": "string"
+          },
+          "datasourceId": {
+            "type": "string"
+          },
+          "schemaName": {
+            "type": "string"
+          },
+          "viewNamePattern": {
             "type": "string"
           }
         }

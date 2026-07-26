@@ -4,17 +4,22 @@ import type {
   BuildCommunityCreateSchemaRequest,
   CommunityBuiltSql,
   CommunityDatabaseList,
+  CommunityForeignKeyList,
   CommunityPluginCatalog,
+  CommunityPrimaryKeyList,
   CommunitySchemaList,
   CommunitySqlAnalysis,
   CommunityTableColumnList,
   CommunityTableIndexList,
   CommunityTableList,
+  CommunityViewList,
   ListCommunityColumnsRequest,
   ListCommunityDatabasesRequest,
   ListCommunityIndexesRequest,
   ListCommunitySchemasRequest,
+  ListCommunityTableKeysRequest,
   ListCommunityTablesRequest,
+  ListCommunityViewsRequest,
   ParseCommunitySqlRequest,
 } from './client';
 import { HttpBackendClient } from './http';
@@ -58,6 +63,18 @@ const listColumnsRequest = {
 const listIndexesRequest = {
   ...listColumnsRequest,
 } satisfies ListCommunityIndexesRequest;
+
+const listViewsRequest = {
+  datasourceId: 'datasource-1',
+  databaseType: 'H2',
+  databaseName: 'inventory',
+  schemaName: 'APP',
+  viewNamePattern: '%',
+} satisfies ListCommunityViewsRequest;
+
+const listKeysRequest = {
+  ...listColumnsRequest,
+} satisfies ListCommunityTableKeysRequest;
 
 const buildSchemaRequest = {
   databaseType: 'H2',
@@ -176,6 +193,40 @@ const indexes = {
     foreignColumnNames: [],
   }],
 } satisfies CommunityTableIndexList;
+const views = {
+  items: [{
+    ...tables.items[0],
+    name: 'ITEMS_VIEW',
+    tableType: 'VIEW',
+  }],
+} satisfies CommunityViewList;
+const foreignKeys = {
+  items: [{
+    primaryTableDatabase: 'inventory',
+    primaryTableSchema: 'APP',
+    primaryTableName: 'PARENTS',
+    primaryColumnName: 'ID',
+    foreignTableDatabase: 'inventory',
+    foreignTableSchema: 'APP',
+    foreignTableName: 'ITEMS',
+    foreignColumnName: 'PARENT_ID',
+    keySequence: 1,
+    updateRule: 1,
+    deleteRule: 1,
+    foreignKeyName: 'FK_ITEMS_PARENT',
+    primaryKeyName: 'CONSTRAINT_PARENT',
+    deferrability: 7,
+  }],
+} satisfies CommunityForeignKeyList;
+const primaryKeys = {
+  items: [{
+    databaseName: 'inventory',
+    schemaName: 'APP',
+    tableName: 'ITEMS',
+    columnName: 'ID',
+    name: 'CONSTRAINT_ITEMS',
+  }],
+} satisfies CommunityPrimaryKeyList;
 const builtSql = { sql: 'CREATE SCHEMA reporting' } satisfies CommunityBuiltSql;
 const analysis = {
   isSelect: true,
@@ -189,6 +240,10 @@ const responses = [
   tables,
   columns,
   indexes,
+  views,
+  foreignKeys,
+  foreignKeys,
+  primaryKeys,
   builtSql,
   analysis,
 ] as const;
@@ -222,6 +277,10 @@ describe('Community backend adapter parity', () => {
       await client.listCommunityTables(listTablesRequest),
       await client.listCommunityColumns(listColumnsRequest),
       await client.listCommunityIndexes(listIndexesRequest),
+      await client.listCommunityViews(listViewsRequest),
+      await client.listCommunityImportedKeys(listKeysRequest),
+      await client.listCommunityExportedKeys(listKeysRequest),
+      await client.listCommunityPrimaryKeys(listKeysRequest),
       await client.buildCommunityCreateSchema(buildSchemaRequest),
       await client.parseCommunitySql(parseSqlRequest),
     ];
@@ -261,6 +320,26 @@ describe('Community backend adapter parity', () => {
         body: listIndexesRequest,
       },
       {
+        path: '/api/v1/community/metadata/views',
+        method: 'POST',
+        body: listViewsRequest,
+      },
+      {
+        path: '/api/v1/community/metadata/imported-keys',
+        method: 'POST',
+        body: listKeysRequest,
+      },
+      {
+        path: '/api/v1/community/metadata/exported-keys',
+        method: 'POST',
+        body: listKeysRequest,
+      },
+      {
+        path: '/api/v1/community/metadata/primary-keys',
+        method: 'POST',
+        body: listKeysRequest,
+      },
+      {
         path: '/api/v1/community/sql/build-create-schema',
         method: 'POST',
         body: buildSchemaRequest,
@@ -287,6 +366,10 @@ describe('Community backend adapter parity', () => {
       await client.listCommunityTables(listTablesRequest),
       await client.listCommunityColumns(listColumnsRequest),
       await client.listCommunityIndexes(listIndexesRequest),
+      await client.listCommunityViews(listViewsRequest),
+      await client.listCommunityImportedKeys(listKeysRequest),
+      await client.listCommunityExportedKeys(listKeysRequest),
+      await client.listCommunityPrimaryKeys(listKeysRequest),
       await client.buildCommunityCreateSchema(buildSchemaRequest),
       await client.parseCommunitySql(parseSqlRequest),
     ];
@@ -301,6 +384,10 @@ describe('Community backend adapter parity', () => {
       { command: 'list_community_tables', args: { request: listTablesRequest } },
       { command: 'list_community_columns', args: { request: listColumnsRequest } },
       { command: 'list_community_indexes', args: { request: listIndexesRequest } },
+      { command: 'list_community_views', args: { request: listViewsRequest } },
+      { command: 'list_community_imported_keys', args: { request: listKeysRequest } },
+      { command: 'list_community_exported_keys', args: { request: listKeysRequest } },
+      { command: 'list_community_primary_keys', args: { request: listKeysRequest } },
       { command: 'build_community_create_schema', args: { request: buildSchemaRequest } },
       { command: 'parse_community_sql', args: { request: parseSqlRequest } },
     ]);

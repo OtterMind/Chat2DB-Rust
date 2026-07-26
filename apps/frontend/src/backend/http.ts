@@ -16,12 +16,15 @@ import type {
   CancelOperationResponse,
   CommunityBuiltSql,
   CommunityDatabaseList,
+  CommunityForeignKeyList,
   CommunityPluginCatalog,
+  CommunityPrimaryKeyList,
   CommunitySchemaList,
   CommunitySqlAnalysis,
   CommunityTableColumnList,
   CommunityTableIndexList,
   CommunityTableList,
+  CommunityViewList,
   CreateAgentSessionRequest,
   CreateDatasourceRequest,
   CreateProviderProfileRequest,
@@ -34,7 +37,9 @@ import type {
   ListCommunityDatabasesRequest,
   ListCommunityIndexesRequest,
   ListCommunitySchemasRequest,
+  ListCommunityTableKeysRequest,
   ListCommunityTablesRequest,
+  ListCommunityViewsRequest,
   OperationSnapshot,
   OperationSubscription,
   OperationSubscriptionOptions,
@@ -181,6 +186,50 @@ export class HttpBackendClient implements BackendClient {
   ): Promise<CommunityTableIndexList> {
     return this.#json(
       '/api/v1/community/metadata/indexes',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  listCommunityViews(
+    request: ListCommunityViewsRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityViewList> {
+    return this.#json(
+      '/api/v1/community/metadata/views',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  listCommunityImportedKeys(
+    request: ListCommunityTableKeysRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityForeignKeyList> {
+    return this.#json(
+      '/api/v1/community/metadata/imported-keys',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  listCommunityExportedKeys(
+    request: ListCommunityTableKeysRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityForeignKeyList> {
+    return this.#json(
+      '/api/v1/community/metadata/exported-keys',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  listCommunityPrimaryKeys(
+    request: ListCommunityTableKeysRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityPrimaryKeyList> {
+    return this.#json(
+      '/api/v1/community/metadata/primary-keys',
       { method: 'POST', body: JSON.stringify(request), signal },
       [200],
     );

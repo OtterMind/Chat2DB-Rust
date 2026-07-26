@@ -315,6 +315,62 @@ mod tests {
             (
                 json_request(
                     Method::POST,
+                    "/api/v1/community/metadata/views",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1",
+                        "databaseType": "H2",
+                        "databaseName": "inventory",
+                        "schemaName": "APP",
+                        "viewNamePattern": "item%"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/metadata/imported-keys",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1",
+                        "databaseType": "H2",
+                        "databaseName": "inventory",
+                        "schemaName": "APP",
+                        "tableName": "items"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/metadata/exported-keys",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1",
+                        "databaseType": "H2",
+                        "databaseName": "inventory",
+                        "schemaName": "APP",
+                        "tableName": "items"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/metadata/primary-keys",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1",
+                        "databaseType": "H2",
+                        "databaseName": "inventory",
+                        "schemaName": "APP",
+                        "tableName": "items"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
                     "/api/v1/community/sql/build-create-schema",
                     &serde_json::json!({
                         "databaseType": "H2",
@@ -461,6 +517,10 @@ mod tests {
             "/api/v1/community/metadata/tables",
             "/api/v1/community/metadata/columns",
             "/api/v1/community/metadata/indexes",
+            "/api/v1/community/metadata/views",
+            "/api/v1/community/metadata/imported-keys",
+            "/api/v1/community/metadata/exported-keys",
+            "/api/v1/community/metadata/primary-keys",
             "/api/v1/community/sql/build-create-schema",
             "/api/v1/community/sql/parse",
             "/api/v1/datasources",
@@ -494,6 +554,10 @@ mod tests {
             "/api/v1/community/metadata/tables",
             "/api/v1/community/metadata/columns",
             "/api/v1/community/metadata/indexes",
+            "/api/v1/community/metadata/views",
+            "/api/v1/community/metadata/imported-keys",
+            "/api/v1/community/metadata/exported-keys",
+            "/api/v1/community/metadata/primary-keys",
             "/api/v1/community/sql/build-create-schema",
             "/api/v1/community/sql/parse",
         ] {
@@ -571,11 +635,15 @@ mod tests {
             "CommunityDatabase",
             "CommunityDatabaseList",
             "CommunityDriverConfig",
+            "CommunityForeignKey",
+            "CommunityForeignKeyList",
             "CommunityParsedStatement",
             "CommunityPlugin",
             "CommunityPluginBehavior",
             "CommunityPluginCatalog",
             "CommunityPluginServices",
+            "CommunityPrimaryKey",
+            "CommunityPrimaryKeyList",
             "CommunitySchema",
             "CommunitySchemaList",
             "CommunitySqlAnalysis",
@@ -586,15 +654,18 @@ mod tests {
             "CommunityTableIndexColumn",
             "CommunityTableIndexList",
             "CommunityTableList",
+            "CommunityViewList",
             "ContextCompactionStrategy",
             "CreateAgentSessionRequest",
             "CreateProviderProfileRequest",
             "DecideAgentPermissionRequest",
             "ListCommunitySchemasRequest",
+            "ListCommunityTableKeysRequest",
             "ListCommunityColumnsRequest",
             "ListCommunityDatabasesRequest",
             "ListCommunityIndexesRequest",
             "ListCommunityTablesRequest",
+            "ListCommunityViewsRequest",
             "ParseCommunitySqlRequest",
             "ProviderCredentials",
             "ProviderProfile",

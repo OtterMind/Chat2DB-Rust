@@ -22,12 +22,13 @@ for the CLI and MCP process. That same `Application` owns query and Agent run
 execution, replay, cancellation, and write-permission decisions. Strict local
 managed driver packs and immutable inventory are implemented. A fixed Community
 5.3.0 submodule now supplies a real H2 compatibility slice for plugin discovery,
-schema and relational object metadata, dialect SQL building, and retained ANTLR
-parsing. Product Core, Axum, Tauri, and both frontend backend adapters expose
-catalog, schemas, databases, tables, columns, indexes, schema SQL building, and
-parsing when the exact locked classpath is configured. Signing, distribution,
-end-user Community workflows, the remaining dialect estate, and packaging
-remain target components. CLI and MCP attach to a running host rather than
+schema, relational object, view, foreign-key, and primary-key metadata, dialect
+SQL building, and retained ANTLR parsing. Product Core, Axum, Tauri, and both
+frontend backend adapters expose catalog, schemas, databases, tables, columns,
+indexes, views, imported and exported foreign keys, primary keys, schema SQL
+building, and parsing when the exact locked classpath is configured. Signing,
+distribution, end-user Community workflows, the remaining dialect estate, and
+packaging remain target components. CLI and MCP attach to a running host rather than
 composing a second product runtime.
 
 ## Ownership
@@ -153,10 +154,22 @@ request and response types. Database, table, column, index, and cumulative
 index-column counts are explicit, while both Java and Rust enforce the shared
 8 MiB response ceiling.
 
-Views, functions, procedures, triggers, keys, remaining builders, type
-conversion, non-relational operations, script execution, formatting,
-validation, completion, end-user Community UI workflows, and per-dialect
-conformance are not implemented yet. The current product slice proves H2 only.
+Stage 7E adds the independent `community.metadata.relations.v1` capability.
+Java invokes real `IDbMetaData.views`, `getImportedKeys`, `getExportedKeys`, and
+`getPrimaryKeys` methods. Core exposes four forced-read-only,
+cancellation-safe services; Axum adds four POST routes; Tauri adds four
+commands; and both frontend adapters share the generated request and response
+types. Views reuse the stable table projection. View, foreign-key, and
+primary-key lists each have explicit 65,536-entry limits, and Rust applies both
+allocation-free pre-decode counts and decoded response validation under the
+same cumulative 8 MiB ceiling. The real H2 gates create a view plus named
+primary and foreign keys and verify both foreign-key directions through the
+bridge and product boundary.
+
+Functions, procedures, triggers, remaining builders, type conversion,
+non-relational operations, script execution, formatting, validation,
+completion, end-user Community UI workflows, and per-dialect conformance are
+not implemented yet. The current product slice proves H2 only.
 
 Spring Boot, Spring Web, Spring AI, MCP, JCEF, product storage, and updater logic
 do not belong in the final Java engine.
@@ -274,9 +287,11 @@ Axum, Tauri, and the shared frontend backend adapters, while enforcing the exact
 embedded classpath lock at product startup and forced-read-only metadata
 sessions. The fourth slice adds databases, tables, columns, and indexes across
 the same Java/Core/Axum/Tauri/frontend path with independent capability
-negotiation and bounded responses. Signing, installation, hot reload,
-downloading, compatibility selection, updates, rollback, end-user Community
-workflows, and the remaining compatibility operations are not implemented.
+negotiation and bounded responses. The fifth slice adds views, both foreign-key
+directions, and primary keys through another independent capability. Signing,
+installation, hot reload, downloading, compatibility selection, updates,
+rollback, end-user Community workflows, and the remaining compatibility
+operations are not implemented.
 
 ## Local attachment and MCP boundary
 
@@ -333,10 +348,10 @@ set.
   over-budget entries before the isolated Community loader is created; Java
   also rejects manifest `Class-Path` escapes. The fixed build removes such
   dependency attributes deterministically before lock verification and verifies
-  two consecutive clean builds byte-for-byte. Configuring it requires all five
+  two consecutive clean builds byte-for-byte. Configuring it requires all six
   Community capabilities during handshake, and Community response projection
   is capped at 8 MiB in both Java and Rust. Rust applies that budget to raw
-  Community response tags `200..=207` before Protobuf decoding, including
+  Community response tags `200..=211` before Protobuf decoding, including
   duplicate fields, and allocation-free scans known nested repeated fields so
   collection limits are enforced before DTO allocation. It then validates
   decoded collection counts, nested index columns, field sizes, aggregate

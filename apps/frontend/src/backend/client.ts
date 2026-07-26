@@ -10,12 +10,15 @@ export type CancelOperationResponse = Schema<'CancelOperationResponse'>;
 export type BuildCommunityCreateSchemaRequest = Schema<'BuildCommunityCreateSchemaRequest'>;
 export type CommunityBuiltSql = Schema<'CommunityBuiltSql'>;
 export type CommunityDatabaseList = Schema<'CommunityDatabaseList'>;
+export type CommunityForeignKeyList = Schema<'CommunityForeignKeyList'>;
 export type CommunityPluginCatalog = Schema<'CommunityPluginCatalog'>;
+export type CommunityPrimaryKeyList = Schema<'CommunityPrimaryKeyList'>;
 export type CommunitySchemaList = Schema<'CommunitySchemaList'>;
 export type CommunitySqlAnalysis = Schema<'CommunitySqlAnalysis'>;
 export type CommunityTableColumnList = Schema<'CommunityTableColumnList'>;
 export type CommunityTableIndexList = Schema<'CommunityTableIndexList'>;
 export type CommunityTableList = Schema<'CommunityTableList'>;
+export type CommunityViewList = Schema<'CommunityViewList'>;
 export type CreateAgentSessionRequest = Schema<'CreateAgentSessionRequest'>;
 export type CreateDatasourceRequest = Schema<'CreateDatasourceRequest'>;
 export type CreateProviderProfileRequest = Schema<'CreateProviderProfileRequest'>;
@@ -29,10 +32,12 @@ export type JdbcDriver = Schema<'JdbcDriver'>;
 export type JdbcDriverList = Schema<'JdbcDriverList'>;
 export type JdbcValue = Schema<'JdbcValue'>;
 export type ListCommunitySchemasRequest = Schema<'ListCommunitySchemasRequest'>;
+export type ListCommunityTableKeysRequest = Schema<'ListCommunityTableKeysRequest'>;
 export type ListCommunityColumnsRequest = Schema<'ListCommunityColumnsRequest'>;
 export type ListCommunityDatabasesRequest = Schema<'ListCommunityDatabasesRequest'>;
 export type ListCommunityIndexesRequest = Schema<'ListCommunityIndexesRequest'>;
 export type ListCommunityTablesRequest = Schema<'ListCommunityTablesRequest'>;
+export type ListCommunityViewsRequest = Schema<'ListCommunityViewsRequest'>;
 export type OperationEventEnvelope = Schema<'OperationEventEnvelope'>;
 export type OperationSnapshot = Schema<'OperationSnapshot'>;
 export type OperationStreamMessage = Schema<'OperationStreamMessage'>;
@@ -117,6 +122,22 @@ export interface BackendClient {
     request: ListCommunityIndexesRequest,
     signal?: AbortSignal,
   ): Promise<CommunityTableIndexList>;
+  listCommunityViews(
+    request: ListCommunityViewsRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityViewList>;
+  listCommunityImportedKeys(
+    request: ListCommunityTableKeysRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityForeignKeyList>;
+  listCommunityExportedKeys(
+    request: ListCommunityTableKeysRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityForeignKeyList>;
+  listCommunityPrimaryKeys(
+    request: ListCommunityTableKeysRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityPrimaryKeyList>;
   buildCommunityCreateSchema(
     request: BuildCommunityCreateSchemaRequest,
     signal?: AbortSignal,

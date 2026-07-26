@@ -9,11 +9,16 @@ import ai.chat2db.rust.compat.protocol.v1.CommunityDatabaseCountLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunityDatabaseList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityDownloadUrlLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunityDriverConfig;
+import ai.chat2db.rust.compat.protocol.v1.CommunityForeignKey;
+import ai.chat2db.rust.compat.protocol.v1.CommunityForeignKeyList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityIndexColumnCountLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunityIndexCountLimit;
+import ai.chat2db.rust.compat.protocol.v1.CommunityKeyCountLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunityParsedStatement;
 import ai.chat2db.rust.compat.protocol.v1.CommunityPluginCatalog;
 import ai.chat2db.rust.compat.protocol.v1.CommunityPluginDescriptor;
+import ai.chat2db.rust.compat.protocol.v1.CommunityPrimaryKey;
+import ai.chat2db.rust.compat.protocol.v1.CommunityPrimaryKeyList;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySchema;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySchemaList;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySchemaCountLimit;
@@ -26,6 +31,8 @@ import ai.chat2db.rust.compat.protocol.v1.CommunityTableIndex;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableIndexColumn;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableIndexList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableList;
+import ai.chat2db.rust.compat.protocol.v1.CommunityViewCountLimit;
+import ai.chat2db.rust.compat.protocol.v1.CommunityViewList;
 import ai.chat2db.rust.compat.protocol.v1.JdbcProtocolLimit;
 import ai.chat2db.rust.compat.protocol.v1.OperationOutcome;
 import java.io.IOException;
@@ -69,6 +76,8 @@ final class CommunityPluginRegistry implements AutoCloseable {
             "ai.chat2db.spi.model.request.TablesRequest";
     private static final String TABLE_METADATA_REQUEST_CLASS =
             "ai.chat2db.spi.model.request.TableMetadataRequest";
+    private static final String VIEW_METADATA_REQUEST_CLASS =
+            "ai.chat2db.spi.model.request.ViewMetadataRequest";
     private static final int MAX_CLASSPATH_ARTIFACTS =
             CommunityCountLimit.COMMUNITY_COUNT_LIMIT_MAX_CLASSPATH_ARTIFACTS.getNumber();
     private static final long MAX_CLASSPATH_BYTES =
@@ -85,6 +94,10 @@ final class CommunityPluginRegistry implements AutoCloseable {
             CommunityDatabaseCountLimit.COMMUNITY_DATABASE_COUNT_LIMIT_MAX_DATABASES.getNumber();
     private static final int MAX_TABLES =
             CommunityTableCountLimit.COMMUNITY_TABLE_COUNT_LIMIT_MAX_TABLES.getNumber();
+    private static final int MAX_VIEWS =
+            CommunityViewCountLimit.COMMUNITY_VIEW_COUNT_LIMIT_MAX_VIEWS.getNumber();
+    private static final int MAX_KEYS =
+            CommunityKeyCountLimit.COMMUNITY_KEY_COUNT_LIMIT_MAX_KEYS.getNumber();
     private static final int MAX_COLUMNS =
             CommunityColumnCountLimit.COMMUNITY_COLUMN_COUNT_LIMIT_MAX_COLUMNS.getNumber();
     private static final int MAX_INDEXES =
@@ -278,6 +291,62 @@ final class CommunityPluginRegistry implements AutoCloseable {
         });
     }
 
+    void validateViewsRequest(
+            String databaseType,
+            String databaseName,
+            String schemaName,
+            String viewNamePattern)
+            throws RuntimeFailure {
+        ensureOpen();
+        requireDatabaseType(databaseType);
+        requireUtf8(databaseName, MAX_SCALAR_BYTES, "database_name");
+        requireUtf8(schemaName, MAX_SCALAR_BYTES, "schema_name");
+        requireUtf8(viewNamePattern, MAX_SCALAR_BYTES, "view_name_pattern");
+        requirePlugin(databaseType);
+    }
+
+    CommunityViewList views(
+            String databaseType,
+            Connection connection,
+            String databaseName,
+            String schemaName,
+            String viewNamePattern)
+            throws RuntimeFailure {
+        validateViewsRequest(databaseType, databaseName, schemaName, viewNamePattern);
+        return withMetadata(databaseType, metadata -> {
+            Object result;
+            if (viewNamePattern.isBlank()) {
+                result = invoke(
+                        metadata,
+                        "views",
+                        new Class<?>[] {Connection.class, String.class, String.class},
+                        connection,
+                        databaseName,
+                        schemaName);
+            } else {
+                Object request = viewMetadataRequest(databaseName, schemaName, viewNamePattern);
+                result = invoke(
+                        metadata,
+                        "views",
+                        new Class<?>[] {Connection.class, request.getClass()},
+                        connection,
+                        request);
+            }
+            List<?> values = requireList(result, "views");
+            if (values.size() > MAX_VIEWS) {
+                throw RuntimeFailure.limit("community views", MAX_VIEWS);
+            }
+            ProjectionBudget budget = ProjectionBudget.response();
+            budget.consumeMessage();
+            CommunityViewList.Builder views = CommunityViewList.newBuilder();
+            for (Object value : values) {
+                budget.consumeMessage();
+                views.addViews(table(value, budget));
+            }
+            return views.build();
+        });
+    }
+
     void validateTableObjectRequest(
             String databaseType, String databaseName, String schemaName, String tableName)
             throws RuntimeFailure {
@@ -353,6 +422,108 @@ final class CommunityPluginRegistry implements AutoCloseable {
                 indexes.addIndexes(index(value, budget, projectedColumns));
             }
             return indexes.build();
+        });
+    }
+
+    CommunityForeignKeyList importedKeys(
+            String databaseType,
+            Connection connection,
+            String databaseName,
+            String schemaName,
+            String tableName)
+            throws RuntimeFailure {
+        return foreignKeys(
+                databaseType,
+                connection,
+                databaseName,
+                schemaName,
+                tableName,
+                "getImportedKeys",
+                "imported keys");
+    }
+
+    CommunityForeignKeyList exportedKeys(
+            String databaseType,
+            Connection connection,
+            String databaseName,
+            String schemaName,
+            String tableName)
+            throws RuntimeFailure {
+        return foreignKeys(
+                databaseType,
+                connection,
+                databaseName,
+                schemaName,
+                tableName,
+                "getExportedKeys",
+                "exported keys");
+    }
+
+    private CommunityForeignKeyList foreignKeys(
+            String databaseType,
+            Connection connection,
+            String databaseName,
+            String schemaName,
+            String tableName,
+            String method,
+            String field)
+            throws RuntimeFailure {
+        validateTableObjectRequest(databaseType, databaseName, schemaName, tableName);
+        return withMetadata(databaseType, metadata -> {
+            Object request = metadataRequest(
+                    TABLE_METADATA_REQUEST_CLASS, databaseName, schemaName, tableName);
+            List<?> values = requireList(
+                    invoke(
+                            metadata,
+                            method,
+                            new Class<?>[] {Connection.class, request.getClass()},
+                            connection,
+                            request),
+                    field);
+            if (values.size() > MAX_KEYS) {
+                throw RuntimeFailure.limit("community " + field, MAX_KEYS);
+            }
+            ProjectionBudget budget = ProjectionBudget.response();
+            budget.consumeMessage();
+            CommunityForeignKeyList.Builder keys = CommunityForeignKeyList.newBuilder();
+            for (Object value : values) {
+                budget.consumeMessage();
+                keys.addKeys(foreignKey(value, budget));
+            }
+            return keys.build();
+        });
+    }
+
+    CommunityPrimaryKeyList primaryKeys(
+            String databaseType,
+            Connection connection,
+            String databaseName,
+            String schemaName,
+            String tableName)
+            throws RuntimeFailure {
+        validateTableObjectRequest(databaseType, databaseName, schemaName, tableName);
+        return withMetadata(databaseType, metadata -> {
+            Object request = metadataRequest(
+                    TABLE_METADATA_REQUEST_CLASS, databaseName, schemaName, tableName);
+            List<?> values = requireList(
+                    invoke(
+                            metadata,
+                            "getPrimaryKeys",
+                            new Class<?>[] {Connection.class, request.getClass()},
+                            connection,
+                            request),
+                    "primary keys");
+            if (values.size() > MAX_KEYS) {
+                throw RuntimeFailure.limit("community primary keys", MAX_KEYS);
+            }
+            ProjectionBudget budget = ProjectionBudget.response();
+            budget.consumeMessage();
+            CommunityPrimaryKeyList.Builder keys = CommunityPrimaryKeyList.newBuilder();
+            for (Object value : values) {
+                budget.consumeMessage();
+                keys.addKeys(primaryKey(value, budget));
+            }
+            return keys.build();
         });
     }
 
@@ -693,6 +864,112 @@ final class CommunityPluginRegistry implements AutoCloseable {
         return table.build();
     }
 
+    private CommunityForeignKey foreignKey(Object value, ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        return CommunityForeignKey.newBuilder()
+                .setPrimaryTableDatabase(getString(
+                        value,
+                        "getPkTableCat",
+                        MAX_SCALAR_BYTES,
+                        "foreign_key_primary_database",
+                        budget))
+                .setPrimaryTableSchema(getString(
+                        value,
+                        "getPkTableSchem",
+                        MAX_SCALAR_BYTES,
+                        "foreign_key_primary_schema",
+                        budget))
+                .setPrimaryTableName(getString(
+                        value,
+                        "getPkTableName",
+                        MAX_SCALAR_BYTES,
+                        "foreign_key_primary_table",
+                        budget))
+                .setPrimaryColumnName(getString(
+                        value,
+                        "getPkColumnName",
+                        MAX_SCALAR_BYTES,
+                        "foreign_key_primary_column",
+                        budget))
+                .setForeignTableDatabase(getString(
+                        value,
+                        "getFkTableCat",
+                        MAX_SCALAR_BYTES,
+                        "foreign_key_foreign_database",
+                        budget))
+                .setForeignTableSchema(getString(
+                        value,
+                        "getFkTableSchem",
+                        MAX_SCALAR_BYTES,
+                        "foreign_key_foreign_schema",
+                        budget))
+                .setForeignTableName(getString(
+                        value,
+                        "getFkTableName",
+                        MAX_SCALAR_BYTES,
+                        "foreign_key_foreign_table",
+                        budget))
+                .setForeignColumnName(getString(
+                        value,
+                        "getFkColumnName",
+                        MAX_SCALAR_BYTES,
+                        "foreign_key_foreign_column",
+                        budget))
+                .setKeySequence(getRequiredInteger(value, "getKeySeq", budget))
+                .setUpdateRule(getRequiredInteger(value, "getUpdateRule", budget))
+                .setDeleteRule(getRequiredInteger(value, "getDeleteRule", budget))
+                .setForeignKeyName(getString(
+                        value,
+                        "getFkName",
+                        MAX_SCALAR_BYTES,
+                        "foreign_key_name",
+                        budget))
+                .setPrimaryKeyName(getString(
+                        value,
+                        "getPkName",
+                        MAX_SCALAR_BYTES,
+                        "foreign_key_primary_key_name",
+                        budget))
+                .setDeferrability(getRequiredInteger(value, "getDeferrability", budget))
+                .build();
+    }
+
+    private CommunityPrimaryKey primaryKey(Object value, ProjectionBudget budget)
+            throws ReflectiveOperationException, RuntimeFailure {
+        return CommunityPrimaryKey.newBuilder()
+                .setDatabaseName(getString(
+                        value,
+                        "getDatabaseName",
+                        MAX_SCALAR_BYTES,
+                        "primary_key_database",
+                        budget))
+                .setSchemaName(getString(
+                        value,
+                        "getSchemaName",
+                        MAX_SCALAR_BYTES,
+                        "primary_key_schema",
+                        budget))
+                .setTableName(getString(
+                        value,
+                        "getTableName",
+                        MAX_SCALAR_BYTES,
+                        "primary_key_table",
+                        budget))
+                .setColumnName(getString(
+                        value,
+                        "getColumnName",
+                        MAX_SCALAR_BYTES,
+                        "primary_key_column",
+                        budget))
+                .setName(getString(
+                        value,
+                        "getPrimaryKeyName",
+                        MAX_SCALAR_BYTES,
+                        "primary_key_name",
+                        budget))
+                .build();
+    }
+
     private CommunityTableColumn column(Object value, ProjectionBudget budget)
             throws ReflectiveOperationException, RuntimeFailure {
         CommunityTableColumn.Builder column = CommunityTableColumn.newBuilder()
@@ -892,6 +1169,17 @@ final class CommunityPluginRegistry implements AutoCloseable {
         invokeSetter(request, "setDatabaseName", String.class, databaseName);
         invokeSetter(request, "setSchemaName", String.class, schemaName);
         invokeSetter(request, "setTableName", String.class, tableName);
+        return request;
+    }
+
+    private Object viewMetadataRequest(
+            String databaseName, String schemaName, String viewName)
+            throws ReflectiveOperationException {
+        Class<?> requestType = Class.forName(VIEW_METADATA_REQUEST_CLASS, true, loader);
+        Object request = requestType.getDeclaredConstructor().newInstance();
+        invokeSetter(request, "setDatabaseName", String.class, databaseName);
+        invokeSetter(request, "setSchemaName", String.class, schemaName);
+        invokeSetter(request, "setViewName", String.class, viewName);
         return request;
     }
 

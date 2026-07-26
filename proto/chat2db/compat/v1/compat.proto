@@ -57,6 +57,10 @@ message ClientEnvelope {
     ListCommunityTablesRequest list_community_tables = 205;
     ListCommunityColumnsRequest list_community_columns = 206;
     ListCommunityIndexesRequest list_community_indexes = 207;
+    ListCommunityViewsRequest list_community_views = 208;
+    ListCommunityTableKeysRequest list_community_imported_keys = 209;
+    ListCommunityTableKeysRequest list_community_exported_keys = 210;
+    ListCommunityTableKeysRequest list_community_primary_keys = 211;
   }
 }
 
@@ -89,6 +93,10 @@ message ServerEnvelope {
     CommunityTableList community_table_list = 205;
     CommunityTableColumnList community_table_column_list = 206;
     CommunityTableIndexList community_table_index_list = 207;
+    CommunityViewList community_view_list = 208;
+    CommunityForeignKeyList community_imported_key_list = 209;
+    CommunityForeignKeyList community_exported_key_list = 210;
+    CommunityPrimaryKeyList community_primary_key_list = 211;
   }
 }
 

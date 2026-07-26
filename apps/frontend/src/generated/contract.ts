@@ -196,6 +196,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/community/metadata/exported-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["list_community_exported_keys"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/community/metadata/imported-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["list_community_imported_keys"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/community/metadata/indexes": {
         parameters: {
             query?: never;
@@ -206,6 +238,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["list_community_indexes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/community/metadata/primary-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["list_community_primary_keys"];
         delete?: never;
         options?: never;
         head?: never;
@@ -238,6 +286,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["list_community_tables"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/community/metadata/views": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["list_community_views"];
         delete?: never;
         options?: never;
         head?: never;
@@ -890,6 +954,31 @@ export interface components {
             /** @description JDBC URL template declared by the plugin. */
             url: string;
         };
+        /** @description Secret-free metadata for one imported or exported foreign-key column pair. */
+        CommunityForeignKey: {
+            /** Format: int32 */
+            deferrability: number;
+            /** Format: int32 */
+            deleteRule: number;
+            foreignColumnName: string;
+            foreignKeyName: string;
+            foreignTableDatabase: string;
+            foreignTableName: string;
+            foreignTableSchema: string;
+            /** Format: int32 */
+            keySequence: number;
+            primaryColumnName: string;
+            primaryKeyName: string;
+            primaryTableDatabase: string;
+            primaryTableName: string;
+            primaryTableSchema: string;
+            /** Format: int32 */
+            updateRule: number;
+        };
+        /** @description Stable imported or exported foreign-key collection. */
+        CommunityForeignKeyList: {
+            items: components["schemas"]["CommunityForeignKey"][];
+        };
         /** @description One statement returned by the retained Community parser. */
         CommunityParsedStatement: {
             /** @description Bounded parser-specific statement kind. */
@@ -936,6 +1025,18 @@ export interface components {
             sqlBuilderAvailable: boolean;
             /** @description Whether retained SQL parsing is available. */
             sqlParserAvailable: boolean;
+        };
+        /** @description Secret-free metadata for one primary-key column. */
+        CommunityPrimaryKey: {
+            columnName: string;
+            databaseName: string;
+            name: string;
+            schemaName: string;
+            tableName: string;
+        };
+        /** @description Stable primary-key collection returned by Community metadata. */
+        CommunityPrimaryKeyList: {
+            items: components["schemas"]["CommunityPrimaryKey"][];
         };
         /** @description Secret-free database schema metadata returned by Community. */
         CommunitySchema: {
@@ -1082,6 +1183,11 @@ export interface components {
         };
         /** @description Stable table collection returned by Community metadata APIs. */
         CommunityTableList: {
+            items: components["schemas"]["CommunityTable"][];
+        };
+        /** @description Stable view collection returned by Community metadata APIs. */
+        CommunityViewList: {
+            /** @description Views represented by the same bounded metadata projection as tables. */
             items: components["schemas"]["CommunityTable"][];
         };
         /** @description Health information for one owned component. */
@@ -1371,6 +1477,14 @@ export interface components {
             /** @description Datasource whose installed connection descriptor is used. */
             datasourceId: string;
         };
+        /** @description Request to list imported, exported, or primary keys for one table. */
+        ListCommunityTableKeysRequest: {
+            databaseName: string;
+            databaseType: string;
+            datasourceId: string;
+            schemaName: string;
+            tableName: string;
+        };
         /** @description Request to list tables through one datasource connection. */
         ListCommunityTablesRequest: {
             databaseName: string;
@@ -1378,6 +1492,14 @@ export interface components {
             datasourceId: string;
             schemaName: string;
             tableNamePattern: string;
+        };
+        /** @description Request to list views through one datasource connection. */
+        ListCommunityViewsRequest: {
+            databaseName: string;
+            databaseType: string;
+            datasourceId: string;
+            schemaName: string;
+            viewNamePattern: string;
         };
         /** @description Replayable asynchronous query lifecycle event. */
         OperationEvent: {
@@ -2810,6 +2932,108 @@ export interface operations {
             };
         };
     };
+    list_community_exported_keys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ListCommunityTableKeysRequest"];
+            };
+        };
+        responses: {
+            /** @description Community exported foreign-key metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityForeignKeyList"];
+                };
+            };
+            /** @description Invalid Community metadata request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected Community metadata failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Community compatibility engine is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    list_community_imported_keys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ListCommunityTableKeysRequest"];
+            };
+        };
+        responses: {
+            /** @description Community imported foreign-key metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityForeignKeyList"];
+                };
+            };
+            /** @description Invalid Community metadata request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected Community metadata failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Community compatibility engine is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
     list_community_indexes: {
         parameters: {
             query?: never;
@@ -2830,6 +3054,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CommunityTableIndexList"];
+                };
+            };
+            /** @description Invalid Community metadata request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected Community metadata failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Community compatibility engine is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    list_community_primary_keys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ListCommunityTableKeysRequest"];
+            };
+        };
+        responses: {
+            /** @description Community primary-key metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityPrimaryKeyList"];
                 };
             };
             /** @description Invalid Community metadata request */
@@ -2932,6 +3207,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CommunityTableList"];
+                };
+            };
+            /** @description Invalid Community metadata request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected Community metadata failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Community compatibility engine is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    list_community_views: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ListCommunityViewsRequest"];
+            };
+        };
+        responses: {
+            /** @description Community view metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityViewList"];
                 };
             };
             /** @description Invalid Community metadata request */

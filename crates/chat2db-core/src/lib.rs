@@ -24,8 +24,9 @@ use chat2db_contract::{
 };
 use chat2db_java_bridge::{
     COMMUNITY_OBJECT_METADATA_CAPABILITY, COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
-    COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
-    COMMUNITY_SQL_PARSER_CAPABILITY, EngineClient, EngineConfig, EngineState, EngineSupervisor,
+    COMMUNITY_RELATION_METADATA_CAPABILITY, COMMUNITY_SCHEMA_METADATA_CAPABILITY,
+    COMMUNITY_SQL_BUILDER_CAPABILITY, COMMUNITY_SQL_PARSER_CAPABILITY, EngineClient, EngineConfig,
+    EngineState, EngineSupervisor,
 };
 use chat2db_storage::{
     CreateDatasource, EncryptedFileVault, PageRequest, SecretChange, SecretValue, SecretVault,
@@ -745,6 +746,7 @@ fn community_health(engine: Option<&EngineClient>) -> ComponentHealth {
                     COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
                     COMMUNITY_SCHEMA_METADATA_CAPABILITY,
                     COMMUNITY_OBJECT_METADATA_CAPABILITY,
+                    COMMUNITY_RELATION_METADATA_CAPABILITY,
                     COMMUNITY_SQL_BUILDER_CAPABILITY,
                     COMMUNITY_SQL_PARSER_CAPABILITY,
                 ]

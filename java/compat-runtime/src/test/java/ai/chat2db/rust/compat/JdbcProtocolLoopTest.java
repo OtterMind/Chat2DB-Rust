@@ -24,7 +24,9 @@ import ai.chat2db.rust.compat.protocol.v1.ListCommunityColumnsRequest;
 import ai.chat2db.rust.compat.protocol.v1.ListCommunityDatabasesRequest;
 import ai.chat2db.rust.compat.protocol.v1.ListCommunityIndexesRequest;
 import ai.chat2db.rust.compat.protocol.v1.ListCommunitySchemasRequest;
+import ai.chat2db.rust.compat.protocol.v1.ListCommunityTableKeysRequest;
 import ai.chat2db.rust.compat.protocol.v1.ListCommunityTablesRequest;
+import ai.chat2db.rust.compat.protocol.v1.ListCommunityViewsRequest;
 import ai.chat2db.rust.compat.protocol.v1.OpenSessionRequest;
 import ai.chat2db.rust.compat.protocol.v1.ProtocolVersion;
 import ai.chat2db.rust.compat.protocol.v1.QueryOptions;
@@ -90,6 +92,7 @@ class JdbcProtocolLoopTest {
                             ProtocolLoop.COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
                             ProtocolLoop.COMMUNITY_SCHEMA_METADATA_CAPABILITY,
                             ProtocolLoop.COMMUNITY_OBJECT_METADATA_CAPABILITY,
+                            ProtocolLoop.COMMUNITY_RELATION_METADATA_CAPABILITY,
                             ProtocolLoop.COMMUNITY_SQL_BUILDER_CAPABILITY,
                             ProtocolLoop.COMMUNITY_SQL_PARSER_CAPABILITY),
                     hello.getHello().getCapabilitiesList());
@@ -298,6 +301,75 @@ class JdbcProtocolLoopTest {
             assertEquals(
                     SessionState.SESSION_STATE_AUTO_COMMIT,
                     missingCommunityObjectPlugin.getError().getSessionState());
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("oversized-community-view-pattern", sessionId))
+                    .setListCommunityViews(ListCommunityViewsRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setViewNamePattern("x".repeat(ProtocolLimits.MAX_SCALAR_BYTES + 1)))
+                    .build());
+            ServerEnvelope oversizedCommunityViewPattern = harness.read();
+            assertEquals(
+                    ServerEnvelope.PayloadCase.ERROR,
+                    oversizedCommunityViewPattern.getPayloadCase());
+            assertEquals(
+                    "protocol.limit_exceeded",
+                    oversizedCommunityViewPattern.getError().getCode());
+            assertEquals(
+                    SessionState.SESSION_STATE_AUTO_COMMIT,
+                    oversizedCommunityViewPattern.getError().getSessionState());
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("blank-community-imported-key-table", sessionId))
+                    .setListCommunityImportedKeys(ListCommunityTableKeysRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setTableName("  "))
+                    .build());
+            ServerEnvelope blankCommunityImportedKeyTable = harness.read();
+            assertEquals(
+                    ServerEnvelope.PayloadCase.ERROR,
+                    blankCommunityImportedKeyTable.getPayloadCase());
+            assertEquals(
+                    "protocol.invalid_table_name",
+                    blankCommunityImportedKeyTable.getError().getCode());
+            assertEquals(
+                    SessionState.SESSION_STATE_AUTO_COMMIT,
+                    blankCommunityImportedKeyTable.getError().getSessionState());
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("oversized-community-exported-key-schema", sessionId))
+                    .setListCommunityExportedKeys(ListCommunityTableKeysRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setSchemaName("x".repeat(ProtocolLimits.MAX_SCALAR_BYTES + 1))
+                            .setTableName("items"))
+                    .build());
+            ServerEnvelope oversizedCommunityExportedKeySchema = harness.read();
+            assertEquals(
+                    ServerEnvelope.PayloadCase.ERROR,
+                    oversizedCommunityExportedKeySchema.getPayloadCase());
+            assertEquals(
+                    "protocol.limit_exceeded",
+                    oversizedCommunityExportedKeySchema.getError().getCode());
+            assertEquals(
+                    SessionState.SESSION_STATE_AUTO_COMMIT,
+                    oversizedCommunityExportedKeySchema.getError().getSessionState());
+
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("blank-community-primary-key-database-type", sessionId))
+                    .setListCommunityPrimaryKeys(ListCommunityTableKeysRequest.newBuilder()
+                            .setDatabaseType("  ")
+                            .setTableName("items"))
+                    .build());
+            ServerEnvelope blankCommunityPrimaryKeyDatabaseType = harness.read();
+            assertEquals(
+                    ServerEnvelope.PayloadCase.ERROR,
+                    blankCommunityPrimaryKeyDatabaseType.getPayloadCase());
+            assertEquals(
+                    "protocol.invalid_database_type",
+                    blankCommunityPrimaryKeyDatabaseType.getError().getCode());
+            assertEquals(
+                    SessionState.SESSION_STATE_AUTO_COMMIT,
+                    blankCommunityPrimaryKeyDatabaseType.getError().getSessionState());
 
             harness.send(ClientEnvelope.newBuilder()
                     .setMeta(meta("begin", sessionId))
