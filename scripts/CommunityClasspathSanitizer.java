@@ -355,12 +355,11 @@ public final class CommunityClasspathSanitizer {
         try (InputStream input = source.getInputStream(pomEntry)) {
             pom = input.readAllBytes();
         }
-        for (byte value : pom) {
-            if (value == '\r') {
-                throw new IOException(
-                        "Community Maven pom.xml is not LF-canonical: "
-                                + artifact.getFileName() + "!" + pomPath);
-            }
+        byte[] canonicalPom = canonicalTextDescriptor(pom, artifact, pomPath);
+        if (requireCanonical && !Arrays.equals(pom, canonicalPom)) {
+            throw new IOException(
+                    "Community Maven pom.xml is not LF-canonical: "
+                            + artifact.getFileName() + "!" + pomPath);
         }
         ZipEntry propertiesEntry = requireRegularEntry(source, propertiesPath, artifact);
         byte[] properties;
@@ -373,7 +372,7 @@ public final class CommunityClasspathSanitizer {
                     "Community Maven descriptor is not LF-canonical: "
                             + artifact.getFileName() + "!" + propertiesPath);
         }
-        return Map.of(propertiesPath, canonical);
+        return Map.of(pomPath, canonicalPom, propertiesPath, canonical);
     }
 
     private static ZipEntry requireRegularEntry(ZipFile source, String name, Path artifact)
@@ -397,6 +396,37 @@ public final class CommunityClasspathSanitizer {
                             + artifact.getFileName() + "!" + communityArtifact.propertiesPath());
         }
         return canonical;
+    }
+
+    private static byte[] canonicalTextDescriptor(
+            byte[] actual, Path artifact, String descriptorPath) throws IOException {
+        ByteArrayOutputStream canonical = new ByteArrayOutputStream(actual.length);
+        boolean sawLf = false;
+        boolean sawCrlf = false;
+        for (int index = 0; index < actual.length; index++) {
+            int value = actual[index] & 0xff;
+            if (value == '\r') {
+                if (index + 1 >= actual.length || actual[index + 1] != '\n') {
+                    throw new IOException(
+                            "invalid Community Maven pom.xml line endings: "
+                                    + artifact.getFileName() + "!" + descriptorPath);
+                }
+                sawCrlf = true;
+                canonical.write('\n');
+                index++;
+            } else {
+                if (value == '\n') {
+                    sawLf = true;
+                }
+                canonical.write(value);
+            }
+        }
+        if (sawLf && sawCrlf) {
+            throw new IOException(
+                    "invalid Community Maven pom.xml line endings: "
+                            + artifact.getFileName() + "!" + descriptorPath);
+        }
+        return canonical.toByteArray();
     }
 
     private static void verifyCommunityDescriptor(
@@ -684,6 +714,9 @@ public final class CommunityClasspathSanitizer {
                     crlfDescriptor,
                     communityArtifact,
                     communityArtifact.properties("\r\n"),
+                    "<project/>\r\n".getBytes(StandardCharsets.UTF_8),
+                    true,
+                    null,
                     archiveTime);
             RebuildPlan communityPlan = RebuildPlan.community(communityArtifact);
             rebuild(lfDescriptor, archiveTime, communityPlan);
@@ -725,18 +758,6 @@ public final class CommunityClasspathSanitizer {
                     communityPlan,
                     "invalid Community Maven descriptor contents");
 
-            Path crlfPom = directory.resolve("descriptor-crlf-pom.jar");
-            writeCommunityFixture(
-                    crlfPom,
-                    communityArtifact,
-                    communityArtifact.properties("\n"),
-                    "<project/>\r\n".getBytes(StandardCharsets.UTF_8),
-                    true,
-                    null,
-                    archiveTime);
-            expectRejected(
-                    crlfPom, archiveTime, communityPlan, "pom.xml is not LF-canonical");
-
             Path mixedPom = directory.resolve("descriptor-mixed-pom.jar");
             writeCommunityFixture(
                     mixedPom,
@@ -748,7 +769,25 @@ public final class CommunityClasspathSanitizer {
                     null,
                     archiveTime);
             expectRejected(
-                    mixedPom, archiveTime, communityPlan, "pom.xml is not LF-canonical");
+                    mixedPom,
+                    archiveTime,
+                    communityPlan,
+                    "invalid Community Maven pom.xml line endings");
+
+            Path bareCarriageReturnPom = directory.resolve("descriptor-bare-cr-pom.jar");
+            writeCommunityFixture(
+                    bareCarriageReturnPom,
+                    communityArtifact,
+                    communityArtifact.properties("\n"),
+                    "<project>\r</project>\n".getBytes(StandardCharsets.UTF_8),
+                    true,
+                    null,
+                    archiveTime);
+            expectRejected(
+                    bareCarriageReturnPom,
+                    archiveTime,
+                    communityPlan,
+                    "invalid Community Maven pom.xml line endings");
 
             Path missingDescriptor = directory.resolve("descriptor-missing.jar");
             writeCommunityFixture(
