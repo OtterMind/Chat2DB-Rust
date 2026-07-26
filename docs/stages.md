@@ -12,7 +12,7 @@ in runtime health until then.
 | 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
 | 5 | Complete | Product transports | Generated OpenAPI/TypeScript contract, Axum JSON/SSE, Tauri 2 commands/channels, shared SQL workbench, product H2 tests |
 | 6 | Complete | Agent, MCP, and CLI | Direct providers, durable bounded tool loop, SQL tools/permissions, compaction, Web/Tauri run transports, owner-only local attachment, read-query CLI, and bounded `rmcp` stdio tools |
-| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs, 7B fixed Community H2 SPI/ANTLR, 7C product Core/Web/Tauri contracts, 7D relational object metadata, 7E relation metadata, and 7F programmability metadata implemented; remaining plugin/UI operations and per-dialect conformance explicit |
+| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs, 7B fixed Community H2 SPI/ANTLR, 7C product Core/Web/Tauri contracts, 7D relational object metadata, 7E relation metadata, 7F programmability metadata, and 7G end-user object explorer implemented; remaining plugin operations and per-dialect conformance explicit |
 | 8 | Planned | Packaging and release | License authorization, NOTICE/SBOM, jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
 
 Stage 3 completion means the versioned Rust-Java bridge can load an external
@@ -142,8 +142,25 @@ procedure-list behavior, exercise all eight services, preserve the external
 catalog across H2's schema-based detail lookup, and prove session cleanup still
 permits driver unload.
 
-Stage 7 remains incomplete: no end-user Community workflow uses the new
-frontend backend methods yet. Type conversion, script execution, data
+Stage 7G connects the complete fixed 20-operation Community product contract to
+the shared React workbench. The three-pane layout keeps datasource selection,
+Community objects, and SQL/results visible together. Plugin, database, and
+schema scopes drive lazy table, view, function, procedure, and trigger lists;
+table details load columns, indexes, imported/exported keys, and primary keys;
+routine and trigger details load only after selection. Independent metadata
+groups publish as they settle and retain successful results when a long-tail
+plugin lacks or delays another group. The heading refresh action retries catalog
+and scope failures without discarding the selected database or schema.
+Driver-class mapping chooses the initial plugin, while a missing inventory
+identity never guesses a dialect. Direct name lookup keeps H2 aliases reachable
+even when its function list is empty. `CREATE SCHEMA` builds SQL into the editor
+without executing it, and SQL parsing is an explicit bounded Analyze action
+enabled only when the selected plugin advertises parser support. Focused model
+tests verify request scope, operation fan-out, progressive and partial result
+retention, abort propagation, deterministic selection, and driver-to-plugin
+mapping.
+
+Stage 7 remains incomplete. Type conversion, script execution, data
 import/export, formatting, validation, completion, non-relational behavior,
 remaining builders and plugin inventory, driver distribution, and per-dialect
 conformance are not implemented.

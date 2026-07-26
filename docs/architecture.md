@@ -27,10 +27,11 @@ building, and retained ANTLR parsing. Product Core, Axum, Tauri, and both
 frontend backend adapters expose catalog, schemas, databases, tables, columns,
 indexes, views, imported and exported foreign keys, primary keys, functions,
 function parameters, procedures, procedure parameters, triggers, schema SQL
-building, and parsing when the exact locked classpath is configured. Signing,
-distribution, end-user Community workflows, the remaining dialect estate, and
-packaging remain target components. CLI and MCP attach to a running host rather than
-composing a second product runtime.
+building, and parsing when the exact locked classpath is configured. The shared
+React workbench consumes all 20 operations through an end-user object explorer,
+schema SQL insertion, and explicit SQL analysis. Signing, distribution, the
+remaining dialect estate, and packaging remain target components. CLI and MCP
+attach to a running host rather than composing a second product runtime.
 
 ## Ownership
 
@@ -184,10 +185,26 @@ Java aliases and a trigger, exercise every operation plus injection-shaped and
 missing-detail requests, and prove driver unload after all metadata sessions
 close.
 
+Stage 7G connects the complete fixed 20-operation Community product contract to
+the shared React workbench. Its three-pane layout keeps datasource selection,
+Community objects, and the SQL/result workspace visible together. Plugin,
+database, and schema scopes lazily load table, view, function, procedure, and
+trigger groups, followed by relational or programmability details only after
+selection. Independent requests publish each settled result without waiting for
+slower peers, so an unsupported long-tail metadata group cannot hide successful
+groups. One refresh action
+retries catalog and scope failures while preserving the selected scope. The
+initial plugin is mapped from the managed JDBC driver's class, and a missing
+driver identity never guesses a dialect. Direct routine and trigger lookup
+covers objects omitted by a vendor's list metadata. `CREATE SCHEMA` inserts
+generated SQL without executing it, and the bounded Analyze action is enabled
+only when the selected plugin advertises parser support. Scope and detail
+requests are abortable; the responsive object browser preserves keyboard
+tab/dialog behavior and starts collapsed on mobile.
+
 Remaining builders, type conversion, non-relational operations, script
-execution, formatting, validation, completion, end-user Community UI workflows,
-and per-dialect conformance are not implemented yet. The current product slice
-proves H2 only.
+execution, import/export, formatting, validation, completion, and per-dialect
+conformance are not implemented yet. The current product slice proves H2 only.
 
 Spring Boot, Spring Web, Spring AI, MCP, JCEF, product storage, and updater logic
 do not belong in the final Java engine.
@@ -308,9 +325,11 @@ the same Java/Core/Axum/Tauri/frontend path with independent capability
 negotiation and bounded responses. The fifth slice adds views, both foreign-key
 directions, and primary keys through another independent capability. The sixth
 slice adds functions, procedures, their parameters, and triggers through eight
-more product operations. Signing, installation, hot reload, downloading,
-compatibility selection, updates, rollback, end-user Community workflows, and
-the remaining compatibility operations are not implemented.
+more product operations. The seventh slice connects all 20 operations to the
+shared React workbench through an object explorer, lazy details, partial-result
+handling, schema SQL insertion, and explicit SQL analysis. Signing,
+installation, hot reload, downloading, compatibility selection, updates,
+rollback, and the remaining compatibility operations are not implemented.
 
 ## Local attachment and MCP boundary
 

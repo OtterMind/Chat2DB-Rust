@@ -4,7 +4,7 @@ Private implementation of the Chat2DB Community hybrid runtime.
 
 ## Current state
 
-The repository has completed Stages 1 through 6 and the first six independently
+The repository has completed Stages 1 through 6 and the first seven independently
 buildable Stage 7 slices:
 
 - canonical Rust API contracts;
@@ -62,7 +62,11 @@ buildable Stage 7 slices:
   checked-in filename, byte-length, and SHA-256 lock; and
 - product-owned Community DTOs and Core services exposed consistently through
   Axum, Tauri, and the shared HTTP/Tauri frontend backend contract, with exact
-  locked-classpath startup and forced-read-only metadata sessions.
+  locked-classpath startup and forced-read-only metadata sessions; and
+- an end-user Community object explorer that selects plugin, database, and
+  schema scopes, preserves partial metadata from long-tail plugins, lazily opens
+  relational and programmability details, inserts generated schema SQL into the
+  console, and explicitly analyzes editor SQL.
 
 Stage 6 is complete. Web and desktop own the product runtime and publish its
 owner-only local endpoint; CLI and MCP attach to that host and never contact
@@ -76,9 +80,11 @@ transports. Stage 7D adds database, table, column, and index metadata through a
 separate capability. Stage 7E adds views, imported and exported foreign keys,
 and primary keys through another capability. Stage 7F adds functions,
 function parameters, procedures, procedure parameters, and triggers through the
-same Core/Axum/Tauri/frontend boundary. Signing, downloading, updating,
-rollback, end-user Community UI workflows, the remaining builder/parser estate,
-and full per-dialect compatibility remain Stage 7 work.
+same Core/Axum/Tauri/frontend boundary. Stage 7G connects all 20 fixed Community
+operations to the shared React workbench through a three-pane object explorer,
+partial long-tail metadata, lazy detail views, schema SQL generation, and
+explicit SQL analysis. Signing, downloading, updating, rollback, the remaining
+builder/parser estate, and full per-dialect compatibility remain Stage 7 work.
 
 ## Architecture
 
@@ -152,7 +158,7 @@ make check-contracts
 ```
 
 Build the Java engine, fixed Community classpath, and shared frontend, then run
-the Web product host with the Stage 7C-7F services enabled:
+the Web product host with the Stage 7C-7G services enabled:
 
 ```bash
 make java community-h2-classpath frontend

@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleStop,
+  Code2,
   Database,
   KeyRound,
   LoaderCircle,
@@ -19,6 +20,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 're
 import {
   ApiRequestError,
   BackendClient,
+  CommunitySqlAnalysis,
   CreateDatasourceRequest,
   Datasource,
   DatasourceConnection,
@@ -34,6 +36,7 @@ import {
   createBackendClient,
   observeOperation,
 } from './backend';
+import { CommunityExplorer } from './CommunityExplorer';
 
 const PAGE_ROWS = 50n;
 const PAGE_BYTES = '1048576';
@@ -398,15 +401,53 @@ export default function App() {
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [loadingDatasources, setLoadingDatasources] = useState(true);
   const [sql, setSql] = useState('SELECT 1;');
+  const [communitySelection, setCommunitySelection] = useState({ datasourceKey: '', databaseType: '' });
+  const [communityParserAvailable, setCommunityParserAvailable] = useState(false);
+  const [sqlAnalysis, setSqlAnalysis] = useState<CommunitySqlAnalysis | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
   const [operation, setOperation] = useState<QueryOperation | null>(null);
   const [resultPage, setResultPage] = useState<ResultPage | null>(null);
   const [resultLoading, setResultLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const subscriptionRef = useRef<OperationSubscription | null>(null);
   const resultRequestRef = useRef(0);
+  const analysisRequestRef = useRef(0);
 
   const selectedDatasource = datasources.find((datasource) => datasource.id === selectedId);
+  const selectedDatasourceKey = selectedDatasource
+    ? `${selectedDatasource.id}:${selectedDatasource.revision}:${selectedDatasource.driverId}`
+    : '';
+  const communityDatabaseType = communitySelection.datasourceKey === selectedDatasourceKey
+    ? communitySelection.databaseType
+    : '';
+  const communityCompatibility = health?.components.find(
+    (component) => component.id === 'community-compatibility',
+  );
   const queryRunning = operation?.status === 'running' || operation?.status === 'starting';
+
+  const updateSql = useCallback((nextSql: string) => {
+    analysisRequestRef.current += 1;
+    setAnalysisLoading(false);
+    setSqlAnalysis(null);
+    setSql(nextSql);
+  }, []);
+
+  const selectCommunityDatabaseType = useCallback((databaseType: string) => {
+    analysisRequestRef.current += 1;
+    setAnalysisLoading(false);
+    setSqlAnalysis(null);
+    setCommunityParserAvailable(false);
+    setCommunitySelection({ datasourceKey: selectedDatasourceKey, databaseType });
+  }, [selectedDatasourceKey]);
+
+  const setParserAvailability = useCallback((available: boolean) => {
+    if (!available) {
+      analysisRequestRef.current += 1;
+      setAnalysisLoading(false);
+      setSqlAnalysis(null);
+    }
+    setCommunityParserAvailable(available);
+  }, []);
 
   const refreshDatasources = useCallback(async (signal?: AbortSignal) => {
     setLoadingDatasources(true);
@@ -437,6 +478,13 @@ export default function App() {
   }, [client, refreshDatasources]);
 
   useEffect(() => () => subscriptionRef.current?.close(), []);
+
+  useEffect(() => {
+    analysisRequestRef.current += 1;
+    setAnalysisLoading(false);
+    setSqlAnalysis(null);
+    setCommunityParserAvailable(false);
+  }, [selectedDatasourceKey]);
 
   const saveDatasource = async (form: DatasourceFormValue) => {
     if (!dialog) return;
@@ -628,6 +676,30 @@ export default function App() {
     }
   };
 
+  const analyzeSql = async () => {
+    if (
+      !sql.trim()
+      || !communityDatabaseType
+      || !communityParserAvailable
+      || communityCompatibility?.state !== 'ready'
+      || analysisLoading
+    ) return;
+    const requestId = ++analysisRequestRef.current;
+    setAnalysisLoading(true);
+    setError(null);
+    try {
+      const analysis = await client.parseCommunitySql({
+        databaseType: communityDatabaseType,
+        sql,
+      });
+      if (analysisRequestRef.current === requestId) setSqlAnalysis(analysis);
+    } catch (requestError) {
+      if (analysisRequestRef.current === requestId) setError(errorMessage(requestError));
+    } finally {
+      if (analysisRequestRef.current === requestId) setAnalysisLoading(false);
+    }
+  };
+
   const pageBack = () => {
     if (!resultPage || !operation?.resultId) return;
     const current = BigInt(resultPage.offset);
@@ -688,6 +760,16 @@ export default function App() {
         </button>
       </aside>
 
+      <CommunityExplorer
+        client={client}
+        datasource={selectedDatasource}
+        compatibility={communityCompatibility}
+        databaseType={communityDatabaseType}
+        onDatabaseTypeChange={selectCommunityDatabaseType}
+        onParserAvailabilityChange={setParserAvailability}
+        onInsertSql={updateSql}
+      />
+
       <main className="workspace">
         <section className="connection-bar">
           <div className="connection-identity">
@@ -725,6 +807,21 @@ export default function App() {
           <div className="editor-toolbar">
             <div><span className="section-kicker">SQL console</span><strong>Query</strong></div>
             <div className="query-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => void analyzeSql()}
+                disabled={
+                  analysisLoading
+                  || !sql.trim()
+                  || !communityDatabaseType
+                  || !communityParserAvailable
+                  || communityCompatibility?.state !== 'ready'
+                }
+              >
+                {analysisLoading ? <LoaderCircle className="spinning" size={16} aria-hidden="true" /> : <Code2 size={16} aria-hidden="true" />}
+                {analysisLoading ? 'Analyzing' : 'Analyze'}
+              </button>
               {queryRunning ? (
                 <button className="secondary-button danger-text" type="button" onClick={() => void cancelQuery()}>
                   <CircleStop size={16} aria-hidden="true" /> Cancel
@@ -738,12 +835,30 @@ export default function App() {
           </div>
           <textarea
             value={sql}
-            onChange={(event) => setSql(event.target.value)}
+            onChange={(event) => updateSql(event.target.value)}
             spellCheck={false}
             aria-label="SQL query"
           />
+          {sqlAnalysis ? (
+            <section className="analysis-strip" aria-label="Community SQL analysis">
+              <header>
+                <strong>{sqlAnalysis.isSelect ? 'SELECT' : 'NON-SELECT'}</strong>
+                <span>{sqlAnalysis.statements.length} statement{sqlAnalysis.statements.length === 1 ? '' : 's'}</span>
+              </header>
+              <div className="analysis-statements">
+                {sqlAnalysis.statements.slice(0, 4).map((statement, index) => (
+                  <div key={`${statement.statementType}:${index}`}>
+                    <code>{statement.statementType || statement.kind}</code>
+                    <span title={statement.sql}>{statement.sql}</span>
+                  </div>
+                ))}
+                {sqlAnalysis.statements.length === 0 ? <span>No statements returned</span> : null}
+                {sqlAnalysis.statements.length > 4 ? <span>+{sqlAnalysis.statements.length - 4} more</span> : null}
+              </div>
+            </section>
+          ) : null}
           <footer className="editor-status">
-            <span>{selectedDatasource?.hasSecret ? 'Ready' : 'Connection details required'}</span>
+            <span>{selectedDatasource?.hasSecret ? `Ready${communityDatabaseType ? ` · ${communityDatabaseType}` : ''}` : 'Connection details required'}</span>
             {operation ? <code>{operation.id}</code> : null}
           </footer>
         </section>
