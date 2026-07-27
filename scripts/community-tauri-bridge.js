@@ -2,6 +2,10 @@
   const invoke = globalThis.__TAURI__?.core?.invoke;
   if (typeof invoke !== 'function' || typeof globalThis.window !== 'object') return;
 
+  if (globalThis.window.location?.hash === '') {
+    globalThis.window.location.replace('#/workspace');
+  }
+
   globalThis.window.javaQuery = ({ request, onSuccess, onFailure }) => {
     invoke('legacy_request', { request })
       .then((response) => onSuccess?.(response))
