@@ -16,17 +16,19 @@ use chat2db_contract::{
     CommunitySqlCompletionEditorHint, CommunitySqlCompletionEditorHintItem,
     CommunitySqlCompletionRange, CommunitySqlDiagnostic, CommunitySqlValidation, CommunityTable,
     CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
-    CommunityTableIndexList, CommunityTableList, CommunityTrigger, CommunityTriggerList,
-    CommunityViewList, CompleteCommunitySqlRequest, FormatCommunitySqlRequest,
-    GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
-    ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityFunctionsRequest,
-    ListCommunityIndexesRequest, ListCommunityProceduresRequest, ListCommunitySchemasRequest,
-    ListCommunityTableKeysRequest, ListCommunityTablesRequest, ListCommunityTriggersRequest,
-    ListCommunityViewsRequest, ParseCommunitySqlRequest, ValidateCommunitySqlRequest,
+    CommunityTableIndexList, CommunityTableList, CommunityTablePreviewAccepted, CommunityTrigger,
+    CommunityTriggerList, CommunityViewList, CompleteCommunitySqlRequest,
+    FormatCommunitySqlRequest, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
+    GetCommunityTriggerRequest, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
+    ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
+    ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
+    ListCommunityTriggersRequest, ListCommunityViewsRequest, ParseCommunitySqlRequest, QueryLimits,
+    StartCommunityTablePreviewRequest, StartQueryRequest, ValidateCommunitySqlRequest,
 };
 use chat2db_java_bridge::{
     BridgeError, BuildCommunityDmlRequest as BridgeBuildCommunityDmlRequest,
     BuildCommunityNamespaceSqlRequest as BridgeBuildCommunityNamespaceSqlRequest,
+    BuildCommunityTablePreviewSqlRequest as BridgeBuildCommunityTablePreviewSqlRequest,
     CommunityClasspath, CommunityDatabase as BridgeCommunityDatabase,
     CommunityDmlAssignment as BridgeCommunityDmlAssignment,
     CommunityDmlColumn as BridgeCommunityDmlColumn, CommunityDmlRow as BridgeCommunityDmlRow,
@@ -66,6 +68,11 @@ use chat2db_storage::Storage;
 
 const FIXED_COMMUNITY_CLASSPATH_LOCK: &str =
     include_str!("../../../third_party/community-h2-classpath.lock");
+const DEFAULT_TABLE_PREVIEW_ROWS: u32 = 200;
+const MAX_TABLE_PREVIEW_ROWS: u32 = 1_000;
+const TABLE_PREVIEW_MAX_RESULT_BYTES: u64 = 8 * 1024 * 1024;
+const TABLE_PREVIEW_BATCH_BYTES: u32 = 1024 * 1024;
+const TABLE_PREVIEW_RESULT_TTL_SECONDS: u32 = 60 * 60;
 
 /// Loads the product's fixed Community 5.3.0 classpath only when every
 /// filename, byte length, and SHA-256 digest matches the embedded lock.
@@ -864,6 +871,64 @@ impl Application {
             .map_err(AppError::from)
     }
 
+    /// Builds a bounded dialect SELECT and accepts it through a forced read-only session.
+    ///
+    /// # Errors
+    ///
+    /// Returns before query acceptance when the request, Community builder output,
+    /// parser result, datasource, or engine is invalid or unavailable.
+    pub async fn start_community_table_preview(
+        &self,
+        request: StartCommunityTablePreviewRequest,
+    ) -> Result<CommunityTablePreviewAccepted, AppError> {
+        let row_limit = table_preview_row_limit(request.row_limit)?;
+        if request.datasource_id.trim().is_empty() {
+            return Err(AppError::invalid(
+                "invalid_community_table_preview_request",
+                "datasourceId cannot be empty",
+            ));
+        }
+
+        let engine = self.require_community_engine()?;
+        let client = engine.community_client().map_err(AppError::from)?;
+        let built = client
+            .build_table_preview_sql(BridgeBuildCommunityTablePreviewSqlRequest {
+                database_type: request.database_type.clone(),
+                database_name: request.database_name,
+                schema_name: request.schema_name,
+                table_name: request.table_name,
+                row_limit,
+            })
+            .await
+            .map_err(AppError::from)?;
+        let analysis = client
+            .parse_sql(request.database_type, built.sql.clone())
+            .await
+            .map_err(AppError::from)?;
+        validate_table_preview_sql(&built.sql, &analysis)?;
+
+        let accepted = self
+            .start_read_query(StartQueryRequest {
+                datasource_id: request.datasource_id,
+                sql: built.sql.clone(),
+                parameters: Vec::new(),
+                limits: QueryLimits {
+                    max_rows: row_limit.to_string(),
+                    max_result_bytes: TABLE_PREVIEW_MAX_RESULT_BYTES.to_string(),
+                    batch_rows: row_limit.min(DEFAULT_TABLE_PREVIEW_ROWS),
+                    batch_bytes: TABLE_PREVIEW_BATCH_BYTES,
+                    result_ttl_seconds: TABLE_PREVIEW_RESULT_TTL_SECONDS,
+                },
+            })
+            .await?;
+
+        Ok(CommunityTablePreviewAccepted {
+            operation_id: accepted.operation_id,
+            sql: built.sql,
+            row_limit: built.row_limit,
+        })
+    }
+
     /// Parses SQL through the retained Community dialect parser.
     ///
     /// # Errors
@@ -1109,6 +1174,7 @@ fn community_plugin(plugin: BridgeCommunityPlugin) -> CommunityPlugin {
             sql_builder_available: plugin.services.sql_builder_available,
             sql_parser_available: plugin.services.sql_parser_available,
             dml_builder_available: plugin.services.dml_builder_available,
+            dql_builder_available: plugin.services.dql_builder_available,
             value_processor_available: plugin.services.value_processor_available,
             identifier_processor_available: plugin.services.identifier_processor_available,
         },
@@ -1438,6 +1504,46 @@ fn bridge_dml_request(
         target: bridge_dml_target(request.target),
         statement: bridge_dml_statement(request.statement)?,
     })
+}
+
+fn table_preview_row_limit(requested: Option<u32>) -> Result<u32, AppError> {
+    let row_limit = requested.unwrap_or(DEFAULT_TABLE_PREVIEW_ROWS);
+    if row_limit == 0 || row_limit > MAX_TABLE_PREVIEW_ROWS {
+        return Err(AppError::invalid(
+            "invalid_community_table_preview_request",
+            format!("rowLimit must be between 1 and {MAX_TABLE_PREVIEW_ROWS}"),
+        ));
+    }
+    Ok(row_limit)
+}
+
+fn validate_table_preview_sql(
+    sql: &str,
+    analysis: &BridgeCommunitySqlAnalysis,
+) -> Result<(), AppError> {
+    let trimmed = sql.trim_start();
+    let select_prefix = trimmed.get(..6).is_some_and(|prefix| {
+        prefix.eq_ignore_ascii_case("SELECT")
+            && trimmed
+                .as_bytes()
+                .get(6)
+                .is_some_and(u8::is_ascii_whitespace)
+    });
+    // The fixed H2/MySQL parser can classify a SELECT while returning no
+    // projected statements, so the closed builder shape remains part of the check.
+    let projected_statement_is_select = analysis
+        .statements
+        .first()
+        .is_none_or(|statement| statement.kind.eq_ignore_ascii_case("SELECT"));
+    if !analysis.is_select
+        || analysis.statements.len() > 1
+        || !projected_statement_is_select
+        || !select_prefix
+        || sql.contains(';')
+    {
+        return Err(AppError::internal());
+    }
+    Ok(())
 }
 
 fn bridge_dml_target(target: CommunityDmlTarget) -> BridgeCommunityDmlTarget {
@@ -1781,7 +1887,7 @@ mod tests {
         community_procedure, community_procedure_parameter, community_schema,
         community_sql_analysis, community_sql_validation, community_table, community_table_column,
         community_table_index, community_trigger, preserve_primary_result, run_cancellation_safe,
-        run_cancellation_safe_with_cleanup,
+        run_cancellation_safe_with_cleanup, table_preview_row_limit, validate_table_preview_sql,
     };
     use crate::{AppError, AppErrorKind};
 
@@ -1807,6 +1913,75 @@ mod tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn table_preview_row_limit_defaults_and_enforces_the_product_bound() {
+        assert_eq!(
+            table_preview_row_limit(None).expect("the default limit is valid"),
+            200
+        );
+        assert_eq!(
+            table_preview_row_limit(Some(1)).expect("the minimum limit is valid"),
+            1
+        );
+        assert_eq!(
+            table_preview_row_limit(Some(1_000)).expect("the maximum limit is valid"),
+            1_000
+        );
+        assert_eq!(
+            table_preview_row_limit(Some(0))
+                .expect_err("zero rows must be rejected")
+                .api_error()
+                .code,
+            "invalid_community_table_preview_request"
+        );
+        assert_eq!(
+            table_preview_row_limit(Some(1_001))
+                .expect_err("limits above the product bound must be rejected")
+                .api_error()
+                .code,
+            "invalid_community_table_preview_request"
+        );
+    }
+
+    #[test]
+    fn table_preview_sql_validation_accepts_the_fixed_parser_projection_and_rejects_ambiguity() {
+        let empty_projection = BridgeCommunitySqlAnalysis {
+            is_select: true,
+            statements: Vec::new(),
+        };
+        validate_table_preview_sql("SELECT * FROM APP.items\n LIMIT 200", &empty_projection)
+            .expect("the fixed H2 parser may omit a valid SELECT projection");
+
+        let select_projection = BridgeCommunitySqlAnalysis {
+            is_select: true,
+            statements: vec![BridgeCommunityParsedStatement {
+                sql: "SELECT * FROM items".to_owned(),
+                statement_type: "VALID".to_owned(),
+                kind: "SELECT".to_owned(),
+            }],
+        };
+        validate_table_preview_sql("SELECT * FROM items LIMIT 1", &select_projection)
+            .expect("one projected SELECT must be accepted");
+
+        for sql in [
+            "UPDATE items SET label = 'no'",
+            "SELECT * FROM items; DELETE FROM items",
+        ] {
+            assert!(
+                validate_table_preview_sql(sql, &empty_projection).is_err(),
+                "unsafe generated SQL must be rejected: {sql}"
+            );
+        }
+        let multiple_statements = BridgeCommunitySqlAnalysis {
+            is_select: true,
+            statements: vec![
+                select_projection.statements[0].clone(),
+                select_projection.statements[0].clone(),
+            ],
+        };
+        assert!(validate_table_preview_sql("SELECT * FROM items", &multiple_statements).is_err());
     }
 
     #[test]
@@ -1878,6 +2053,7 @@ mod tests {
                     sql_builder_available: true,
                     sql_parser_available: true,
                     dml_builder_available: true,
+                    dql_builder_available: true,
                     value_processor_available: true,
                     identifier_processor_available: true,
                 },
@@ -1906,6 +2082,7 @@ mod tests {
                     sql_builder_available: true,
                     sql_parser_available: true,
                     dml_builder_available: true,
+                    dql_builder_available: true,
                     value_processor_available: true,
                     identifier_processor_available: true,
                 },
@@ -2349,8 +2526,8 @@ mod tests {
             is_select: true,
             statements: vec![BridgeCommunityParsedStatement {
                 sql: "select 1".to_owned(),
-                statement_type: "SELECT".to_owned(),
-                kind: "Select".to_owned(),
+                statement_type: "VALID".to_owned(),
+                kind: "SELECT".to_owned(),
             }],
         };
 
@@ -2360,8 +2537,8 @@ mod tests {
                 is_select: true,
                 statements: vec![CommunityParsedStatement {
                     sql: "select 1".to_owned(),
-                    statement_type: "SELECT".to_owned(),
-                    kind: "Select".to_owned(),
+                    statement_type: "VALID".to_owned(),
+                    kind: "SELECT".to_owned(),
                 }],
             }
         );

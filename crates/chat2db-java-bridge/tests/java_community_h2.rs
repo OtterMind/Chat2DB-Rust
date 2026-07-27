@@ -7,7 +7,8 @@ use std::{
 
 use chat2db_java_bridge::{
     BridgeError, BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest,
-    COMMUNITY_DML_BUILDER_CAPABILITY, COMMUNITY_NAMESPACE_BUILDER_CAPABILITY,
+    BuildCommunityTablePreviewSqlRequest, COMMUNITY_DML_BUILDER_CAPABILITY,
+    COMMUNITY_DQL_BUILDER_CAPABILITY, COMMUNITY_NAMESPACE_BUILDER_CAPABILITY,
     COMMUNITY_OBJECT_METADATA_CAPABILITY, COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
     COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY, COMMUNITY_RELATION_METADATA_CAPABILITY,
     COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
@@ -63,6 +64,7 @@ async fn invokes_real_community_h2_spi_metadata_builder_and_parser() {
         COMMUNITY_SQL_COMPLETION_CAPABILITY,
         COMMUNITY_DML_BUILDER_CAPABILITY,
         COMMUNITY_NAMESPACE_BUILDER_CAPABILITY,
+        COMMUNITY_DQL_BUILDER_CAPABILITY,
     ] {
         assert!(
             identity
@@ -112,6 +114,7 @@ async fn invokes_real_community_h2_spi_metadata_builder_and_parser() {
 
     verify_namespace_builder(&community, &session).await;
     create_and_verify_schema(&community, &session).await;
+    verify_table_preview_builder(&community, &session).await;
     verify_dml_builder(&community, &session).await;
     verify_object_tree(&community, &session).await;
     verify_parser(&community).await;
@@ -209,6 +212,7 @@ fn assert_catalog(catalog: &CommunityPluginCatalog) {
     assert!(h2.services.dml_builder_available);
     assert!(h2.services.value_processor_available);
     assert!(h2.services.identifier_processor_available);
+    assert!(h2.services.dql_builder_available);
     assert!(
         h2.drivers
             .iter()
@@ -219,6 +223,27 @@ fn assert_catalog(catalog: &CommunityPluginCatalog) {
             .plugins
             .iter()
             .any(|plugin| plugin.database_type == "MYSQL")
+    );
+}
+
+async fn verify_table_preview_builder(community: &CommunityClient, session: &Session) {
+    let built = community
+        .build_table_preview_sql(BuildCommunityTablePreviewSqlRequest {
+            database_type: "H2".to_owned(),
+            database_name: String::new(),
+            schema_name: "APP".to_owned(),
+            table_name: "items".to_owned(),
+            row_limit: 200,
+        })
+        .await
+        .expect("real H2 plugin must build bounded table-preview SQL");
+
+    assert_eq!(built.row_limit, 200);
+    assert!(built.sql.contains("APP.items"));
+    assert!(built.sql.contains("200"));
+    assert_eq!(
+        query_values(session, &built.sql).await,
+        Vec::<Vec<JdbcValue>>::new()
     );
 }
 

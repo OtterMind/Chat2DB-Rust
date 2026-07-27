@@ -239,6 +239,30 @@ describe('community explorer loaders', () => {
     });
   });
 
+  it('uses the Community MySQL empty table pattern to list every table', async () => {
+    const client = {
+      listCommunityTables: vi.fn(async () => ({ items: [table] })),
+      listCommunityViews: vi.fn(async () => ({ items: [] })),
+      listCommunityFunctions: vi.fn(async () => ({ items: [] })),
+      listCommunityProcedures: vi.fn(async () => ({ items: [] })),
+      listCommunityTriggers: vi.fn(async () => ({ items: [] })),
+    } satisfies CommunityNamespaceClient;
+    const signal = new AbortController().signal;
+
+    await loadCommunityNamespace(client, {
+      ...namespaceRequest,
+      databaseType: 'MYSQL',
+      schemaName: '',
+    }, signal);
+
+    expect(client.listCommunityTables).toHaveBeenCalledWith({
+      ...namespaceRequest,
+      databaseType: 'MYSQL',
+      schemaName: '',
+      tableNamePattern: '',
+    }, signal);
+  });
+
   it('keeps successful namespace groups when one long-tail service fails', async () => {
     const failure = new Error('functions unsupported');
     const client = {
@@ -428,6 +452,7 @@ describe('selectCommunityPlugin', () => {
         sqlBuilderAvailable: true,
         sqlParserAvailable: true,
         dmlBuilderAvailable: true,
+        dqlBuilderAvailable: true,
         valueProcessorAvailable: true,
         identifierProcessorAvailable: true,
       },
@@ -453,6 +478,7 @@ describe('selectCommunityPlugin', () => {
         sqlBuilderAvailable: true,
         sqlParserAvailable: true,
         dmlBuilderAvailable: true,
+        dqlBuilderAvailable: true,
         valueProcessorAvailable: true,
         identifierProcessorAvailable: true,
       },

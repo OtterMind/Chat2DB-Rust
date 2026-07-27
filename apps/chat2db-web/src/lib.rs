@@ -533,6 +533,21 @@ mod tests {
             (
                 json_request(
                     Method::POST,
+                    "/api/v1/community/table-preview",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1",
+                        "databaseType": "H2",
+                        "databaseName": "",
+                        "schemaName": "APP",
+                        "tableName": "items",
+                        "rowLimit": 200
+                    }),
+                ),
+                "database_engine_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
                     "/api/v1/community/sql/validate",
                     &serde_json::json!({
                         "databaseType": "H2",
@@ -706,6 +721,7 @@ mod tests {
             "/api/v1/community/sql/build-create-schema",
             "/api/v1/community/sql/build-namespace",
             "/api/v1/community/sql/build-dml",
+            "/api/v1/community/table-preview",
             "/api/v1/community/sql/parse",
             "/api/v1/community/sql/validate",
             "/api/v1/community/sql/format",
@@ -756,6 +772,7 @@ mod tests {
             "/api/v1/community/sql/build-create-schema",
             "/api/v1/community/sql/build-namespace",
             "/api/v1/community/sql/build-dml",
+            "/api/v1/community/table-preview",
             "/api/v1/community/sql/parse",
             "/api/v1/community/sql/validate",
             "/api/v1/community/sql/format",
@@ -896,6 +913,7 @@ mod tests {
             "CommunityTableIndexColumn",
             "CommunityTableIndexList",
             "CommunityTableList",
+            "CommunityTablePreviewAccepted",
             "CommunityTrigger",
             "CommunityTriggerList",
             "CommunityViewList",
@@ -925,6 +943,7 @@ mod tests {
             "ProviderProfileList",
             "SqlPermissionMode",
             "StartAgentRunRequest",
+            "StartCommunityTablePreviewRequest",
             "UpdateAgentSessionRequest",
             "UpdateProviderProfileRequest",
         ] {

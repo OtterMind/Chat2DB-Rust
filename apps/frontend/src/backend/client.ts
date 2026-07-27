@@ -99,6 +99,8 @@ export type ContextCompactionStrategy = Schema<'ContextCompactionStrategy'>;
 export type DecideAgentPermissionRequest = Schema<'DecideAgentPermissionRequest'>;
 export type SqlPermissionMode = Schema<'SqlPermissionMode'>;
 export type StartAgentRunRequest = Schema<'StartAgentRunRequest'>;
+export type StartCommunityTablePreviewRequest = Schema<'StartCommunityTablePreviewRequest'>;
+export type CommunityTablePreviewAccepted = Schema<'CommunityTablePreviewAccepted'>;
 
 export interface OperationSubscriptionOptions {
   afterSequence?: string;
@@ -225,6 +227,10 @@ export interface BackendClient {
     request: CompleteCommunitySqlRequest,
     signal?: AbortSignal,
   ): Promise<CommunitySqlCompletion>;
+  startCommunityTablePreview(
+    request: StartCommunityTablePreviewRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTablePreviewAccepted>;
   listDatasources(signal?: AbortSignal): Promise<DatasourceList>;
   createDatasource(
     request: CreateDatasourceRequest,

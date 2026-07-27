@@ -54,6 +54,7 @@ final class ProtocolLoop {
     static final String COMMUNITY_DML_BUILDER_CAPABILITY = "community.dml-builder.v1";
     static final String COMMUNITY_NAMESPACE_BUILDER_CAPABILITY =
             "community.namespace-builder.v1";
+    static final String COMMUNITY_DQL_BUILDER_CAPABILITY = "community.dql-builder.v1";
 
     private static final int MINIMUM_PEER_FRAME_BYTES = 1024;
     private static final List<String> BASE_CAPABILITIES = List.of(
@@ -394,6 +395,13 @@ final class ProtocolLoop {
                                     meta, envelope.getBuildCommunityNamespaceSql()));
                     yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
                 }
+                case BUILD_COMMUNITY_TABLE_PREVIEW_SQL -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.buildCommunityTablePreviewSql(
+                                    meta, envelope.getBuildCommunityTablePreviewSql()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
                 case HELLO -> error(
                         meta,
                         "protocol.handshake_already_completed",
@@ -501,6 +509,7 @@ final class ProtocolLoop {
         capabilities.add(COMMUNITY_SQL_COMPLETION_CAPABILITY);
         capabilities.add(COMMUNITY_DML_BUILDER_CAPABILITY);
         capabilities.add(COMMUNITY_NAMESPACE_BUILDER_CAPABILITY);
+        capabilities.add(COMMUNITY_DQL_BUILDER_CAPABILITY);
         return List.copyOf(capabilities);
     }
 

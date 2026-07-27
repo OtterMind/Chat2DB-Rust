@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.chat2db.rust.compat.protocol.v1.CancelDisposition;
 import ai.chat2db.rust.compat.protocol.v1.CancelOperationRequest;
+import ai.chat2db.rust.compat.protocol.v1.BuildCommunityTablePreviewSqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.ClientEnvelope;
 import ai.chat2db.rust.compat.protocol.v1.ClientHello;
 import ai.chat2db.rust.compat.protocol.v1.CompleteCommunitySqlRequest;
@@ -85,6 +86,8 @@ class ProtocolLoopTest {
                 .contains(ProtocolLoop.COMMUNITY_DML_BUILDER_CAPABILITY));
         assertFalse(ProtocolLoop.capabilities(false)
                 .contains(ProtocolLoop.COMMUNITY_NAMESPACE_BUILDER_CAPABILITY));
+        assertFalse(ProtocolLoop.capabilities(false)
+                .contains(ProtocolLoop.COMMUNITY_DQL_BUILDER_CAPABILITY));
         assertTrue(ProtocolLoop.capabilities(true)
                 .contains(ProtocolLoop.COMMUNITY_SQL_VALIDATION_CAPABILITY));
         assertTrue(ProtocolLoop.capabilities(true)
@@ -95,9 +98,63 @@ class ProtocolLoopTest {
                 .contains(ProtocolLoop.COMMUNITY_DML_BUILDER_CAPABILITY));
         assertTrue(ProtocolLoop.capabilities(true)
                 .contains(ProtocolLoop.COMMUNITY_NAMESPACE_BUILDER_CAPABILITY));
+        assertTrue(ProtocolLoop.capabilities(true)
+                .contains(ProtocolLoop.COMMUNITY_DQL_BUILDER_CAPABILITY));
         assertEquals(
-                ProtocolLoop.capabilities(false).size() + 5,
+                ProtocolLoop.capabilities(false).size() + 6,
                 ProtocolLoop.capabilities(true).size());
+    }
+
+    @Test
+    void dispatchesCommunityTablePreviewSqlToJdbcRuntime() throws Exception {
+        ClientEnvelope preview = ClientEnvelope.newBuilder()
+                .setMeta(meta("preview"))
+                .setBuildCommunityTablePreviewSql(
+                        BuildCommunityTablePreviewSqlRequest.newBuilder()
+                                .setDatabaseType("MYSQL")
+                                .setDatabaseName("inventory")
+                                .setTableName("items")
+                                .setRowLimit(200))
+                .build();
+        ClientEnvelope shutdown = ClientEnvelope.newBuilder()
+                .setMeta(meta("shutdown"))
+                .setShutdown(Shutdown.getDefaultInstance())
+                .build();
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try (PipedInputStream runtimeInput = new PipedInputStream(64 * 1024);
+                PipedOutputStream clientOutput = new PipedOutputStream(runtimeInput);
+                PipedInputStream clientInput = new PipedInputStream(64 * 1024);
+                PipedOutputStream runtimeOutput = new PipedOutputStream(clientInput);
+                PrintStream diagnostics = new PrintStream(
+                        new ByteArrayOutputStream(), true, StandardCharsets.UTF_8)) {
+            ProtocolLoop loop = new ProtocolLoop(diagnostics);
+            Future<Integer> loopResult =
+                    executor.submit(() -> loop.serve(runtimeInput, runtimeOutput));
+
+            FrameCodec.writeFrame(
+                    clientOutput,
+                    hello(
+                            "hello",
+                            List.of(version(1, 0)),
+                            List.of(ProtocolLoop.SHUTDOWN_CAPABILITY)));
+            assertEquals(
+                    ServerEnvelope.PayloadCase.HELLO,
+                    read(clientInput, executor).getPayloadCase());
+
+            FrameCodec.writeFrame(clientOutput, preview);
+            ServerEnvelope previewResponse = read(clientInput, executor);
+            assertEquals(ServerEnvelope.PayloadCase.ERROR, previewResponse.getPayloadCase());
+            assertEquals("community.plugin_not_found", previewResponse.getError().getCode());
+
+            FrameCodec.writeFrame(clientOutput, shutdown);
+            assertEquals(
+                    ServerEnvelope.PayloadCase.SHUTDOWN_ACK,
+                    read(clientInput, executor).getPayloadCase());
+            assertEquals(CompatibilityRuntime.EXIT_OK, loopResult.get(5, TimeUnit.SECONDS));
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+        }
     }
 
     @Test

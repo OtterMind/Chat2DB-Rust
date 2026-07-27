@@ -174,7 +174,18 @@ export async function loadCommunityNamespace(
   };
 
   await Promise.all([
-    settleItems('tables', client.listCommunityTables({ ...scope, tableNamePattern: '%' }, signal), (items) => { tables = items; }, failures, publish),
+    settleItems(
+      'tables',
+      client.listCommunityTables({
+        ...scope,
+        // Community MySQL treats a non-empty table pattern as a literal name;
+        // its empty value is the supported all-tables query.
+        tableNamePattern: scope.databaseType.toUpperCase() === 'MYSQL' ? '' : '%',
+      }, signal),
+      (items) => { tables = items; },
+      failures,
+      publish,
+    ),
     settleItems('views', client.listCommunityViews({ ...scope, viewNamePattern: '%' }, signal), (items) => { views = items; }, failures, publish),
     settleItems('functions', client.listCommunityFunctions({ ...scope }, signal), (items) => { functions = items; }, failures, publish),
     settleItems('procedures', client.listCommunityProcedures({ ...scope }, signal), (items) => { procedures = items; }, failures, publish),

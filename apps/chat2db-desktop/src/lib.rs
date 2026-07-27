@@ -22,18 +22,19 @@ use chat2db_contract::{
     CommunityFunctionParameterList, CommunityPluginCatalog, CommunityPrimaryKeyList,
     CommunityProcedure, CommunityProcedureList, CommunityProcedureParameterList,
     CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlCompletion, CommunitySqlValidation,
-    CommunityTableColumnList, CommunityTableIndexList, CommunityTableList, CommunityTrigger,
-    CommunityTriggerList, CommunityViewList, CompleteCommunitySqlRequest,
-    CreateAgentSessionRequest, CreateDatasourceRequest, CreateProviderProfileRequest, Datasource,
-    DatasourceList, DecideAgentPermissionRequest, FormatCommunitySqlRequest,
-    GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
-    HealthResponse, JdbcDriverList, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
-    ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
-    ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
-    ListCommunityTriggersRequest, ListCommunityViewsRequest, OperationEventEnvelope,
-    OperationSnapshot, OperationStreamMessage, OperationSubscriptionAccepted,
-    ParseCommunitySqlRequest, ProviderProfile, ProviderProfileList, QueryAccepted, ResultPage,
-    ResultPageRequest, StartAgentRunRequest, StartQueryRequest, UpdateAgentSessionRequest,
+    CommunityTableColumnList, CommunityTableIndexList, CommunityTableList,
+    CommunityTablePreviewAccepted, CommunityTrigger, CommunityTriggerList, CommunityViewList,
+    CompleteCommunitySqlRequest, CreateAgentSessionRequest, CreateDatasourceRequest,
+    CreateProviderProfileRequest, Datasource, DatasourceList, DecideAgentPermissionRequest,
+    FormatCommunitySqlRequest, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
+    GetCommunityTriggerRequest, HealthResponse, JdbcDriverList, ListCommunityColumnsRequest,
+    ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
+    ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
+    ListCommunityTablesRequest, ListCommunityTriggersRequest, ListCommunityViewsRequest,
+    OperationEventEnvelope, OperationSnapshot, OperationStreamMessage,
+    OperationSubscriptionAccepted, ParseCommunitySqlRequest, ProviderProfile, ProviderProfileList,
+    QueryAccepted, ResultPage, ResultPageRequest, StartAgentRunRequest,
+    StartCommunityTablePreviewRequest, StartQueryRequest, UpdateAgentSessionRequest,
     UpdateDatasourceRequest, UpdateProviderProfileRequest, ValidateCommunitySqlRequest,
 };
 use chat2db_core::{
@@ -288,6 +289,7 @@ pub fn run() -> Result<i32, DesktopError> {
             build_community_create_schema,
             build_community_namespace_sql,
             build_community_dml,
+            start_community_table_preview,
             parse_community_sql,
             validate_community_sql,
             format_community_sql,
@@ -686,6 +688,24 @@ async fn build_community_dml_for(
 ) -> Result<CommunityBuiltSql, ApiError> {
     application
         .build_community_dml(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn start_community_table_preview(
+    state: State<'_, Arc<DesktopState>>,
+    request: StartCommunityTablePreviewRequest,
+) -> Result<CommunityTablePreviewAccepted, ApiError> {
+    start_community_table_preview_for(&state.application, request).await
+}
+
+async fn start_community_table_preview_for(
+    application: &Application,
+    request: StartCommunityTablePreviewRequest,
+) -> Result<CommunityTablePreviewAccepted, ApiError> {
+    application
+        .start_community_table_preview(request)
         .await
         .map_err(|error| api_error(&error))
 }
@@ -1243,7 +1263,7 @@ mod tests {
         CommunityDmlStatement, CommunityDmlTarget, CommunityDmlValue,
         CommunityNamespaceSqlOperation, CompleteCommunitySqlRequest, FormatCommunitySqlRequest,
         OperationEvent, OperationEventEnvelope, OperationStreamMessage,
-        ValidateCommunitySqlRequest,
+        StartCommunityTablePreviewRequest, ValidateCommunitySqlRequest,
     };
     use chat2db_core::{AppError, Application};
     use tokio::sync::oneshot;
@@ -1251,8 +1271,8 @@ mod tests {
     use super::{
         DesktopError, SubscriptionRegistry, agent_stream_message, build_community_dml_for,
         build_community_namespace_sql_for, complete_community_sql_for, format_community_sql_for,
-        operation_stream_message, parse_after_sequence, validate_community_sql_for,
-        validate_java_engine_jar, validate_optional_os_env,
+        operation_stream_message, parse_after_sequence, start_community_table_preview_for,
+        validate_community_sql_for, validate_java_engine_jar, validate_optional_os_env,
     };
 
     #[tokio::test]
@@ -1300,6 +1320,25 @@ mod tests {
         )
         .await
         .expect_err("DML generation without an engine must fail");
+
+        assert_eq!(error.code, "database_engine_unavailable");
+    }
+
+    #[tokio::test]
+    async fn table_preview_command_maps_unavailable_engine_errors() {
+        let error = start_community_table_preview_for(
+            &Application::new(),
+            StartCommunityTablePreviewRequest {
+                datasource_id: "datasource-1".to_owned(),
+                database_type: "H2".to_owned(),
+                database_name: String::new(),
+                schema_name: "APP".to_owned(),
+                table_name: "items".to_owned(),
+                row_limit: Some(200),
+            },
+        )
+        .await
+        .expect_err("table preview without an engine must fail");
 
         assert_eq!(error.code, "database_engine_unavailable");
     }

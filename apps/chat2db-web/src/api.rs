@@ -27,9 +27,9 @@ use chat2db_contract::{
     CommunitySqlCompletionEditorHint, CommunitySqlCompletionEditorHintItem,
     CommunitySqlCompletionRange, CommunitySqlDiagnostic, CommunitySqlValidation, CommunityTable,
     CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
-    CommunityTableIndexList, CommunityTableList, CommunityTrigger, CommunityTriggerList,
-    CommunityViewList, CompleteCommunitySqlRequest, ComponentHealth, ComponentState,
-    ContextCompactionStrategy, CreateAgentSessionRequest, CreateDatasourceRequest,
+    CommunityTableIndexList, CommunityTableList, CommunityTablePreviewAccepted, CommunityTrigger,
+    CommunityTriggerList, CommunityViewList, CompleteCommunitySqlRequest, ComponentHealth,
+    ComponentState, ContextCompactionStrategy, CreateAgentSessionRequest, CreateDatasourceRequest,
     CreateProviderProfileRequest, Datasource, DatasourceConnection, DatasourceConnectionProperty,
     DatasourceList, DatasourceSecretChange, DecideAgentPermissionRequest,
     FormatCommunitySqlRequest, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
@@ -42,9 +42,9 @@ use chat2db_contract::{
     OperationSubscriptionAccepted, ParseCommunitySqlRequest, ProductInfo, ProviderCredentials,
     ProviderKind, ProviderProfile, ProviderProfileList, ProviderSecretChange, QueryAccepted,
     QueryLimits, QueryParameter, ResultColumn, ResultMetadata, ResultPage, ResultPageRequest,
-    ResultRow, RuntimeStatus, SqlPermissionMode, StartAgentRunRequest, StartQueryRequest,
-    UpdateAgentSessionRequest, UpdateDatasourceRequest, UpdateProviderProfileRequest,
-    ValidateCommunitySqlRequest,
+    ResultRow, RuntimeStatus, SqlPermissionMode, StartAgentRunRequest,
+    StartCommunityTablePreviewRequest, StartQueryRequest, UpdateAgentSessionRequest,
+    UpdateDatasourceRequest, UpdateProviderProfileRequest, ValidateCommunitySqlRequest,
 };
 use chat2db_core::{AppError, Application};
 use futures_util::{Stream, stream};
@@ -157,6 +157,7 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         CommunityTableIndexColumn,
         CommunityTableIndexList,
         CommunityTableList,
+        CommunityTablePreviewAccepted,
         CommunityTrigger,
         CommunityTriggerList,
         CommunityViewList,
@@ -215,6 +216,7 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         RuntimeStatus,
         SqlPermissionMode,
         StartAgentRunRequest,
+        StartCommunityTablePreviewRequest,
         StartQueryRequest,
         UpdateAgentSessionRequest,
         UpdateProviderProfileRequest,
@@ -262,6 +264,7 @@ fn documented_router() -> OpenApiRouter<Application> {
         .routes(routes!(build_community_create_schema))
         .routes(routes!(build_community_namespace_sql))
         .routes(routes!(build_community_dml))
+        .routes(routes!(start_community_table_preview))
         .routes(routes!(parse_community_sql))
         .routes(routes!(validate_community_sql))
         .routes(routes!(format_community_sql))
@@ -826,6 +829,31 @@ async fn build_community_dml(
         .build_community_dml(request)
         .await
         .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/table-preview",
+    tag = "community",
+    request_body = StartCommunityTablePreviewRequest,
+    responses(
+        (status = 202, description = "Forced read-only table preview accepted", body = CommunityTablePreviewAccepted),
+        (status = 400, description = "Invalid table preview request or generated SQL", body = ApiError),
+        (status = 404, description = "Datasource does not exist", body = ApiError),
+        (status = 507, description = "Query resource limits are exhausted", body = ApiError),
+        (status = 503, description = "Community compatibility or query engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected table preview failure", body = ApiError)
+    )
+)]
+async fn start_community_table_preview(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<StartCommunityTablePreviewRequest>,
+) -> Result<(StatusCode, Json<CommunityTablePreviewAccepted>), WebError> {
+    application
+        .start_community_table_preview(request)
+        .await
+        .map(|accepted| (StatusCode::ACCEPTED, Json(accepted)))
         .map_err(Into::into)
 }
 

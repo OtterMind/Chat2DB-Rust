@@ -564,6 +564,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/community/table-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["start_community_table_preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/datasources": {
         parameters: {
             query?: never;
@@ -1358,11 +1374,11 @@ export interface components {
         };
         /** @description One statement returned by the retained Community parser. */
         CommunityParsedStatement: {
-            /** @description Bounded parser-specific statement kind. */
+            /** @description Bounded parser-specific statement kind, for example `SELECT`. */
             kind: string;
             /** @description Statement SQL projected by Community. */
             sql: string;
-            /** @description Community statement type. */
+            /** @description Community validity classification, for example `VALID` or `INVALID`. */
             statementType: string;
         };
         /** @description Stable product projection of one Community plugin. */
@@ -1398,6 +1414,8 @@ export interface components {
         CommunityPluginServices: {
             /** @description Whether the plugin exposes a DML builder object. */
             dmlBuilderAvailable: boolean;
+            /** @description Whether the plugin exposes the closed, bounded table-preview DQL builder. */
+            dqlBuilderAvailable: boolean;
             /** @description Whether the plugin exposes a dialect identifier processor. */
             identifierProcessorAvailable: boolean;
             /** @description Whether schema metadata is available. */
@@ -1733,6 +1751,18 @@ export interface components {
         /** @description Stable table collection returned by Community metadata APIs. */
         CommunityTableList: {
             items: components["schemas"]["CommunityTable"][];
+        };
+        /** @description Immediate acknowledgement for an accepted forced read-only table preview. */
+        CommunityTablePreviewAccepted: {
+            /** @description Opaque operation id used for events, snapshots, cancellation, and results. */
+            operationId: string;
+            /**
+             * Format: int32
+             * @description Effective row limit enforced in both generated SQL and query execution.
+             */
+            rowLimit: number;
+            /** @description Exact dialect SQL generated and validated before query acceptance. */
+            sql: string;
         };
         /** @description Secret-free Community trigger metadata. */
         CommunityTrigger: {
@@ -2434,6 +2464,24 @@ export interface components {
             sessionId: string;
             /** @description SQL permission policy for this run. */
             sqlPermissionMode?: components["schemas"]["SqlPermissionMode"];
+        };
+        /** @description Closed request to preview rows from one table through a forced read-only query. */
+        StartCommunityTablePreviewRequest: {
+            /** @description Raw database identifier segment; an empty value means no database qualifier. */
+            databaseName: string;
+            /** @description Community database type used to select the dialect services. */
+            databaseType: string;
+            /** @description Opaque datasource id used only after SQL generation succeeds. */
+            datasourceId: string;
+            /**
+             * Format: int32
+             * @description Requested preview rows. Omission selects 200; explicit values must be 1 through 1000.
+             */
+            rowLimit?: number | null;
+            /** @description Raw schema identifier segment; an empty value means no schema qualifier. */
+            schemaName: string;
+            /** @description Raw table identifier segment. Community quotes it before SQL generation. */
+            tableName: string;
         };
         /** @description Request to begin one asynchronous query operation. */
         StartQueryRequest: {
@@ -4730,6 +4778,75 @@ export interface operations {
             };
             /** @description Community compatibility engine is unavailable */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    start_community_table_preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartCommunityTablePreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Forced read-only table preview accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityTablePreviewAccepted"];
+                };
+            };
+            /** @description Invalid table preview request or generated SQL */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Datasource does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected table preview failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Community compatibility or query engine is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Query resource limits are exhausted */
+            507: {
                 headers: {
                     [name: string]: unknown;
                 };

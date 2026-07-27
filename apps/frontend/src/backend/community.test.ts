@@ -206,6 +206,7 @@ const catalog = {
       sqlBuilderAvailable: true,
       sqlParserAvailable: true,
       dmlBuilderAvailable: true,
+      dqlBuilderAvailable: true,
       valueProcessorAvailable: true,
       identifierProcessorAvailable: true,
     },

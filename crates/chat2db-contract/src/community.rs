@@ -44,6 +44,8 @@ pub struct CommunityPluginServices {
     pub sql_parser_available: bool,
     /// Whether the plugin exposes a DML builder object.
     pub dml_builder_available: bool,
+    /// Whether the plugin exposes the closed, bounded table-preview DQL builder.
+    pub dql_builder_available: bool,
     /// Whether the plugin exposes a dialect value processor.
     pub value_processor_available: bool,
     /// Whether the plugin exposes a dialect identifier processor.
@@ -579,6 +581,38 @@ pub struct CommunityBuiltSql {
     pub sql: String,
 }
 
+/// Closed request to preview rows from one table through a forced read-only query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct StartCommunityTablePreviewRequest {
+    /// Opaque datasource id used only after SQL generation succeeds.
+    pub datasource_id: String,
+    /// Community database type used to select the dialect services.
+    pub database_type: String,
+    /// Raw database identifier segment; an empty value means no database qualifier.
+    pub database_name: String,
+    /// Raw schema identifier segment; an empty value means no schema qualifier.
+    pub schema_name: String,
+    /// Raw table identifier segment. Community quotes it before SQL generation.
+    pub table_name: String,
+    /// Requested preview rows. Omission selects 200; explicit values must be 1 through 1000.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(minimum = 1, maximum = 1000)]
+    pub row_limit: Option<u32>,
+}
+
+/// Immediate acknowledgement for an accepted forced read-only table preview.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityTablePreviewAccepted {
+    /// Opaque operation id used for events, snapshots, cancellation, and results.
+    pub operation_id: String,
+    /// Exact dialect SQL generated and validated before query acceptance.
+    pub sql: String,
+    /// Effective row limit enforced in both generated SQL and query execution.
+    pub row_limit: u32,
+}
+
 /// Request to build dialect-specific database or schema namespace SQL.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -739,9 +773,9 @@ pub struct ParseCommunitySqlRequest {
 pub struct CommunityParsedStatement {
     /// Statement SQL projected by Community.
     pub sql: String,
-    /// Community statement type.
+    /// Community validity classification, for example `VALID` or `INVALID`.
     pub statement_type: String,
-    /// Bounded parser-specific statement kind.
+    /// Bounded parser-specific statement kind, for example `SELECT`.
     pub kind: String,
 }
 
@@ -993,6 +1027,7 @@ mod tests {
                     sql_builder_available: true,
                     sql_parser_available: true,
                     dml_builder_available: true,
+                    dql_builder_available: true,
                     value_processor_available: true,
                     identifier_processor_available: true,
                 },

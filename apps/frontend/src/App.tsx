@@ -47,6 +47,7 @@ import {
   OperationSnapshot,
   OperationSubscription,
   ResultPage,
+  StartCommunityTablePreviewRequest,
   UpdateDatasourceRequest,
   createBackendClient,
   observeOperation,
@@ -60,7 +61,7 @@ import {
 import { isCurrentSqlFormatRequest } from './sql-format-model';
 
 const PAGE_ROWS = 50n;
-const PAGE_BYTES = '1048576';
+const PAGE_BYTES = '8388608';
 const VALIDATION_PREVIEW_ITEMS = 8;
 const MAX_VISIBLE_COMPLETION_CANDIDATES = 200;
 const INITIAL_SQL = 'SELECT 1;';
@@ -523,10 +524,14 @@ export default function App({ client: providedClient }: { client?: BackendClient
   const [sqlCompletion, setSqlCompletion] = useState<SqlCompletionState>({ status: 'idle' });
   const [editorCursorUtf16, setEditorCursorUtf16] = useState(INITIAL_SQL.length);
   const [operation, setOperation] = useState<QueryOperation | null>(null);
+  const [previewStarting, setPreviewStarting] = useState(false);
   const [resultPage, setResultPage] = useState<ResultPage | null>(null);
   const [resultLoading, setResultLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const subscriptionRef = useRef<OperationSubscription | null>(null);
+  const activeOperationIdRef = useRef<string | null>(null);
+  const previewRequestSequenceRef = useRef(0);
+  const previewStartingRef = useRef(false);
   const driverRequestRef = useRef(0);
   const resultRequestRef = useRef(0);
   const inspectionRequestRef = useRef(0);
@@ -705,7 +710,12 @@ export default function App({ client: providedClient }: { client?: BackendClient
     return () => controller.abort();
   }, [client, refreshDatasources, refreshDrivers]);
 
-  useEffect(() => () => subscriptionRef.current?.close(), []);
+  useEffect(() => () => {
+    activeOperationIdRef.current = null;
+    previewRequestSequenceRef.current += 1;
+    previewStartingRef.current = false;
+    subscriptionRef.current?.close();
+  }, []);
 
   useEffect(() => {
     invalidateSqlCompletion();
@@ -793,6 +803,7 @@ export default function App({ client: providedClient }: { client?: BackendClient
   }, [client]);
 
   const applySnapshot = useCallback((snapshot: OperationSnapshot) => {
+    if (activeOperationIdRef.current !== snapshot.operationId) return;
     setOperation({
       id: snapshot.operationId,
       status: snapshot.status,
@@ -814,6 +825,7 @@ export default function App({ client: providedClient }: { client?: BackendClient
   }, [applySnapshot, client]);
 
   const applyOperationEvent = useCallback((envelope: OperationEventEnvelope) => {
+    if (activeOperationIdRef.current !== envelope.operationId) return;
     const event = envelope.event;
     setOperation((current) => {
       const base: QueryOperation = current ?? {
@@ -862,15 +874,38 @@ export default function App({ client: providedClient }: { client?: BackendClient
     if (event.type === 'failed') setError(errorMessage(new ApiRequestError(event.error)));
   }, [loadResultPage]);
 
-  const runQuery = async () => {
-    if (!selectedDatasource || !sql.trim() || queryRunning) return;
+  const clearOperationView = useCallback(() => {
     subscriptionRef.current?.close();
     subscriptionRef.current = null;
+    activeOperationIdRef.current = null;
     resultRequestRef.current += 1;
     setResultLoading(false);
     setError(null);
     setResultPage(null);
     setOperation(null);
+  }, []);
+
+  const observeAcceptedOperation = useCallback((operationId: string) => {
+    clearOperationView();
+    activeOperationIdRef.current = operationId;
+    setOperation({
+      id: operationId,
+      status: 'starting',
+      rowCount: '0',
+      byteCount: '0',
+    });
+    subscriptionRef.current = observeOperation(client, operationId, {
+      onEvent: applyOperationEvent,
+      onSnapshot: applySnapshot,
+      onError: (streamError) => {
+        if (activeOperationIdRef.current === operationId) setError(errorMessage(streamError));
+      },
+    });
+  }, [applyOperationEvent, applySnapshot, clearOperationView, client]);
+
+  const runQuery = async () => {
+    if (!selectedDatasource || !sql.trim() || queryRunning || previewStartingRef.current) return;
+    clearOperationView();
     let accepted;
     try {
       accepted = await client.startQuery({
@@ -885,23 +920,49 @@ export default function App({ client: providedClient }: { client?: BackendClient
           resultTtlSeconds: 3600,
         },
       });
-      setOperation({
-        id: accepted.operationId,
-        status: 'starting',
-        rowCount: '0',
-        byteCount: '0',
-      });
     } catch (requestError) {
       setError(errorMessage(requestError));
       setOperation(null);
       return;
     }
-    subscriptionRef.current = observeOperation(client, accepted.operationId, {
-        onEvent: applyOperationEvent,
-        onSnapshot: applySnapshot,
-        onError: (streamError) => setError(errorMessage(streamError)),
-      });
+    observeAcceptedOperation(accepted.operationId);
   };
+
+  const previewTable = useCallback(async (
+    request: StartCommunityTablePreviewRequest,
+    signal: AbortSignal,
+  ) => {
+    if (queryRunning || previewStartingRef.current || signal.aborted) return;
+    const requestId = ++previewRequestSequenceRef.current;
+    previewStartingRef.current = true;
+    setPreviewStarting(true);
+    setError(null);
+    const invalidate = () => {
+      if (previewRequestSequenceRef.current !== requestId) return;
+      previewRequestSequenceRef.current += 1;
+      previewStartingRef.current = false;
+      setPreviewStarting(false);
+    };
+    signal.addEventListener('abort', invalidate, { once: true });
+    try {
+      const accepted = await client.startCommunityTablePreview(request, signal);
+      if (signal.aborted || previewRequestSequenceRef.current !== requestId) {
+        void client.cancelOperation(accepted.operationId).catch(() => undefined);
+        return;
+      }
+      updateSql(accepted.sql);
+      observeAcceptedOperation(accepted.operationId);
+    } catch (requestError) {
+      if (signal.aborted || previewRequestSequenceRef.current !== requestId) return;
+      throw requestError;
+    } finally {
+      signal.removeEventListener('abort', invalidate);
+      if (previewRequestSequenceRef.current === requestId) {
+        previewStartingRef.current = false;
+        setPreviewStarting(false);
+      }
+    }
+  }, [client, observeAcceptedOperation, queryRunning, updateSql]);
 
   const cancelQuery = async () => {
     if (!operation || !queryRunning) return;
@@ -1222,6 +1283,8 @@ export default function App({ client: providedClient }: { client?: BackendClient
         onParserAvailabilityChange={setParserAvailability}
         onCompletionContextChange={setCompletionContext}
         onInsertSql={updateSql}
+        previewDisabled={queryRunning || previewStarting}
+        onPreviewTable={previewTable}
       />
 
       <main className="workspace">
@@ -1325,9 +1388,9 @@ export default function App({ client: providedClient }: { client?: BackendClient
                   <CircleStop size={16} aria-hidden="true" /> Cancel
                 </button>
               ) : null}
-              <button className="primary-button" type="button" onClick={() => void runQuery()} disabled={!selectedDatasource || !selectedDatasource.hasSecret || !sql.trim() || queryRunning}>
-                {queryRunning ? <LoaderCircle className="spinning" size={16} aria-hidden="true" /> : <Play size={16} fill="currentColor" aria-hidden="true" />}
-                {queryRunning ? 'Running' : 'Run'}
+              <button className="primary-button" type="button" onClick={() => void runQuery()} disabled={!selectedDatasource || !selectedDatasource.hasSecret || !sql.trim() || queryRunning || previewStarting}>
+                {queryRunning || previewStarting ? <LoaderCircle className="spinning" size={16} aria-hidden="true" /> : <Play size={16} fill="currentColor" aria-hidden="true" />}
+                {queryRunning ? 'Running' : previewStarting ? 'Starting' : 'Run'}
               </button>
             </div>
           </div>

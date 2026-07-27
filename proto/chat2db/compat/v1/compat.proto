@@ -74,6 +74,7 @@ message ClientEnvelope {
     CompleteCommunitySqlRequest complete_community_sql = 222;
     BuildCommunityDmlRequest build_community_dml = 223;
     BuildCommunityNamespaceSqlRequest build_community_namespace_sql = 224;
+    BuildCommunityTablePreviewSqlRequest build_community_table_preview_sql = 225;
   }
 }
 
@@ -123,6 +124,7 @@ message ServerEnvelope {
     CommunitySqlCompletion community_sql_completion = 222;
     CommunityBuiltDml community_built_dml = 223;
     CommunityBuiltNamespaceSql community_built_namespace_sql = 224;
+    CommunityBuiltTablePreviewSql community_built_table_preview_sql = 225;
   }
 }
 

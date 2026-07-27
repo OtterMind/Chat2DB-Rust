@@ -2674,6 +2674,86 @@
         }
       }
     },
+    "/api/v1/community/table-preview": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "start_community_table_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartCommunityTablePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Forced read-only table preview accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityTablePreviewAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid table preview request or generated SQL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Datasource does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected table preview failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility or query engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "507": {
+            "description": "Query resource limits are exhausted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/datasources": {
       "get": {
         "tags": [
@@ -5474,7 +5554,7 @@
         "properties": {
           "kind": {
             "type": "string",
-            "description": "Bounded parser-specific statement kind."
+            "description": "Bounded parser-specific statement kind, for example `SELECT`."
           },
           "sql": {
             "type": "string",
@@ -5482,7 +5562,7 @@
           },
           "statementType": {
             "type": "string",
-            "description": "Community statement type."
+            "description": "Community validity classification, for example `VALID` or `INVALID`."
           }
         }
       },
@@ -5574,6 +5654,7 @@
           "sqlBuilderAvailable",
           "sqlParserAvailable",
           "dmlBuilderAvailable",
+          "dqlBuilderAvailable",
           "valueProcessorAvailable",
           "identifierProcessorAvailable"
         ],
@@ -5581,6 +5662,10 @@
           "dmlBuilderAvailable": {
             "type": "boolean",
             "description": "Whether the plugin exposes a DML builder object."
+          },
+          "dqlBuilderAvailable": {
+            "type": "boolean",
+            "description": "Whether the plugin exposes the closed, bounded table-preview DQL builder."
           },
           "identifierProcessorAvailable": {
             "type": "boolean",
@@ -6793,6 +6878,31 @@
             "items": {
               "$ref": "#/components/schemas/CommunityTable"
             }
+          }
+        }
+      },
+      "CommunityTablePreviewAccepted": {
+        "type": "object",
+        "description": "Immediate acknowledgement for an accepted forced read-only table preview.",
+        "required": [
+          "operationId",
+          "sql",
+          "rowLimit"
+        ],
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "description": "Opaque operation id used for events, snapshots, cancellation, and results."
+          },
+          "rowLimit": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Effective row limit enforced in both generated SQL and query execution.",
+            "minimum": 0
+          },
+          "sql": {
+            "type": "string",
+            "description": "Exact dialect SQL generated and validated before query acceptance."
           }
         }
       },
@@ -8864,6 +8974,49 @@
           "sqlPermissionMode": {
             "$ref": "#/components/schemas/SqlPermissionMode",
             "description": "SQL permission policy for this run."
+          }
+        }
+      },
+      "StartCommunityTablePreviewRequest": {
+        "type": "object",
+        "description": "Closed request to preview rows from one table through a forced read-only query.",
+        "required": [
+          "datasourceId",
+          "databaseType",
+          "databaseName",
+          "schemaName",
+          "tableName"
+        ],
+        "properties": {
+          "databaseName": {
+            "type": "string",
+            "description": "Raw database identifier segment; an empty value means no database qualifier."
+          },
+          "databaseType": {
+            "type": "string",
+            "description": "Community database type used to select the dialect services."
+          },
+          "datasourceId": {
+            "type": "string",
+            "description": "Opaque datasource id used only after SQL generation succeeds."
+          },
+          "rowLimit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Requested preview rows. Omission selects 200; explicit values must be 1 through 1000.",
+            "maximum": 1000,
+            "minimum": 1
+          },
+          "schemaName": {
+            "type": "string",
+            "description": "Raw schema identifier segment; an empty value means no schema qualifier."
+          },
+          "tableName": {
+            "type": "string",
+            "description": "Raw table identifier segment. Community quotes it before SQL generation."
           }
         }
       },

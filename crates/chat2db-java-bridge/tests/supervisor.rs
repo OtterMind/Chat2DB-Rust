@@ -2,11 +2,11 @@ use std::{sync::Arc, time::Duration};
 
 use chat2db_engine_protocol::{MAX_FRAME_BYTES, MIN_FRAME_BYTES, wire::ProtocolVersion};
 use chat2db_java_bridge::{
-    BridgeError, BuildCommunityNamespaceSqlRequest, CancelDisposition, CommunityClasspath,
-    CommunityNamespaceSqlOperation, DeliveryOutcome, DriverArtifact, DriverSpec, EngineClient,
-    EngineCommand, EngineConfig, EngineState, EngineSupervisor, JdbcValue, QueryEvent,
-    QueryOptions, QueryRequest, SESSION_JDBC_CAPABILITY, Session, SessionConfig, SessionState,
-    TransactionOptions, UpdateRequest,
+    BridgeError, BuildCommunityNamespaceSqlRequest, BuildCommunityTablePreviewSqlRequest,
+    CancelDisposition, CommunityClasspath, CommunityNamespaceSqlOperation, DeliveryOutcome,
+    DriverArtifact, DriverSpec, EngineClient, EngineCommand, EngineConfig, EngineState,
+    EngineSupervisor, JdbcValue, QueryEvent, QueryOptions, QueryRequest, SESSION_JDBC_CAPABILITY,
+    Session, SessionConfig, SessionState, TransactionOptions, UpdateRequest,
 };
 
 const COMMUNITY_COMMIT: &str = "f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7";
@@ -381,6 +381,67 @@ async fn namespace_builder_dispatches_closed_operations_after_local_preflight() 
         .await
         .expect_err("unsafe namespace request must fail before transport");
     assert!(matches!(local, BridgeError::InvalidRequest(_)));
+
+    assert!(matches!(supervisor.state(), EngineState::Ready { .. }));
+    supervisor.shutdown().await.expect("fixture must shut down");
+}
+
+#[tokio::test]
+async fn table_preview_builder_dispatches_after_local_preflight() {
+    let directory = tempfile::tempdir().expect("fixture directory must exist");
+    let jar = directory.path().join("community-fixture.jar");
+    std::fs::write(&jar, b"fixture").expect("fixture JAR must write");
+    let classpath = CommunityClasspath::from_paths(COMMUNITY_COMMIT, [jar])
+        .expect("fixture Community classpath must validate");
+    let supervisor = EngineSupervisor::spawn(
+        fast_config(fixture_command(&["--community=wrong-commit"]))
+            .with_community_classpath(classpath),
+    )
+    .await
+    .expect("Community fixture must negotiate the DQL capability");
+    let community = supervisor
+        .client()
+        .community_client()
+        .expect("Community client must bind");
+
+    let built = community
+        .build_table_preview_sql(BuildCommunityTablePreviewSqlRequest {
+            database_type: "MYSQL".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: String::new(),
+            table_name: "items".to_owned(),
+            row_limit: 200,
+        })
+        .await
+        .expect("valid table-preview request must reach the fixture");
+    assert_eq!(built.sql, "SELECT * FROM inventory.items LIMIT 200");
+    assert_eq!(built.row_limit, 200);
+
+    for row_limit in [0, 1001] {
+        let error = community
+            .build_table_preview_sql(BuildCommunityTablePreviewSqlRequest {
+                database_type: "MYSQL".to_owned(),
+                database_name: "inventory".to_owned(),
+                schema_name: String::new(),
+                table_name: "items".to_owned(),
+                row_limit,
+            })
+            .await
+            .expect_err("out-of-range row limit must fail before transport");
+        assert!(matches!(error, BridgeError::InvalidRequest(_)));
+    }
+
+    let unsafe_identifier = community
+        .build_table_preview_sql(BuildCommunityTablePreviewSqlRequest {
+            database_type: "MYSQL".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: String::new(),
+            table_name: "items; DROP TABLE audit_log".to_owned(),
+            row_limit: 200,
+        })
+        .await
+        .expect_err("unsafe table identifier must fail before transport");
+    assert!(matches!(unsafe_identifier, BridgeError::InvalidRequest(_)));
 
     assert!(matches!(supervisor.state(), EngineState::Ready { .. }));
     supervisor.shutdown().await.expect("fixture must shut down");

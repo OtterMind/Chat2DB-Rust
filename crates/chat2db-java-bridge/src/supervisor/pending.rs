@@ -1066,6 +1066,19 @@ fn validate_response_payload(
             validate_community_response_encoded_len(built)?;
             Ok(None)
         }
+        wire::server_envelope::Payload::CommunityBuiltTablePreviewSql(built) => {
+            validate_non_empty_bytes(&built.sql, MAX_SQL_BYTES, "Community table preview SQL")?;
+            if !(1..=wire::CommunityDqlRowLimit::MaxRows as u32).contains(&built.row_limit) {
+                return Err(format!(
+                    "Community table preview row limit must be between 1 and {}",
+                    wire::CommunityDqlRowLimit::MaxRows as u32
+                ));
+            }
+            let mut field_bytes = 0;
+            add_community_response_field(&mut field_bytes, &built.sql)?;
+            validate_community_response_encoded_len(built)?;
+            Ok(None)
+        }
         wire::server_envelope::Payload::CommunitySqlAnalysis(analysis) => {
             let mut field_bytes = 0;
             validate_community_parsed_statements(&analysis.statements, &mut field_bytes)?;
@@ -3297,6 +3310,44 @@ mod tests {
                 .expect_err("built namespace SQL above one MiB must fail")
                 .contains(&format!("{MAX_SQL_BYTES}-byte limit"))
         );
+    }
+
+    #[test]
+    fn community_table_preview_enforces_sql_and_row_limit_bounds() {
+        let empty = wire::server_envelope::Payload::CommunityBuiltTablePreviewSql(
+            wire::CommunityBuiltTablePreviewSql {
+                sql: String::new(),
+                row_limit: 200,
+            },
+        );
+        assert!(
+            validate_response_payload(&empty)
+                .expect_err("empty table-preview SQL must fail")
+                .contains("cannot be empty")
+        );
+
+        let exact = wire::server_envelope::Payload::CommunityBuiltTablePreviewSql(
+            wire::CommunityBuiltTablePreviewSql {
+                sql: "x".repeat(MAX_SQL_BYTES),
+                row_limit: wire::CommunityDqlRowLimit::MaxRows as u32,
+            },
+        );
+        validate_response_payload(&exact)
+            .expect("exact table-preview SQL and row-limit bounds must pass");
+
+        for row_limit in [0, wire::CommunityDqlRowLimit::MaxRows as u32 + 1] {
+            let invalid = wire::server_envelope::Payload::CommunityBuiltTablePreviewSql(
+                wire::CommunityBuiltTablePreviewSql {
+                    sql: "SELECT 1".to_owned(),
+                    row_limit,
+                },
+            );
+            assert!(
+                validate_response_payload(&invalid)
+                    .expect_err("out-of-range table-preview row limit must fail")
+                    .contains("row limit")
+            );
+        }
     }
 
     fn valid_completion_candidate() -> wire::CommunitySqlCompletionCandidate {

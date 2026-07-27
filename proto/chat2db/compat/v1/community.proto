@@ -127,6 +127,11 @@ enum CommunityNamespaceByteLimit {
   COMMUNITY_NAMESPACE_BYTE_LIMIT_MAX_PROPERTY_BYTES = 4096;
 }
 
+enum CommunityDqlRowLimit {
+  COMMUNITY_DQL_ROW_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_DQL_ROW_LIMIT_MAX_ROWS = 1000;
+}
+
 enum CommunityColumnCountLimit {
   COMMUNITY_COLUMN_COUNT_LIMIT_UNSPECIFIED = 0;
   COMMUNITY_COLUMN_COUNT_LIMIT_MAX_COLUMNS = 65536;
@@ -179,6 +184,7 @@ message CommunityPluginDescriptor {
   bool dml_builder_available = 10;
   bool value_processor_available = 11;
   bool identifier_processor_available = 12;
+  bool dql_builder_available = 13;
 }
 
 message CommunityPluginCatalog {
@@ -596,6 +602,19 @@ message CommunityDropSchemaSql {
 
 message CommunityBuiltNamespaceSql {
   string sql = 1;
+}
+
+message BuildCommunityTablePreviewSqlRequest {
+  string database_type = 1;
+  string database_name = 2;
+  string schema_name = 3;
+  string table_name = 4;
+  uint32 row_limit = 5;
+}
+
+message CommunityBuiltTablePreviewSql {
+  string sql = 1;
+  uint32 row_limit = 2;
 }
 
 message BuildCommunityDmlRequest {

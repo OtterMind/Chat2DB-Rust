@@ -2,9 +2,11 @@ package ai.chat2db.rust.compat;
 
 import ai.chat2db.rust.compat.protocol.v1.BuildCommunityDmlRequest;
 import ai.chat2db.rust.compat.protocol.v1.BuildCommunityNamespaceSqlRequest;
+import ai.chat2db.rust.compat.protocol.v1.BuildCommunityTablePreviewSqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.CommunityBuiltDml;
 import ai.chat2db.rust.compat.protocol.v1.CommunityBuiltNamespaceSql;
 import ai.chat2db.rust.compat.protocol.v1.CommunityBuiltSql;
+import ai.chat2db.rust.compat.protocol.v1.CommunityBuiltTablePreviewSql;
 import ai.chat2db.rust.compat.protocol.v1.CommunityByteLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunityColumnCountLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunityCountLimit;
@@ -174,6 +176,7 @@ final class CommunityPluginRegistry implements AutoCloseable {
     private final CommunitySqlCompletionBridge sqlCompletion;
     private final CommunityDmlBuilder dmlBuilder;
     private final CommunityNamespaceBuilder namespaceBuilder;
+    private final CommunityDqlBuilder dqlBuilder;
     private boolean closed;
 
     private CommunityPluginRegistry(
@@ -192,6 +195,7 @@ final class CommunityPluginRegistry implements AutoCloseable {
         this.sqlCompletion = sqlCompletion;
         this.dmlBuilder = loader == null ? null : new CommunityDmlBuilder(loader);
         this.namespaceBuilder = loader == null ? null : new CommunityNamespaceBuilder(loader);
+        this.dqlBuilder = loader == null ? null : new CommunityDqlBuilder(loader);
     }
 
     static CommunityPluginRegistry openConfigured() {
@@ -294,6 +298,19 @@ final class CommunityPluginRegistry implements AutoCloseable {
                     "Community namespace generation is not configured");
         }
         return namespaceBuilder.build(handle.plugin(), request);
+    }
+
+    synchronized CommunityBuiltTablePreviewSql buildTablePreviewSql(
+            BuildCommunityTablePreviewSqlRequest request) throws RuntimeFailure {
+        ensureOpen();
+        CommunityDqlBuilder.validateRequest(request);
+        PluginHandle handle = requirePlugin(request.getDatabaseType());
+        if (dqlBuilder == null) {
+            throw RuntimeFailure.conflict(
+                    "community.dql_builder_unavailable",
+                    "Community DQL generation is not configured");
+        }
+        return dqlBuilder.build(handle.plugin(), request);
     }
 
     void validateSchemasRequest(String databaseType, String databaseName)
@@ -1369,13 +1386,14 @@ final class CommunityPluginRegistry implements AutoCloseable {
             Object identifierProcessor =
                     optionalComponent(handle.plugin(), "getSQLIdentifierProcessor");
             Object syntax = invoke(handle.plugin(), "getSqlSyntaxPlugin");
-            budget.consumeBooleans(6);
+            budget.consumeBooleans(7);
             descriptor.setMetadataAvailable(metadata != null);
             descriptor.setSqlBuilderAvailable(builder != null);
             descriptor.setSqlParserAvailable(syntax != null && invoke(syntax, "getSQLParser") != null);
             descriptor.setDmlBuilderAvailable(dmlSegmentAvailable(builder));
             descriptor.setValueProcessorAvailable(valueProcessor != null);
             descriptor.setIdentifierProcessorAvailable(identifierProcessor != null);
+            descriptor.setDqlBuilderAvailable(dqlSegmentAvailable(builder));
             return descriptor.build();
         } catch (RuntimeFailure failure) {
             throw failure;
@@ -2319,11 +2337,21 @@ final class CommunityPluginRegistry implements AutoCloseable {
 
     private static boolean dmlSegmentAvailable(Object builder)
             throws ReflectiveOperationException {
+        return segmentAvailable(builder, "dml");
+    }
+
+    private static boolean dqlSegmentAvailable(Object builder)
+            throws ReflectiveOperationException {
+        return segmentAvailable(builder, "dql");
+    }
+
+    private static boolean segmentAvailable(Object builder, String segment)
+            throws ReflectiveOperationException {
         if (builder == null) {
             return false;
         }
         try {
-            return invoke(builder, "dml") != null;
+            return invoke(builder, segment) != null;
         } catch (InvocationTargetException failure) {
             if (rootInvocationCause(failure) instanceof UnsupportedOperationException) {
                 return false;

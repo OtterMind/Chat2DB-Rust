@@ -28,16 +28,21 @@ frontend backend adapters expose catalog, schemas, databases, tables, columns,
 indexes, views, imported and exported foreign keys, primary keys, functions,
 function parameters, procedures, procedure parameters, triggers, schema SQL
 building, parsing, syntax validation, formatting, and datasource-aware SQL
-completion plus datasource-free typed DML and namespace SQL generation when the exact locked
-classpath is configured. The shared React
-workbench consumes the Community operations through an end-user object explorer,
-schema SQL insertion, explicit SQL analysis, separately negotiated validation,
-race-safe in-place formatting, keyboard-driven bounded completion, and a
-table-scoped INSERT/UPDATE builder plus a database/schema namespace builder.
-Signing,
-distribution, the
-remaining dialect estate, and packaging remain target components. CLI and MCP
-attach to a running host rather than composing a second product runtime.
+completion plus datasource-free typed DML, namespace SQL, and bounded
+table-preview SQL generation when the exact locked classpath is configured. The
+shared React workbench consumes the Community operations through an end-user
+object explorer, schema SQL insertion, explicit SQL analysis, separately
+negotiated validation, race-safe in-place formatting, keyboard-driven bounded
+completion, a table-scoped INSERT/UPDATE builder, a database/schema namespace
+builder, and one-click table data preview through the existing query result
+surface. Signing, distribution, the remaining dialect estate, and packaging
+remain target components. CLI and MCP attach to a running host rather than
+composing a second product runtime.
+
+Runtime-tested: yes for the Stage 7M MySQL product vertical. On 2026-07-27 the
+complete stored-datasource path passed against MySQL 8.4, from real Community
+identifier/DQL/page-limit generation through forced-read-only JDBC execution
+and retained-result paging.
 
 ## Ownership
 
@@ -301,15 +306,41 @@ generated-SQL-only contract. The old CREATE SCHEMA operation remains available.
 Real H2 bridge/product gates prove generation is non-executing, while the fixed
 Java classpath gate verifies both H2 and MySQL builder output.
 
+Stage 7M adds `community.dql-builder.v1` at request/response tag `225`. The
+catalog advertises `dql_builder_available` per plugin. Java treats database,
+schema, and table names as separate bounded identifier segments, uses the
+selected plugin's real identifier builder to produce the qualified name,
+then calls its DQL `buildSelectTable` and `buildPageLimit` implementations. Some
+plugins, including MySQL, quote the table argument again; the adapter detects
+that incompatible first result, retries the same real builder with the original
+segments, and requires the resulting SELECT to contain the exact plugin-quoted
+qualified identifier. This generation step accepts no raw SQL, opens no JDBC
+session, and never executes the returned statement.
+
+Core applies the product default of 200 rows and rejects limits outside
+`1..=1000`. It parses the generated SQL through the retained Community parser
+and requires `is_select`, at most one projected SELECT statement, a SELECT
+prefix, and no semicolon before passing the SQL to `start_read_query`. That
+existing path resolves the stored datasource, forces the JDBC session read-only,
+caps the result at the same row limit and 8 MiB, writes batches of at most 1 MiB,
+and retains the result for one hour. The accepted response carries the operation
+id, exact SQL, and effective row limit; normal operation events, cancellation,
+and retained-result paging remain unchanged.
+
+Axum exposes `POST /api/v1/community/table-preview`; Tauri exposes
+`start_community_table_preview`; generated OpenAPI/TypeScript and both frontend
+adapters share the same DTO. The table detail enables Preview only when the
+selected plugin advertises DQL support. Starting a preview inserts the generated
+SQL into the editor and observes the accepted operation in the existing result
+surface. A table/scope change aborts the pending request, and a late accepted
+operation is cancelled instead of replacing newer state. The Core path is
+runtime-tested against MySQL 8.4 with a pinned Connector/J pack. Product writes
+and Agent, CLI, and MCP MySQL conformance remain outside Stage 7M; PostgreSQL and
+long-tail plugin conformance do not block this MySQL milestone.
+
 Remaining builder operations, general type conversion, non-relational
 operations, script execution, import/export, and per-dialect conformance are not
 implemented yet.
-The MySQL preview product gate loads a pinned Connector/J pack and proves stored
-datasource access, real database/table/column/index metadata, read-query
-execution, and retained-result paging. The shared workbench selects the loaded
-driver instead of requiring an opaque driver id. MySQL write execution and
-Agent, CLI, and MCP conformance remain follow-on work; PostgreSQL and long-tail
-plugins do not block this read-only preview.
 
 Spring Boot, Spring Web, Spring AI, MCP, JCEF, product storage, and updater logic
 do not belong in the final Java engine.
@@ -440,7 +471,10 @@ Core/Axum/Tauri/React product boundary. The eleventh slice generates typed
 single/batch INSERT and ordered UPDATE SQL through the real plugin-owned DML,
 value, and identifier processors and inserts it into the editor without
 execution. The twelfth slice adds closed database/schema namespace DDL
-generation through the same product boundary. Signing,
+generation through the same product boundary. The thirteenth slice generates a
+bounded table SELECT through the real plugin-owned identifier, DQL, and
+page-limit builders, then executes it through Core's forced-read-only query and
+retained-result path for Web and Tauri. Signing,
 installation, hot reload, downloading, compatibility selection, updates,
 rollback, and the remaining compatibility operations are not implemented.
 
@@ -499,16 +533,16 @@ set.
   over-budget entries before the isolated Community loader is created; Java
   also rejects manifest `Class-Path` escapes. The fixed build removes such
   dependency attributes deterministically before lock verification and verifies
-  two consecutive clean builds byte-for-byte. Configuring it requires all twelve
-  Community capabilities during handshake, and Community response projection
+  two consecutive clean builds byte-for-byte. Configuring it requires all
+  thirteen Community capabilities during handshake, and Community response projection
   is capped at 8 MiB in both Java and Rust. Rust applies that budget to raw
-  Community response tags `200..=224` before Protobuf decoding, including
+  Community response tags `200..=225` before Protobuf decoding, including
   duplicate fields, and allocation-free scans known nested repeated fields so
   collection limits are enforced before DTO allocation. It then validates
-  decoded collection counts, nested index columns, completion fields, typed-DML
-  and namespace SQL, UTF-16 ranges, field sizes, aggregate strings, and encoded
-  message length again. The
-  source build also rejects any artifact-set drift against its committed lock.
+  decoded collection counts, nested index columns, completion fields, typed-DML,
+  namespace SQL, table-preview SQL and row limits, UTF-16 ranges, field sizes,
+  aggregate strings, and encoded message length again. The source build also
+  rejects any artifact-set drift against its committed lock.
   Signing and installed-package verification remain Stage 8 work.
 
 ## Packaging target

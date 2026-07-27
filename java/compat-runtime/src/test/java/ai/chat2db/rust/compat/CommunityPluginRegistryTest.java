@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import ai.chat2db.rust.compat.protocol.v1.BuildCommunityDmlRequest;
 import ai.chat2db.rust.compat.protocol.v1.BuildCommunityNamespaceSqlRequest;
+import ai.chat2db.rust.compat.protocol.v1.BuildCommunityTablePreviewSqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.CommunityAlterDatabaseSql;
 import ai.chat2db.rust.compat.protocol.v1.CommunityCreateDatabaseSql;
 import ai.chat2db.rust.compat.protocol.v1.CommunityCreateSchemaSql;
@@ -678,6 +679,7 @@ class CommunityPluginRegistryTest {
             assertTrue(descriptor.getDmlBuilderAvailable());
             assertTrue(descriptor.getValueProcessorAvailable());
             assertTrue(descriptor.getIdentifierProcessorAvailable());
+            assertTrue(descriptor.getDqlBuilderAvailable());
 
             try (Statement statement = connection.createStatement()) {
                 statement.executeUpdate("CREATE SCHEMA IF NOT EXISTS APP");
@@ -754,6 +756,42 @@ class CommunityPluginRegistryTest {
                                     "community.dml_value_not_supported",
                                     () -> registry.buildDml(binary))
                             .code());
+        }
+    }
+
+    @Test
+    void realCommunityMysqlBuildsBoundedTablePreviewSqlWithoutOpeningJdbc()
+            throws Exception {
+        Path communityClasspath = communityClasspathDirectory();
+        assumeTrue(
+                Files.isDirectory(communityClasspath),
+                "the fixed Community classpath is built by the extended integration lane");
+
+        try (CommunityPluginRegistry registry = openRegistry(communityClasspath)) {
+            assumeTrue(
+                    hasPlugin(registry, "MYSQL"),
+                    "the fixed classpath does not contain the MySQL plugin");
+            var descriptor = registry.catalog().getPluginsList().stream()
+                    .filter(plugin -> plugin.getDatabaseType().equalsIgnoreCase("MYSQL"))
+                    .findFirst()
+                    .orElseThrow();
+            assertTrue(descriptor.getDqlBuilderAvailable());
+
+            ClassLoader previous = Thread.currentThread().getContextClassLoader();
+            var built = registry.buildTablePreviewSql(
+                    BuildCommunityTablePreviewSqlRequest.newBuilder()
+                            .setDatabaseType("MYSQL")
+                            .setDatabaseName("inventory")
+                            .setTableName("order")
+                            .setRowLimit(200)
+                            .build());
+
+            assertEquals(previous, Thread.currentThread().getContextClassLoader());
+            assertEquals(200, built.getRowLimit());
+            assertTrue(
+                    built.getSql().contains("FROM `inventory`.`order`"),
+                    built.getSql());
+            assertTrue(built.getSql().endsWith("LIMIT 200"), built.getSql());
         }
     }
 

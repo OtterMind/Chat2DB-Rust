@@ -49,6 +49,7 @@ const catalog = {
       sqlBuilderAvailable: true,
       sqlParserAvailable: true,
       dmlBuilderAvailable: true,
+      dqlBuilderAvailable: true,
       valueProcessorAvailable: true,
       identifierProcessorAvailable: true,
     },
@@ -158,6 +159,7 @@ async function renderExplorer(
     onParserAvailabilityChange: vi.fn(),
     onCompletionContextChange: vi.fn(),
     onInsertSql: vi.fn(),
+    onPreviewTable: vi.fn(async () => undefined),
   };
   const fixture = fixtureClient(buildCommunityNamespaceSql);
   await act(async () => {

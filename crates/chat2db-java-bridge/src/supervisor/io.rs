@@ -42,7 +42,7 @@ const MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINT_ITEMS: usize =
     wire::CommunitySqlCompletionEditorHintItemCountLimit::MaxEditorHintItems as usize;
 const MAX_COMMUNITY_SQL_COMPLETION_SNIPPET_SLOTS: usize =
     wire::CommunitySqlCompletionSnippetSlotCountLimit::MaxSnippetSlots as usize;
-const COMMUNITY_RESPONSE_TAGS: std::ops::RangeInclusive<u32> = 200..=224;
+const COMMUNITY_RESPONSE_TAGS: std::ops::RangeInclusive<u32> = 200..=225;
 const MAX_PROTOBUF_FIELD_NUMBER: u64 = (1 << 29) - 1;
 const MAX_PROTOBUF_GROUP_DEPTH: usize = 100;
 
@@ -714,7 +714,8 @@ mod tests {
     const COMMUNITY_SQL_COMPLETION_TAG: u32 = 222;
     const COMMUNITY_BUILT_DML_TAG: u32 = 223;
     const COMMUNITY_BUILT_NAMESPACE_SQL_TAG: u32 = 224;
-    const NON_COMMUNITY_TAG: u32 = 225;
+    const COMMUNITY_BUILT_TABLE_PREVIEW_SQL_TAG: u32 = 225;
+    const NON_COMMUNITY_TAG: u32 = 226;
 
     fn encode_varint(mut value: u64, output: &mut Vec<u8>) {
         loop {
@@ -1368,6 +1369,33 @@ mod tests {
         assert!(
             validate_community_response_wire_budget(&cross_operation)
                 .expect_err("DML and namespace payloads must share the Community byte budget")
+                .contains(&format!("{} bytes", MAX_COMMUNITY_RESPONSE_BYTES + 1))
+        );
+    }
+
+    #[test]
+    fn raw_scanner_enforces_table_preview_byte_budget_across_duplicate_payloads() {
+        let exact = community_response(
+            COMMUNITY_BUILT_TABLE_PREVIEW_SQL_TAG,
+            &unknown_nested_message(MAX_COMMUNITY_RESPONSE_BYTES),
+        );
+        validate_community_response_wire_budget(&exact)
+            .expect("table-preview payload exactly at the Community byte budget must pass");
+
+        let first_length = MAX_COMMUNITY_RESPONSE_BYTES / 2;
+        let second_length = MAX_COMMUNITY_RESPONSE_BYTES - first_length + 1;
+        let mut duplicate = community_response(
+            COMMUNITY_BUILT_TABLE_PREVIEW_SQL_TAG,
+            &unknown_nested_message(first_length),
+        );
+        push_length_delimited_field(
+            COMMUNITY_BUILT_TABLE_PREVIEW_SQL_TAG,
+            &unknown_nested_message(second_length),
+            &mut duplicate,
+        );
+        assert!(
+            validate_community_response_wire_budget(&duplicate)
+                .expect_err("duplicate table-preview payloads must share the Community byte budget")
                 .contains(&format!("{} bytes", MAX_COMMUNITY_RESPONSE_BYTES + 1))
         );
     }

@@ -16,7 +16,8 @@ use chat2db_contract::{
     ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityFunctionsRequest,
     ListCommunityIndexesRequest, ListCommunityProceduresRequest, ListCommunitySchemasRequest,
     ListCommunityTableKeysRequest, ListCommunityTablesRequest, ListCommunityTriggersRequest,
-    ListCommunityViewsRequest, ParseCommunitySqlRequest, ValidateCommunitySqlRequest,
+    ListCommunityViewsRequest, OperationEvent, ParseCommunitySqlRequest, ResultPageRequest,
+    StartCommunityTablePreviewRequest, ValidateCommunitySqlRequest,
 };
 use chat2db_core::{
     AppError, AppErrorKind, Application, RuntimeHost, load_fixed_community_classpath,
@@ -30,6 +31,7 @@ use tempfile::TempDir;
 
 const COMMUNITY_COMMIT: &str = "f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7";
 const H2_DRIVER_CLASS: &str = "org.h2.Driver";
+const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[tokio::test]
 async fn product_services_invoke_the_fixed_community_h2_compatibility_slice() {
@@ -84,6 +86,7 @@ async fn product_services_invoke_the_fixed_community_h2_compatibility_slice() {
 
     create_metadata_fixture(&driver, &driver_id, jdbc_url, &built.sql).await;
     verify_dml_builder(&application, &driver, &driver_id, jdbc_url).await;
+    verify_table_preview(&application, &datasource.id).await;
 
     let schemas = application
         .list_community_schemas(ListCommunitySchemasRequest {
@@ -319,6 +322,14 @@ async fn create_metadata_fixture(
         })
         .await
         .expect("test index must be created");
+    setup_session
+        .execute_update(UpdateRequest {
+            sql: "INSERT INTO APP.items (id, label) VALUES (1, 'preview-ready')".to_owned(),
+            parameters: Vec::new(),
+            transaction_id: None,
+        })
+        .await
+        .expect("table-preview fixture row must be inserted");
     for sql in [
         "CREATE TABLE APP.parents (id BIGINT NOT NULL, CONSTRAINT pk_parents PRIMARY KEY (id))",
         "CREATE TABLE APP.children (id BIGINT NOT NULL, parent_id BIGINT NOT NULL, CONSTRAINT pk_children PRIMARY KEY (id), CONSTRAINT fk_children_parent FOREIGN KEY (parent_id) REFERENCES APP.parents(id))",
@@ -342,6 +353,66 @@ async fn create_metadata_fixture(
         .close()
         .await
         .expect("setup JDBC session must close");
+}
+
+async fn verify_table_preview(application: &Application, datasource_id: &str) {
+    let accepted = application
+        .start_community_table_preview(StartCommunityTablePreviewRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: String::new(),
+            schema_name: "APP".to_owned(),
+            table_name: "items".to_owned(),
+            row_limit: None,
+        })
+        .await
+        .expect("Core must build, validate, and accept an H2 table preview");
+    assert_eq!(accepted.row_limit, 200);
+    assert!(accepted.sql.contains("APP.items"));
+
+    let result_id = wait_for_preview_result(application, &accepted.operation_id).await;
+    let page = application
+        .result_page(
+            &result_id,
+            ResultPageRequest {
+                offset: "0".to_owned(),
+                max_rows: "200".to_owned(),
+                max_bytes: (8_u64 * 1024 * 1024).to_string(),
+            },
+        )
+        .await
+        .expect("H2 table preview result must be retained");
+    assert_eq!(page.metadata.row_count, "1");
+    assert_eq!(page.rows.len(), 1);
+    assert!(matches!(
+        page.rows[0].values.as_slice(),
+        [
+            chat2db_contract::JdbcValue::SignedInteger { value: id },
+            chat2db_contract::JdbcValue::Text { value: label },
+        ] if id == "1" && label == "preview-ready"
+    ));
+}
+
+async fn wait_for_preview_result(application: &Application, operation_id: &str) -> String {
+    let mut events = application
+        .subscribe_operation(operation_id, Some(0))
+        .await
+        .expect("table-preview operation subscription must open");
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, events.next_event())
+            .await
+            .expect("table-preview operation event must arrive")
+            .expect("table-preview event stream must remain valid")
+            .expect("table preview must emit a terminal event");
+        match event.event {
+            OperationEvent::Started | OperationEvent::Progress { .. } => {}
+            OperationEvent::Completed { result } => return result.id,
+            OperationEvent::Failed { error } => panic!("H2 table preview failed: {error:?}"),
+            OperationEvent::Cancelled { reason } => {
+                panic!("H2 table preview was cancelled: {reason:?}")
+            }
+        }
+    }
 }
 
 async fn verify_dml_builder(

@@ -12,7 +12,7 @@ in runtime health until then.
 | 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
 | 5 | Complete | Product transports | Generated OpenAPI/TypeScript contract, Axum JSON/SSE, Tauri 2 commands/channels, shared SQL workbench, product H2 tests |
 | 6 | Complete | Agent, MCP, and CLI | Direct providers, durable bounded tool loop, SQL tools/permissions, compaction, Web/Tauri run transports, owner-only local attachment, read-query CLI, and bounded `rmcp` stdio tools |
-| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs through 7L namespace SQL are implemented; the MySQL read-only preview adds a pinned Connector/J pack, driver picker, real table metadata, query execution, and result paging |
+| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs through 7M bounded table preview are implemented; the MySQL read-only preview adds a pinned Connector/J pack, driver picker, real table metadata, plugin-built SELECT, query execution, and result paging |
 | 8 | Planned | Packaging and release | License authorization, NOTICE/SBOM, jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
 
 Stage 3 completion means the versioned Rust-Java bridge can load an external
@@ -79,8 +79,8 @@ supervised Java generation. Java isolates them behind a platform-parent
 `URLClassLoader`, rejects manifest `Class-Path` escapes, discovers real `IPlugin`
 services, and exposes plugin catalog, H2 schema metadata, `CREATE SCHEMA`, and
 retained ANTLR parsing DTOs over Protobuf. Configuring the classpath requires all
-twelve current Community capabilities at handshake, and Java plus Rust enforce the
-generated 8 MiB cumulative response budget. Rust counts raw Community oneof
+thirteen current Community capabilities at handshake, and Java plus Rust enforce
+the generated 8 MiB cumulative response budget. Rust counts raw Community oneof
 values before decoding, including duplicate fields, and retains a generation
 snapshot whenever child reap cannot be proven. The real vertical test keeps the
 H2 JDBC driver in its separate driver loader.
@@ -248,12 +248,32 @@ into the editor. H2 bridge and product gates prove generated CREATE/DROP SCHEMA
 SQL does not execute until submitted separately; the Java classpath gate also
 verifies real MySQL CREATE DATABASE output.
 
-The MySQL-first preview provisions one verified Connector/J pack and proves
-datasource CRUD, Community database/table/column/index metadata, parsing,
-validation, formatting, completion, and read-query result paging through the
-same stored datasource. The shared frontend selects the installed driver from
-runtime inventory. Product writes and Agent, CLI, and MCP MySQL conformance are
-explicitly deferred from this small preview; other dialects do not block it.
+Stage 7M adds the independent `community.dql-builder.v1` capability at
+request/response tag `225`. Java calls the selected plugin's real identifier,
+DQL table-select, and page-limit builders without opening JDBC or accepting raw
+SQL. Database, schema, and table identifiers remain separate bounded segments;
+row limits are `1..=1000`. The compatibility fallback for plugins such as MySQL
+retries the real table builder with the original segments when passing an
+already-qualified identifier would cause a second quoting pass, and rejects any
+result that does not contain the exact plugin-quoted qualified identifier.
+
+Core defaults previews to 200 rows and requires parser `is_select`, at most one
+projected SELECT statement, a SELECT prefix, and no semicolon. It then executes
+the SQL through the existing forced-read-only query service with the same row
+limit, an 8 MiB result ceiling, 1 MiB batches, and one-hour retention. Axum,
+Tauri, generated OpenAPI/TypeScript, and the shared frontend expose one
+table-preview contract.
+The table detail action starts the operation, writes the exact generated SQL to
+the editor, and uses the existing event, cancellation, and retained-page result
+surface; stale scope responses cannot replace current state.
+
+Runtime-tested: yes. On 2026-07-27 the complete product gate passed against
+MySQL 8.4 with the pinned Connector/J pack, covering stored datasource access,
+real database/table/column/index metadata, qualified table-preview generation,
+forced-read-only execution, and retained-result paging. The frontend selects
+the installed driver from runtime inventory. Product writes and Agent, CLI, and
+MCP MySQL conformance are explicitly deferred from this small preview;
+PostgreSQL and long-tail plugin conformance do not block it.
 
 Stage 7 remains incomplete. General type conversion, script execution, data
 import/export, non-relational behavior, remaining builder operations and plugin

@@ -37,6 +37,7 @@ import type {
   CommunityTableColumnList,
   CommunityTableIndexList,
   CommunityTableList,
+  CommunityTablePreviewAccepted,
   CommunityTrigger,
   CommunityTriggerList,
   CommunityViewList,
@@ -76,6 +77,7 @@ import type {
   ResultPage,
   ResultPageRequest,
   StartAgentRunRequest,
+  StartCommunityTablePreviewRequest,
   StartQueryRequest,
   UpdateAgentSessionRequest,
   UpdateDatasourceRequest,
@@ -307,6 +309,13 @@ export class TauriBackendClient implements BackendClient {
     signal?: AbortSignal,
   ): Promise<CommunitySqlCompletion> {
     return this.#request('complete_community_sql', { request }, signal);
+  }
+
+  startCommunityTablePreview(
+    request: StartCommunityTablePreviewRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTablePreviewAccepted> {
+    return this.#request('start_community_table_preview', { request }, signal);
   }
 
   listDatasources(signal?: AbortSignal): Promise<DatasourceList> {

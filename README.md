@@ -25,8 +25,8 @@ git submodule update --init --recursive
 
 ## Current state
 
-The repository has completed Stages 1 through 6 and the first twelve independently
-buildable Stage 7 slices:
+The repository has completed Stages 1 through 6 and the first thirteen
+independently buildable Stage 7 slices:
 
 - canonical Rust API contracts;
 - a transport-neutral Rust application service root;
@@ -104,9 +104,17 @@ buildable Stage 7 slices:
 - closed database/schema namespace SQL generation for create, alter, drop, and
   use operations, with real H2 and MySQL Community builders, no JDBC session,
   and a race-safe editor dialog that never executes generated SQL; and
+- bounded table-preview SQL generation through the selected Community plugin's
+  real identifier, DQL, and page-limit builders, with no raw SQL input and no
+  JDBC session during generation; and
 - a MySQL-first preview with a pinned Connector/J pack, installed-driver picker,
-  real database/table/column/index discovery, read-query execution, and retained
-  result paging through the product Core and shared Web/Tauri workbench.
+  real database/table/column/index discovery, one-click table data preview,
+  forced-read-only query execution, and retained result paging through the
+  product Core and shared Web/Tauri workbench.
+
+Runtime-tested: yes. The Stage 7M product vertical passed against a real local
+MySQL 8.4 server on 2026-07-27, including plugin-built qualified table SQL,
+forced-read-only execution, and retained paging of the selected table's rows.
 
 Stage 6 is complete. Web and desktop own the product runtime and publish its
 owner-only local endpoint; CLI and MCP attach to that host and never contact
@@ -138,9 +146,13 @@ opening a JDBC session, and exposes typed INSERT/UPDATE generation through the
 same product boundary and table detail UI.
 Stage 7L adds `community.namespace-builder.v1`, retains the old CREATE SCHEMA
 contract, and exposes a closed database/schema DDL union through Core, Axum,
-Tauri, and the shared frontend. The fixed 149-JAR classpath keeps H2 and MySQL;
-PostgreSQL and other dialects do not block the MySQL preview. MySQL writes,
-Agent, CLI, and MCP conformance remain outside this small read-only milestone.
+Tauri, and the shared frontend. Stage 7M adds `community.dql-builder.v1` at tag
+`225`: Java uses the selected plugin to quote the database/schema/table name and
+build a row-limited SELECT without opening JDBC, then Rust validates that SQL and
+executes it through the existing forced-read-only query and retained-result
+path. The fixed 149-JAR classpath keeps H2 and MySQL; PostgreSQL and other
+dialects do not block the MySQL preview. MySQL writes, Agent, CLI, and MCP
+conformance remain outside this small read-only milestone.
 Signing, downloading, updating, rollback, the remaining compatibility estate,
 and full per-dialect compatibility remain Stage 7 work.
 
@@ -186,14 +198,13 @@ JAR integration test rejects any build that embeds `org/h2/Driver.class`.
 The H2 gates cover the Stage 3 JDBC bridge, the Stage 5 product path from a
 vault-backed datasource through retained-result paging and cancellation, and
 the Stage 7B Community path through real `IPlugin`, `IDbMetaData`,
-`ISqlBuilder`, and ANTLR parser implementations. The Stage 7C-7L product gate
+`ISqlBuilder`, and ANTLR parser implementations. The Stage 7C-7M product gate
 repeats those calls through encrypted datasource storage and Core services,
 including forced-read-only schema, object, relation, and programmability
 metadata session cleanup plus datasource-free parsing, validation, formatting,
 typed DML generation, namespace SQL generation, plus datasource-bound table and
-column completion. H2
-remains an external test driver rather than a runtime dependency of either Java
-classpath.
+column completion and table preview. H2 remains an external test driver rather
+than a runtime dependency of either Java classpath.
 The Stage 7J completion workbench also passes Playwright visual acceptance at
 desktop `1440x1000` and mobile `390x844` viewports, with no overlapping or
 out-of-bounds content, horizontal page scrolling, or text overflow.
@@ -217,10 +228,11 @@ make community-product-mysql-integration
 `MYSQL_TEST_HOST` and `MYSQL_TEST_PORT` default to `127.0.0.1:3306`. The test
 creates a uniquely named database, verifies driver loading, datasource CRUD,
 metadata, namespace DDL, typed DML, parsing, validation, formatting, completion,
-query execution, and retained-result paging, then drops the database even when
-verification fails. Connector/J is downloaded from Maven Central only after its
-pinned byte length and SHA-256 are verified; it remains an external driver pack
-and is never embedded in the Java engine.
+plugin-built table-preview SQL, forced-read-only query execution, and
+retained-result paging, then drops the database even when verification fails.
+Connector/J is downloaded from Maven Central only after its pinned byte length
+and SHA-256 are verified; it remains an external driver pack and is never
+embedded in the Java engine.
 
 Those targets require a clean submodule at the fixed commit, build through the
 checked-in Maven Wrapper and a repository-local Maven cache, derive archive
@@ -238,7 +250,7 @@ make check-contracts
 ```
 
 Build the Java engine, fixed Community classpath, verified MySQL driver pack,
-and shared frontend, then run the Web product host with the Stage 7C-7L services
+and shared frontend, then run the Web product host with the Stage 7C-7M services
 enabled:
 
 ```bash

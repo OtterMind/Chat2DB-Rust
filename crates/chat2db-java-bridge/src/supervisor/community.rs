@@ -43,6 +43,8 @@ pub const COMMUNITY_SQL_COMPLETION_CAPABILITY: &str = "community.sql-completion.
 pub const COMMUNITY_DML_BUILDER_CAPABILITY: &str = "community.dml-builder.v1";
 /// Builds database and schema lifecycle SQL without executing it.
 pub const COMMUNITY_NAMESPACE_BUILDER_CAPABILITY: &str = "community.namespace-builder.v1";
+/// Builds bounded table-preview SELECT SQL without opening a JDBC session.
+pub const COMMUNITY_DQL_BUILDER_CAPABILITY: &str = "community.dql-builder.v1";
 
 pub(super) const COMMUNITY_CLASSPATH_ENV: &str = "CHAT2DB_COMMUNITY_CLASSPATH_DIR";
 pub(super) const COMMUNITY_SOURCE_COMMIT_ENV: &str = "CHAT2DB_COMMUNITY_SOURCE_COMMIT";
@@ -69,6 +71,7 @@ const MAX_NAMESPACE_IDENTIFIER_BYTES: usize =
     wire::CommunityNamespaceByteLimit::MaxIdentifierBytes as usize;
 const MAX_NAMESPACE_PROPERTY_BYTES: usize =
     wire::CommunityNamespaceByteLimit::MaxPropertyBytes as usize;
+const MAX_DQL_ROW_LIMIT: u32 = wire::CommunityDqlRowLimit::MaxRows as u32;
 const MAX_COMMUNITY_RESPONSE_BYTES: usize = wire::CommunityByteLimit::MaxResponseBytes as usize;
 const MAX_SQL_BYTES: usize = wire::JdbcProtocolLimit::MaxSqlBytes as usize;
 const MAX_SCALAR_BYTES: usize = wire::JdbcProtocolLimit::MaxScalarBytes as usize;
@@ -533,6 +536,7 @@ pub struct CommunityPluginServices {
     pub dml_builder_available: bool,
     pub value_processor_available: bool,
     pub identifier_processor_available: bool,
+    pub dql_builder_available: bool,
 }
 
 /// Community plugin inventory for one fixed source commit.
@@ -817,6 +821,23 @@ pub struct CommunityFormattedSql {
 pub struct BuildCommunityNamespaceSqlRequest {
     pub database_type: String,
     pub operation: CommunityNamespaceSqlOperation,
+}
+
+/// Pure table-preview SQL generation request without product datasource identifiers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BuildCommunityTablePreviewSqlRequest {
+    pub database_type: String,
+    pub database_name: String,
+    pub schema_name: String,
+    pub table_name: String,
+    pub row_limit: u32,
+}
+
+/// Bounded SQL and effective limit returned by the Community DQL builder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommunityBuiltTablePreviewSql {
+    pub sql: String,
+    pub row_limit: u32,
 }
 
 /// Supported database and schema lifecycle operations. Raw SQL is absent by design.
@@ -1998,6 +2019,51 @@ impl CommunityClient {
         Ok(built.sql)
     }
 
+    /// Builds bounded table-preview SQL through the selected Community plugin.
+    /// This pure generation call neither opens a JDBC session nor accepts raw SQL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid identifiers or limits, unavailable plugin
+    /// services, engine failure, or an invalid response.
+    pub async fn build_table_preview_sql(
+        &self,
+        request: BuildCommunityTablePreviewSqlRequest,
+    ) -> Result<CommunityBuiltTablePreviewSql, BridgeError> {
+        let request = community_table_preview_sql_request(request)?;
+        let expected_row_limit = request.row_limit;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_DQL_BUILDER_CAPABILITY,
+                None,
+                None,
+                wire::client_envelope::Payload::BuildCommunityTablePreviewSql(request),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityBuiltTablePreviewSql(built)) =
+            response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community built-table-preview-SQL response")
+                .await;
+        };
+        if built.row_limit != expected_row_limit {
+            return self
+                .client
+                .protocol_violation("Community table-preview row limit changed across IPC")
+                .await;
+        }
+        validate_non_blank_utf8(&built.sql, MAX_SQL_BYTES, "table preview SQL")?;
+        Ok(CommunityBuiltTablePreviewSql {
+            sql: built.sql,
+            row_limit: built.row_limit,
+        })
+    }
+
     /// Parses SQL through the selected plugin's retained syntax plugin.
     ///
     /// # Errors
@@ -2263,6 +2329,7 @@ impl From<wire::CommunityPluginDescriptor> for CommunityPlugin {
                 dml_builder_available: plugin.dml_builder_available,
                 value_processor_available: plugin.value_processor_available,
                 identifier_processor_available: plugin.identifier_processor_available,
+                dql_builder_available: plugin.dql_builder_available,
             },
         }
     }
@@ -3303,6 +3370,53 @@ fn community_namespace_sql_request(
     Ok(request)
 }
 
+fn community_table_preview_sql_request(
+    request: BuildCommunityTablePreviewSqlRequest,
+) -> Result<wire::BuildCommunityTablePreviewSqlRequest, BridgeError> {
+    validate_database_type(&request.database_type)?;
+    if !request.database_name.is_empty() {
+        validate_dql_identifier(&request.database_name, "database name")?;
+    }
+    if !request.schema_name.is_empty() {
+        validate_dql_identifier(&request.schema_name, "schema name")?;
+    }
+    validate_dql_identifier(&request.table_name, "table name")?;
+    if !(1..=MAX_DQL_ROW_LIMIT).contains(&request.row_limit) {
+        return Err(BridgeError::InvalidRequest(format!(
+            "Community DQL row limit must be between 1 and {MAX_DQL_ROW_LIMIT}"
+        )));
+    }
+    let request = wire::BuildCommunityTablePreviewSqlRequest {
+        database_type: request.database_type,
+        database_name: request.database_name,
+        schema_name: request.schema_name,
+        table_name: request.table_name,
+        row_limit: request.row_limit,
+    };
+    if request.encoded_len() > MAX_COMMUNITY_RESPONSE_BYTES {
+        return Err(BridgeError::InvalidRequest(format!(
+            "Community table-preview request cannot exceed {MAX_COMMUNITY_RESPONSE_BYTES} encoded bytes"
+        )));
+    }
+    Ok(request)
+}
+
+fn validate_dql_identifier(value: &str, field: &str) -> Result<(), BridgeError> {
+    validate_non_blank_utf8(value, MAX_NAMESPACE_IDENTIFIER_BYTES, field)?;
+    if value.trim() != value
+        || value.chars().any(char::is_control)
+        || value.contains(['.', ';', '\'', '"', '`', '[', ']'])
+        || value.contains("--")
+        || value.contains("/*")
+        || value.contains("*/")
+    {
+        return Err(BridgeError::InvalidRequest(format!(
+            "Community DQL {field} contains unsafe identifier syntax"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_namespace_database(database: &CommunityDatabase) -> Result<(), BridgeError> {
     validate_namespace_identifier(&database.name, "database name")?;
     validate_utf8(&database.comment, MAX_COMMENT_BYTES, "database comment")?;
@@ -3752,18 +3866,20 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest, CommunityClasspath,
-        CommunityDatabase, CommunityDmlAssignment, CommunityDmlColumn, CommunityDmlRow,
-        CommunityDmlStatement, CommunityDmlTarget, CommunityDmlTemporal, CommunityDmlTemporalKind,
-        CommunityDmlValue, CommunityForeignKey, CommunityFormattedSql, CommunityFunction,
-        CommunityFunctionParameter, CommunityNamespaceSqlOperation, CommunityPrimaryKey,
-        CommunityProcedure, CommunityProcedureParameter, CommunitySchema, CommunitySqlCompletion,
+        BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest,
+        BuildCommunityTablePreviewSqlRequest, CommunityClasspath, CommunityDatabase,
+        CommunityDmlAssignment, CommunityDmlColumn, CommunityDmlRow, CommunityDmlStatement,
+        CommunityDmlTarget, CommunityDmlTemporal, CommunityDmlTemporalKind, CommunityDmlValue,
+        CommunityForeignKey, CommunityFormattedSql, CommunityFunction, CommunityFunctionParameter,
+        CommunityNamespaceSqlOperation, CommunityPrimaryKey, CommunityProcedure,
+        CommunityProcedureParameter, CommunitySchema, CommunitySqlCompletion,
         CommunitySqlCompletionCandidate, CommunitySqlCompletionEditorHint,
         CommunitySqlCompletionEditorHintItem, CommunitySqlCompletionRange, CommunitySqlDiagnostic,
         CommunitySqlValidation, CommunityTrigger, MAX_COMMENT_BYTES, MAX_DML_VALUE_BYTES,
         MAX_NAMESPACE_IDENTIFIER_BYTES, MAX_NAMESPACE_PROPERTY_BYTES, MAX_SCALAR_BYTES,
         MAX_SQL_COMPLETION_PREFIX_LENGTH, MAX_SQL_FORMATTER_COMPLEXITY_UNITS, SqlUtf16Layout,
-        community_dml_request, community_namespace_sql_request, next_java_long_scope,
+        community_dml_request, community_namespace_sql_request,
+        community_table_preview_sql_request, next_java_long_scope,
         next_sql_completion_datasource_scope, normalize_keyword_case, validate_completion_for_sql,
         validate_completion_prefix_length, validate_non_blank_utf8,
         validate_sql_formatter_complexity,
@@ -3980,6 +4096,68 @@ mod tests {
         ))
         .expect_err("unsafe namespace property must fail");
         assert!(error.to_string().contains("unsafe property syntax"));
+    }
+
+    #[test]
+    fn table_preview_request_preserves_qualified_segments_and_limit() {
+        let request = community_table_preview_sql_request(BuildCommunityTablePreviewSqlRequest {
+            database_type: "MYSQL".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: "reporting".to_owned(),
+            table_name: "items".to_owned(),
+            row_limit: 200,
+        })
+        .expect("valid table-preview request must encode");
+
+        assert_eq!(request.database_type, "MYSQL");
+        assert_eq!(request.database_name, "inventory");
+        assert_eq!(request.schema_name, "reporting");
+        assert_eq!(request.table_name, "items");
+        assert_eq!(request.row_limit, 200);
+    }
+
+    #[test]
+    fn table_preview_request_rejects_unsafe_identifiers_and_limits() {
+        for row_limit in [0, 1001] {
+            let error = community_table_preview_sql_request(BuildCommunityTablePreviewSqlRequest {
+                database_type: "MYSQL".to_owned(),
+                database_name: "inventory".to_owned(),
+                schema_name: String::new(),
+                table_name: "items".to_owned(),
+                row_limit,
+            })
+            .expect_err("out-of-range row limit must fail locally");
+            assert!(error.to_string().contains("between 1 and 1000"));
+        }
+
+        for table_name in [
+            "items.detail",
+            "items; DROP TABLE audit_log",
+            "items--comment",
+            "items/*comment*/",
+            "`items`",
+            " items",
+        ] {
+            let error = community_table_preview_sql_request(BuildCommunityTablePreviewSqlRequest {
+                database_type: "MYSQL".to_owned(),
+                database_name: "inventory".to_owned(),
+                schema_name: String::new(),
+                table_name: table_name.to_owned(),
+                row_limit: 200,
+            })
+            .expect_err("unsafe table identifier must fail locally");
+            assert!(error.to_string().contains("unsafe identifier syntax"));
+        }
+
+        let oversized = community_table_preview_sql_request(BuildCommunityTablePreviewSqlRequest {
+            database_type: "MYSQL".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: String::new(),
+            table_name: "x".repeat(MAX_NAMESPACE_IDENTIFIER_BYTES + 1),
+            row_limit: 200,
+        })
+        .expect_err("oversized table identifier must fail locally");
+        assert!(oversized.to_string().contains("512 UTF-8 bytes"));
     }
 
     #[test]

@@ -35,6 +35,7 @@ import type {
   CommunityTableColumnList,
   CommunityTableIndexList,
   CommunityTableList,
+  CommunityTablePreviewAccepted,
   CommunityTrigger,
   CommunityTriggerList,
   CommunityViewList,
@@ -71,6 +72,7 @@ import type {
   ResultPage,
   ResultPageRequest,
   StartAgentRunRequest,
+  StartCommunityTablePreviewRequest,
   StartQueryRequest,
   UpdateAgentSessionRequest,
   UpdateDatasourceRequest,
@@ -419,6 +421,17 @@ export class HttpBackendClient implements BackendClient {
       '/api/v1/community/sql/complete',
       { method: 'POST', body: JSON.stringify(request), signal },
       [200],
+    );
+  }
+
+  startCommunityTablePreview(
+    request: StartCommunityTablePreviewRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityTablePreviewAccepted> {
+    return this.#json(
+      '/api/v1/community/table-preview',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [202],
     );
   }
 

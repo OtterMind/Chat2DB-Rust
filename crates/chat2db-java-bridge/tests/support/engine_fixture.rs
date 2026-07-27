@@ -20,7 +20,7 @@ const JDBC_CAPABILITIES: [&str; 7] = [
     "update.jdbc.v1",
     "transaction.local.v1",
 ];
-const COMMUNITY_CAPABILITIES: [&str; 12] = [
+const COMMUNITY_CAPABILITIES: [&str; 13] = [
     "community.plugin-catalog.v1",
     "community.metadata.schemas.v1",
     "community.metadata.objects.v1",
@@ -33,6 +33,7 @@ const COMMUNITY_CAPABILITIES: [&str; 12] = [
     "community.sql-completion.v1",
     "community.dml-builder.v1",
     "community.namespace-builder.v1",
+    "community.dql-builder.v1",
 ];
 
 #[derive(Default)]
@@ -471,6 +472,41 @@ async fn run(options: Options) -> Result<u8, Box<dyn std::error::Error>> {
                         .await?;
                     }
                 }
+            }
+            Some(wire::client_envelope::Payload::BuildCommunityTablePreviewSql(request)) => {
+                if options.community == CommunityBehavior::None {
+                    write_error(
+                        &mut output,
+                        &meta,
+                        "community.not_configured",
+                        "the fixture does not provide Community compatibility",
+                    )
+                    .await?;
+                    continue;
+                }
+                let qualified = [
+                    request.database_name.as_str(),
+                    request.schema_name.as_str(),
+                    request.table_name.as_str(),
+                ]
+                .into_iter()
+                .filter(|segment| !segment.is_empty())
+                .collect::<Vec<_>>()
+                .join(".");
+                write_response(
+                    &mut output,
+                    &meta,
+                    wire::server_envelope::Payload::CommunityBuiltTablePreviewSql(
+                        wire::CommunityBuiltTablePreviewSql {
+                            sql: format!("SELECT * FROM {qualified} LIMIT {}", request.row_limit),
+                            row_limit: request.row_limit,
+                        },
+                    ),
+                    0,
+                    true,
+                    None,
+                )
+                .await?;
             }
             Some(
                 wire::client_envelope::Payload::ListCommunitySchemas(_)

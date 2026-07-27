@@ -9,8 +9,9 @@ use chat2db_contract::{
     CreateDatasourceRequest, Datasource, DatasourceConnection, DatasourceConnectionProperty,
     DatasourceSecretChange, FormatCommunitySqlRequest, JdbcValue, ListCommunityColumnsRequest,
     ListCommunityDatabasesRequest, ListCommunityIndexesRequest, ListCommunityTablesRequest,
-    OperationEvent, ParseCommunitySqlRequest, QueryLimits, ResultPageRequest, StartQueryRequest,
-    UpdateDatasourceRequest, ValidateCommunitySqlRequest,
+    OperationEvent, ParseCommunitySqlRequest, QueryLimits, ResultPageRequest,
+    StartCommunityTablePreviewRequest, StartQueryRequest, UpdateDatasourceRequest,
+    ValidateCommunitySqlRequest,
 };
 use chat2db_core::{Application, RuntimeConfig, RuntimeHost, load_fixed_community_classpath};
 use chat2db_java_bridge::{
@@ -409,6 +410,7 @@ async fn verify_database_vertical(
 
     verify_mysql_metadata(&harness.application, &datasource.id, database_name).await;
     verify_typed_dml(&harness.application, &fixture.server_session, database_name).await;
+    verify_table_preview(&harness.application, &datasource.id, database_name).await;
     verify_sql_tools(&harness.application, &datasource.id, database_name).await;
     verify_product_query(&harness.application, &datasource.id).await;
 }
@@ -479,6 +481,7 @@ async fn verify_community_catalog(application: &Application) {
     assert!(mysql.services.sql_builder_available);
     assert!(mysql.services.sql_parser_available);
     assert!(mysql.services.dml_builder_available);
+    assert!(mysql.services.dql_builder_available);
     assert!(mysql.services.value_processor_available);
     assert!(mysql.services.identifier_processor_available);
 }
@@ -778,6 +781,46 @@ async fn verify_product_query(application: &Application, datasource_id: &str) {
             && amount == "99.99"
             && active == "1"
             && created_at.starts_with("2026-07-27T12:34:56")
+    ));
+}
+
+async fn verify_table_preview(application: &Application, datasource_id: &str, database_name: &str) {
+    let accepted = application
+        .start_community_table_preview(StartCommunityTablePreviewRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: MYSQL_DATABASE_TYPE.to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: String::new(),
+            table_name: "items".to_owned(),
+            row_limit: Some(1),
+        })
+        .await
+        .expect("Core must build, validate, and accept a MySQL table preview");
+    assert_eq!(accepted.row_limit, 1);
+    assert!(accepted.sql.contains(&format!("`{database_name}`.`items`")));
+    assert!(accepted.sql.to_ascii_lowercase().contains("limit"));
+
+    let result_id = wait_for_result(application, &accepted.operation_id).await;
+    let page = application
+        .result_page(
+            &result_id,
+            ResultPageRequest {
+                offset: "0".to_owned(),
+                max_rows: "1".to_owned(),
+                max_bytes: (8_u64 * 1024 * 1024).to_string(),
+            },
+        )
+        .await
+        .expect("MySQL table preview result must be retained");
+    assert_eq!(page.metadata.row_count, "1");
+    assert_eq!(page.rows.len(), 1);
+    assert!(matches!(
+        page.rows[0].values.as_slice(),
+        [
+            JdbcValue::SignedInteger { value: id },
+            JdbcValue::Text { value: label },
+            ..
+        ] if id == "1" && label == "mysql-ready"
     ));
 }
 

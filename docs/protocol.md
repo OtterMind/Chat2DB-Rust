@@ -11,7 +11,11 @@ H2 schema, database, table, column, index, view, imported/exported foreign-key,
 primary-key, function, function-parameter, procedure, procedure-parameter, and
 trigger metadata, typed DML and database/schema namespace SQL building, retained
 SQL parsing, bounded syntax validation, SQL formatting, and datasource-aware SQL
-completion.
+completion, plus bounded table-preview SQL generation.
+
+Runtime-tested: yes. The Stage 7M product vertical passed against MySQL 8.4 on
+2026-07-27, including the tag-`225` Community builder call, forced-read-only
+execution, and retained-result paging.
 
 Not implemented in the compatibility protocol: general-purpose SQL builder
 operations, script execution, data import/export, non-relational operations, or
@@ -84,6 +88,7 @@ The implemented capability names are:
 - `community.sql-completion.v1`
 - `community.dml-builder.v1`
 - `community.namespace-builder.v1`
+- `community.dql-builder.v1`
 
 No common version or missing required capability returns a fatal structured
 error and terminates the engine. Rust rejects a selected version it did not
@@ -216,15 +221,15 @@ before lock verification by rebuilding only affected JARs with sorted entries,
 the source-commit timestamp, and the `STORED` method. A two-clean-build gate
 compares every resulting JAR digest and length.
 
-Configuring the classpath automatically makes all twelve Community capabilities
-required during handshake. A sidecar that lacks any one of them fails startup
-and is reaped before the generation becomes ready.
+Configuring the classpath automatically makes all thirteen Community
+capabilities required during handshake. A sidecar that lacks any one of them
+fails startup and is reaped before the generation becomes ready.
 
 `ServiceLoader<IPlugin>` discovery and every Community invocation run with that
 loader as the thread context loader. Catalog responses project plugin identity,
 database/schema behavior, declared JDBC configuration, and available metadata,
-SQL builder, parser, DML builder, value processor, and identifier processor
-services into bounded Protobuf DTOs. Java stops projection
+SQL builder, parser, DML builder, DQL builder, value processor, and identifier
+processor services into bounded Protobuf DTOs. Java stops projection
 when cumulative UTF-8 plus conservative encoding accounting exceeds 8 MiB;
 Rust independently scans the undecoded `ServerEnvelope` wire and accumulates
 the raw length-delimited values of every Community response field, including
@@ -359,7 +364,29 @@ returns SQL without executing it. Unsafe identifier, property, and comment
 syntax is rejected before reflection. The rendered SQL is non-empty and at most
 1 MiB, and the old tag-`202` CREATE SCHEMA operation remains compatible.
 
-All twenty-five Community operations use the fatal-on-unknown lane. Once
+The DQL capability adds one unary, datasource-free operation at client and
+server envelope tag `225`. Its closed request carries a database type, separate
+raw database/schema/table identifier segments, and a row limit from 1 through
+1,000; it accepts no caller-supplied SQL. Java calls the selected plugin's real
+`identifier().quoteQualifiedIdentifier`, `dql().buildSelectTable`, and
+`dql().buildPageLimit` services. The page request fixes offset zero and page one
+and uses the requested row limit as its page size.
+
+The adapter first gives `buildSelectTable` the plugin-quoted qualified
+identifier. If the returned SQL does not contain that exact identifier, it
+retries with the original database/schema/table segments; this preserves MySQL,
+whose builder otherwise quotes the complete qualified string a second time.
+The retry must contain the exact plugin-quoted qualified identifier or the call
+returns `community.dql_builder_incompatible`. Database and schema segments may
+be empty; the table segment is required. Both sides reject any present segment
+that is oversized, whitespace-padded, control-bearing, delimiter-bearing, or
+comment-shaped. Generated SQL must be non-empty, at most 1 MiB, and free of
+unsafe control characters. Java opens no JDBC session and does not execute the
+statement. Rust requires the response row limit to equal the request, applies
+the 8 MiB raw Community wire budget before decoding tag `225`, and validates the
+decoded SQL and encoded response again.
+
+All twenty-six Community operations use the fatal-on-unknown lane. Once
 delivered, a timeout or abandoned response terminates and reaps the Java
 generation because the host can no longer prove the plugin invocation's state.
 The checked-in
@@ -370,7 +397,7 @@ authorization.
 
 The product runtime embeds that lock and accepts only a directory matching it
 exactly. `CHAT2DB_COMMUNITY_CLASSPATH_DIR` selects the directory but cannot
-override its source commit or inventory. Core maps all twenty-five protocol
+override its source commit or inventory. Core maps all twenty-six protocol
 operations to stable external DTOs; schema, object, relation, and
 programmability metadata plus completion resolve a vault-backed datasource and
 use a forced-read-only JDBC session before invoking this protocol. Completion
@@ -378,11 +405,20 @@ also injects the stored datasource display name; only Rust's private
 `datasource_scope`, never the product id, crosses the Java boundary. Core keeps
 each bounded session operation alive if its transport waiter is cancelled so it
 can consume the response and close the session. These product rules sit above
-the compatibility wire contract. Typed-DML and namespace generation remain
-datasource-free. Axum exposes `POST /api/v1/community/sql/build-dml` and
-`POST /api/v1/community/sql/build-namespace`; Tauri exposes
-`build_community_dml` and `build_community_namespace_sql`. Both transports
-return the same generated SQL DTO.
+the compatibility wire contract. Typed-DML, namespace, and DQL generation
+remain datasource-free.
+
+For table preview, Core applies a default of 200 and a maximum of 1,000 rows,
+parses the generated SQL, requires `is_select`, at most one projected SELECT
+statement, a SELECT prefix, and no semicolon, and only then submits it through
+the existing forced-read-only query service. Execution uses the same row limit,
+an 8 MiB result ceiling, 1 MiB batches, and one-hour retention. Axum exposes
+`POST /api/v1/community/table-preview`; Tauri exposes
+`start_community_table_preview`. The response contains the operation id, exact
+generated SQL, and effective row limit; events, cancellation, and result paging
+reuse the existing query contracts. The DML and namespace endpoints remain
+`POST /api/v1/community/sql/build-dml` and
+`POST /api/v1/community/sql/build-namespace`, with matching Tauri commands.
 
 ## Supervision
 
@@ -412,7 +448,7 @@ repository-local Maven cache, rejects classpath lock drift, keeps the H2 JDBC
 driver external, and executes catalog, schema, object, relation,
 programmability, schema-builder, and ANTLR-parser calls through the real
 Community H2 plugin. CI runs that same Community sidecar path on Linux and
-Windows. The Stage 7C-7L product gate starts from the exact embedded lock,
+Windows. The Stage 7C-7M product gate starts from the exact embedded lock,
 stores an encrypted H2 datasource, invokes the fixed operations through Core,
 and verifies database/table/column/index, view, foreign-key, primary-key,
 function, procedure, parameter, and trigger projection plus metadata-session
@@ -426,6 +462,8 @@ Namespace cases likewise generate H2 CREATE/DROP SCHEMA SQL, prove the database
 is unchanged, and only then execute and verify each state transition. The Java
 fixed-classpath gate also verifies the real MySQL CREATE DATABASE builder.
 The separate MySQL preview gate loads the pinned Connector/J pack and verifies
-real database/table/column/index metadata, read-query execution, and retained
-result paging through Core. It does not expand the protocol with a product
-write surface or claim Agent, CLI, or MCP MySQL conformance.
+real database/table/column/index metadata, plugin-built qualified table-preview
+SQL, forced-read-only query execution, and retained-result paging through Core.
+This complete product vertical passed against MySQL 8.4 on 2026-07-27. It does
+not expand the protocol with a product write surface or claim Agent, CLI, or MCP
+MySQL conformance.

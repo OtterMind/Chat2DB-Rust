@@ -345,10 +345,15 @@ export interface CommunityExplorerProps {
   datasource?: Datasource;
   compatibility?: CommunityHealth;
   databaseType: string;
+  previewDisabled?: boolean;
   onDatabaseTypeChange: (databaseType: string) => void;
   onParserAvailabilityChange: (available: boolean) => void;
   onCompletionContextChange: (context: CommunityCompletionContext) => void;
   onInsertSql: (sql: string) => void;
+  onPreviewTable: (
+    request: Parameters<BackendClient['startCommunityTablePreview']>[0],
+    signal: AbortSignal,
+  ) => Promise<void>;
 }
 
 export interface CommunityCompletionContext {
@@ -362,10 +367,12 @@ export function CommunityExplorer({
   datasource,
   compatibility,
   databaseType,
+  previewDisabled = false,
   onDatabaseTypeChange,
   onParserAvailabilityChange,
   onCompletionContextChange,
   onInsertSql,
+  onPreviewTable,
 }: CommunityExplorerProps) {
   const [catalog, setCatalog] = useState<CommunityPluginCatalog | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
@@ -402,6 +409,7 @@ export function CommunityExplorer({
   const [dmlDialog, setDmlDialog] = useState<DmlDialogState | null>(null);
   const [dmlBusy, setDmlBusy] = useState(false);
   const [dmlError, setDmlError] = useState<string | null>(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
   const [mobileCollapsed, setMobileCollapsed] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(max-width: 720px)').matches,
   );
@@ -411,6 +419,9 @@ export function CommunityExplorer({
   const dmlRequestRef = useRef<AbortController | null>(null);
   const dmlRequestSequenceRef = useRef(0);
   const activeDmlScopeRef = useRef<string | null>(null);
+  const previewRequestRef = useRef<AbortController | null>(null);
+  const previewRequestSequenceRef = useRef(0);
+  const activePreviewScopeRef = useRef<string | null>(null);
   const databaseNameRef = useRef('');
   const schemaNameRef = useRef('');
   const databaseScopeRef = useRef('');
@@ -426,13 +437,15 @@ export function CommunityExplorer({
   const groupedProcedures = useMemo(() => groupNamedItems(namespace.procedures), [namespace.procedures]);
   const activeSelectionKey = selection ? selectionKey(selection) : '';
   const ready = compatibility?.state === 'ready';
-  const databaseScopeKey = ready && datasource?.hasSecret && driversLoaded && databaseType
+  const supportsDatabase = Boolean(selectedPlugin?.behavior.supportsDatabase);
+  const supportsSchema = Boolean(selectedPlugin?.behavior.supportsSchema);
+  const databaseScopeKey = ready && datasource?.hasSecret && driversLoaded && selectedPlugin
     ? `${datasource.id}:${datasource.revision}:${databaseType}`
     : '';
-  const schemaScopeKey = databaseScopeKey && databaseName
+  const schemaScopeKey = databaseScopeKey && (!supportsDatabase || databaseName)
     ? `${databaseScopeKey}:${databaseName}`
     : '';
-  const namespaceScopeKey = schemaScopeKey && schemaName
+  const namespaceScopeKey = schemaScopeKey && (!supportsSchema || schemaName)
     ? `${schemaScopeKey}:${schemaName}`
     : '';
   const currentNamespaceSqlScope = databaseScopeKey
@@ -447,6 +460,9 @@ export function CommunityExplorer({
   const currentDmlScope = selection?.kind === 'table' && scopedDetail?.kind === 'table'
     ? detailScopeKey
     : null;
+  const currentPreviewScope = selection?.kind === 'table' && detailScopeKey
+    ? detailScopeKey
+    : null;
   const dmlBuilderAvailable = Boolean(
     selectedPlugin?.services.dmlBuilderAvailable
     && selectedPlugin.services.valueProcessorAvailable
@@ -458,6 +474,13 @@ export function CommunityExplorer({
     && scopedDetail?.kind === 'table'
     && scopedDetail.value.columns.length > 0
     && !loadingDetail,
+  );
+  const previewBuilderAvailable = Boolean(selectedPlugin?.services.dqlBuilderAvailable);
+  const canPreviewRows = Boolean(
+    currentPreviewScope
+    && previewBuilderAvailable
+    && !previewDisabled
+    && !previewBusy,
   );
   const namespaceBuilderAvailable = Boolean(
     selectedPlugin?.services.sqlBuilderAvailable
@@ -472,6 +495,7 @@ export function CommunityExplorer({
   useEffect(() => () => {
     namespaceRequestRef.current?.abort();
     dmlRequestRef.current?.abort();
+    previewRequestRef.current?.abort();
   }, []);
 
   useEffect(() => {
@@ -495,6 +519,15 @@ export function CommunityExplorer({
     setDmlError(null);
     setDmlDialog(null);
   }, [currentDmlScope, dmlDialog]);
+
+  useEffect(() => {
+    if (!activePreviewScopeRef.current || activePreviewScopeRef.current === currentPreviewScope) return;
+    previewRequestRef.current?.abort();
+    previewRequestRef.current = null;
+    previewRequestSequenceRef.current += 1;
+    activePreviewScopeRef.current = null;
+    setPreviewBusy(false);
+  }, [currentPreviewScope]);
 
   useEffect(() => { databaseNameRef.current = databaseName; }, [databaseName]);
   useEffect(() => { schemaNameRef.current = schemaName; }, [schemaName]);
@@ -581,6 +614,12 @@ export function CommunityExplorer({
     setError(null);
     setLoadingDatabases(false);
     if (!databaseScopeKey || !datasource) return undefined;
+    if (!supportsDatabase) {
+      databaseNameRef.current = '';
+      setDatabases([]);
+      setDatabaseName('');
+      return undefined;
+    }
     const controller = new AbortController();
     setLoadingDatabases(true);
     void client.listCommunityDatabases({ datasourceId: datasource.id, databaseType }, controller.signal).then((response) => {
@@ -600,7 +639,7 @@ export function CommunityExplorer({
       if (!controller.signal.aborted) setLoadingDatabases(false);
     });
     return () => controller.abort();
-  }, [client, databaseScopeKey, databaseType, datasource, onCompletionContextChange, refreshRevision]);
+  }, [client, databaseScopeKey, databaseType, datasource, onCompletionContextChange, refreshRevision, supportsDatabase]);
 
   useEffect(() => {
     const scopeChanged = schemaScopeRef.current !== schemaScopeKey;
@@ -618,6 +657,12 @@ export function CommunityExplorer({
     setError(null);
     setLoadingSchemas(false);
     if (!schemaScopeKey || !datasource) return undefined;
+    if (!supportsSchema) {
+      schemaNameRef.current = '';
+      setSchemas([]);
+      setSchemaName('');
+      return undefined;
+    }
     const controller = new AbortController();
     setLoadingSchemas(true);
     void client.listCommunitySchemas({
@@ -652,6 +697,7 @@ export function CommunityExplorer({
     onCompletionContextChange,
     refreshRevision,
     schemaScopeKey,
+    supportsSchema,
   ]);
 
   useEffect(() => {
@@ -938,6 +984,45 @@ export function CommunityExplorer({
     }
   };
 
+  const previewRows = async () => {
+    if (
+      !canPreviewRows
+      || previewRequestRef.current !== null
+      || !currentPreviewScope
+      || !datasource
+      || !selectedPlugin
+      || selection?.kind !== 'table'
+    ) return;
+    const controller = new AbortController();
+    const sequence = ++previewRequestSequenceRef.current;
+    const scope = currentPreviewScope;
+    previewRequestRef.current = controller;
+    activePreviewScopeRef.current = scope;
+    setPreviewBusy(true);
+    setDetailError(null);
+    try {
+      await onPreviewTable({
+        datasourceId: datasource.id,
+        databaseType: selectedPlugin.databaseType,
+        databaseName,
+        schemaName,
+        tableName: selection.item.name,
+      }, controller.signal);
+    } catch (requestError) {
+      if (
+        !isAbortError(requestError)
+        && sequence === previewRequestSequenceRef.current
+        && activePreviewScopeRef.current === scope
+      ) setDetailError(messageFromError(requestError));
+    } finally {
+      if (previewRequestRef.current === controller) {
+        previewRequestRef.current = null;
+        activePreviewScopeRef.current = null;
+        setPreviewBusy(false);
+      }
+    }
+  };
+
   const panelBody = (() => {
     if (!compatibility) return <ExplorerState icon={<LoaderCircle className="spinning" size={20} />}>Checking compatibility</ExplorerState>;
     if (!ready) return <ExplorerState icon={<FolderTree size={22} />}>{compatibility.detail}</ExplorerState>;
@@ -990,14 +1075,15 @@ export function CommunityExplorer({
         <>
           <div className="explorer-selectors">
             <label><span>Plugin</span><select value={databaseType} onChange={(event) => onDatabaseTypeChange(event.target.value)}>{databaseType ? null : <option value="" disabled>Select plugin</option>}{plugins.map((plugin) => <option value={plugin.databaseType} key={plugin.databaseType}>{plugin.name}</option>)}</select></label>
-            <label><span>Database</span><select value={databaseName} onChange={(event) => selectDatabaseName(event.target.value)} disabled={loadingScope || databases.length === 0}>{databases.map((database) => <option value={database.name} key={database.name}>{database.name}</option>)}</select></label>
-            <label><span>Schema</span><select value={schemaName} onChange={(event) => selectSchemaName(event.target.value)} disabled={loadingScope || schemas.length === 0}>{schemas.map((schema) => <option value={schema.name} key={`${schema.databaseName}:${schema.name}`}>{schema.name}</option>)}</select></label>
+            {supportsDatabase ? <label><span>Database</span><select value={databaseName} onChange={(event) => selectDatabaseName(event.target.value)} disabled={loadingScope || databases.length === 0}>{databases.map((database) => <option value={database.name} key={database.name}>{database.name}</option>)}</select></label> : null}
+            {supportsSchema ? <label><span>Schema</span><select value={schemaName} onChange={(event) => selectSchemaName(event.target.value)} disabled={loadingScope || schemas.length === 0}>{schemas.map((schema) => <option value={schema.name} key={`${schema.databaseName}:${schema.name}`}>{schema.name}</option>)}</select></label> : null}
           </div>
 
           <div className="object-tree" aria-busy={loadingNamespace}>
             {loadingNamespace && !namespace.tables.length && !namespace.views.length ? <ExplorerState icon={<LoaderCircle className="spinning" size={18} />}>Loading objects</ExplorerState> : null}
-            {!loadingNamespace && !schemaName ? <ExplorerState icon={<FolderTree size={20} />}>No schema selected</ExplorerState> : null}
-            {schemaName ? (
+            {!loadingNamespace && !scopeReady && supportsDatabase && !databaseName ? <ExplorerState icon={<FolderTree size={20} />}>No database selected</ExplorerState> : null}
+            {!loadingNamespace && !scopeReady && (!supportsDatabase || databaseName) && supportsSchema && !schemaName ? <ExplorerState icon={<FolderTree size={20} />}>No schema selected</ExplorerState> : null}
+            {scopeReady ? (
               <>
                 <PartialWarning failures={namespace.failures} />
                 <ObjectGroup label="Tables" icon={<Table2 size={14} />} count={namespace.tables.length} open={openGroups.tables} onToggle={() => toggleGroup('tables')}>
@@ -1024,10 +1110,24 @@ export function CommunityExplorer({
             ) : null}
           </div>
 
-          <section className="object-detail" aria-label="Object details" aria-busy={loadingDetail}>
+          <section className="object-detail" aria-label="Object details" aria-busy={loadingDetail || previewBusy}>
             <header>
               <div><span className="section-kicker">Details</span><strong>{selection ? selectionName(selection) : 'No selection'}</strong></div>
               <div className="object-detail-actions">
+                {selection?.kind === 'table' ? (
+                  <button
+                    className="icon-button compact-button"
+                    type="button"
+                    disabled={!canPreviewRows}
+                    onClick={() => void previewRows()}
+                    aria-label="Preview table rows"
+                    title={previewBuilderAvailable ? 'Preview table rows' : 'Table preview unavailable for this plugin'}
+                  >
+                    {previewBusy
+                      ? <LoaderCircle className="spinning" size={15} aria-hidden="true" />
+                      : <Eye size={15} aria-hidden="true" />}
+                  </button>
+                ) : null}
                 {selection?.kind === 'table' ? (
                   <button
                     className="icon-button compact-button"
