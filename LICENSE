@@ -1,7 +1,178 @@
-Copyright (c) 2026 OtterMind.
+# License
 
-All rights reserved.
+Chat2DB Rust is licensed under a modified version of the Apache License 2.0,
+with the additional conditions below.
 
-This repository is private and proprietary. No permission is granted to use,
-copy, modify, distribute, sublicense, or publish this software except under a
-separate written agreement with OtterMind.
+The Chat2DB Community source used by Chat2DB Rust remains subject to the
+license included with that source. Third-party components remain subject to
+their own license terms and notices.
+
+For package metadata, these terms may be identified as
+`LicenseRef-Chat2DB`. That identifier refers only to this root `LICENSE` file
+and does not create a separate license.
+
+## 1. Permitted Use
+
+Subject to this License, you may use, copy, and modify the Software for:
+
+a. personal self-use, or self-hosted use by an educational, academic research,
+   or non-profit organization; and
+
+b. Internal Use by you and Your Organization, including internal use of the
+   desktop application, Web interface, Docker image, HTTP API, CLI, MCP,
+   plugins, and reusable modules.
+
+You may publish and redistribute the Software or your modifications in Source
+form under this License, provided that you keep this License and all applicable
+copyright, attribution, and third-party notices. This permission does not allow
+you to provide an External Product or Service, Managed Delivery, Embedded
+Product Use, white-label delivery, OEM delivery, or Object-form distribution
+to an Independent External Party without written commercial authorization.
+
+## 2. Internal Processing and Results Delivery
+
+Internal Use includes use by your Authorized Personnel to process data owned
+or provided by an Independent External Party and to deliver reports, analyses,
+migration results, or other non-interactive outputs to that party, provided
+that the party does not receive credentials, interfaces, configurations,
+controls, repeatable automated access, or any other ability to operate,
+configure, invoke, integrate, or direct the Software or its Community Core
+Capabilities.
+
+An Independent External Party providing business requirements, data, or
+acceptance criteria does not by itself make the use external. However, shared
+accounts, human intermediaries, proxy interfaces, prompts, agents, workflows,
+plugins, scheduled requests, or similar arrangements do not qualify for this
+exception when they give the party repeatable or practical control over the
+Software or its Community Core Capabilities.
+
+## 3. Commercial Authorization Required
+
+Unless Chat2DB has expressly authorized you in writing, you may not:
+
+a. provide an External Product or Service;
+
+b. perform Managed Delivery for an Independent External Party;
+
+c. except for the Source-form redistribution expressly permitted by Section 1,
+   distribute installers, binaries, archives, container images, deployment
+   charts, patches, configurations, or other materials that enable an
+   Independent External Party to deploy or use the Software in Object form;
+
+d. perform Embedded Product Use;
+
+e. provide white-label or OEM versions of the Software or a derivative work;
+   or
+
+f. remove, obscure, or modify Chat2DB logos, copyright information, licensing
+   notices, or attribution displayed by the official frontend or included in
+   an official distribution.
+
+These conditions apply whether the offering is paid or free, whether access is
+direct or indirect, whether accounts exist, whether there is one tenant or many
+tenants, and whether the Software runs in a shared instance, a dedicated
+instance, a customer-owned cloud account, or any other deployment topology.
+The identity of the payer, account owner, infrastructure owner, distributor,
+or operator does not change the result. The relevant question is whether an
+Independent External Party receives the ability to use Community Core
+Capabilities.
+
+For written commercial authorization, contact Chat2DB through
+https://chat2db.ai.
+
+## 4. Definitions
+
+"Chat2DB" means 爱獭科技（杭州）有限公司, the producer of the Software.
+
+"Software" means the Chat2DB Rust software made available under this License
+in Source or Object form, including its official desktop, Web, HTTP API, CLI,
+MCP, compatibility engine, plugins, and reusable module distributions.
+
+"Source" and "Object" have the meanings given in the Apache License 2.0.
+
+"You" means the individual or legal entity exercising permissions under this
+License.
+
+"Your Organization" means you and any legal entities that control, are
+controlled by, or are under common control with you. "Control" means direct or
+indirect ownership of more than fifty percent of the voting interests, or the
+power to direct the management and policies of an entity by ownership,
+contract, or otherwise.
+
+"Authorized Personnel" means employees and individual contractors acting
+solely on behalf of Your Organization, under obligations that protect the
+Software and prevent its use for any other person or organization. Customers,
+vendors, channel partners, distributors, and independent service providers are
+not Authorized Personnel merely because they have a commercial relationship
+with you.
+
+"Internal Use" means use of the Software solely by Authorized Personnel and
+internal systems for the internal operations of Your Organization, where no
+Independent External Party receives Community Core Capabilities.
+
+"Independent External Party" means any individual or organization outside
+Your Organization that is not Authorized Personnel.
+
+"Community Core Capabilities" means substantive database functionality
+provided by the Software, including database connection and credential
+management, metadata browsing, SQL, DDL, or DML execution, data editing,
+import or export, tasks and history, dashboards and charts, AI features, CLI,
+MCP, frontend interaction, HTTP APIs, plugins, and reusable API, Core, or SPI
+modules.
+
+"External Product or Service" means any product or service through which an
+Independent External Party can directly or indirectly operate, configure,
+invoke, integrate, automate, or otherwise use Community Core Capabilities,
+including through a Web UI, desktop application, HTTP API, CLI, MCP, embedded
+module, prompt, agent, workflow, proxy, or other interface.
+
+"Managed Delivery" means deploying, configuring, customizing, hosting,
+operating, maintaining, upgrading, or continuously administering the Software
+or a derivative work for an Independent External Party in a way that gives
+that party Community Core Capabilities.
+
+"Embedded Product Use" means incorporating the Software, its frontend, HTTP
+API, CLI, MCP, plugins, reusable modules, or a derivative implementation into
+a product made available to an Independent External Party, where that product
+provides substantive Community Core Capabilities.
+
+## 5. Branding and Notices
+
+This License does not grant permission to use Chat2DB trade names, trademarks,
+service marks, or product names except as required to describe the origin of
+the Software and reproduce required notices. All uses of Chat2DB marks remain
+subject to applicable trademark law and any separately published trademark
+policy.
+
+If you modify the Software, you must include prominent notices stating that
+you changed it. You must retain all applicable copyright, patent, trademark,
+licensing, and attribution notices from the Software.
+
+## 6. Contributions
+
+Unless you explicitly state otherwise in writing before submission, any
+contribution intentionally submitted for inclusion in Chat2DB Rust is provided
+under this License. By submitting a contribution, you also agree that Chat2DB
+may use the contribution for commercial purposes and may include it in future
+Chat2DB releases made available under different license terms.
+
+## 7. Third-Party Software
+
+Third-party components included with the Software remain subject to their own
+license terms and notices. This License does not replace, restrict, or modify
+those third-party terms. Where a file or component contains a separate license
+or copyright notice, that separate notice governs that file or component.
+
+## 8. Apache License 2.0 Terms
+
+Except for the additional conditions stated in this License, all other rights
+and restrictions follow the Apache License 2.0, available at
+https://www.apache.org/licenses/LICENSE-2.0. If these additional conditions
+conflict with the Apache License 2.0 for Chat2DB Rust, these additional
+conditions control.
+
+The Apache License 2.0 provisions concerning patent grants, patent litigation,
+notices, disclaimer of warranty, limitation of liability, and acceptance of
+additional liability are incorporated into this License.
+
+Copyright 2026 爱獭科技（杭州）有限公司.

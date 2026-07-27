@@ -1,0 +1,14 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public Chat2DB Community submodule"
+paths = [
+  '''^third_party/chat2db-community/''',
+  '''(^|/)target/''',
+  '''^apps/frontend/(dist|node_modules)/''',
+]
+
+[[allowlists]]
+description = "Fixed dummy bearer token used by Web tests"
+regexes = ['''0123456789abcdef0123456789abcdef''']

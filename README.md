@@ -1,6 +1,27 @@
 # Chat2DB Rust
 
-Private implementation of the Chat2DB Community hybrid runtime.
+Source-available implementation of the Chat2DB Community hybrid runtime.
+
+Chat2DB Rust owns the product runtime in Rust while retaining the public
+Chat2DB Community database compatibility layer behind a supervised Java
+process. The repository is under active development and is not yet a stable
+end-user release.
+
+## Clone
+
+The Community compatibility source is a public Git submodule pinned to an
+exact commit. Clone it together with the main repository:
+
+```bash
+git clone --recurse-submodules https://github.com/OtterMind/Chat2DB-Rust.git
+cd Chat2DB-Rust
+```
+
+For an existing checkout, initialize the same pinned source with:
+
+```bash
+git submodule update --init --recursive
+```
 
 ## Current state
 
@@ -281,3 +302,20 @@ java/
 docs/                architecture and staged delivery contract
 scripts/             contract generation and drift checks
 ```
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). Contributions are accepted under the
+repository license.
+
+## Security
+
+Do not report vulnerabilities in public issues. Follow
+[`SECURITY.md`](SECURITY.md) to submit a private report.
+
+## License
+
+Chat2DB Rust is source-available under `LicenseRef-Chat2DB`. See
+[`LICENSE`](LICENSE) for the complete terms. The pinned Chat2DB Community
+submodule and other third-party components remain subject to their own license
+terms and notices.
