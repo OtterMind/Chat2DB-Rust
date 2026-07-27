@@ -12,16 +12,17 @@ use chat2db_contract::{
     AgentPermissionStatus, AgentResultHandle, AgentRunAccepted, AgentRunSnapshot, AgentRunStatus,
     AgentSession, AgentSessionList, AgentStreamMessage, AgentSubscriptionAccepted, AgentToolCall,
     AgentToolOutput, AgentUsage, ApiError, ApiErrorDetails, BuildCommunityCreateSchemaRequest,
-    BuildCommunityDmlRequest, CancelAgentRunResponse, CancelDisposition, CancelOperationResponse,
-    ColumnNullability, CommunityBuiltSql, CommunityDatabase, CommunityDatabaseList,
-    CommunityDmlAssignment, CommunityDmlColumn, CommunityDmlRow, CommunityDmlStatement,
-    CommunityDmlTarget, CommunityDmlTemporalKind, CommunityDmlValue, CommunityDriverConfig,
-    CommunityForeignKey, CommunityForeignKeyList, CommunityFormattedSql, CommunityFunction,
-    CommunityFunctionList, CommunityFunctionParameter, CommunityFunctionParameterList,
-    CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
-    CommunityPluginServices, CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure,
-    CommunityProcedureList, CommunityProcedureParameter, CommunityProcedureParameterList,
-    CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlCompletion,
+    BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest, CancelAgentRunResponse,
+    CancelDisposition, CancelOperationResponse, ColumnNullability, CommunityBuiltSql,
+    CommunityDatabase, CommunityDatabaseList, CommunityDmlAssignment, CommunityDmlColumn,
+    CommunityDmlRow, CommunityDmlStatement, CommunityDmlTarget, CommunityDmlTemporalKind,
+    CommunityDmlValue, CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList,
+    CommunityFormattedSql, CommunityFunction, CommunityFunctionList, CommunityFunctionParameter,
+    CommunityFunctionParameterList, CommunityNamespaceSqlOperation, CommunityParsedStatement,
+    CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
+    CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
+    CommunityProcedureParameter, CommunityProcedureParameterList, CommunitySchema,
+    CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlCompletion,
     CommunitySqlCompletionActiveSnippetSlot, CommunitySqlCompletionCandidate,
     CommunitySqlCompletionEditorHint, CommunitySqlCompletionEditorHintItem,
     CommunitySqlCompletionRange, CommunitySqlDiagnostic, CommunitySqlValidation, CommunityTable,
@@ -107,6 +108,7 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         ComponentState,
         BuildCommunityCreateSchemaRequest,
         BuildCommunityDmlRequest,
+        BuildCommunityNamespaceSqlRequest,
         CommunityBuiltSql,
         CommunityDatabase,
         CommunityDatabaseList,
@@ -125,6 +127,7 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         CommunityFunctionList,
         CommunityFunctionParameter,
         CommunityFunctionParameterList,
+        CommunityNamespaceSqlOperation,
         CommunityParsedStatement,
         CommunityPlugin,
         CommunityPluginBehavior,
@@ -257,6 +260,7 @@ fn documented_router() -> OpenApiRouter<Application> {
         .routes(routes!(list_community_triggers))
         .routes(routes!(get_community_trigger))
         .routes(routes!(build_community_create_schema))
+        .routes(routes!(build_community_namespace_sql))
         .routes(routes!(build_community_dml))
         .routes(routes!(parse_community_sql))
         .routes(routes!(validate_community_sql))
@@ -774,6 +778,29 @@ async fn build_community_create_schema(
 ) -> Result<Json<CommunityBuiltSql>, WebError> {
     application
         .build_community_create_schema(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/sql/build-namespace",
+    tag = "community",
+    request_body = BuildCommunityNamespaceSqlRequest,
+    responses(
+        (status = 200, description = "Community database or schema namespace SQL", body = CommunityBuiltSql),
+        (status = 400, description = "Invalid Community namespace-builder request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community namespace-builder failure", body = ApiError)
+    )
+)]
+async fn build_community_namespace_sql(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<BuildCommunityNamespaceSqlRequest>,
+) -> Result<Json<CommunityBuiltSql>, WebError> {
+    application
+        .build_community_namespace_sql(request)
         .await
         .map(Json)
         .map_err(Into::into)

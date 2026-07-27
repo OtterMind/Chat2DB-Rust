@@ -12,7 +12,7 @@ in runtime health until then.
 | 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
 | 5 | Complete | Product transports | Generated OpenAPI/TypeScript contract, Axum JSON/SSE, Tauri 2 commands/channels, shared SQL workbench, product H2 tests |
 | 6 | Complete | Agent, MCP, and CLI | Direct providers, durable bounded tool loop, SQL tools/permissions, compaction, Web/Tauri run transports, owner-only local attachment, read-query CLI, and bounded `rmcp` stdio tools |
-| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs, 7B fixed Community H2 SPI/ANTLR, 7C product Core/Web/Tauri contracts, 7D relational object metadata, 7E relation metadata, 7F programmability metadata, 7G end-user object explorer, 7H SQL validation, 7I SQL formatting, 7J SQL completion, and 7K typed DML generation implemented; remaining plugin operations and per-dialect conformance explicit |
+| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs, 7B fixed Community H2 SPI/ANTLR, 7C product Core/Web/Tauri contracts, 7D relational object metadata, 7E relation metadata, 7F programmability metadata, 7G end-user object explorer, 7H SQL validation, 7I SQL formatting, 7J SQL completion, 7K typed DML, and 7L namespace SQL generation implemented; real MySQL conformance is the next testable milestone |
 | 8 | Planned | Packaging and release | License authorization, NOTICE/SBOM, jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
 
 Stage 3 completion means the versioned Rust-Java bridge can load an external
@@ -79,7 +79,7 @@ supervised Java generation. Java isolates them behind a platform-parent
 `URLClassLoader`, rejects manifest `Class-Path` escapes, discovers real `IPlugin`
 services, and exposes plugin catalog, H2 schema metadata, `CREATE SCHEMA`, and
 retained ANTLR parsing DTOs over Protobuf. Configuring the classpath requires all
-eleven current Community capabilities at handshake, and Java plus Rust enforce the
+twelve current Community capabilities at handshake, and Java plus Rust enforce the
 generated 8 MiB cumulative response budget. Rust counts raw Community oneof
 values before decoding, including duplicate fields, and retains a generation
 snapshot whenever child reap cannot be proven. The real vertical test keeps the
@@ -235,6 +235,24 @@ primary-key-first predicates; closing, switching table, or refreshing aborts
 the request and rejects a late response. Real H2 bridge and product gates prove
 generation does not execute SQL, then independently execute and read back
 apostrophe, NULL, decimal, boolean, and temporal values.
+
+Stage 7L adds the independent `community.namespace-builder.v1` capability at
+request/response tag `224` while preserving tag `202` CREATE SCHEMA behavior.
+The closed request union supports database create/alter/drop/use and schema
+create/alter/drop; it has no raw-SQL variant. Java calls the selected plugin's
+real metadata-owned database or schema DDL builder without opening a JDBC
+session, and Rust enforces raw and decoded field, request, and rendered-SQL
+limits. Core, Axum, Tauri, generated OpenAPI/TypeScript, and the React explorer
+share the same DTO. The dialog aborts stale work and only inserts returned SQL
+into the editor. H2 bridge and product gates prove generated CREATE/DROP SCHEMA
+SQL does not execute until submitted separately; the Java classpath gate also
+verifies real MySQL CREATE DATABASE output.
+
+The next private testable milestone is MySQL-first: provision one verified
+Connector/J pack and prove datasource CRUD, query/write execution, Community
+metadata, parsing, validation, formatting, completion, DML, namespace DDL, AI,
+CLI, and MCP through the same stored datasource. Other dialects remain planned
+and do not block that milestone.
 
 Stage 7 remains incomplete. General type conversion, script execution, data
 import/export, non-relational behavior, remaining builder operations and plugin

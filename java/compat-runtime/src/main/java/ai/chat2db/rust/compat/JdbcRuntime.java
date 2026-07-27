@@ -4,9 +4,11 @@ import ai.chat2db.rust.compat.protocol.v1.BeginTransactionRequest;
 import ai.chat2db.rust.compat.protocol.v1.CancelOperationRequest;
 import ai.chat2db.rust.compat.protocol.v1.BuildCommunityCreateSchemaRequest;
 import ai.chat2db.rust.compat.protocol.v1.BuildCommunityDmlRequest;
+import ai.chat2db.rust.compat.protocol.v1.BuildCommunityNamespaceSqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.CloseSessionRequest;
 import ai.chat2db.rust.compat.protocol.v1.CommunityDatabaseList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityBuiltDml;
+import ai.chat2db.rust.compat.protocol.v1.CommunityBuiltNamespaceSql;
 import ai.chat2db.rust.compat.protocol.v1.CommunityForeignKeyList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityFormattedSql;
 import ai.chat2db.rust.compat.protocol.v1.CommunityFunction;
@@ -815,6 +817,13 @@ final class JdbcRuntime implements AutoCloseable {
             throws RuntimeFailure {
         CommunityBuiltDml built = community.buildDml(request);
         return terminal(meta).setCommunityBuiltDml(built).build();
+    }
+
+    ServerEnvelope buildCommunityNamespaceSql(
+            RequestMeta meta, BuildCommunityNamespaceSqlRequest request)
+            throws RuntimeFailure {
+        CommunityBuiltNamespaceSql built = community.buildNamespace(request);
+        return terminal(meta).setCommunityBuiltNamespaceSql(built).build();
     }
 
     ServerEnvelope parseCommunitySql(RequestMeta meta, ParseCommunitySqlRequest request)

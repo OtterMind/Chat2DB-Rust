@@ -484,6 +484,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/community/sql/build-namespace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["build_community_namespace_sql"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/community/sql/complete": {
         parameters: {
             query?: never;
@@ -1095,6 +1111,13 @@ export interface components {
             statement: components["schemas"]["CommunityDmlStatement"];
             target: components["schemas"]["CommunityDmlTarget"];
         };
+        /** @description Request to build dialect-specific database or schema namespace SQL. */
+        BuildCommunityNamespaceSqlRequest: {
+            /** @description Community database type used to select the SQL builder. */
+            databaseType: string;
+            /** @description Closed namespace operation. No variant accepts raw SQL. */
+            operation: components["schemas"]["CommunityNamespaceSqlOperation"];
+        };
         /** @description Result of an idempotent agent-run cancellation request. */
         CancelAgentRunResponse: {
             /** @description Idempotent cancellation disposition. */
@@ -1300,6 +1323,38 @@ export interface components {
         /** @description Stable function-parameter collection returned by Community metadata. */
         CommunityFunctionParameterList: {
             items: components["schemas"]["CommunityFunctionParameter"][];
+        };
+        /** @description Supported database and schema namespace operations. */
+        CommunityNamespaceSqlOperation: {
+            database: components["schemas"]["CommunityDatabase"];
+            /** @enum {string} */
+            kind: "createDatabase";
+        } | {
+            /** @enum {string} */
+            kind: "alterDatabase";
+            newDatabase: components["schemas"]["CommunityDatabase"];
+            oldDatabase: components["schemas"]["CommunityDatabase"];
+        } | {
+            databaseName: string;
+            /** @enum {string} */
+            kind: "dropDatabase";
+        } | {
+            databaseName: string;
+            /** @enum {string} */
+            kind: "useDatabase";
+        } | {
+            /** @enum {string} */
+            kind: "createSchema";
+            schema: components["schemas"]["CommunitySchema"];
+        } | {
+            /** @enum {string} */
+            kind: "alterSchema";
+            newSchemaName: string;
+            oldSchemaName: string;
+        } | {
+            /** @enum {string} */
+            kind: "dropSchema";
+            schemaName: string;
         };
         /** @description One statement returned by the retained Community parser. */
         CommunityParsedStatement: {
@@ -4401,6 +4456,57 @@ export interface operations {
                 };
             };
             /** @description Unexpected Community DML-builder failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Community compatibility engine is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    build_community_namespace_sql: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BuildCommunityNamespaceSqlRequest"];
+            };
+        };
+        responses: {
+            /** @description Community database or schema namespace SQL */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityBuiltSql"];
+                };
+            };
+            /** @description Invalid Community namespace-builder request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected Community namespace-builder failure */
             500: {
                 headers: {
                     [name: string]: unknown;

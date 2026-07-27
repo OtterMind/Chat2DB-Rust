@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type {
   BuildCommunityCreateSchemaRequest,
   BuildCommunityDmlRequest,
+  BuildCommunityNamespaceSqlRequest,
   CommunityBuiltSql,
   CommunityDatabaseList,
   CommunityFormattedSql,
@@ -131,6 +132,14 @@ const buildSchemaRequest = {
   databaseType: 'H2',
   schema,
 } satisfies BuildCommunityCreateSchemaRequest;
+
+const buildNamespaceRequest = {
+  databaseType: 'H2',
+  operation: {
+    kind: 'createSchema',
+    schema,
+  },
+} satisfies BuildCommunityNamespaceSqlRequest;
 
 const parseSqlRequest = {
   databaseType: 'H2',
@@ -399,6 +408,7 @@ const triggers = {
 } satisfies CommunityTriggerList;
 const trigger = triggers.items[0] satisfies CommunityTrigger;
 const builtSql = { sql: 'CREATE SCHEMA reporting' } satisfies CommunityBuiltSql;
+const builtNamespaceSql = { sql: 'CREATE SCHEMA reporting' } satisfies CommunityBuiltSql;
 const builtDml = { sql: "INSERT INTO inventory.APP.ITEMS (LABEL) VALUES ('O''Brien')" } satisfies CommunityBuiltSql;
 const analysis = {
   isSelect: true,
@@ -483,6 +493,7 @@ const responses = [
   triggers,
   trigger,
   builtSql,
+  builtNamespaceSql,
   builtDml,
   analysis,
   validation,
@@ -532,6 +543,7 @@ describe('Community backend adapter parity', () => {
       await client.listCommunityTriggers(listTriggersRequest),
       await client.getCommunityTrigger(getTriggerRequest),
       await client.buildCommunityCreateSchema(buildSchemaRequest),
+      await client.buildCommunityNamespaceSql(buildNamespaceRequest),
       await client.buildCommunityDml(buildDmlRequest),
       await client.parseCommunitySql(parseSqlRequest),
       await client.validateCommunitySql(validateSqlRequest),
@@ -638,6 +650,11 @@ describe('Community backend adapter parity', () => {
         method: 'POST',
         body: buildSchemaRequest,
       },
+      {
+        path: '/api/v1/community/sql/build-namespace',
+        method: 'POST',
+        body: buildNamespaceRequest,
+      },
       { path: '/api/v1/community/sql/build-dml', method: 'POST', body: buildDmlRequest },
       { path: '/api/v1/community/sql/parse', method: 'POST', body: parseSqlRequest },
       { path: '/api/v1/community/sql/validate', method: 'POST', body: validateSqlRequest },
@@ -677,6 +694,7 @@ describe('Community backend adapter parity', () => {
       await client.listCommunityTriggers(listTriggersRequest),
       await client.getCommunityTrigger(getTriggerRequest),
       await client.buildCommunityCreateSchema(buildSchemaRequest),
+      await client.buildCommunityNamespaceSql(buildNamespaceRequest),
       await client.buildCommunityDml(buildDmlRequest),
       await client.parseCommunitySql(parseSqlRequest),
       await client.validateCommunitySql(validateSqlRequest),
@@ -713,6 +731,7 @@ describe('Community backend adapter parity', () => {
       { command: 'list_community_triggers', args: { request: listTriggersRequest } },
       { command: 'get_community_trigger', args: { request: getTriggerRequest } },
       { command: 'build_community_create_schema', args: { request: buildSchemaRequest } },
+      { command: 'build_community_namespace_sql', args: { request: buildNamespaceRequest } },
       { command: 'build_community_dml', args: { request: buildDmlRequest } },
       { command: 'parse_community_sql', args: { request: parseSqlRequest } },
       { command: 'validate_community_sql', args: { request: validateSqlRequest } },

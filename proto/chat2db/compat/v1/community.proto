@@ -121,6 +121,12 @@ enum CommunityDmlByteLimit {
   COMMUNITY_DML_BYTE_LIMIT_MAX_VALUE_BYTES = 262144;
 }
 
+enum CommunityNamespaceByteLimit {
+  COMMUNITY_NAMESPACE_BYTE_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_NAMESPACE_BYTE_LIMIT_MAX_IDENTIFIER_BYTES = 512;
+  COMMUNITY_NAMESPACE_BYTE_LIMIT_MAX_PROPERTY_BYTES = 4096;
+}
+
 enum CommunityColumnCountLimit {
   COMMUNITY_COLUMN_COUNT_LIMIT_UNSPECIFIED = 0;
   COMMUNITY_COLUMN_COUNT_LIMIT_MAX_COLUMNS = 65536;
@@ -541,6 +547,54 @@ message BuildCommunityCreateSchemaRequest {
 }
 
 message CommunityBuiltSql {
+  string sql = 1;
+}
+
+message BuildCommunityNamespaceSqlRequest {
+  string database_type = 1;
+
+  oneof operation {
+    CommunityCreateDatabaseSql create_database = 2;
+    CommunityAlterDatabaseSql alter_database = 3;
+    CommunityDropDatabaseSql drop_database = 4;
+    CommunityUseDatabaseSql use_database = 5;
+    CommunityCreateSchemaSql create_schema = 6;
+    CommunityAlterSchemaSql alter_schema = 7;
+    CommunityDropSchemaSql drop_schema = 8;
+  }
+}
+
+message CommunityCreateDatabaseSql {
+  CommunityDatabase database = 1;
+}
+
+message CommunityAlterDatabaseSql {
+  CommunityDatabase old_database = 1;
+  CommunityDatabase new_database = 2;
+}
+
+message CommunityDropDatabaseSql {
+  string database_name = 1;
+}
+
+message CommunityUseDatabaseSql {
+  string database_name = 1;
+}
+
+message CommunityCreateSchemaSql {
+  CommunitySchema schema = 1;
+}
+
+message CommunityAlterSchemaSql {
+  string old_schema_name = 1;
+  string new_schema_name = 2;
+}
+
+message CommunityDropSchemaSql {
+  string schema_name = 1;
+}
+
+message CommunityBuiltNamespaceSql {
   string sql = 1;
 }
 

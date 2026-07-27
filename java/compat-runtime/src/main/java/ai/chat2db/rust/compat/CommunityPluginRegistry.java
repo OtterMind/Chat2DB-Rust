@@ -1,7 +1,9 @@
 package ai.chat2db.rust.compat;
 
 import ai.chat2db.rust.compat.protocol.v1.BuildCommunityDmlRequest;
+import ai.chat2db.rust.compat.protocol.v1.BuildCommunityNamespaceSqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.CommunityBuiltDml;
+import ai.chat2db.rust.compat.protocol.v1.CommunityBuiltNamespaceSql;
 import ai.chat2db.rust.compat.protocol.v1.CommunityBuiltSql;
 import ai.chat2db.rust.compat.protocol.v1.CommunityByteLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunityColumnCountLimit;
@@ -31,6 +33,7 @@ import ai.chat2db.rust.compat.protocol.v1.CommunityProcedureCountLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunityProcedureList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityProcedureParameter;
 import ai.chat2db.rust.compat.protocol.v1.CommunityProcedureParameterList;
+import ai.chat2db.rust.compat.protocol.v1.CommunityCreateSchemaSql;
 import ai.chat2db.rust.compat.protocol.v1.CommunityRoutineParameterCountLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySchema;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySchemaList;
@@ -91,8 +94,6 @@ final class CommunityPluginRegistry implements AutoCloseable {
     private static final String PLUGIN_INTERFACE = "ai.chat2db.spi.IPlugin";
     private static final String DB_CONFIG_CLASS =
             "ai.chat2db.community.domain.api.config.DBConfig";
-    private static final String SCHEMA_CLASS =
-            "ai.chat2db.community.domain.api.model.metadata.Schema";
     private static final String TABLES_REQUEST_CLASS =
             "ai.chat2db.spi.model.request.TablesRequest";
     private static final String TABLE_METADATA_REQUEST_CLASS =
@@ -172,6 +173,7 @@ final class CommunityPluginRegistry implements AutoCloseable {
     private final Map<String, PluginHandle> plugins;
     private final CommunitySqlCompletionBridge sqlCompletion;
     private final CommunityDmlBuilder dmlBuilder;
+    private final CommunityNamespaceBuilder namespaceBuilder;
     private boolean closed;
 
     private CommunityPluginRegistry(
@@ -189,6 +191,7 @@ final class CommunityPluginRegistry implements AutoCloseable {
         this.plugins = plugins;
         this.sqlCompletion = sqlCompletion;
         this.dmlBuilder = loader == null ? null : new CommunityDmlBuilder(loader);
+        this.namespaceBuilder = loader == null ? null : new CommunityNamespaceBuilder(loader);
     }
 
     static CommunityPluginRegistry openConfigured() {
@@ -278,6 +281,19 @@ final class CommunityPluginRegistry implements AutoCloseable {
                     "Community DML generation is not configured");
         }
         return dmlBuilder.build(handle.plugin(), request);
+    }
+
+    synchronized CommunityBuiltNamespaceSql buildNamespace(
+            BuildCommunityNamespaceSqlRequest request) throws RuntimeFailure {
+        ensureOpen();
+        CommunityNamespaceBuilder.validateRequest(request);
+        PluginHandle handle = requirePlugin(request.getDatabaseType());
+        if (namespaceBuilder == null) {
+            throw RuntimeFailure.conflict(
+                    "community.namespace_builder_unavailable",
+                    "Community namespace generation is not configured");
+        }
+        return namespaceBuilder.build(handle.plugin(), request);
     }
 
     void validateSchemasRequest(String databaseType, String databaseName)
@@ -1099,64 +1115,27 @@ final class CommunityPluginRegistry implements AutoCloseable {
             throw RuntimeFailure.validation(
                     "community.schema_required", "schema is required");
         }
-        requireNonBlank(requested.getName(), MAX_SCALAR_BYTES, "schema_name");
-        requireUtf8(requested.getDatabaseName(), MAX_SCALAR_BYTES, "schema_database_name");
-        requireUtf8(requested.getComment(), MAX_COMMENT_BYTES, "schema_comment");
-        requireUtf8(requested.getOwner(), MAX_SCALAR_BYTES, "schema_owner");
-
-        PluginHandle handle = requirePlugin(databaseType);
-        Thread thread = Thread.currentThread();
-        ClassLoader previous = thread.getContextClassLoader();
-        thread.setContextClassLoader(loader);
         try {
-            Object metadata = invoke(handle.plugin(), "getDbMetaData");
-            Object builder = metadata == null ? null : invoke(metadata, "getSqlBuilder");
-            if (builder == null) {
-                throw RuntimeFailure.validation(
-                        "community.sql_builder_not_supported",
-                        "the selected Community plugin does not provide a SQL builder");
-            }
-            Object ddl = invoke(builder, "ddl");
-            Object schemaBuilder = invoke(ddl, "schema");
-            Class<?> schemaType = Class.forName(SCHEMA_CLASS, true, loader);
-            Object communitySchema = schemaType.getDeclaredConstructor().newInstance();
-            invokeSetter(communitySchema, "setDatabaseName", String.class, requested.getDatabaseName());
-            invokeSetter(communitySchema, "setName", String.class, requested.getName());
-            invokeSetter(communitySchema, "setComment", String.class, requested.getComment());
-            invokeSetter(communitySchema, "setOwner", String.class, requested.getOwner());
-            invokeSetter(communitySchema, "setSystem", boolean.class, requested.getSystem());
-            Object built = invoke(
-                    schemaBuilder,
-                    "buildCreateSchema",
-                    new Class<?>[] {schemaType},
-                    communitySchema);
-            String sql = scalar(built);
-            requireNonBlank(sql, MAX_SQL_BYTES, "built_sql");
-            ProjectionBudget budget = ProjectionBudget.response();
-            budget.consumeMessage();
-            return CommunityBuiltSql.newBuilder()
-                    .setSql(projectString(sql, MAX_SQL_BYTES, "built_sql", budget))
-                    .build();
+            CommunityBuiltNamespaceSql built = buildNamespace(
+                    BuildCommunityNamespaceSqlRequest.newBuilder()
+                            .setDatabaseType(databaseType)
+                            .setCreateSchema(CommunityCreateSchemaSql.newBuilder()
+                                    .setSchema(requested))
+                            .build());
+            return CommunityBuiltSql.newBuilder().setSql(built.getSql()).build();
         } catch (RuntimeFailure failure) {
-            throw failure;
-        } catch (InvocationTargetException failure) {
-            Throwable cause = rootInvocationCause(failure);
-            if (cause instanceof UnsupportedOperationException) {
+            if (failure.code().equals("community.namespace_builder_not_supported")) {
                 throw RuntimeFailure.validation(
                         "community.sql_builder_not_supported",
                         "the selected Community SQL builder does not support CREATE SCHEMA");
             }
-            throw RuntimeFailure.internal(
-                    "community.sql_builder_failed",
-                    "the Community SQL builder failed",
-                    cause);
-        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
-            throw RuntimeFailure.internal(
-                    "community.sql_builder_failed",
-                    "the Community SQL builder failed",
-                    failure);
-        } finally {
-            thread.setContextClassLoader(previous);
+            if (failure.code().equals("community.namespace_builder_failed")) {
+                throw RuntimeFailure.internal(
+                        "community.sql_builder_failed",
+                        "the Community SQL builder failed",
+                        failure.getCause());
+            }
+            throw failure;
         }
     }
 

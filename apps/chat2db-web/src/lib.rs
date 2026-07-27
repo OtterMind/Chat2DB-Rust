@@ -481,6 +481,20 @@ mod tests {
             (
                 json_request(
                     Method::POST,
+                    "/api/v1/community/sql/build-namespace",
+                    &serde_json::json!({
+                        "databaseType": "H2",
+                        "operation": {
+                            "kind": "dropSchema",
+                            "schemaName": "APP"
+                        }
+                    }),
+                ),
+                "database_engine_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
                     "/api/v1/community/sql/build-dml",
                     &serde_json::json!({
                         "databaseType": "H2",
@@ -690,6 +704,7 @@ mod tests {
             "/api/v1/community/metadata/triggers",
             "/api/v1/community/metadata/trigger",
             "/api/v1/community/sql/build-create-schema",
+            "/api/v1/community/sql/build-namespace",
             "/api/v1/community/sql/build-dml",
             "/api/v1/community/sql/parse",
             "/api/v1/community/sql/validate",
@@ -739,6 +754,7 @@ mod tests {
             "/api/v1/community/metadata/triggers",
             "/api/v1/community/metadata/trigger",
             "/api/v1/community/sql/build-create-schema",
+            "/api/v1/community/sql/build-namespace",
             "/api/v1/community/sql/build-dml",
             "/api/v1/community/sql/parse",
             "/api/v1/community/sql/validate",
@@ -758,6 +774,18 @@ mod tests {
             );
         }
         assert!(!dml_responses.contains_key("409"));
+        let namespace_responses =
+            paths["/api/v1/community/sql/build-namespace"]["post"]["responses"]
+                .as_object()
+                .expect("Community namespace OpenAPI operation must declare responses");
+        assert_eq!(namespace_responses.len(), 4);
+        for status in ["200", "400", "500", "503"] {
+            assert!(
+                namespace_responses.contains_key(status),
+                "missing Community namespace OpenAPI response {status}"
+            );
+        }
+        assert!(!namespace_responses.contains_key("409"));
         assert!(
             paths["/api/v1/datasources/{datasource_id}"]
                 .get("delete")
@@ -826,6 +854,7 @@ mod tests {
             "AgentUsage",
             "CancelAgentRunResponse",
             "BuildCommunityCreateSchemaRequest",
+            "BuildCommunityNamespaceSqlRequest",
             "CommunityBuiltSql",
             "CommunityDatabase",
             "CommunityDatabaseList",
@@ -837,6 +866,7 @@ mod tests {
             "CommunityFunctionList",
             "CommunityFunctionParameter",
             "CommunityFunctionParameterList",
+            "CommunityNamespaceSqlOperation",
             "CommunityParsedStatement",
             "CommunityPlugin",
             "CommunityPluginBehavior",

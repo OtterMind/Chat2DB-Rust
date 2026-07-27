@@ -13,6 +13,7 @@ import type {
   BackendClient,
   BuildCommunityCreateSchemaRequest,
   BuildCommunityDmlRequest,
+  BuildCommunityNamespaceSqlRequest,
   CancelAgentRunResponse,
   CancelOperationResponse,
   CommunityBuiltSql,
@@ -361,6 +362,17 @@ export class HttpBackendClient implements BackendClient {
   ): Promise<CommunityBuiltSql> {
     return this.#json(
       '/api/v1/community/sql/build-dml',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  buildCommunityNamespaceSql(
+    request: BuildCommunityNamespaceSqlRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityBuiltSql> {
+    return this.#json(
+      '/api/v1/community/sql/build-namespace',
       { method: 'POST', body: JSON.stringify(request), signal },
       [200],
     );

@@ -9,6 +9,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import ai.chat2db.rust.compat.protocol.v1.BuildCommunityDmlRequest;
+import ai.chat2db.rust.compat.protocol.v1.BuildCommunityNamespaceSqlRequest;
+import ai.chat2db.rust.compat.protocol.v1.CommunityAlterDatabaseSql;
+import ai.chat2db.rust.compat.protocol.v1.CommunityCreateDatabaseSql;
+import ai.chat2db.rust.compat.protocol.v1.CommunityCreateSchemaSql;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDatabase;
 import ai.chat2db.rust.compat.protocol.v1.CommunityDmlAssignment;
 import ai.chat2db.rust.compat.protocol.v1.CommunityDmlColumn;
 import ai.chat2db.rust.compat.protocol.v1.CommunityDmlMultiInsert;
@@ -22,6 +27,7 @@ import ai.chat2db.rust.compat.protocol.v1.CommunityDmlUpdate;
 import ai.chat2db.rust.compat.protocol.v1.CommunityDmlValue;
 import ai.chat2db.rust.compat.protocol.v1.CommunityForeignKey;
 import ai.chat2db.rust.compat.protocol.v1.CommunityPrimaryKey;
+import ai.chat2db.rust.compat.protocol.v1.CommunitySchema;
 import ai.chat2db.rust.compat.protocol.v1.CompleteCommunitySqlRequest;
 import com.google.protobuf.ByteString;
 import java.io.OutputStream;
@@ -522,6 +528,138 @@ class CommunityPluginRegistryTest {
     }
 
     @Test
+    void realCommunityH2BuildsNamespaceSqlWithoutOpeningJdbc() throws Exception {
+        Path communityClasspath = communityClasspathDirectory();
+        assumeTrue(
+                Files.isDirectory(communityClasspath),
+                "the fixed Community classpath is built by the extended integration lane");
+
+        try (CommunityPluginRegistry registry = openRegistry(communityClasspath)) {
+            assumeTrue(hasPlugin(registry, "H2"), "the fixed classpath does not contain H2");
+            CommunitySchema schema = CommunitySchema.newBuilder()
+                    .setDatabaseName("local")
+                    .setName("rust_namespace")
+                    .setComment("generated only")
+                    .setOwner("owner")
+                    .build();
+            BuildCommunityNamespaceSqlRequest request =
+                    BuildCommunityNamespaceSqlRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setCreateSchema(CommunityCreateSchemaSql.newBuilder()
+                                    .setSchema(schema))
+                            .build();
+
+            ClassLoader previous = Thread.currentThread().getContextClassLoader();
+            assertEquals(
+                    "CREATE SCHEMA \"rust_namespace\";\nCOMMENT ON SCHEMA \"rust_namespace\""
+                            + " IS 'generated only';",
+                    registry.buildNamespace(request).getSql());
+            assertEquals(previous, Thread.currentThread().getContextClassLoader());
+            assertEquals(
+                    registry.buildNamespace(request).getSql(),
+                    registry.buildCreateSchema("H2", schema).getSql());
+        }
+    }
+
+    @Test
+    void realCommunityMysqlBuildsDatabaseNamespaceSql() throws Exception {
+        Path communityClasspath = communityClasspathDirectory();
+        assumeTrue(
+                Files.isDirectory(communityClasspath),
+                "the fixed Community classpath is built by the extended integration lane");
+
+        try (CommunityPluginRegistry registry = openRegistry(communityClasspath)) {
+            assumeTrue(
+                    hasPlugin(registry, "MYSQL"),
+                    "the fixed classpath does not contain the MySQL plugin");
+            CommunityDatabase database = CommunityDatabase.newBuilder()
+                    .setName("analytics")
+                    .setCharset("utf8mb4")
+                    .setCollation("utf8mb4_0900_ai_ci")
+                    .build();
+            assertEquals(
+                    "CREATE DATABASE `analytics` DEFAULT CHARACTER SET=utf8mb4"
+                            + " COLLATE=utf8mb4_0900_ai_ci",
+                    registry.buildNamespace(BuildCommunityNamespaceSqlRequest.newBuilder()
+                                    .setDatabaseType("MYSQL")
+                                    .setCreateDatabase(CommunityCreateDatabaseSql.newBuilder()
+                                            .setDatabase(database))
+                                    .build())
+                            .getSql());
+        }
+    }
+
+    @Test
+    void realCommunityPostgresqlBuildsSchemaNamespaceSql() throws Exception {
+        Path communityClasspath = communityClasspathDirectory();
+        assumeTrue(
+                Files.isDirectory(communityClasspath),
+                "the fixed Community classpath is built by the extended integration lane");
+
+        try (CommunityPluginRegistry registry = openRegistry(communityClasspath)) {
+            assumeTrue(
+                    hasPlugin(registry, "POSTGRESQL"),
+                    "the fixed classpath does not contain the PostgreSQL plugin");
+            CommunitySchema schema = CommunitySchema.newBuilder()
+                    .setName("reporting")
+                    .setOwner("analyst")
+                    .setComment("curated")
+                    .build();
+            assertEquals(
+                    "CREATE SCHEMA \"reporting\" AUTHORIZATION analyst;"
+                            + " COMMENT ON SCHEMA \"reporting\" IS 'curated';",
+                    registry.buildNamespace(BuildCommunityNamespaceSqlRequest.newBuilder()
+                                    .setDatabaseType("POSTGRESQL")
+                                    .setCreateSchema(CommunityCreateSchemaSql.newBuilder()
+                                            .setSchema(schema))
+                                    .build())
+                            .getSql());
+        }
+    }
+
+    @Test
+    void realCommunityNamespaceMapsUnsupportedAndRejectsOversizedInput() throws Exception {
+        Path communityClasspath = communityClasspathDirectory();
+        assumeTrue(
+                Files.isDirectory(communityClasspath),
+                "the fixed Community classpath is built by the extended integration lane");
+
+        try (CommunityPluginRegistry registry = openRegistry(communityClasspath)) {
+            assumeTrue(hasPlugin(registry, "H2"), "the fixed classpath does not contain H2");
+            CommunityDatabase database = CommunityDatabase.newBuilder()
+                    .setName("before")
+                    .build();
+            assertFailureCode(
+                    "community.namespace_builder_not_supported",
+                    () -> registry.buildNamespace(BuildCommunityNamespaceSqlRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setAlterDatabase(CommunityAlterDatabaseSql.newBuilder()
+                                    .setOldDatabase(database)
+                                    .setNewDatabase(database.toBuilder().setName("after")))
+                            .build()));
+
+            RuntimeFailure identifier = assertFailureCode(
+                    "protocol.limit_exceeded",
+                    () -> registry.buildNamespace(BuildCommunityNamespaceSqlRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setCreateDatabase(CommunityCreateDatabaseSql.newBuilder()
+                                    .setDatabase(database.toBuilder().setName("x".repeat(513))))
+                            .build()));
+            assertFalse(identifier.getMessage().contains("x".repeat(513)));
+
+            RuntimeFailure property = assertFailureCode(
+                    "protocol.limit_exceeded",
+                    () -> registry.buildNamespace(BuildCommunityNamespaceSqlRequest.newBuilder()
+                            .setDatabaseType("H2")
+                            .setCreateDatabase(CommunityCreateDatabaseSql.newBuilder()
+                                    .setDatabase(database.toBuilder()
+                                            .setCharset("x".repeat(4097))))
+                            .build()));
+            assertFalse(property.getMessage().contains("x".repeat(4097)));
+        }
+    }
+
+    @Test
     void realCommunityH2BuildsAndExecutesBoundedDml() throws Exception {
         Path communityClasspath = communityClasspathDirectory();
         assumeTrue(
@@ -733,6 +871,12 @@ class CommunityPluginRegistryTest {
         RuntimeFailure failure = assertThrows(RuntimeFailure.class, executable);
         assertEquals(code, failure.code());
         return failure;
+    }
+
+    private static boolean hasPlugin(CommunityPluginRegistry registry, String databaseType)
+            throws RuntimeFailure {
+        return registry.catalog().getPluginsList().stream()
+                .anyMatch(plugin -> plugin.getDatabaseType().equalsIgnoreCase(databaseType));
     }
 
     private static CommunityPluginRegistry openRegistry(Path directory) throws Exception {

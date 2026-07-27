@@ -16,25 +16,25 @@ use chat2db_contract::{
     AgentEventEnvelope, AgentMessageList, AgentPermissionResponse, AgentRunAccepted,
     AgentRunSnapshot, AgentSession, AgentSessionList, AgentStreamMessage,
     AgentSubscriptionAccepted, ApiError, BuildCommunityCreateSchemaRequest,
-    BuildCommunityDmlRequest, CancelAgentRunResponse, CancelOperationResponse, CommunityBuiltSql,
-    CommunityDatabaseList, CommunityForeignKeyList, CommunityFormattedSql, CommunityFunction,
-    CommunityFunctionList, CommunityFunctionParameterList, CommunityPluginCatalog,
-    CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
-    CommunityProcedureParameterList, CommunitySchemaList, CommunitySqlAnalysis,
-    CommunitySqlCompletion, CommunitySqlValidation, CommunityTableColumnList,
-    CommunityTableIndexList, CommunityTableList, CommunityTrigger, CommunityTriggerList,
-    CommunityViewList, CompleteCommunitySqlRequest, CreateAgentSessionRequest,
-    CreateDatasourceRequest, CreateProviderProfileRequest, Datasource, DatasourceList,
-    DecideAgentPermissionRequest, FormatCommunitySqlRequest, GetCommunityFunctionRequest,
-    GetCommunityProcedureRequest, GetCommunityTriggerRequest, HealthResponse, JdbcDriverList,
-    ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityFunctionsRequest,
-    ListCommunityIndexesRequest, ListCommunityProceduresRequest, ListCommunitySchemasRequest,
-    ListCommunityTableKeysRequest, ListCommunityTablesRequest, ListCommunityTriggersRequest,
-    ListCommunityViewsRequest, OperationEventEnvelope, OperationSnapshot, OperationStreamMessage,
-    OperationSubscriptionAccepted, ParseCommunitySqlRequest, ProviderProfile, ProviderProfileList,
-    QueryAccepted, ResultPage, ResultPageRequest, StartAgentRunRequest, StartQueryRequest,
-    UpdateAgentSessionRequest, UpdateDatasourceRequest, UpdateProviderProfileRequest,
-    ValidateCommunitySqlRequest,
+    BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest, CancelAgentRunResponse,
+    CancelOperationResponse, CommunityBuiltSql, CommunityDatabaseList, CommunityForeignKeyList,
+    CommunityFormattedSql, CommunityFunction, CommunityFunctionList,
+    CommunityFunctionParameterList, CommunityPluginCatalog, CommunityPrimaryKeyList,
+    CommunityProcedure, CommunityProcedureList, CommunityProcedureParameterList,
+    CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlCompletion, CommunitySqlValidation,
+    CommunityTableColumnList, CommunityTableIndexList, CommunityTableList, CommunityTrigger,
+    CommunityTriggerList, CommunityViewList, CompleteCommunitySqlRequest,
+    CreateAgentSessionRequest, CreateDatasourceRequest, CreateProviderProfileRequest, Datasource,
+    DatasourceList, DecideAgentPermissionRequest, FormatCommunitySqlRequest,
+    GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
+    HealthResponse, JdbcDriverList, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
+    ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
+    ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
+    ListCommunityTriggersRequest, ListCommunityViewsRequest, OperationEventEnvelope,
+    OperationSnapshot, OperationStreamMessage, OperationSubscriptionAccepted,
+    ParseCommunitySqlRequest, ProviderProfile, ProviderProfileList, QueryAccepted, ResultPage,
+    ResultPageRequest, StartAgentRunRequest, StartQueryRequest, UpdateAgentSessionRequest,
+    UpdateDatasourceRequest, UpdateProviderProfileRequest, ValidateCommunitySqlRequest,
 };
 use chat2db_core::{
     AppError, Application, RuntimeConfig, RuntimeHost, load_fixed_community_classpath,
@@ -286,6 +286,7 @@ pub fn run() -> Result<i32, DesktopError> {
             list_community_triggers,
             get_community_trigger,
             build_community_create_schema,
+            build_community_namespace_sql,
             build_community_dml,
             parse_community_sql,
             validate_community_sql,
@@ -649,6 +650,24 @@ async fn build_community_create_schema(
     state
         .application
         .build_community_create_schema(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn build_community_namespace_sql(
+    state: State<'_, Arc<DesktopState>>,
+    request: BuildCommunityNamespaceSqlRequest,
+) -> Result<CommunityBuiltSql, ApiError> {
+    build_community_namespace_sql_for(&state.application, request).await
+}
+
+async fn build_community_namespace_sql_for(
+    application: &Application,
+    request: BuildCommunityNamespaceSqlRequest,
+) -> Result<CommunityBuiltSql, ApiError> {
+    application
+        .build_community_namespace_sql(request)
         .await
         .map_err(|error| api_error(&error))
 }
@@ -1220,19 +1239,38 @@ mod tests {
 
     use chat2db_contract::{
         AgentEvent, AgentEventEnvelope, AgentStreamMessage, BuildCommunityDmlRequest,
-        CommunityDmlColumn, CommunityDmlRow, CommunityDmlStatement, CommunityDmlTarget,
-        CommunityDmlValue, CompleteCommunitySqlRequest, FormatCommunitySqlRequest, OperationEvent,
-        OperationEventEnvelope, OperationStreamMessage, ValidateCommunitySqlRequest,
+        BuildCommunityNamespaceSqlRequest, CommunityDmlColumn, CommunityDmlRow,
+        CommunityDmlStatement, CommunityDmlTarget, CommunityDmlValue,
+        CommunityNamespaceSqlOperation, CompleteCommunitySqlRequest, FormatCommunitySqlRequest,
+        OperationEvent, OperationEventEnvelope, OperationStreamMessage,
+        ValidateCommunitySqlRequest,
     };
     use chat2db_core::{AppError, Application};
     use tokio::sync::oneshot;
 
     use super::{
         DesktopError, SubscriptionRegistry, agent_stream_message, build_community_dml_for,
-        complete_community_sql_for, format_community_sql_for, operation_stream_message,
-        parse_after_sequence, validate_community_sql_for, validate_java_engine_jar,
-        validate_optional_os_env,
+        build_community_namespace_sql_for, complete_community_sql_for, format_community_sql_for,
+        operation_stream_message, parse_after_sequence, validate_community_sql_for,
+        validate_java_engine_jar, validate_optional_os_env,
     };
+
+    #[tokio::test]
+    async fn namespace_builder_command_maps_unavailable_engine_errors() {
+        let error = build_community_namespace_sql_for(
+            &Application::new(),
+            BuildCommunityNamespaceSqlRequest {
+                database_type: "H2".to_owned(),
+                operation: CommunityNamespaceSqlOperation::DropSchema {
+                    schema_name: "APP".to_owned(),
+                },
+            },
+        )
+        .await
+        .expect_err("namespace generation without an engine must fail");
+
+        assert_eq!(error.code, "database_engine_unavailable");
+    }
 
     #[tokio::test]
     async fn dml_builder_command_maps_unavailable_engine_errors() {

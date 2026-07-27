@@ -9,8 +9,9 @@ and updates, typed row streams, credit flow control, cancellation, deadlines,
 bounded errors, conservative delivery outcomes, Community plugin inventory,
 H2 schema, database, table, column, index, view, imported/exported foreign-key,
 primary-key, function, function-parameter, procedure, procedure-parameter, and
-trigger metadata, `CREATE SCHEMA` building, retained SQL parsing, bounded syntax
-validation, SQL formatting, and datasource-aware SQL completion.
+trigger metadata, typed DML and database/schema namespace SQL building, retained
+SQL parsing, bounded syntax validation, SQL formatting, and datasource-aware SQL
+completion.
 
 Not implemented in the compatibility protocol: general-purpose SQL builder
 operations, script execution, data import/export, non-relational operations, or
@@ -82,6 +83,7 @@ The implemented capability names are:
 - `community.sql-formatter.v1`
 - `community.sql-completion.v1`
 - `community.dml-builder.v1`
+- `community.namespace-builder.v1`
 
 No common version or missing required capability returns a fatal structured
 error and terminates the engine. Rust rejects a selected version it did not
@@ -214,7 +216,7 @@ before lock verification by rebuilding only affected JARs with sorted entries,
 the source-commit timestamp, and the `STORED` method. A two-clean-build gate
 compares every resulting JAR digest and length.
 
-Configuring the classpath automatically makes all eleven Community capabilities
+Configuring the classpath automatically makes all twelve Community capabilities
 required during handshake. A sidecar that lacks any one of them fails startup
 and is reaped before the generation becomes ready.
 
@@ -347,7 +349,17 @@ request at 2,048 columns, 4,096 rows, 32,768 values, 8 MiB encoded bytes, and
 bounded identifier, type-name, decimal, temporal, string, and binary fields.
 The returned SQL is non-empty and at most 1 MiB.
 
-All twenty-four Community operations use the fatal-on-unknown lane. Once
+The namespace capability adds one unary, datasource-free operation at envelope
+tag `224`. Its closed oneof supports create/alter/drop/use database and
+create/alter/drop schema operations. Database and schema models contain bounded
+identifier, comment, charset, collation, and owner fields; no variant accepts
+raw SQL. Java calls the selected plugin's real metadata-owned
+`ddl().database()` or `ddl().schema()` builder, opens no JDBC session, and
+returns SQL without executing it. Unsafe identifier, property, and comment
+syntax is rejected before reflection. The rendered SQL is non-empty and at most
+1 MiB, and the old tag-`202` CREATE SCHEMA operation remains compatible.
+
+All twenty-five Community operations use the fatal-on-unknown lane. Once
 delivered, a timeout or abandoned response terminates and reaps the Java
 generation because the host can no longer prove the plugin invocation's state.
 The checked-in
@@ -358,7 +370,7 @@ authorization.
 
 The product runtime embeds that lock and accepts only a directory matching it
 exactly. `CHAT2DB_COMMUNITY_CLASSPATH_DIR` selects the directory but cannot
-override its source commit or inventory. Core maps all twenty-four protocol
+override its source commit or inventory. Core maps all twenty-five protocol
 operations to stable external DTOs; schema, object, relation, and
 programmability metadata plus completion resolve a vault-backed datasource and
 use a forced-read-only JDBC session before invoking this protocol. Completion
@@ -366,9 +378,11 @@ also injects the stored datasource display name; only Rust's private
 `datasource_scope`, never the product id, crosses the Java boundary. Core keeps
 each bounded session operation alive if its transport waiter is cancelled so it
 can consume the response and close the session. These product rules sit above
-the compatibility wire contract. Typed-DML generation remains datasource-free;
-Axum exposes `POST /api/v1/community/sql/build-dml`, Tauri exposes
-`build_community_dml`, and both transports return the same generated SQL DTO.
+the compatibility wire contract. Typed-DML and namespace generation remain
+datasource-free. Axum exposes `POST /api/v1/community/sql/build-dml` and
+`POST /api/v1/community/sql/build-namespace`; Tauri exposes
+`build_community_dml` and `build_community_namespace_sql`. Both transports
+return the same generated SQL DTO.
 
 ## Supervision
 
@@ -398,7 +412,7 @@ repository-local Maven cache, rejects classpath lock drift, keeps the H2 JDBC
 driver external, and executes catalog, schema, object, relation,
 programmability, schema-builder, and ANTLR-parser calls through the real
 Community H2 plugin. CI runs that same Community sidecar path on Linux and
-Windows. The Stage 7C-7K product gate starts from the exact embedded lock,
+Windows. The Stage 7C-7L product gate starts from the exact embedded lock,
 stores an encrypted H2 datasource, invokes the fixed operations through Core,
 and verifies database/table/column/index, view, foreign-key, primary-key,
 function, procedure, parameter, and trigger projection plus metadata-session
@@ -408,3 +422,6 @@ and driver cleanup. Its completion cases verify table suggestions after
 forced-read-only product-session boundary. Its DML cases prove single and batch
 INSERT plus ordered UPDATE generation, prove generation does not execute SQL,
 then independently execute and read back typed H2 values.
+Namespace cases likewise generate H2 CREATE/DROP SCHEMA SQL, prove the database
+is unchanged, and only then execute and verify each state transition. The Java
+fixed-classpath gate also verifies the real MySQL CREATE DATABASE builder.

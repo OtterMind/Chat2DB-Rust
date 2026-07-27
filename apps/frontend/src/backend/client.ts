@@ -9,7 +9,9 @@ export type ApiError = Schema<'ApiError'>;
 export type CancelOperationResponse = Schema<'CancelOperationResponse'>;
 export type BuildCommunityCreateSchemaRequest = Schema<'BuildCommunityCreateSchemaRequest'>;
 export type BuildCommunityDmlRequest = Schema<'BuildCommunityDmlRequest'>;
+export type BuildCommunityNamespaceSqlRequest = Schema<'BuildCommunityNamespaceSqlRequest'>;
 export type CommunityBuiltSql = Schema<'CommunityBuiltSql'>;
+export type CommunityDatabase = Schema<'CommunityDatabase'>;
 export type CommunityDatabaseList = Schema<'CommunityDatabaseList'>;
 export type CommunityFormattedSql = Schema<'CommunityFormattedSql'>;
 export type CommunityForeignKeyList = Schema<'CommunityForeignKeyList'>;
@@ -22,6 +24,7 @@ export type CommunityProcedure = Schema<'CommunityProcedure'>;
 export type CommunityProcedureList = Schema<'CommunityProcedureList'>;
 export type CommunityProcedureParameterList = Schema<'CommunityProcedureParameterList'>;
 export type CommunitySchemaList = Schema<'CommunitySchemaList'>;
+export type CommunitySchema = Schema<'CommunitySchema'>;
 export type CommunitySqlAnalysis = Schema<'CommunitySqlAnalysis'>;
 export type CommunitySqlCompletion = Schema<'CommunitySqlCompletion'>;
 export type CommunitySqlCompletionActiveSnippetSlot = Schema<'CommunitySqlCompletionActiveSnippetSlot'>;
@@ -200,6 +203,10 @@ export interface BackendClient {
   ): Promise<CommunityBuiltSql>;
   buildCommunityDml(
     request: BuildCommunityDmlRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityBuiltSql>;
+  buildCommunityNamespaceSql(
+    request: BuildCommunityNamespaceSqlRequest,
     signal?: AbortSignal,
   ): Promise<CommunityBuiltSql>;
   parseCommunitySql(

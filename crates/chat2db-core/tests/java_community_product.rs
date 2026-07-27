@@ -7,9 +7,10 @@ use std::{
 };
 
 use chat2db_contract::{
-    BuildCommunityCreateSchemaRequest, BuildCommunityDmlRequest, CommunityDmlAssignment,
-    CommunityDmlColumn, CommunityDmlRow, CommunityDmlStatement, CommunityDmlTarget,
-    CommunityDmlTemporalKind, CommunityDmlValue, CompleteCommunitySqlRequest, ComponentState,
+    BuildCommunityCreateSchemaRequest, BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest,
+    CommunityDmlAssignment, CommunityDmlColumn, CommunityDmlRow, CommunityDmlStatement,
+    CommunityDmlTarget, CommunityDmlTemporalKind, CommunityDmlValue,
+    CommunityNamespaceSqlOperation, CompleteCommunitySqlRequest, ComponentState,
     CreateDatasourceRequest, DatasourceConnection, FormatCommunitySqlRequest,
     GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
     ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityFunctionsRequest,
@@ -68,6 +69,7 @@ async fn product_services_invoke_the_fixed_community_h2_compatibility_slice() {
         })
         .await
         .expect("product datasource must be stored");
+    verify_namespace_builder(&application, &driver, &driver_id, jdbc_url).await;
     let built = application
         .build_community_create_schema(BuildCommunityCreateSchemaRequest {
             database_type: "H2".to_owned(),
@@ -112,6 +114,104 @@ async fn product_services_invoke_the_fixed_community_h2_compatibility_slice() {
     host.shutdown()
         .await
         .expect("product host must shut down cleanly");
+}
+
+async fn verify_namespace_builder(
+    application: &Application,
+    driver: &DriverClient,
+    driver_id: &str,
+    jdbc_url: &str,
+) {
+    let create = application
+        .build_community_namespace_sql(BuildCommunityNamespaceSqlRequest {
+            database_type: "H2".to_owned(),
+            operation: CommunityNamespaceSqlOperation::CreateSchema {
+                schema: chat2db_contract::CommunitySchema {
+                    name: "PRODUCT_NAMESPACE_ONLY".to_owned(),
+                    ..chat2db_contract::CommunitySchema::default()
+                },
+            },
+        })
+        .await
+        .expect("Core must invoke the H2 namespace CREATE SCHEMA builder");
+    assert_eq!(create.sql, "CREATE SCHEMA \"PRODUCT_NAMESPACE_ONLY\";");
+
+    let session = driver
+        .open_session(SessionConfig {
+            driver_id: driver_id.to_owned(),
+            jdbc_url: jdbc_url.to_owned(),
+            properties: Vec::new(),
+            read_only: false,
+        })
+        .await
+        .expect("namespace verification JDBC session must open");
+    assert_eq!(
+        query_values(
+            &session,
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = 'PRODUCT_NAMESPACE_ONLY'",
+        )
+        .await,
+        vec![vec![JdbcValue::SignedInteger(0)]],
+        "Core namespace SQL generation must not create the schema"
+    );
+
+    session
+        .execute_update(UpdateRequest {
+            sql: create.sql,
+            parameters: Vec::new(),
+            transaction_id: None,
+        })
+        .await
+        .expect("generated namespace CREATE SCHEMA SQL must execute separately");
+    assert_eq!(
+        query_values(
+            &session,
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = 'PRODUCT_NAMESPACE_ONLY'",
+        )
+        .await,
+        vec![vec![JdbcValue::SignedInteger(1)]]
+    );
+
+    let drop = application
+        .build_community_namespace_sql(BuildCommunityNamespaceSqlRequest {
+            database_type: "H2".to_owned(),
+            operation: CommunityNamespaceSqlOperation::DropSchema {
+                schema_name: "PRODUCT_NAMESPACE_ONLY".to_owned(),
+            },
+        })
+        .await
+        .expect("Core must invoke the H2 namespace DROP SCHEMA builder");
+    assert_eq!(drop.sql, "DROP SCHEMA PRODUCT_NAMESPACE_ONLY");
+    assert_eq!(
+        query_values(
+            &session,
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = 'PRODUCT_NAMESPACE_ONLY'",
+        )
+        .await,
+        vec![vec![JdbcValue::SignedInteger(1)]],
+        "Core namespace SQL generation must not drop the schema"
+    );
+
+    session
+        .execute_update(UpdateRequest {
+            sql: drop.sql,
+            parameters: Vec::new(),
+            transaction_id: None,
+        })
+        .await
+        .expect("generated namespace DROP SCHEMA SQL must execute separately");
+    assert_eq!(
+        query_values(
+            &session,
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = 'PRODUCT_NAMESPACE_ONLY'",
+        )
+        .await,
+        vec![vec![JdbcValue::SignedInteger(0)]]
+    );
+    session
+        .close()
+        .await
+        .expect("namespace verification JDBC session must close");
 }
 
 async fn verify_sql_completion(application: &Application, datasource_id: &str) {

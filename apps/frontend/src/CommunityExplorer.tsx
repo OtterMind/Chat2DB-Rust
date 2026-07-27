@@ -3,10 +3,9 @@ import {
   ChevronRight,
   ChevronsDown,
   ChevronsUp,
-  Code2,
   Database,
+  DatabaseZap,
   Eye,
-  FolderPlus,
   FolderTree,
   KeyRound,
   LoaderCircle,
@@ -43,7 +42,9 @@ import type {
   JdbcDriverList,
 } from './backend';
 import { CommunityDmlDialog } from './CommunityDmlDialog';
+import { CommunityNamespaceDialog } from './CommunityNamespaceDialog';
 import { isCurrentCommunityDmlRequest } from './community-dml-model';
+import { isCurrentCommunityNamespaceRequest } from './community-namespace-model';
 import {
   CommunityFunctionDetail,
   CommunityLoadFailure,
@@ -94,6 +95,15 @@ interface DmlDialogState {
   tableName: string;
   columns: CommunityTableDetail['columns'];
   primaryKeys: CommunityTableDetail['primaryKeys'];
+}
+
+interface NamespaceDialogState {
+  scope: string;
+  databaseType: string;
+  database?: CommunityDatabase;
+  schemaName: string;
+  supportsDatabase: boolean;
+  supportsSchema: boolean;
 }
 
 const EMPTY_NAMESPACE: CommunityNamespaceSnapshot = {
@@ -330,97 +340,6 @@ function TriggerDetailView({ detail }: { detail: CommunityTriggerDetail }) {
   );
 }
 
-function SchemaSqlDialog({
-  databaseName,
-  busy,
-  error,
-  onClose,
-  onBuild,
-}: {
-  databaseName: string;
-  busy: boolean;
-  error: string | null;
-  onClose: () => void;
-  onBuild: (value: { name: string; owner: string; comment: string }) => Promise<void>;
-}) {
-  const [name, setName] = useState('');
-  const [owner, setOwner] = useState('');
-  const [comment, setComment] = useState('');
-  const [validation, setValidation] = useState<string | null>(null);
-  const dialogRef = useRef<HTMLElement | null>(null);
-  const returnFocusRef = useRef<HTMLElement | null>(
-    typeof document === 'undefined' ? null : document.activeElement as HTMLElement | null,
-  );
-
-  useEffect(() => () => returnFocusRef.current?.focus(), []);
-
-  const handleKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      onClose();
-      return;
-    }
-    if (event.key !== 'Tab') return;
-    const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    );
-    if (!focusable?.length) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
-
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!name.trim()) {
-      setValidation('Schema name is required.');
-      return;
-    }
-    setValidation(null);
-    await onBuild({ name: name.trim(), owner: owner.trim(), comment: comment.trim() });
-  };
-
-  return (
-    <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}>
-      <section
-        ref={dialogRef}
-        className="dialog schema-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="schema-dialog-title"
-        onKeyDown={handleKeyDown}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <header className="dialog-header">
-          <div><span className="section-kicker">{databaseName}</span><h2 id="schema-dialog-title">Create schema SQL</h2></div>
-          <button className="icon-button quiet" type="button" onClick={onClose} aria-label="Close" title="Close"><X size={18} aria-hidden="true" /></button>
-        </header>
-        <form aria-busy={busy} onSubmit={(event) => void submit(event)}>
-          <div className="form-grid two-columns">
-            <label><span>Name</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label>
-            <label><span>Owner</span><input value={owner} onChange={(event) => setOwner(event.target.value)} /></label>
-          </div>
-          <label><span>Comment</span><input value={comment} onChange={(event) => setComment(event.target.value)} /></label>
-          {validation || error ? <p className="form-error" role="alert">{validation ?? error}</p> : null}
-          <footer className="dialog-actions">
-            <button className="secondary-button" type="button" onClick={onClose}>Cancel</button>
-            <button className="primary-button" type="submit" disabled={busy}>
-              {busy ? <LoaderCircle className="spinning" size={16} aria-hidden="true" /> : <Code2 size={16} aria-hidden="true" />}
-              Use SQL
-            </button>
-          </footer>
-        </form>
-      </section>
-    </div>
-  );
-}
-
 export interface CommunityExplorerProps {
   client: BackendClient;
   datasource?: Datasource;
@@ -477,16 +396,18 @@ export function CommunityExplorer({
   });
   const [lookupKind, setLookupKind] = useState<LookupKind>('function');
   const [lookupName, setLookupName] = useState('');
-  const [schemaDialogOpen, setSchemaDialogOpen] = useState(false);
-  const [schemaBusy, setSchemaBusy] = useState(false);
-  const [schemaError, setSchemaError] = useState<string | null>(null);
+  const [namespaceDialog, setNamespaceDialog] = useState<NamespaceDialogState | null>(null);
+  const [namespaceBusy, setNamespaceBusy] = useState(false);
+  const [namespaceError, setNamespaceError] = useState<string | null>(null);
   const [dmlDialog, setDmlDialog] = useState<DmlDialogState | null>(null);
   const [dmlBusy, setDmlBusy] = useState(false);
   const [dmlError, setDmlError] = useState<string | null>(null);
   const [mobileCollapsed, setMobileCollapsed] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(max-width: 720px)').matches,
   );
-  const schemaRequestRef = useRef<AbortController | null>(null);
+  const namespaceRequestRef = useRef<AbortController | null>(null);
+  const namespaceRequestSequenceRef = useRef(0);
+  const activeNamespaceScopeRef = useRef<string | null>(null);
   const dmlRequestRef = useRef<AbortController | null>(null);
   const dmlRequestSequenceRef = useRef(0);
   const activeDmlScopeRef = useRef<string | null>(null);
@@ -514,6 +435,9 @@ export function CommunityExplorer({
   const namespaceScopeKey = schemaScopeKey && schemaName
     ? `${schemaScopeKey}:${schemaName}`
     : '';
+  const currentNamespaceSqlScope = databaseScopeKey
+    ? `${databaseScopeKey}:${databaseName}:${schemaName}:${refreshRevision}`
+    : null;
   const scopeReady = Boolean(namespaceScopeKey);
   const loadingScope = loadingDatabases || loadingSchemas;
   const detailScopeKey = selection && namespaceScopeKey
@@ -535,11 +459,31 @@ export function CommunityExplorer({
     && scopedDetail.value.columns.length > 0
     && !loadingDetail,
   );
+  const namespaceBuilderAvailable = Boolean(
+    selectedPlugin?.services.sqlBuilderAvailable
+    && (selectedPlugin.behavior.supportsDatabase || selectedPlugin.behavior.supportsSchema),
+  );
+  const canOpenNamespace = Boolean(
+    currentNamespaceSqlScope
+    && namespaceBuilderAvailable
+    && !loadingScope,
+  );
 
   useEffect(() => () => {
-    schemaRequestRef.current?.abort();
+    namespaceRequestRef.current?.abort();
     dmlRequestRef.current?.abort();
   }, []);
+
+  useEffect(() => {
+    if (!namespaceDialog || namespaceDialog.scope === currentNamespaceSqlScope) return;
+    namespaceRequestRef.current?.abort();
+    namespaceRequestRef.current = null;
+    namespaceRequestSequenceRef.current += 1;
+    activeNamespaceScopeRef.current = null;
+    setNamespaceBusy(false);
+    setNamespaceError(null);
+    setNamespaceDialog(null);
+  }, [currentNamespaceSqlScope, namespaceDialog]);
 
   useEffect(() => {
     if (!dmlDialog || dmlDialog.scope === currentDmlScope) return;
@@ -861,43 +805,68 @@ export function CommunityExplorer({
     setLookupName('');
   };
 
-  const buildSchemaSql = async (value: { name: string; owner: string; comment: string }) => {
-    if (!selectedPlugin || !databaseName) return;
-    schemaRequestRef.current?.abort();
-    const controller = new AbortController();
-    schemaRequestRef.current = controller;
-    setSchemaBusy(true);
-    setSchemaError(null);
-    try {
-      const response = await client.buildCommunityCreateSchema({
-        databaseType: selectedPlugin.databaseType,
-        schema: {
-          databaseName,
-          name: value.name,
-          owner: value.owner,
-          comment: value.comment,
-          system: false,
-        },
-      }, controller.signal);
-      if (controller.signal.aborted) return;
-      onInsertSql(response.sql);
-      setSchemaDialogOpen(false);
-    } catch (requestError) {
-      if (!isAbortError(requestError)) setSchemaError(messageFromError(requestError));
-    } finally {
-      if (schemaRequestRef.current === controller) {
-        schemaRequestRef.current = null;
-        setSchemaBusy(false);
-      }
-    }
+  const openNamespaceDialog = () => {
+    if (!canOpenNamespace || !currentNamespaceSqlScope || !selectedPlugin) return;
+    activeNamespaceScopeRef.current = currentNamespaceSqlScope;
+    setNamespaceError(null);
+    setNamespaceDialog({
+      scope: currentNamespaceSqlScope,
+      databaseType: selectedPlugin.databaseType,
+      database: databases.find((database) => database.name === databaseName),
+      schemaName,
+      supportsDatabase: selectedPlugin.behavior.supportsDatabase,
+      supportsSchema: selectedPlugin.behavior.supportsSchema,
+    });
   };
 
-  const closeSchemaDialog = () => {
-    schemaRequestRef.current?.abort();
-    schemaRequestRef.current = null;
-    setSchemaBusy(false);
-    setSchemaDialogOpen(false);
-    setSchemaError(null);
+  const closeNamespaceDialog = () => {
+    namespaceRequestRef.current?.abort();
+    namespaceRequestRef.current = null;
+    namespaceRequestSequenceRef.current += 1;
+    activeNamespaceScopeRef.current = null;
+    setNamespaceBusy(false);
+    setNamespaceError(null);
+    setNamespaceDialog(null);
+  };
+
+  const buildNamespaceSql = async (
+    request: Parameters<BackendClient['buildCommunityNamespaceSql']>[0],
+  ) => {
+    if (!namespaceDialog) return;
+    namespaceRequestRef.current?.abort();
+    const controller = new AbortController();
+    const identity = {
+      sequence: ++namespaceRequestSequenceRef.current,
+      scope: namespaceDialog.scope,
+    };
+    namespaceRequestRef.current = controller;
+    setNamespaceBusy(true);
+    setNamespaceError(null);
+    try {
+      const response = await client.buildCommunityNamespaceSql(request, controller.signal);
+      if (!isCurrentCommunityNamespaceRequest(
+        identity,
+        namespaceRequestSequenceRef.current,
+        activeNamespaceScopeRef.current,
+      )) return;
+      onInsertSql(response.sql);
+      activeNamespaceScopeRef.current = null;
+      setNamespaceDialog(null);
+    } catch (requestError) {
+      if (
+        !isAbortError(requestError)
+        && isCurrentCommunityNamespaceRequest(
+          identity,
+          namespaceRequestSequenceRef.current,
+          activeNamespaceScopeRef.current,
+        )
+      ) setNamespaceError(messageFromError(requestError));
+    } finally {
+      if (namespaceRequestRef.current === controller) {
+        namespaceRequestRef.current = null;
+        setNamespaceBusy(false);
+      }
+    }
   };
 
   const openDmlDialog = () => {
@@ -998,11 +967,13 @@ export function CommunityExplorer({
           <button
             className="icon-button compact-button"
             type="button"
-            onClick={() => { setSchemaError(null); setSchemaDialogOpen(true); }}
-            disabled={!selectedPlugin?.services.sqlBuilderAvailable || !databaseName}
-            aria-label="Create schema SQL"
-            title="Create schema SQL"
-          ><FolderPlus size={16} aria-hidden="true" /></button>
+            onClick={openNamespaceDialog}
+            disabled={!canOpenNamespace}
+            aria-label="Build database or schema SQL"
+            title={namespaceBuilderAvailable
+              ? 'Build database or schema SQL'
+              : 'Namespace builder unavailable for this plugin'}
+          ><DatabaseZap size={16} aria-hidden="true" /></button>
           <button
             className="icon-button compact-button"
             type="button"
@@ -1087,13 +1058,18 @@ export function CommunityExplorer({
         </>
       )}
 
-      {schemaDialogOpen ? (
-        <SchemaSqlDialog
-          databaseName={databaseName}
-          busy={schemaBusy}
-          error={schemaError}
-          onClose={closeSchemaDialog}
-          onBuild={buildSchemaSql}
+      {namespaceDialog ? (
+        <CommunityNamespaceDialog
+          key={namespaceDialog.scope}
+          databaseType={namespaceDialog.databaseType}
+          database={namespaceDialog.database}
+          schemaName={namespaceDialog.schemaName}
+          supportsDatabase={namespaceDialog.supportsDatabase}
+          supportsSchema={namespaceDialog.supportsSchema}
+          busy={namespaceBusy}
+          error={namespaceError}
+          onClose={closeNamespaceDialog}
+          onBuild={buildNamespaceSql}
         />
       ) : null}
       {dmlDialog ? (

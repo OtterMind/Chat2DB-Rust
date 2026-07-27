@@ -2364,6 +2364,66 @@
         }
       }
     },
+    "/api/v1/community/sql/build-namespace": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "build_community_namespace_sql",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BuildCommunityNamespaceSqlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community database or schema namespace SQL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityBuiltSql"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community namespace-builder request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community namespace-builder failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/community/sql/complete": {
       "post": {
         "tags": [
@@ -4525,6 +4585,24 @@
           }
         }
       },
+      "BuildCommunityNamespaceSqlRequest": {
+        "type": "object",
+        "description": "Request to build dialect-specific database or schema namespace SQL.",
+        "required": [
+          "databaseType",
+          "operation"
+        ],
+        "properties": {
+          "databaseType": {
+            "type": "string",
+            "description": "Community database type used to select the SQL builder."
+          },
+          "operation": {
+            "$ref": "#/components/schemas/CommunityNamespaceSqlOperation",
+            "description": "Closed namespace operation. No variant accepts raw SQL."
+          }
+        }
+      },
       "CancelAgentRunResponse": {
         "type": "object",
         "description": "Result of an idempotent agent-run cancellation request.",
@@ -5245,6 +5323,145 @@
             }
           }
         }
+      },
+      "CommunityNamespaceSqlOperation": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "database",
+              "kind"
+            ],
+            "properties": {
+              "database": {
+                "$ref": "#/components/schemas/CommunityDatabase"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "createDatabase"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "oldDatabase",
+              "newDatabase",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "alterDatabase"
+                ]
+              },
+              "newDatabase": {
+                "$ref": "#/components/schemas/CommunityDatabase"
+              },
+              "oldDatabase": {
+                "$ref": "#/components/schemas/CommunityDatabase"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "databaseName",
+              "kind"
+            ],
+            "properties": {
+              "databaseName": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "dropDatabase"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "databaseName",
+              "kind"
+            ],
+            "properties": {
+              "databaseName": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "useDatabase"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "schema",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "createSchema"
+                ]
+              },
+              "schema": {
+                "$ref": "#/components/schemas/CommunitySchema"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "oldSchemaName",
+              "newSchemaName",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "alterSchema"
+                ]
+              },
+              "newSchemaName": {
+                "type": "string"
+              },
+              "oldSchemaName": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "schemaName",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "dropSchema"
+                ]
+              },
+              "schemaName": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "Supported database and schema namespace operations."
       },
       "CommunityParsedStatement": {
         "type": "object",

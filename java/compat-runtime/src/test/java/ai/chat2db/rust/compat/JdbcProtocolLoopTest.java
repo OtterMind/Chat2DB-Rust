@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.chat2db.rust.compat.protocol.v1.BeginTransactionRequest;
 import ai.chat2db.rust.compat.protocol.v1.BuildCommunityDmlRequest;
+import ai.chat2db.rust.compat.protocol.v1.BuildCommunityNamespaceSqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.CancelDisposition;
 import ai.chat2db.rust.compat.protocol.v1.CancelOperationRequest;
 import ai.chat2db.rust.compat.protocol.v1.ClientEnvelope;
@@ -18,6 +19,8 @@ import ai.chat2db.rust.compat.protocol.v1.CommunityDmlRow;
 import ai.chat2db.rust.compat.protocol.v1.CommunityDmlSingleInsert;
 import ai.chat2db.rust.compat.protocol.v1.CommunityDmlTarget;
 import ai.chat2db.rust.compat.protocol.v1.CommunityDmlValue;
+import ai.chat2db.rust.compat.protocol.v1.CommunityCreateSchemaSql;
+import ai.chat2db.rust.compat.protocol.v1.CommunitySchema;
 import ai.chat2db.rust.compat.protocol.v1.DriverArtifact;
 import ai.chat2db.rust.compat.protocol.v1.ExecuteQueryRequest;
 import ai.chat2db.rust.compat.protocol.v1.ExecuteUpdateRequest;
@@ -81,6 +84,40 @@ class JdbcProtocolLoopTest {
     private static final String SQL_SENTINEL = "sql-do-not-log";
     private static final String CELL_SENTINEL = "cell-do-not-log";
     private static final String PASSWORD_SENTINEL = "password-do-not-log";
+
+    @Test
+    void communityNamespaceDispatchDoesNotRequireAJdbcSession() throws Exception {
+        BuildCommunityNamespaceSqlRequest request =
+                BuildCommunityNamespaceSqlRequest.newBuilder()
+                        .setDatabaseType("H2")
+                        .setCreateSchema(CommunityCreateSchemaSql.newBuilder()
+                                .setSchema(CommunitySchema.newBuilder()
+                                        .setName("rust_namespace")))
+                        .build();
+
+        try (Harness harness = new Harness()) {
+            harness.send(hello());
+            assertEquals(ServerEnvelope.PayloadCase.HELLO, harness.read().getPayloadCase());
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("community-namespace"))
+                    .setBuildCommunityNamespaceSql(request)
+                    .build());
+
+            ServerEnvelope response = harness.read();
+            if (isCommunityCompatibilityConfigured()) {
+                assertEquals(
+                        ServerEnvelope.PayloadCase.COMMUNITY_BUILT_NAMESPACE_SQL,
+                        response.getPayloadCase());
+                assertEquals(
+                        "CREATE SCHEMA \"rust_namespace\";",
+                        response.getCommunityBuiltNamespaceSql().getSql());
+            } else {
+                assertEquals(ServerEnvelope.PayloadCase.ERROR, response.getPayloadCase());
+                assertEquals("community.plugin_not_found", response.getError().getCode());
+                assertFalse(response.getError().getCode().equals("session.id_required"));
+            }
+        }
+    }
 
     @Test
     void communityDmlDispatchDoesNotRequireAJdbcSession() throws Exception {

@@ -83,6 +83,8 @@ class ProtocolLoopTest {
                 .contains(ProtocolLoop.COMMUNITY_SQL_COMPLETION_CAPABILITY));
         assertFalse(ProtocolLoop.capabilities(false)
                 .contains(ProtocolLoop.COMMUNITY_DML_BUILDER_CAPABILITY));
+        assertFalse(ProtocolLoop.capabilities(false)
+                .contains(ProtocolLoop.COMMUNITY_NAMESPACE_BUILDER_CAPABILITY));
         assertTrue(ProtocolLoop.capabilities(true)
                 .contains(ProtocolLoop.COMMUNITY_SQL_VALIDATION_CAPABILITY));
         assertTrue(ProtocolLoop.capabilities(true)
@@ -91,8 +93,10 @@ class ProtocolLoopTest {
                 .contains(ProtocolLoop.COMMUNITY_SQL_COMPLETION_CAPABILITY));
         assertTrue(ProtocolLoop.capabilities(true)
                 .contains(ProtocolLoop.COMMUNITY_DML_BUILDER_CAPABILITY));
+        assertTrue(ProtocolLoop.capabilities(true)
+                .contains(ProtocolLoop.COMMUNITY_NAMESPACE_BUILDER_CAPABILITY));
         assertEquals(
-                ProtocolLoop.capabilities(false).size() + 4,
+                ProtocolLoop.capabilities(false).size() + 5,
                 ProtocolLoop.capabilities(true).size());
     }
 

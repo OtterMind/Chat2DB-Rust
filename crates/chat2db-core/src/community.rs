@@ -2,16 +2,16 @@ use std::future::Future;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chat2db_contract::{
-    BuildCommunityCreateSchemaRequest, BuildCommunityDmlRequest, CommunityBuiltSql,
-    CommunityDatabase, CommunityDatabaseList, CommunityDmlAssignment, CommunityDmlColumn,
-    CommunityDmlRow, CommunityDmlStatement, CommunityDmlTarget, CommunityDmlTemporalKind,
-    CommunityDmlValue, CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList,
-    CommunityFormattedSql, CommunityFunction, CommunityFunctionList, CommunityFunctionParameter,
-    CommunityFunctionParameterList, CommunityParsedStatement, CommunityPlugin,
-    CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices, CommunityPrimaryKey,
-    CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
-    CommunityProcedureParameter, CommunityProcedureParameterList, CommunitySchema,
-    CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlCompletion,
+    BuildCommunityCreateSchemaRequest, BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest,
+    CommunityBuiltSql, CommunityDatabase, CommunityDatabaseList, CommunityDmlAssignment,
+    CommunityDmlColumn, CommunityDmlRow, CommunityDmlStatement, CommunityDmlTarget,
+    CommunityDmlTemporalKind, CommunityDmlValue, CommunityDriverConfig, CommunityForeignKey,
+    CommunityForeignKeyList, CommunityFormattedSql, CommunityFunction, CommunityFunctionList,
+    CommunityFunctionParameter, CommunityFunctionParameterList, CommunityNamespaceSqlOperation,
+    CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
+    CommunityPluginServices, CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure,
+    CommunityProcedureList, CommunityProcedureParameter, CommunityProcedureParameterList,
+    CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlCompletion,
     CommunitySqlCompletionActiveSnippetSlot, CommunitySqlCompletionCandidate,
     CommunitySqlCompletionEditorHint, CommunitySqlCompletionEditorHintItem,
     CommunitySqlCompletionRange, CommunitySqlDiagnostic, CommunitySqlValidation, CommunityTable,
@@ -25,8 +25,9 @@ use chat2db_contract::{
     ListCommunityViewsRequest, ParseCommunitySqlRequest, ValidateCommunitySqlRequest,
 };
 use chat2db_java_bridge::{
-    BridgeError, BuildCommunityDmlRequest as BridgeBuildCommunityDmlRequest, CommunityClasspath,
-    CommunityDatabase as BridgeCommunityDatabase,
+    BridgeError, BuildCommunityDmlRequest as BridgeBuildCommunityDmlRequest,
+    BuildCommunityNamespaceSqlRequest as BridgeBuildCommunityNamespaceSqlRequest,
+    CommunityClasspath, CommunityDatabase as BridgeCommunityDatabase,
     CommunityDmlAssignment as BridgeCommunityDmlAssignment,
     CommunityDmlColumn as BridgeCommunityDmlColumn, CommunityDmlRow as BridgeCommunityDmlRow,
     CommunityDmlStatement as BridgeCommunityDmlStatement,
@@ -39,6 +40,7 @@ use chat2db_java_bridge::{
     CommunityFormattedSql as BridgeCommunityFormattedSql,
     CommunityFunction as BridgeCommunityFunction,
     CommunityFunctionParameter as BridgeCommunityFunctionParameter,
+    CommunityNamespaceSqlOperation as BridgeCommunityNamespaceSqlOperation,
     CommunityParsedStatement as BridgeCommunityParsedStatement,
     CommunityPlugin as BridgeCommunityPlugin,
     CommunityPluginCatalog as BridgeCommunityPluginCatalog,
@@ -824,6 +826,25 @@ impl Application {
             .map_err(AppError::from)
     }
 
+    /// Builds dialect-specific database or schema namespace SQL without a datasource session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an engine availability, capability, validation, protocol, or
+    /// Community namespace-builder error.
+    pub async fn build_community_namespace_sql(
+        &self,
+        request: BuildCommunityNamespaceSqlRequest,
+    ) -> Result<CommunityBuiltSql, AppError> {
+        let engine = self.require_community_engine()?;
+        let client = engine.community_client().map_err(AppError::from)?;
+        client
+            .build_namespace_sql(bridge_namespace_request(request))
+            .await
+            .map(|sql| CommunityBuiltSql { sql })
+            .map_err(AppError::from)
+    }
+
     /// Generates typed dialect INSERT or UPDATE SQL without opening a datasource session.
     ///
     /// # Errors
@@ -1355,6 +1376,60 @@ fn bridge_schema(schema: CommunitySchema) -> BridgeCommunitySchema {
     }
 }
 
+fn bridge_database(database: CommunityDatabase) -> BridgeCommunityDatabase {
+    BridgeCommunityDatabase {
+        name: database.name,
+        comment: database.comment,
+        charset: database.charset,
+        collation: database.collation,
+        owner: database.owner,
+        system: database.system,
+    }
+}
+
+fn bridge_namespace_request(
+    request: BuildCommunityNamespaceSqlRequest,
+) -> BridgeBuildCommunityNamespaceSqlRequest {
+    BridgeBuildCommunityNamespaceSqlRequest {
+        database_type: request.database_type,
+        operation: match request.operation {
+            CommunityNamespaceSqlOperation::CreateDatabase { database } => {
+                BridgeCommunityNamespaceSqlOperation::CreateDatabase {
+                    database: bridge_database(database),
+                }
+            }
+            CommunityNamespaceSqlOperation::AlterDatabase {
+                old_database,
+                new_database,
+            } => BridgeCommunityNamespaceSqlOperation::AlterDatabase {
+                old_database: bridge_database(old_database),
+                new_database: bridge_database(new_database),
+            },
+            CommunityNamespaceSqlOperation::DropDatabase { database_name } => {
+                BridgeCommunityNamespaceSqlOperation::DropDatabase { database_name }
+            }
+            CommunityNamespaceSqlOperation::UseDatabase { database_name } => {
+                BridgeCommunityNamespaceSqlOperation::UseDatabase { database_name }
+            }
+            CommunityNamespaceSqlOperation::CreateSchema { schema } => {
+                BridgeCommunityNamespaceSqlOperation::CreateSchema {
+                    schema: bridge_schema(schema),
+                }
+            }
+            CommunityNamespaceSqlOperation::AlterSchema {
+                old_schema_name,
+                new_schema_name,
+            } => BridgeCommunityNamespaceSqlOperation::AlterSchema {
+                old_schema_name,
+                new_schema_name,
+            },
+            CommunityNamespaceSqlOperation::DropSchema { schema_name } => {
+                BridgeCommunityNamespaceSqlOperation::DropSchema { schema_name }
+            }
+        },
+    }
+}
+
 fn bridge_dml_request(
     request: BuildCommunityDmlRequest,
 ) -> Result<BridgeBuildCommunityDmlRequest, AppError> {
@@ -1658,9 +1733,10 @@ fn preserve_primary_result<T>(
 #[cfg(test)]
 mod tests {
     use chat2db_contract::{
-        BuildCommunityDmlRequest, CommunityDatabase, CommunityDmlColumn, CommunityDmlRow,
-        CommunityDmlStatement, CommunityDmlTarget, CommunityDmlValue, CommunityDriverConfig,
-        CommunityForeignKey, CommunityFormattedSql, CommunityFunction, CommunityFunctionParameter,
+        BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest, CommunityDatabase,
+        CommunityDmlColumn, CommunityDmlRow, CommunityDmlStatement, CommunityDmlTarget,
+        CommunityDmlValue, CommunityDriverConfig, CommunityForeignKey, CommunityFormattedSql,
+        CommunityFunction, CommunityFunctionParameter, CommunityNamespaceSqlOperation,
         CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
         CommunityPluginServices, CommunityPrimaryKey, CommunityProcedure,
         CommunityProcedureParameter, CommunitySchema, CommunitySqlAnalysis, CommunitySqlDiagnostic,
@@ -1699,12 +1775,12 @@ mod tests {
     use tokio::{sync::oneshot, time};
 
     use super::{
-        Application, bridge_dml_request, bridge_schema, community_database, community_foreign_key,
-        community_formatted_sql, community_function, community_function_parameter,
-        community_plugin_catalog, community_primary_key, community_procedure,
-        community_procedure_parameter, community_schema, community_sql_analysis,
-        community_sql_validation, community_table, community_table_column, community_table_index,
-        community_trigger, preserve_primary_result, run_cancellation_safe,
+        Application, bridge_dml_request, bridge_namespace_request, bridge_schema,
+        community_database, community_foreign_key, community_formatted_sql, community_function,
+        community_function_parameter, community_plugin_catalog, community_primary_key,
+        community_procedure, community_procedure_parameter, community_schema,
+        community_sql_analysis, community_sql_validation, community_table, community_table_column,
+        community_table_index, community_trigger, preserve_primary_result, run_cancellation_safe,
         run_cancellation_safe_with_cleanup,
     };
     use crate::{AppError, AppErrorKind};
@@ -1755,6 +1831,26 @@ mod tests {
             assert_eq!(error.api_error().code, "community.dml_invalid_value");
             assert_eq!(error.kind(), AppErrorKind::InvalidRequest);
         }
+    }
+
+    #[test]
+    fn namespace_conversion_preserves_the_closed_operation() {
+        let converted = bridge_namespace_request(BuildCommunityNamespaceSqlRequest {
+            database_type: "POSTGRESQL".to_owned(),
+            operation: CommunityNamespaceSqlOperation::AlterSchema {
+                old_schema_name: "before".to_owned(),
+                new_schema_name: "after".to_owned(),
+            },
+        });
+
+        assert_eq!(converted.database_type, "POSTGRESQL");
+        assert_eq!(
+            converted.operation,
+            chat2db_java_bridge::CommunityNamespaceSqlOperation::AlterSchema {
+                old_schema_name: "before".to_owned(),
+                new_schema_name: "after".to_owned(),
+            }
+        );
     }
 
     #[test]

@@ -28,12 +28,13 @@ frontend backend adapters expose catalog, schemas, databases, tables, columns,
 indexes, views, imported and exported foreign keys, primary keys, functions,
 function parameters, procedures, procedure parameters, triggers, schema SQL
 building, parsing, syntax validation, formatting, and datasource-aware SQL
-completion plus datasource-free typed DML generation when the exact locked
+completion plus datasource-free typed DML and namespace SQL generation when the exact locked
 classpath is configured. The shared React
 workbench consumes the Community operations through an end-user object explorer,
 schema SQL insertion, explicit SQL analysis, separately negotiated validation,
 race-safe in-place formatting, keyboard-driven bounded completion, and a
-table-scoped INSERT/UPDATE builder. Signing,
+table-scoped INSERT/UPDATE builder plus a database/schema namespace builder.
+Signing,
 distribution, the
 remaining dialect estate, and packaging remain target components. CLI and MCP
 attach to a running host rather than composing a second product runtime.
@@ -291,10 +292,21 @@ into a newer editor scope. Real bridge and product gates generate first, prove
 the database is unchanged, then independently execute and read back typed H2
 values.
 
+Stage 7L adds `community.namespace-builder.v1` at tag `224`. Its closed request
+union covers database create/alter/drop/use and schema create/alter/drop without
+accepting raw SQL. Java invokes the real plugin-owned database or schema DDL
+builder without opening a datasource session; Rust enforces raw and decoded
+budgets, and Core, Axum, Tauri, OpenAPI/TypeScript, and React expose the same
+generated-SQL-only contract. The old CREATE SCHEMA operation remains available.
+Real H2 bridge/product gates prove generation is non-executing, while the fixed
+Java classpath gate verifies both H2 and MySQL builder output.
+
 Remaining builder operations, general type conversion, non-relational
 operations, script execution, import/export, and per-dialect conformance are not
 implemented yet.
-The current product slice proves H2 only.
+The current full product integration gate proves H2. The next testable product
+milestone intentionally proves one complete real MySQL path before additional
+dialects; PostgreSQL and long-tail plugins do not block that milestone.
 
 Spring Boot, Spring Web, Spring AI, MCP, JCEF, product storage, and updater logic
 do not belong in the final Java engine.
@@ -424,7 +436,8 @@ read-only JDBC session and exposes bounded UTF-16 suggestions through the same
 Core/Axum/Tauri/React product boundary. The eleventh slice generates typed
 single/batch INSERT and ordered UPDATE SQL through the real plugin-owned DML,
 value, and identifier processors and inserts it into the editor without
-execution. Signing,
+execution. The twelfth slice adds closed database/schema namespace DDL
+generation through the same product boundary. Signing,
 installation, hot reload, downloading, compatibility selection, updates,
 rollback, and the remaining compatibility operations are not implemented.
 
@@ -483,15 +496,15 @@ set.
   over-budget entries before the isolated Community loader is created; Java
   also rejects manifest `Class-Path` escapes. The fixed build removes such
   dependency attributes deterministically before lock verification and verifies
-  two consecutive clean builds byte-for-byte. Configuring it requires all eleven
+  two consecutive clean builds byte-for-byte. Configuring it requires all twelve
   Community capabilities during handshake, and Community response projection
   is capped at 8 MiB in both Java and Rust. Rust applies that budget to raw
-  Community response tags `200..=223` before Protobuf decoding, including
+  Community response tags `200..=224` before Protobuf decoding, including
   duplicate fields, and allocation-free scans known nested repeated fields so
   collection limits are enforced before DTO allocation. It then validates
   decoded collection counts, nested index columns, completion fields, typed-DML
-  SQL, UTF-16 ranges, field sizes, aggregate strings, and encoded message length
-  again. The
+  and namespace SQL, UTF-16 ranges, field sizes, aggregate strings, and encoded
+  message length again. The
   source build also rejects any artifact-set drift against its committed lock.
   Signing and installed-package verification remain Stage 8 work.
 

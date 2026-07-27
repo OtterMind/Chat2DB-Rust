@@ -1388,6 +1388,27 @@ td.value-json {
   width: min(560px, 100%);
 }
 
+.namespace-dialog {
+  width: min(640px, 100%);
+}
+
+.namespace-dialog select {
+  width: 100%;
+  min-height: 37px;
+  padding: 0 10px;
+  color: #24302e;
+  background: #ffffff;
+  border: 1px solid #cbd5d2;
+  border-radius: 5px;
+  font-size: 12px;
+}
+
+.namespace-fields {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+}
+
 .dml-dialog {
   width: min(920px, 100%);
   overflow: hidden;

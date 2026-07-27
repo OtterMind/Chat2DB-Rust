@@ -2,10 +2,11 @@ use std::{sync::Arc, time::Duration};
 
 use chat2db_engine_protocol::{MAX_FRAME_BYTES, MIN_FRAME_BYTES, wire::ProtocolVersion};
 use chat2db_java_bridge::{
-    BridgeError, CancelDisposition, CommunityClasspath, DeliveryOutcome, DriverArtifact,
-    DriverSpec, EngineClient, EngineCommand, EngineConfig, EngineState, EngineSupervisor,
-    JdbcValue, QueryEvent, QueryOptions, QueryRequest, SESSION_JDBC_CAPABILITY, Session,
-    SessionConfig, SessionState, TransactionOptions, UpdateRequest,
+    BridgeError, BuildCommunityNamespaceSqlRequest, CancelDisposition, CommunityClasspath,
+    CommunityNamespaceSqlOperation, DeliveryOutcome, DriverArtifact, DriverSpec, EngineClient,
+    EngineCommand, EngineConfig, EngineState, EngineSupervisor, JdbcValue, QueryEvent,
+    QueryOptions, QueryRequest, SESSION_JDBC_CAPABILITY, Session, SessionConfig, SessionState,
+    TransactionOptions, UpdateRequest,
 };
 
 const COMMUNITY_COMMIT: &str = "f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7";
@@ -335,6 +336,53 @@ async fn formatter_complexity_is_scoped_and_rejected_before_transport() {
         BridgeError::Remote(remote) if remote.code == "community.not_configured"
     ));
 
+    supervisor.shutdown().await.expect("fixture must shut down");
+}
+
+#[tokio::test]
+async fn namespace_builder_dispatches_closed_operations_after_local_preflight() {
+    let directory = tempfile::tempdir().expect("fixture directory must exist");
+    let jar = directory.path().join("community-fixture.jar");
+    std::fs::write(&jar, b"fixture").expect("fixture JAR must write");
+    let classpath = CommunityClasspath::from_paths(COMMUNITY_COMMIT, [jar])
+        .expect("fixture Community classpath must validate");
+    let supervisor = EngineSupervisor::spawn(
+        fast_config(fixture_command(&["--community=wrong-commit"]))
+            .with_community_classpath(classpath),
+    )
+    .await
+    .expect("Community fixture must negotiate the namespace capability");
+    let community = supervisor
+        .client()
+        .community_client()
+        .expect("Community client must bind");
+
+    let remote = community
+        .build_namespace_sql(BuildCommunityNamespaceSqlRequest {
+            database_type: "H2".to_owned(),
+            operation: CommunityNamespaceSqlOperation::DropSchema {
+                schema_name: "APP".to_owned(),
+            },
+        })
+        .await
+        .expect_err("valid namespace request must reach the fixture");
+    assert!(matches!(
+        remote,
+        BridgeError::Remote(remote) if remote.code == "community.not_configured"
+    ));
+
+    let local = community
+        .build_namespace_sql(BuildCommunityNamespaceSqlRequest {
+            database_type: "H2".to_owned(),
+            operation: CommunityNamespaceSqlOperation::DropSchema {
+                schema_name: "APP; DROP SCHEMA APP".to_owned(),
+            },
+        })
+        .await
+        .expect_err("unsafe namespace request must fail before transport");
+    assert!(matches!(local, BridgeError::InvalidRequest(_)));
+
+    assert!(matches!(supervisor.state(), EngineState::Ready { .. }));
     supervisor.shutdown().await.expect("fixture must shut down");
 }
 

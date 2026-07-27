@@ -579,6 +579,52 @@ pub struct CommunityBuiltSql {
     pub sql: String,
 }
 
+/// Request to build dialect-specific database or schema namespace SQL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildCommunityNamespaceSqlRequest {
+    /// Community database type used to select the SQL builder.
+    pub database_type: String,
+    /// Closed namespace operation. No variant accepts raw SQL.
+    pub operation: CommunityNamespaceSqlOperation,
+}
+
+/// Supported database and schema namespace operations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CommunityNamespaceSqlOperation {
+    CreateDatabase {
+        database: CommunityDatabase,
+    },
+    AlterDatabase {
+        #[serde(rename = "oldDatabase")]
+        old_database: CommunityDatabase,
+        #[serde(rename = "newDatabase")]
+        new_database: CommunityDatabase,
+    },
+    DropDatabase {
+        #[serde(rename = "databaseName")]
+        database_name: String,
+    },
+    UseDatabase {
+        #[serde(rename = "databaseName")]
+        database_name: String,
+    },
+    CreateSchema {
+        schema: CommunitySchema,
+    },
+    AlterSchema {
+        #[serde(rename = "oldSchemaName")]
+        old_schema_name: String,
+        #[serde(rename = "newSchemaName")]
+        new_schema_name: String,
+    },
+    DropSchema {
+        #[serde(rename = "schemaName")]
+        schema_name: String,
+    },
+}
+
 /// Request to generate typed dialect INSERT or UPDATE SQL without executing it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -899,12 +945,13 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        BuildCommunityCreateSchemaRequest, BuildCommunityDmlRequest, CommunityBuiltSql,
-        CommunityDatabase, CommunityDatabaseList, CommunityDmlColumn, CommunityDmlRow,
-        CommunityDmlStatement, CommunityDmlTarget, CommunityDmlTemporalKind, CommunityDmlValue,
-        CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList, CommunityFormattedSql,
-        CommunityFunction, CommunityFunctionList, CommunityFunctionParameter,
-        CommunityFunctionParameterList, CommunityParsedStatement, CommunityPlugin,
+        BuildCommunityCreateSchemaRequest, BuildCommunityDmlRequest,
+        BuildCommunityNamespaceSqlRequest, CommunityBuiltSql, CommunityDatabase,
+        CommunityDatabaseList, CommunityDmlColumn, CommunityDmlRow, CommunityDmlStatement,
+        CommunityDmlTarget, CommunityDmlTemporalKind, CommunityDmlValue, CommunityDriverConfig,
+        CommunityForeignKey, CommunityForeignKeyList, CommunityFormattedSql, CommunityFunction,
+        CommunityFunctionList, CommunityFunctionParameter, CommunityFunctionParameterList,
+        CommunityNamespaceSqlOperation, CommunityParsedStatement, CommunityPlugin,
         CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
         CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
         CommunityProcedureParameter, CommunityProcedureParameterList, CommunitySchema,
@@ -969,6 +1016,35 @@ mod tests {
             serde_json::from_value::<CommunityPluginCatalog>(value)
                 .expect("catalog must deserialize"),
             catalog
+        );
+    }
+
+    #[test]
+    fn namespace_contract_uses_camel_case_for_variant_fields() {
+        let request = BuildCommunityNamespaceSqlRequest {
+            database_type: "POSTGRESQL".to_owned(),
+            operation: CommunityNamespaceSqlOperation::AlterSchema {
+                old_schema_name: "before".to_owned(),
+                new_schema_name: "after".to_owned(),
+            },
+        };
+
+        let value = serde_json::to_value(&request).expect("namespace request must serialize");
+        assert_eq!(
+            value,
+            json!({
+                "databaseType": "POSTGRESQL",
+                "operation": {
+                    "kind": "alterSchema",
+                    "oldSchemaName": "before",
+                    "newSchemaName": "after"
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<BuildCommunityNamespaceSqlRequest>(value)
+                .expect("namespace request must deserialize"),
+            request
         );
     }
 

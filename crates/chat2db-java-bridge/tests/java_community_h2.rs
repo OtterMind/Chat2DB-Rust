@@ -6,7 +6,8 @@ use std::{
 };
 
 use chat2db_java_bridge::{
-    BridgeError, BuildCommunityDmlRequest, COMMUNITY_DML_BUILDER_CAPABILITY,
+    BridgeError, BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest,
+    COMMUNITY_DML_BUILDER_CAPABILITY, COMMUNITY_NAMESPACE_BUILDER_CAPABILITY,
     COMMUNITY_OBJECT_METADATA_CAPABILITY, COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
     COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY, COMMUNITY_RELATION_METADATA_CAPABILITY,
     COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
@@ -14,9 +15,10 @@ use chat2db_java_bridge::{
     COMMUNITY_SQL_PARSER_CAPABILITY, COMMUNITY_SQL_VALIDATION_CAPABILITY, CommunityClasspath,
     CommunityClient, CommunityDmlAssignment, CommunityDmlColumn, CommunityDmlRow,
     CommunityDmlStatement, CommunityDmlTarget, CommunityDmlTemporal, CommunityDmlTemporalKind,
-    CommunityDmlValue, CommunityPluginCatalog, CommunitySchema, CompleteCommunitySqlRequest,
-    DriverArtifact, DriverSpec, EngineCommand, EngineConfig, EngineState, EngineSupervisor,
-    JdbcValue, QueryEvent, QueryOptions, QueryRequest, Session, SessionConfig, UpdateRequest,
+    CommunityDmlValue, CommunityNamespaceSqlOperation, CommunityPluginCatalog, CommunitySchema,
+    CompleteCommunitySqlRequest, DriverArtifact, DriverSpec, EngineCommand, EngineConfig,
+    EngineState, EngineSupervisor, JdbcValue, QueryEvent, QueryOptions, QueryRequest, Session,
+    SessionConfig, UpdateRequest,
 };
 use tempfile::TempDir;
 
@@ -60,6 +62,7 @@ async fn invokes_real_community_h2_spi_metadata_builder_and_parser() {
         COMMUNITY_SQL_FORMATTER_CAPABILITY,
         COMMUNITY_SQL_COMPLETION_CAPABILITY,
         COMMUNITY_DML_BUILDER_CAPABILITY,
+        COMMUNITY_NAMESPACE_BUILDER_CAPABILITY,
     ] {
         assert!(
             identity
@@ -107,6 +110,7 @@ async fn invokes_real_community_h2_spi_metadata_builder_and_parser() {
         .await
         .expect("H2 session must open");
 
+    verify_namespace_builder(&community, &session).await;
     create_and_verify_schema(&community, &session).await;
     verify_dml_builder(&community, &session).await;
     verify_object_tree(&community, &session).await;
@@ -122,6 +126,71 @@ async fn invokes_real_community_h2_spi_metadata_builder_and_parser() {
         .await
         .expect("Java engine must shut down cleanly");
     assert!(exit.success);
+}
+
+async fn verify_namespace_builder(community: &CommunityClient, session: &Session) {
+    let create = community
+        .build_namespace_sql(BuildCommunityNamespaceSqlRequest {
+            database_type: "H2".to_owned(),
+            operation: CommunityNamespaceSqlOperation::CreateSchema {
+                schema: CommunitySchema {
+                    name: "NAMESPACE_ONLY".to_owned(),
+                    ..CommunitySchema::default()
+                },
+            },
+        })
+        .await
+        .expect("real H2 plugin must build namespace CREATE SCHEMA SQL");
+    assert_eq!(create, "CREATE SCHEMA \"NAMESPACE_ONLY\";");
+    assert_eq!(
+        query_values(
+            session,
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = 'NAMESPACE_ONLY'",
+        )
+        .await,
+        vec![vec![JdbcValue::SignedInteger(0)]],
+        "namespace SQL generation must not create the schema"
+    );
+
+    execute_update(session, &create).await;
+    assert_eq!(
+        query_values(
+            session,
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = 'NAMESPACE_ONLY'",
+        )
+        .await,
+        vec![vec![JdbcValue::SignedInteger(1)]]
+    );
+
+    let drop = community
+        .build_namespace_sql(BuildCommunityNamespaceSqlRequest {
+            database_type: "H2".to_owned(),
+            operation: CommunityNamespaceSqlOperation::DropSchema {
+                schema_name: "NAMESPACE_ONLY".to_owned(),
+            },
+        })
+        .await
+        .expect("real H2 plugin must build namespace DROP SCHEMA SQL");
+    assert_eq!(drop, "DROP SCHEMA NAMESPACE_ONLY");
+    assert_eq!(
+        query_values(
+            session,
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = 'NAMESPACE_ONLY'",
+        )
+        .await,
+        vec![vec![JdbcValue::SignedInteger(1)]],
+        "namespace SQL generation must not drop the schema"
+    );
+
+    execute_update(session, &drop).await;
+    assert_eq!(
+        query_values(
+            session,
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = 'NAMESPACE_ONLY'",
+        )
+        .await,
+        vec![vec![JdbcValue::SignedInteger(0)]]
+    );
 }
 
 fn assert_catalog(catalog: &CommunityPluginCatalog) {

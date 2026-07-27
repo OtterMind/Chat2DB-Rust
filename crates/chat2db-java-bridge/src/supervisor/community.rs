@@ -41,6 +41,8 @@ pub const COMMUNITY_SQL_FORMATTER_CAPABILITY: &str = "community.sql-formatter.v1
 pub const COMMUNITY_SQL_COMPLETION_CAPABILITY: &str = "community.sql-completion.v1";
 /// Builds typed dialect DML without opening a JDBC session or executing SQL.
 pub const COMMUNITY_DML_BUILDER_CAPABILITY: &str = "community.dml-builder.v1";
+/// Builds database and schema lifecycle SQL without executing it.
+pub const COMMUNITY_NAMESPACE_BUILDER_CAPABILITY: &str = "community.namespace-builder.v1";
 
 pub(super) const COMMUNITY_CLASSPATH_ENV: &str = "CHAT2DB_COMMUNITY_CLASSPATH_DIR";
 pub(super) const COMMUNITY_SOURCE_COMMIT_ENV: &str = "CHAT2DB_COMMUNITY_SOURCE_COMMIT";
@@ -63,6 +65,10 @@ const MAX_DML_DATA_TYPE_NAME_BYTES: usize =
 const MAX_DML_DECIMAL_BYTES: usize = wire::CommunityDmlByteLimit::MaxDecimalBytes as usize;
 const MAX_DML_TEMPORAL_BYTES: usize = wire::CommunityDmlByteLimit::MaxTemporalBytes as usize;
 const MAX_DML_VALUE_BYTES: usize = wire::CommunityDmlByteLimit::MaxValueBytes as usize;
+const MAX_NAMESPACE_IDENTIFIER_BYTES: usize =
+    wire::CommunityNamespaceByteLimit::MaxIdentifierBytes as usize;
+const MAX_NAMESPACE_PROPERTY_BYTES: usize =
+    wire::CommunityNamespaceByteLimit::MaxPropertyBytes as usize;
 const MAX_COMMUNITY_RESPONSE_BYTES: usize = wire::CommunityByteLimit::MaxResponseBytes as usize;
 const MAX_SQL_BYTES: usize = wire::JdbcProtocolLimit::MaxSqlBytes as usize;
 const MAX_SCALAR_BYTES: usize = wire::JdbcProtocolLimit::MaxScalarBytes as usize;
@@ -804,6 +810,41 @@ pub struct CommunitySqlValidation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommunityFormattedSql {
     pub sql: String,
+}
+
+/// Pure namespace-SQL generation request without product datasource identifiers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BuildCommunityNamespaceSqlRequest {
+    pub database_type: String,
+    pub operation: CommunityNamespaceSqlOperation,
+}
+
+/// Supported database and schema lifecycle operations. Raw SQL is absent by design.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommunityNamespaceSqlOperation {
+    CreateDatabase {
+        database: CommunityDatabase,
+    },
+    AlterDatabase {
+        old_database: CommunityDatabase,
+        new_database: CommunityDatabase,
+    },
+    DropDatabase {
+        database_name: String,
+    },
+    UseDatabase {
+        database_name: String,
+    },
+    CreateSchema {
+        schema: CommunitySchema,
+    },
+    AlterSchema {
+        old_schema_name: String,
+        new_schema_name: String,
+    },
+    DropSchema {
+        schema_name: String,
+    },
 }
 
 /// Pure typed-DML generation request without product datasource identifiers.
@@ -1923,6 +1964,40 @@ impl CommunityClient {
         Ok(built.sql)
     }
 
+    /// Builds database or schema lifecycle SQL through the selected Community plugin.
+    /// This pure generation call neither opens a JDBC session nor executes SQL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid identifiers or properties, unavailable
+    /// plugin services, engine failure, or an invalid response.
+    pub async fn build_namespace_sql(
+        &self,
+        request: BuildCommunityNamespaceSqlRequest,
+    ) -> Result<String, BridgeError> {
+        let request = community_namespace_sql_request(request)?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_NAMESPACE_BUILDER_CAPABILITY,
+                None,
+                None,
+                wire::client_envelope::Payload::BuildCommunityNamespaceSql(request),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityBuiltNamespaceSql(built)) =
+            response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community built-namespace-SQL response")
+                .await;
+        };
+        Ok(built.sql)
+    }
+
     /// Parses SQL through the selected plugin's retained syntax plugin.
     ///
     /// # Errors
@@ -2232,6 +2307,19 @@ impl From<CommunitySchema> for wire::CommunitySchema {
 
 impl From<wire::CommunityDatabase> for CommunityDatabase {
     fn from(database: wire::CommunityDatabase) -> Self {
+        Self {
+            name: database.name,
+            comment: database.comment,
+            charset: database.charset,
+            collation: database.collation,
+            owner: database.owner,
+            system: database.system,
+        }
+    }
+}
+
+impl From<CommunityDatabase> for wire::CommunityDatabase {
+    fn from(database: CommunityDatabase) -> Self {
         Self {
             name: database.name,
             comment: database.comment,
@@ -3137,6 +3225,134 @@ fn validate_source_commit(commit: &str) -> Result<(), BridgeError> {
     Ok(())
 }
 
+fn community_namespace_sql_request(
+    request: BuildCommunityNamespaceSqlRequest,
+) -> Result<wire::BuildCommunityNamespaceSqlRequest, BridgeError> {
+    validate_database_type(&request.database_type)?;
+    let operation = match request.operation {
+        CommunityNamespaceSqlOperation::CreateDatabase { database } => {
+            validate_namespace_database(&database)?;
+            wire::build_community_namespace_sql_request::Operation::CreateDatabase(
+                wire::CommunityCreateDatabaseSql {
+                    database: Some(database.into()),
+                },
+            )
+        }
+        CommunityNamespaceSqlOperation::AlterDatabase {
+            old_database,
+            new_database,
+        } => {
+            validate_namespace_database(&old_database)?;
+            validate_namespace_database(&new_database)?;
+            wire::build_community_namespace_sql_request::Operation::AlterDatabase(
+                wire::CommunityAlterDatabaseSql {
+                    old_database: Some(old_database.into()),
+                    new_database: Some(new_database.into()),
+                },
+            )
+        }
+        CommunityNamespaceSqlOperation::DropDatabase { database_name } => {
+            validate_namespace_identifier(&database_name, "database name")?;
+            wire::build_community_namespace_sql_request::Operation::DropDatabase(
+                wire::CommunityDropDatabaseSql { database_name },
+            )
+        }
+        CommunityNamespaceSqlOperation::UseDatabase { database_name } => {
+            validate_namespace_identifier(&database_name, "database name")?;
+            wire::build_community_namespace_sql_request::Operation::UseDatabase(
+                wire::CommunityUseDatabaseSql { database_name },
+            )
+        }
+        CommunityNamespaceSqlOperation::CreateSchema { schema } => {
+            validate_namespace_schema(&schema)?;
+            wire::build_community_namespace_sql_request::Operation::CreateSchema(
+                wire::CommunityCreateSchemaSql {
+                    schema: Some(schema.into()),
+                },
+            )
+        }
+        CommunityNamespaceSqlOperation::AlterSchema {
+            old_schema_name,
+            new_schema_name,
+        } => {
+            validate_namespace_identifier(&old_schema_name, "old schema name")?;
+            validate_namespace_identifier(&new_schema_name, "new schema name")?;
+            wire::build_community_namespace_sql_request::Operation::AlterSchema(
+                wire::CommunityAlterSchemaSql {
+                    old_schema_name,
+                    new_schema_name,
+                },
+            )
+        }
+        CommunityNamespaceSqlOperation::DropSchema { schema_name } => {
+            validate_namespace_identifier(&schema_name, "schema name")?;
+            wire::build_community_namespace_sql_request::Operation::DropSchema(
+                wire::CommunityDropSchemaSql { schema_name },
+            )
+        }
+    };
+    let request = wire::BuildCommunityNamespaceSqlRequest {
+        database_type: request.database_type,
+        operation: Some(operation),
+    };
+    if request.encoded_len() > MAX_COMMUNITY_RESPONSE_BYTES {
+        return Err(BridgeError::InvalidRequest(format!(
+            "Community namespace request cannot exceed {MAX_COMMUNITY_RESPONSE_BYTES} encoded bytes"
+        )));
+    }
+    Ok(request)
+}
+
+fn validate_namespace_database(database: &CommunityDatabase) -> Result<(), BridgeError> {
+    validate_namespace_identifier(&database.name, "database name")?;
+    validate_utf8(&database.comment, MAX_COMMENT_BYTES, "database comment")?;
+    validate_namespace_property(&database.charset, "database charset")?;
+    validate_namespace_property(&database.collation, "database collation")?;
+    validate_namespace_property(&database.owner, "database owner")
+}
+
+fn validate_namespace_schema(schema: &CommunitySchema) -> Result<(), BridgeError> {
+    if !schema.database_name.is_empty() {
+        validate_namespace_identifier(&schema.database_name, "schema database name")?;
+    }
+    validate_namespace_identifier(&schema.name, "schema name")?;
+    validate_utf8(&schema.comment, MAX_COMMENT_BYTES, "schema comment")?;
+    validate_namespace_property(&schema.owner, "schema owner")
+}
+
+fn validate_namespace_identifier(value: &str, field: &str) -> Result<(), BridgeError> {
+    validate_non_blank_utf8(value, MAX_NAMESPACE_IDENTIFIER_BYTES, field)?;
+    if value.trim() != value
+        || value.chars().any(char::is_control)
+        || value.contains(['.', ';', '\'', '"', '`', '[', ']'])
+        || value.contains("--")
+        || value.contains("/*")
+        || value.contains("*/")
+    {
+        return Err(BridgeError::InvalidRequest(format!(
+            "Community namespace {field} contains unsafe identifier syntax"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_namespace_property(value: &str, field: &str) -> Result<(), BridgeError> {
+    validate_utf8(value, MAX_NAMESPACE_PROPERTY_BYTES, field)?;
+    if !value.is_empty()
+        && (value.trim() != value
+            || value.chars().any(char::is_control)
+            || value.contains([';', '\'', '"', '`', '[', ']'])
+            || value.contains("--")
+            || value.contains("/*")
+            || value.contains("*/"))
+    {
+        return Err(BridgeError::InvalidRequest(format!(
+            "Community namespace {field} contains unsafe property syntax"
+        )));
+    }
+    Ok(())
+}
+
 fn community_dml_request(
     request: BuildCommunityDmlRequest,
 ) -> Result<wire::BuildCommunityDmlRequest, BridgeError> {
@@ -3536,17 +3752,20 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        BuildCommunityDmlRequest, CommunityClasspath, CommunityDmlAssignment, CommunityDmlColumn,
-        CommunityDmlRow, CommunityDmlStatement, CommunityDmlTarget, CommunityDmlTemporal,
-        CommunityDmlTemporalKind, CommunityDmlValue, CommunityForeignKey, CommunityFormattedSql,
-        CommunityFunction, CommunityFunctionParameter, CommunityPrimaryKey, CommunityProcedure,
-        CommunityProcedureParameter, CommunitySqlCompletion, CommunitySqlCompletionCandidate,
-        CommunitySqlCompletionEditorHint, CommunitySqlCompletionEditorHintItem,
-        CommunitySqlCompletionRange, CommunitySqlDiagnostic, CommunitySqlValidation,
-        CommunityTrigger, MAX_DML_VALUE_BYTES, MAX_SCALAR_BYTES, MAX_SQL_COMPLETION_PREFIX_LENGTH,
-        MAX_SQL_FORMATTER_COMPLEXITY_UNITS, SqlUtf16Layout, community_dml_request,
-        next_java_long_scope, next_sql_completion_datasource_scope, normalize_keyword_case,
-        validate_completion_for_sql, validate_completion_prefix_length, validate_non_blank_utf8,
+        BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest, CommunityClasspath,
+        CommunityDatabase, CommunityDmlAssignment, CommunityDmlColumn, CommunityDmlRow,
+        CommunityDmlStatement, CommunityDmlTarget, CommunityDmlTemporal, CommunityDmlTemporalKind,
+        CommunityDmlValue, CommunityForeignKey, CommunityFormattedSql, CommunityFunction,
+        CommunityFunctionParameter, CommunityNamespaceSqlOperation, CommunityPrimaryKey,
+        CommunityProcedure, CommunityProcedureParameter, CommunitySchema, CommunitySqlCompletion,
+        CommunitySqlCompletionCandidate, CommunitySqlCompletionEditorHint,
+        CommunitySqlCompletionEditorHintItem, CommunitySqlCompletionRange, CommunitySqlDiagnostic,
+        CommunitySqlValidation, CommunityTrigger, MAX_COMMENT_BYTES, MAX_DML_VALUE_BYTES,
+        MAX_NAMESPACE_IDENTIFIER_BYTES, MAX_NAMESPACE_PROPERTY_BYTES, MAX_SCALAR_BYTES,
+        MAX_SQL_COMPLETION_PREFIX_LENGTH, MAX_SQL_FORMATTER_COMPLEXITY_UNITS, SqlUtf16Layout,
+        community_dml_request, community_namespace_sql_request, next_java_long_scope,
+        next_sql_completion_datasource_scope, normalize_keyword_case, validate_completion_for_sql,
+        validate_completion_prefix_length, validate_non_blank_utf8,
         validate_sql_formatter_complexity,
     };
 
@@ -3571,6 +3790,196 @@ mod tests {
             },
             statement,
         }
+    }
+
+    fn namespace_database(name: impl Into<String>) -> CommunityDatabase {
+        CommunityDatabase {
+            name: name.into(),
+            comment: "inventory database".to_owned(),
+            charset: "UTF8".to_owned(),
+            collation: "en_US.UTF-8".to_owned(),
+            owner: "app_owner".to_owned(),
+            system: false,
+        }
+    }
+
+    fn namespace_schema(name: impl Into<String>) -> CommunitySchema {
+        CommunitySchema {
+            database_name: "inventory".to_owned(),
+            name: name.into(),
+            comment: "application schema".to_owned(),
+            owner: "app_owner".to_owned(),
+            system: false,
+        }
+    }
+
+    fn namespace_request(
+        operation: CommunityNamespaceSqlOperation,
+    ) -> BuildCommunityNamespaceSqlRequest {
+        BuildCommunityNamespaceSqlRequest {
+            database_type: "POSTGRESQL".to_owned(),
+            operation,
+        }
+    }
+
+    #[test]
+    fn namespace_request_maps_every_closed_operation() {
+        let operations = [
+            CommunityNamespaceSqlOperation::CreateDatabase {
+                database: namespace_database("inventory"),
+            },
+            CommunityNamespaceSqlOperation::AlterDatabase {
+                old_database: namespace_database("inventory"),
+                new_database: namespace_database("inventory_v2"),
+            },
+            CommunityNamespaceSqlOperation::DropDatabase {
+                database_name: "inventory".to_owned(),
+            },
+            CommunityNamespaceSqlOperation::UseDatabase {
+                database_name: "inventory".to_owned(),
+            },
+            CommunityNamespaceSqlOperation::CreateSchema {
+                schema: namespace_schema("app"),
+            },
+            CommunityNamespaceSqlOperation::AlterSchema {
+                old_schema_name: "app".to_owned(),
+                new_schema_name: "app_v2".to_owned(),
+            },
+            CommunityNamespaceSqlOperation::DropSchema {
+                schema_name: "app".to_owned(),
+            },
+        ];
+
+        for (index, operation) in operations.into_iter().enumerate() {
+            let wire = community_namespace_sql_request(namespace_request(operation))
+                .expect("closed namespace operation must map");
+            assert_eq!(wire.database_type, "POSTGRESQL");
+            let mapped = wire.operation.expect("wire operation must be present");
+            match (index, mapped) {
+                (
+                    0,
+                    wire::build_community_namespace_sql_request::Operation::CreateDatabase(create),
+                ) => assert_eq!(
+                    create.database.expect("database must be present").name,
+                    "inventory"
+                ),
+                (
+                    1,
+                    wire::build_community_namespace_sql_request::Operation::AlterDatabase(alter),
+                ) => {
+                    assert_eq!(
+                        alter
+                            .old_database
+                            .expect("old database must be present")
+                            .name,
+                        "inventory"
+                    );
+                    assert_eq!(
+                        alter
+                            .new_database
+                            .expect("new database must be present")
+                            .name,
+                        "inventory_v2"
+                    );
+                }
+                (2, wire::build_community_namespace_sql_request::Operation::DropDatabase(drop)) => {
+                    assert_eq!(drop.database_name, "inventory");
+                }
+                (
+                    3,
+                    wire::build_community_namespace_sql_request::Operation::UseDatabase(use_db),
+                ) => assert_eq!(use_db.database_name, "inventory"),
+                (
+                    4,
+                    wire::build_community_namespace_sql_request::Operation::CreateSchema(create),
+                ) => assert_eq!(create.schema.expect("schema must be present").name, "app"),
+                (5, wire::build_community_namespace_sql_request::Operation::AlterSchema(alter)) => {
+                    assert_eq!(alter.old_schema_name, "app");
+                    assert_eq!(alter.new_schema_name, "app_v2");
+                }
+                (6, wire::build_community_namespace_sql_request::Operation::DropSchema(drop)) => {
+                    assert_eq!(drop.schema_name, "app");
+                }
+                _ => panic!("namespace operation mapped to the wrong wire variant"),
+            }
+        }
+    }
+
+    #[test]
+    fn namespace_request_enforces_identifier_property_and_comment_limits() {
+        let exact_identifier = community_namespace_sql_request(namespace_request(
+            CommunityNamespaceSqlOperation::DropDatabase {
+                database_name: "x".repeat(MAX_NAMESPACE_IDENTIFIER_BYTES),
+            },
+        ));
+        exact_identifier.expect("exact namespace identifier limit must pass");
+
+        let oversized_identifier = community_namespace_sql_request(namespace_request(
+            CommunityNamespaceSqlOperation::DropDatabase {
+                database_name: "x".repeat(MAX_NAMESPACE_IDENTIFIER_BYTES + 1),
+            },
+        ))
+        .expect_err("namespace identifier above the limit must fail");
+        assert!(oversized_identifier.to_string().contains("512 UTF-8 bytes"));
+
+        let mut exact_database = namespace_database("inventory");
+        exact_database.charset = "x".repeat(MAX_NAMESPACE_PROPERTY_BYTES);
+        community_namespace_sql_request(namespace_request(
+            CommunityNamespaceSqlOperation::CreateDatabase {
+                database: exact_database,
+            },
+        ))
+        .expect("exact namespace property limit must pass");
+
+        let mut oversized_database = namespace_database("inventory");
+        oversized_database.owner = "x".repeat(MAX_NAMESPACE_PROPERTY_BYTES + 1);
+        let oversized_property = community_namespace_sql_request(namespace_request(
+            CommunityNamespaceSqlOperation::CreateDatabase {
+                database: oversized_database,
+            },
+        ))
+        .expect_err("namespace property above the limit must fail");
+        assert!(oversized_property.to_string().contains("4096 UTF-8 bytes"));
+
+        let mut exact_schema = namespace_schema("app");
+        exact_schema.comment = "x".repeat(MAX_COMMENT_BYTES);
+        community_namespace_sql_request(namespace_request(
+            CommunityNamespaceSqlOperation::CreateSchema {
+                schema: exact_schema,
+            },
+        ))
+        .expect("exact namespace comment limit must pass");
+
+        let mut oversized_schema = namespace_schema("app");
+        oversized_schema.comment = "x".repeat(MAX_COMMENT_BYTES + 1);
+        let oversized_comment = community_namespace_sql_request(namespace_request(
+            CommunityNamespaceSqlOperation::CreateSchema {
+                schema: oversized_schema,
+            },
+        ))
+        .expect_err("namespace comment above the limit must fail");
+        assert!(oversized_comment.to_string().contains("65536 UTF-8 bytes"));
+    }
+
+    #[test]
+    fn namespace_request_rejects_unsafe_segments_before_transport() {
+        for database_name in ["inventory.public", "inventory; DROP DATABASE inventory"] {
+            let error = community_namespace_sql_request(namespace_request(
+                CommunityNamespaceSqlOperation::UseDatabase {
+                    database_name: database_name.to_owned(),
+                },
+            ))
+            .expect_err("unsafe database segment must fail");
+            assert!(error.to_string().contains("unsafe identifier syntax"));
+        }
+
+        let mut database = namespace_database("inventory");
+        database.charset = "UTF8; DROP DATABASE inventory".to_owned();
+        let error = community_namespace_sql_request(namespace_request(
+            CommunityNamespaceSqlOperation::CreateDatabase { database },
+        ))
+        .expect_err("unsafe namespace property must fail");
+        assert!(error.to_string().contains("unsafe property syntax"));
     }
 
     #[test]
