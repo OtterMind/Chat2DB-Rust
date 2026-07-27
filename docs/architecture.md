@@ -16,8 +16,8 @@ without embedding H2 in the compatibility-engine JAR.
 
 The Web and Tauri hosts open the production vault, SQLite storage, and Java
 supervisor before exposing a shared `Application`. Axum serves JSON, SSE, and
-the React SPA; Tauri exposes commands and per-subscription channels without a
-localhost product server. Both hosts also publish an owner-only local endpoint
+the exact pinned original Community Umi/React SPA; Tauri exposes commands and
+per-subscription channels without a localhost product server. Both hosts also publish an owner-only local endpoint
 for the CLI and MCP process. That same `Application` owns query and Agent run
 execution, replay, cancellation, and write-permission decisions. Strict local
 managed driver packs and immutable inventory are implemented. A fixed Community
@@ -29,15 +29,18 @@ indexes, views, imported and exported foreign keys, primary keys, functions,
 function parameters, procedures, procedure parameters, triggers, schema SQL
 building, parsing, syntax validation, formatting, and datasource-aware SQL
 completion plus datasource-free typed DML, namespace SQL, and bounded
-table-preview SQL generation when the exact locked classpath is configured. The
-shared React workbench consumes the Community operations through an end-user
-object explorer, schema SQL insertion, explicit SQL analysis, separately
-negotiated validation, race-safe in-place formatting, keyboard-driven bounded
-completion, a table-scoped INSERT/UPDATE builder, a database/schema namespace
-builder, and one-click table data preview through the existing query result
-surface. Signing, distribution, the remaining dialect estate, and packaging
-remain target components. CLI and MCP attach to a running host rather than
-composing a second product runtime.
+table-preview SQL generation when the exact locked classpath is configured.
+The current product frontend is not the former repository-owned replacement
+workbench. The build exports the unmodified Community frontend tree pinned by
+`scripts/community-frontend.lock.json`. Web maps its historical `/api`
+contract through Axum; desktop maps the existing `window.javaQuery` contract
+through one Tauri `legacy_request` command. Both paths call the same Rust
+legacy dispatcher. The implemented product slice covers MySQL connection
+testing, datasource CRUD/tree, database/schema/table discovery, and
+forced-read-only table preview. Signing, distribution, the remaining dialect
+estate, broader historical API coverage, and packaging remain target
+components. CLI and MCP attach to a running host rather than composing a
+second product runtime.
 
 Runtime-tested: yes for the Stage 7M MySQL product vertical. On 2026-07-27 the
 complete stored-datasource path passed against MySQL 8.4, from real Community
@@ -48,7 +51,7 @@ and retained-result paging.
 
 | Area | Owner | Boundary |
 | --- | --- | --- |
-| Shared UI | React and TypeScript | One transport-neutral backend client |
+| Shared UI | Original Community Umi, React, and TypeScript | Historical HTTP on Web and `window.javaQuery` over Tauri IPC on desktop |
 | Desktop | Rust / Tauri 2 | Tauri commands and events; no product localhost HTTP |
 | Web | Rust / Axum | JSON HTTP and SSE |
 | Product services | Rust | Workspace, state, policy, tasks, dashboards, and orchestration |
@@ -474,7 +477,10 @@ execution. The twelfth slice adds closed database/schema namespace DDL
 generation through the same product boundary. The thirteenth slice generates a
 bounded table SELECT through the real plugin-owned identifier, DQL, and
 page-limit builders, then executes it through Core's forced-read-only query and
-retained-result path for Web and Tauri. Signing,
+retained-result path for Web and Tauri. Commit `928e62c` supersedes the custom
+product UI from those intermediate slices with the exact original Community
+frontend while retaining the Rust capabilities behind explicit historical API
+adapters. Signing,
 installation, hot reload, downloading, compatibility selection, updates,
 rollback, and the remaining compatibility operations are not implemented.
 

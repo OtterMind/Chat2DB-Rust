@@ -12,7 +12,7 @@ in runtime health until then.
 | 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
 | 5 | Complete | Product transports | Generated OpenAPI/TypeScript contract, Axum JSON/SSE, Tauri 2 commands/channels, shared SQL workbench, product H2 tests |
 | 6 | Complete | Agent, MCP, and CLI | Direct providers, durable bounded tool loop, SQL tools/permissions, compaction, Web/Tauri run transports, owner-only local attachment, read-query CLI, and bounded `rmcp` stdio tools |
-| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs through 7M bounded table preview are implemented; the MySQL read-only preview adds a pinned Connector/J pack, driver picker, real table metadata, plugin-built SELECT, query execution, and result paging |
+| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs through 7M bounded table preview are implemented; the current product reuses the exact original Community frontend with historical HTTP/Tauri compatibility for the first MySQL browse-and-preview slice |
 | 8 | Planned | Packaging and release | License authorization, NOTICE/SBOM, jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
 
 Stage 3 completion means the versioned Rust-Java bridge can load an external
@@ -21,6 +21,14 @@ typed query batches under explicit limits, credits, deadlines, and
 cancellation. Stage 5 composes that bridge into the Web and desktop product
 hosts. Stage 6 adds CLI and MCP adapters that attach to one of those running
 hosts and do not own another product runtime.
+
+Frontend checkpoint `928e62c` supersedes the repository-owned Stage 5/7G
+replacement workbench. Current builds export the exact pinned Community Umi
+frontend without local page or style patches. Web uses historical `/api`
+compatibility routes; desktop preserves `window.javaQuery` through one Tauri
+command; both converge on the same Rust dispatcher. Earlier stage descriptions
+below remain implementation history for backend capabilities and the removed
+intermediate UI.
 
 Stage 4 completion means `chat2db-storage` owns a process-locked SQLite schema,
 datasource revisions and secret references, persistent secret-cleanup intents,

@@ -57,7 +57,9 @@ independently buildable Stage 7 slices:
   Tauri 2 commands/channels;
 - a checked-in OpenAPI contract with generated TypeScript types and drift
   verification; and
-- one shared React SQL workbench with HTTP and Tauri backend adapters;
+- the exact pinned original Community Umi/React frontend, served by Axum over
+  historical HTTP routes on Web and bridged from `window.javaQuery` to Tauri
+  IPC on desktop without product UI or style forks;
 - a provider-neutral bounded agent loop with direct OpenAI, Anthropic, and
   Gemini adapters, durable sessions/messages/runs/permissions, and atomic
   context compaction;
@@ -82,39 +84,25 @@ independently buildable Stage 7 slices:
   Protobuf, with every one of its 149 JARs bound to the source commit by a
   checked-in filename, byte-length, and SHA-256 lock; and
 - product-owned Community DTOs and Core services exposed consistently through
-  Axum, Tauri, and the shared HTTP/Tauri frontend backend contract, with exact
-  locked-classpath startup and forced-read-only metadata sessions; and
-- an end-user Community object explorer that selects plugin, database, and
-  schema scopes, preserves partial metadata from long-tail plugins, lazily opens
-  relational and programmability details, inserts generated schema SQL into the
-  console, and explicitly analyzes editor SQL; and
-- bounded Community ANTLR syntax validation with statement summaries and source
-  diagnostics exposed through Core, Axum, Tauri, and the shared React editor;
+  Axum and Tauri, with exact locked-classpath startup and forced-read-only
+  metadata sessions; and
+- an original-frontend compatibility layer for MySQL connection testing,
+  datasource CRUD/tree, database/schema/table discovery, and synchronous table
+  preview over the historical `{success,data,errorCode,errorMessage}` envelope;
   and
-- Community-compatible SQL formatting with bounded input, output, and lexical
-  complexity, negotiated capability support, and one race-safe Format action
-  across HTTP and Tauri; and
-- retained Community SQL completion through a forced-read-only JDBC session,
-  bounded UTF-16 edit ranges and suggestions, and one race-safe keyboard-driven
-  completion surface across HTTP and Tauri; and
-- typed Community single-row and batch INSERT plus ordered equality-predicate
-  UPDATE generation, with no raw-SQL value escape hatch, no JDBC session, and a
-  table-scoped editor dialog that inserts generated SQL without executing it;
-  and
-- closed database/schema namespace SQL generation for create, alter, drop, and
-  use operations, with real H2 and MySQL Community builders, no JDBC session,
-  and a race-safe editor dialog that never executes generated SQL; and
-- bounded table-preview SQL generation through the selected Community plugin's
-  real identifier, DQL, and page-limit builders, with no raw SQL input and no
-  JDBC session during generation; and
-- a MySQL-first preview with a pinned Connector/J pack, installed-driver picker,
-  real database/table/column/index discovery, one-click table data preview,
-  forced-read-only query execution, and retained result paging through the
-  product Core and shared Web/Tauri workbench.
+- a shared Web/Tauri legacy dispatcher: Axum maps the original `/api` routes,
+  while desktop preserves the original JCEF correlation envelope through one
+  `legacy_request` Tauri command; and
+- forced-read-only table preview that ignores caller SQL, generates a bounded
+  SELECT through the selected Community plugin, and pages retained results.
 
 Runtime-tested: yes. The Stage 7M product vertical passed against a real local
 MySQL 8.4 server on 2026-07-27, including plugin-built qualified table SQL,
 forced-read-only execution, and retained paging of the selected table's rows.
+Commit `928e62c5d775d0e81d95db7fee186db756834a72` additionally passed the
+complete local repository gate and a live original-frontend legacy HTTP
+vertical covering connection, datasource persistence, database/table listing,
+and three-row table preview.
 
 Stage 6 is complete. Web and desktop own the product runtime and publish its
 owner-only local endpoint; CLI and MCP attach to that host and never contact
@@ -153,6 +141,13 @@ executes it through the existing forced-read-only query and retained-result
 path. The fixed 149-JAR classpath keeps H2 and MySQL; PostgreSQL and other
 dialects do not block the MySQL preview. MySQL writes, Agent, CLI, and MCP
 conformance remain outside this small read-only milestone.
+
+The Stage 5 and Stage 7G through Stage 7M custom React workbench was an
+intermediate implementation and is no longer the product frontend. Commit
+`928e62c5d775d0e81d95db7fee186db756834a72` deletes that replacement UI and
+its styles. Current builds export the original Community frontend from the
+pinned submodule; backend capabilities not yet mapped to its historical API
+remain internal rather than requiring a redesigned page.
 Signing, downloading, updating, rollback, the remaining compatibility estate,
 and full per-dialect compatibility remain Stage 7 work.
 
@@ -300,7 +295,7 @@ apps/
   chat2db-desktop/   Tauri 2 desktop adapter
   chat2db-mcp/       bounded stdio MCP adapter
   chat2db-web/       Axum Web adapter
-  frontend/          shared React application
+  frontend/          build harness and transport tests for the pinned Community UI
 contracts/openapi/   generated external HTTP contract
 crates/
   chat2db-agent/     provider adapters and bounded agent/tool runtime
