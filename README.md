@@ -82,7 +82,10 @@ buildable Stage 7 slices:
   and
 - closed database/schema namespace SQL generation for create, alter, drop, and
   use operations, with real H2 and MySQL Community builders, no JDBC session,
-  and a race-safe editor dialog that never executes generated SQL.
+  and a race-safe editor dialog that never executes generated SQL; and
+- a MySQL-first preview with a pinned Connector/J pack, installed-driver picker,
+  real database/table/column/index discovery, read-query execution, and retained
+  result paging through the product Core and shared Web/Tauri workbench.
 
 Stage 6 is complete. Web and desktop own the product runtime and publish its
 owner-only local endpoint; CLI and MCP attach to that host and never contact
@@ -115,7 +118,8 @@ same product boundary and table detail UI.
 Stage 7L adds `community.namespace-builder.v1`, retains the old CREATE SCHEMA
 contract, and exposes a closed database/schema DDL union through Core, Axum,
 Tauri, and the shared frontend. The fixed 149-JAR classpath keeps H2 and MySQL;
-PostgreSQL and other dialects do not block the first testable MySQL milestone.
+PostgreSQL and other dialects do not block the MySQL preview. MySQL writes,
+Agent, CLI, and MCP conformance remain outside this small read-only milestone.
 Signing, downloading, updating, rollback, the remaining compatibility estate,
 and full per-dialect compatibility remain Stage 7 work.
 
@@ -180,6 +184,23 @@ make community-h2-integration
 make community-product-h2-integration
 ```
 
+Prepare the pinned MySQL Connector/J pack and run the complete real MySQL
+product vertical against a local server:
+
+```bash
+MYSQL_TEST_USER=root \
+MYSQL_TEST_PASSWORD='<local password>' \
+make community-product-mysql-integration
+```
+
+`MYSQL_TEST_HOST` and `MYSQL_TEST_PORT` default to `127.0.0.1:3306`. The test
+creates a uniquely named database, verifies driver loading, datasource CRUD,
+metadata, namespace DDL, typed DML, parsing, validation, formatting, completion,
+query execution, and retained-result paging, then drops the database even when
+verification fails. Connector/J is downloaded from Maven Central only after its
+pinned byte length and SHA-256 are verified; it remains an external driver pack
+and is never embedded in the Java engine.
+
 Those targets require a clean submodule at the fixed commit, build through the
 checked-in Maven Wrapper and a repository-local Maven cache, derive archive
 timestamps from the commit, exclude the H2 JDBC driver, and deterministically
@@ -195,13 +216,15 @@ make generate-contracts
 make check-contracts
 ```
 
-Build the Java engine, fixed Community classpath, and shared frontend, then run
-the Web product host with the Stage 7C-7L services enabled:
+Build the Java engine, fixed Community classpath, verified MySQL driver pack,
+and shared frontend, then run the Web product host with the Stage 7C-7L services
+enabled:
 
 ```bash
-make java community-h2-classpath frontend
+make java community-h2-classpath mysql-driver-pack frontend
 CHAT2DB_JAVA_ENGINE_JAR="$PWD/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar" \
 CHAT2DB_COMMUNITY_CLASSPATH_DIR="$PWD/target/community-h2-classpath" \
+CHAT2DB_DRIVER_PACK_DIR="$PWD/target/mysql-driver-packs" \
 CHAT2DB_VAULT_MASTER_KEY="$(openssl rand -base64 32)" \
 cargo run -p chat2db-web
 ```

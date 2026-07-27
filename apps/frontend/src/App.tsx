@@ -41,6 +41,7 @@ import {
   DatasourceConnectionProperty,
   DatasourceSecretChange,
   HealthResponse,
+  JdbcDriver,
   JdbcValue,
   OperationEventEnvelope,
   OperationSnapshot,
@@ -117,7 +118,7 @@ function defaultProperties(): ConnectionPropertyForm[] {
   ];
 }
 
-function initialForm(dialog: DialogState): DatasourceFormValue {
+function initialForm(dialog: DialogState, defaultDriverId = ''): DatasourceFormValue {
   if (dialog.kind === 'edit') {
     return {
       name: dialog.datasource.name,
@@ -130,7 +131,7 @@ function initialForm(dialog: DialogState): DatasourceFormValue {
   }
   return {
     name: '',
-    driverId: '',
+    driverId: defaultDriverId,
     connectionMode: 'replace',
     jdbcUrl: '',
     readOnly: false,
@@ -183,29 +184,56 @@ function formatJdbcValue(value: JdbcValue): string {
   }
 }
 
-function DatasourceDialog({
+function driverOptionLabel(driver: JdbcDriver): string {
+  return `${driver.name} ${driver.version} \u00b7 ${driver.driverClass}`;
+}
+
+export function DatasourceDialog({
   dialog,
+  drivers,
+  driversLoading,
+  driversError,
   busy,
   submissionError,
+  onRetryDrivers,
   onClose,
   onSubmit,
 }: {
   dialog: DialogState;
+  drivers: JdbcDriver[];
+  driversLoading: boolean;
+  driversError: string | null;
   busy: boolean;
   submissionError: string | null;
+  onRetryDrivers: () => void;
   onClose: () => void;
   onSubmit: (value: DatasourceFormValue) => Promise<void>;
 }) {
-  const [form, setForm] = useState(() => initialForm(dialog));
+  const [form, setForm] = useState(() => initialForm(dialog, drivers[0]?.driverId));
   const [validation, setValidation] = useState<string | null>(null);
   const nextPropertyId = useRef(3);
   const isEdit = dialog.kind === 'edit';
   const showConnection = form.connectionMode === 'replace';
+  const currentDriverMissing = isEdit && form.driverId.length > 0
+    && !drivers.some((driver) => driver.driverId === form.driverId);
+  const driverStatus = driversError
+    ? `Could not load installed drivers: ${driversError}`
+    : driversLoading
+      ? (drivers.length > 0 ? 'Refreshing installed drivers...' : 'Loading installed drivers...')
+      : drivers.length === 0
+        ? 'No installed JDBC drivers found.'
+        : null;
+
+  useEffect(() => {
+    if (!isEdit && !form.driverId && drivers[0]) {
+      setForm((current) => ({ ...current, driverId: current.driverId || drivers[0].driverId }));
+    }
+  }, [drivers, form.driverId, isEdit]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!form.name.trim() || !form.driverId.trim()) {
-      setValidation('Name and driver ID are required.');
+      setValidation('Name and driver are required.');
       return;
     }
     if (showConnection && !form.jdbcUrl.trim()) {
@@ -250,19 +278,61 @@ function DatasourceDialog({
               <span>Name</span>
               <input
                 autoFocus
+                aria-label="Datasource name"
                 value={form.name}
                 onChange={(event) => setForm({ ...form, name: event.target.value })}
                 placeholder="Local analytics"
               />
             </label>
-            <label>
-              <span>Driver ID</span>
-              <input
-                value={form.driverId}
-                onChange={(event) => setForm({ ...form, driverId: event.target.value })}
-                placeholder="postgresql"
-              />
-            </label>
+            <div className="driver-field">
+              <label>
+                <span>Driver</span>
+                <select
+                  aria-label="Driver"
+                  aria-describedby={driverStatus ? 'driver-inventory-status' : undefined}
+                  value={form.driverId}
+                  onChange={(event) => setForm({ ...form, driverId: event.target.value })}
+                  disabled={busy || (!form.driverId && drivers.length === 0)}
+                >
+                  {!form.driverId ? (
+                    <option value="" disabled>
+                      {driversLoading ? 'Loading installed drivers...' : 'Select an installed driver'}
+                    </option>
+                  ) : null}
+                  {currentDriverMissing ? (
+                    <option value={form.driverId}>
+                      {`Current driver (not installed) \u00b7 ${form.driverId}`}
+                    </option>
+                  ) : null}
+                  {drivers.map((driver) => (
+                    <option value={driver.driverId} key={driver.driverId}>
+                      {driverOptionLabel(driver)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {driverStatus ? (
+                <div
+                  className={`driver-inventory-status ${driversError ? 'error' : ''}`}
+                  id="driver-inventory-status"
+                  role={driversError ? 'alert' : 'status'}
+                >
+                  {driversLoading ? <LoaderCircle className="spinning" size={14} aria-hidden="true" /> : null}
+                  {driversError ? <AlertCircle size={14} aria-hidden="true" /> : null}
+                  <span>
+                    {driverStatus}
+                    {driversError && isEdit && form.driverId
+                      ? ' The existing driver remains available for this edit.'
+                      : ''}
+                  </span>
+                  {!driversLoading && (driversError || drivers.length === 0) ? (
+                    <button className="text-button" type="button" onClick={onRetryDrivers}>
+                      {driversError ? 'Retry' : 'Refresh'}
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
           </div>
 
           {isEdit ? (
@@ -302,6 +372,7 @@ function DatasourceDialog({
               <label>
                 <span>JDBC URL</span>
                 <input
+                  aria-label="JDBC URL"
                   value={form.jdbcUrl}
                   onChange={(event) => setForm({ ...form, jdbcUrl: event.target.value })}
                   placeholder="jdbc:postgresql://127.0.0.1:5432/app"
@@ -382,7 +453,7 @@ function DatasourceDialog({
           ) : null}
           <footer className="dialog-actions">
             <button className="secondary-button" type="button" onClick={onClose} disabled={busy}>Cancel</button>
-            <button className="primary-button" type="submit" disabled={busy}>
+            <button className="primary-button" type="submit" disabled={busy || !form.driverId}>
               {busy ? <LoaderCircle className="spinning" size={16} aria-hidden="true" /> : null}
               {isEdit ? 'Save changes' : 'Create datasource'}
             </button>
@@ -430,9 +501,12 @@ function ResultTable({ page, loading }: { page: ResultPage; loading: boolean }) 
   );
 }
 
-export default function App() {
-  const client = useMemo<BackendClient>(() => createBackendClient(), []);
+export default function App({ client: providedClient }: { client?: BackendClient } = {}) {
+  const client = useMemo<BackendClient>(() => providedClient ?? createBackendClient(), [providedClient]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [drivers, setDrivers] = useState<JdbcDriver[]>([]);
+  const [driversLoading, setDriversLoading] = useState(true);
+  const [driversError, setDriversError] = useState<string | null>(null);
   const [datasources, setDatasources] = useState<Datasource[]>([]);
   const [selectedId, setSelectedId] = useState<string>('');
   const [dialog, setDialog] = useState<DialogState | null>(null);
@@ -453,6 +527,7 @@ export default function App() {
   const [resultLoading, setResultLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const subscriptionRef = useRef<OperationSubscription | null>(null);
+  const driverRequestRef = useRef(0);
   const resultRequestRef = useRef(0);
   const inspectionRequestRef = useRef(0);
   const formatRequestRef = useRef(0);
@@ -594,6 +669,30 @@ export default function App() {
     }
   }, [client, invalidateSqlCompletion]);
 
+  const refreshDrivers = useCallback(async (signal?: AbortSignal) => {
+    const requestId = ++driverRequestRef.current;
+    setDriversLoading(true);
+    setDriversError(null);
+    try {
+      const inventory = await client.listDrivers(signal);
+      if (!signal?.aborted && driverRequestRef.current === requestId) {
+        setDrivers(inventory.items);
+      }
+    } catch (requestError) {
+      if (
+        !signal?.aborted
+        && driverRequestRef.current === requestId
+        && !(requestError instanceof DOMException && requestError.name === 'AbortError')
+      ) {
+        setDriversError(errorMessage(requestError));
+      }
+    } finally {
+      if (!signal?.aborted && driverRequestRef.current === requestId) {
+        setDriversLoading(false);
+      }
+    }
+  }, [client]);
+
   useEffect(() => {
     const controller = new AbortController();
     void client.health(controller.signal).then(setHealth).catch((requestError: unknown) => {
@@ -601,9 +700,10 @@ export default function App() {
         setError(errorMessage(requestError));
       }
     });
+    void refreshDrivers(controller.signal);
     void refreshDatasources(controller.signal);
     return () => controller.abort();
-  }, [client, refreshDatasources]);
+  }, [client, refreshDatasources, refreshDrivers]);
 
   useEffect(() => () => subscriptionRef.current?.close(), []);
 
@@ -1428,8 +1528,12 @@ export default function App() {
       {dialog ? (
         <DatasourceDialog
           dialog={dialog}
+          drivers={drivers}
+          driversLoading={driversLoading}
+          driversError={driversError}
           busy={dialogBusy}
           submissionError={dialogError}
+          onRetryDrivers={() => void refreshDrivers()}
           onClose={() => { if (!dialogBusy) { setDialog(null); setDialogError(null); } }}
           onSubmit={saveDatasource}
         />

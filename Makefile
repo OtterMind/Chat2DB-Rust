@@ -1,12 +1,17 @@
 .PHONY: verify rust rust-process-tests java ipc-integration jdbc-h2-integration \
 	community-h2-classpath community-h2-reproducibility community-java-h2-integration \
 	community-h2-integration \
-	community-product-h2-integration product-h2-integration \
+	community-product-h2-integration product-h2-integration mysql-driver-pack \
+	community-product-mysql-integration \
 	frontend-deps frontend desktop generate-contracts check-contracts
 
 JAVA_ENGINE_JAR := $(CURDIR)/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar
 H2_DRIVER_JAR := $(CURDIR)/java/compat-runtime/target/test-drivers/h2-2.3.232.jar
 COMMUNITY_CLASSPATH_DIR := $(CURDIR)/target/community-h2-classpath
+MYSQL_DRIVER_PACK_DIR := $(CURDIR)/target/mysql-driver-packs
+MYSQL_TEST_HOST ?= 127.0.0.1
+MYSQL_TEST_PORT ?= 3306
+MYSQL_TEST_JDBC_PARAMETERS ?= sslMode=DISABLED&allowPublicKeyRetrieval=true&serverTimezone=UTC&zeroDateTimeBehavior=CONVERT_TO_NULL&tinyInt1isBit=false
 
 verify: rust rust-process-tests java ipc-integration jdbc-h2-integration \
 	community-java-h2-integration community-h2-integration \
@@ -51,6 +56,23 @@ community-product-h2-integration: java community-h2-classpath
 
 product-h2-integration: java
 	CHAT2DB_JAVA_ENGINE_JAR="$(JAVA_ENGINE_JAR)" CHAT2DB_H2_DRIVER_JAR="$(H2_DRIVER_JAR)" cargo test -p chat2db-core --features java-integration --test java_h2_product --locked
+
+mysql-driver-pack:
+	./scripts/prepare-mysql-driver-pack.sh "$(MYSQL_DRIVER_PACK_DIR)"
+
+community-product-mysql-integration: java community-h2-classpath mysql-driver-pack
+	@test -n "$(MYSQL_TEST_USER)" || (echo "MYSQL_TEST_USER is required" >&2; exit 1)
+	@test -n "$(MYSQL_TEST_PASSWORD)" || (echo "MYSQL_TEST_PASSWORD is required" >&2; exit 1)
+	@CHAT2DB_JAVA_ENGINE_JAR="$(JAVA_ENGINE_JAR)" \
+	CHAT2DB_COMMUNITY_CLASSPATH_DIR="$(COMMUNITY_CLASSPATH_DIR)" \
+	MYSQL_TEST_DRIVER_PACK_DIR="$(MYSQL_DRIVER_PACK_DIR)" \
+	MYSQL_TEST_HOST="$(MYSQL_TEST_HOST)" \
+	MYSQL_TEST_PORT="$(MYSQL_TEST_PORT)" \
+	MYSQL_TEST_USER="$(MYSQL_TEST_USER)" \
+	MYSQL_TEST_PASSWORD="$(MYSQL_TEST_PASSWORD)" \
+	MYSQL_TEST_REQUIRED="1" \
+	MYSQL_TEST_JDBC_PARAMETERS="$(MYSQL_TEST_JDBC_PARAMETERS)" \
+	cargo test -p chat2db-core --features java-integration --test java_community_mysql_product --locked
 
 frontend-deps:
 	cd apps/frontend && npm ci

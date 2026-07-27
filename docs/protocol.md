@@ -425,3 +425,7 @@ then independently execute and read back typed H2 values.
 Namespace cases likewise generate H2 CREATE/DROP SCHEMA SQL, prove the database
 is unchanged, and only then execute and verify each state transition. The Java
 fixed-classpath gate also verifies the real MySQL CREATE DATABASE builder.
+The separate MySQL preview gate loads the pinned Connector/J pack and verifies
+real database/table/column/index metadata, read-query execution, and retained
+result paging through Core. It does not expand the protocol with a product
+write surface or claim Agent, CLI, or MCP MySQL conformance.

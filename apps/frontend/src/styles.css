@@ -19,6 +19,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
   letter-spacing: 0;
@@ -32,6 +33,7 @@ input[type="radio"] {
 
 button:focus-visible,
 input:focus-visible,
+select:focus-visible,
 textarea:focus-visible {
   outline: 2px solid #218a75;
   outline-offset: 1px;
@@ -1464,7 +1466,8 @@ td.value-json {
 
 .dialog input[type="text"],
 .dialog input[type="password"],
-.dialog input:not([type]) {
+.dialog input:not([type]),
+.dialog select {
   width: 100%;
   min-height: 37px;
   padding: 0 10px;
@@ -1473,6 +1476,44 @@ td.value-json {
   border: 1px solid #cbd5d2;
   border-radius: 5px;
   font-size: 12px;
+}
+
+.driver-field {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+}
+
+.driver-inventory-status {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: #5f6c69;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.driver-inventory-status > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.driver-inventory-status > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.driver-inventory-status.error {
+  color: #9c382a;
+}
+
+.driver-inventory-status .text-button {
+  min-height: 18px;
+  flex: 0 0 auto;
+  padding: 0 2px;
+  font-size: 11px;
 }
 
 .dialog input::placeholder {

@@ -304,9 +304,12 @@ Java classpath gate verifies both H2 and MySQL builder output.
 Remaining builder operations, general type conversion, non-relational
 operations, script execution, import/export, and per-dialect conformance are not
 implemented yet.
-The current full product integration gate proves H2. The next testable product
-milestone intentionally proves one complete real MySQL path before additional
-dialects; PostgreSQL and long-tail plugins do not block that milestone.
+The MySQL preview product gate loads a pinned Connector/J pack and proves stored
+datasource access, real database/table/column/index metadata, read-query
+execution, and retained-result paging. The shared workbench selects the loaded
+driver instead of requiring an opaque driver id. MySQL write execution and
+Agent, CLI, and MCP conformance remain follow-on work; PostgreSQL and long-tail
+plugins do not block this read-only preview.
 
 Spring Boot, Spring Web, Spring AI, MCP, JCEF, product storage, and updater logic
 do not belong in the final Java engine.

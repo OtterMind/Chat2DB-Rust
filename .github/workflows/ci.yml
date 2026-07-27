@@ -157,6 +157,70 @@ jobs:
       - name: Verify generated OpenAPI and TypeScript
         run: ./scripts/check-contracts.sh
 
+  mysql-integration:
+    name: MySQL
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0.30
+        env:
+          MYSQL_ROOT_HOST: "%"
+          MYSQL_ROOT_PASSWORD: chat2db-ci-root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping --silent -h 127.0.0.1 -uroot -pchat2db-ci-root"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          submodules: recursive
+      - name: Install Linux keyring dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
+        with:
+          shared-key: mysql-integration
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+          cache-dependency-path: |
+            java/pom.xml
+            java/compat-runtime/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-bom/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-spi/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-domain/chat2db-community-domain-api/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-domain/chat2db-community-domain-core/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-plugins/chat2db-community-mysql/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-plugins/chat2db-community-h2/pom.xml
+      - name: Package Java engine
+        working-directory: java
+        run: ./mvnw -B -DskipTests package
+      - name: Build fixed Community compatibility classpath
+        run: ./scripts/build-community-h2-classpath.sh
+      - name: Prepare verified Connector/J pack
+        run: ./scripts/prepare-mysql-driver-pack.sh
+      - name: Verify real MySQL product vertical
+        env:
+          CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
+          CHAT2DB_COMMUNITY_CLASSPATH_DIR: "${{ github.workspace }}/target/community-h2-classpath"
+          MYSQL_TEST_DRIVER_PACK_DIR: "${{ github.workspace }}/target/mysql-driver-packs"
+          MYSQL_TEST_HOST: 127.0.0.1
+          MYSQL_TEST_PORT: "3306"
+          MYSQL_TEST_USER: root
+          MYSQL_TEST_PASSWORD: chat2db-ci-root
+          MYSQL_TEST_REQUIRED: "1"
+          MYSQL_TEST_JDBC_PARAMETERS: "sslMode=DISABLED&allowPublicKeyRetrieval=true&serverTimezone=UTC&zeroDateTimeBehavior=CONVERT_TO_NULL&tinyInt1isBit=false"
+        run: >-
+          cargo test -p chat2db-core --features java-integration
+          --test java_community_mysql_product --locked
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
