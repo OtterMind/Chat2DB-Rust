@@ -1,9 +1,12 @@
 use std::future::Future;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chat2db_contract::{
-    BuildCommunityCreateSchemaRequest, CommunityBuiltSql, CommunityDatabase, CommunityDatabaseList,
-    CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList, CommunityFormattedSql,
-    CommunityFunction, CommunityFunctionList, CommunityFunctionParameter,
+    BuildCommunityCreateSchemaRequest, BuildCommunityDmlRequest, CommunityBuiltSql,
+    CommunityDatabase, CommunityDatabaseList, CommunityDmlAssignment, CommunityDmlColumn,
+    CommunityDmlRow, CommunityDmlStatement, CommunityDmlTarget, CommunityDmlTemporalKind,
+    CommunityDmlValue, CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList,
+    CommunityFormattedSql, CommunityFunction, CommunityFunctionList, CommunityFunctionParameter,
     CommunityFunctionParameterList, CommunityParsedStatement, CommunityPlugin,
     CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices, CommunityPrimaryKey,
     CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
@@ -22,7 +25,15 @@ use chat2db_contract::{
     ListCommunityViewsRequest, ParseCommunitySqlRequest, ValidateCommunitySqlRequest,
 };
 use chat2db_java_bridge::{
-    BridgeError, CommunityClasspath, CommunityDatabase as BridgeCommunityDatabase,
+    BridgeError, BuildCommunityDmlRequest as BridgeBuildCommunityDmlRequest, CommunityClasspath,
+    CommunityDatabase as BridgeCommunityDatabase,
+    CommunityDmlAssignment as BridgeCommunityDmlAssignment,
+    CommunityDmlColumn as BridgeCommunityDmlColumn, CommunityDmlRow as BridgeCommunityDmlRow,
+    CommunityDmlStatement as BridgeCommunityDmlStatement,
+    CommunityDmlTarget as BridgeCommunityDmlTarget,
+    CommunityDmlTemporal as BridgeCommunityDmlTemporal,
+    CommunityDmlTemporalKind as BridgeCommunityDmlTemporalKind,
+    CommunityDmlValue as BridgeCommunityDmlValue,
     CommunityDriverConfig as BridgeCommunityDriverConfig,
     CommunityForeignKey as BridgeCommunityForeignKey,
     CommunityFormattedSql as BridgeCommunityFormattedSql,
@@ -813,6 +824,25 @@ impl Application {
             .map_err(AppError::from)
     }
 
+    /// Generates typed dialect INSERT or UPDATE SQL without opening a datasource session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an engine availability, capability, validation, protocol, or
+    /// Community DML-builder error.
+    pub async fn build_community_dml(
+        &self,
+        request: BuildCommunityDmlRequest,
+    ) -> Result<CommunityBuiltSql, AppError> {
+        let engine = self.require_community_engine()?;
+        let client = engine.community_client().map_err(AppError::from)?;
+        client
+            .build_dml(bridge_dml_request(request)?)
+            .await
+            .map(|sql| CommunityBuiltSql { sql })
+            .map_err(AppError::from)
+    }
+
     /// Parses SQL through the retained Community dialect parser.
     ///
     /// # Errors
@@ -1057,6 +1087,9 @@ fn community_plugin(plugin: BridgeCommunityPlugin) -> CommunityPlugin {
             metadata_available: plugin.services.metadata_available,
             sql_builder_available: plugin.services.sql_builder_available,
             sql_parser_available: plugin.services.sql_parser_available,
+            dml_builder_available: plugin.services.dml_builder_available,
+            value_processor_available: plugin.services.value_processor_available,
+            identifier_processor_available: plugin.services.identifier_processor_available,
         },
     }
 }
@@ -1322,6 +1355,127 @@ fn bridge_schema(schema: CommunitySchema) -> BridgeCommunitySchema {
     }
 }
 
+fn bridge_dml_request(
+    request: BuildCommunityDmlRequest,
+) -> Result<BridgeBuildCommunityDmlRequest, AppError> {
+    Ok(BridgeBuildCommunityDmlRequest {
+        database_type: request.database_type,
+        target: bridge_dml_target(request.target),
+        statement: bridge_dml_statement(request.statement)?,
+    })
+}
+
+fn bridge_dml_target(target: CommunityDmlTarget) -> BridgeCommunityDmlTarget {
+    BridgeCommunityDmlTarget {
+        database_name: target.database_name,
+        schema_name: target.schema_name,
+        table_name: target.table_name,
+    }
+}
+
+fn bridge_dml_statement(
+    statement: CommunityDmlStatement,
+) -> Result<BridgeCommunityDmlStatement, AppError> {
+    Ok(match statement {
+        CommunityDmlStatement::SingleInsert { columns, row } => {
+            BridgeCommunityDmlStatement::SingleInsert {
+                columns: columns.into_iter().map(bridge_dml_column).collect(),
+                row: bridge_dml_row(row)?,
+            }
+        }
+        CommunityDmlStatement::MultiInsert { columns, rows } => {
+            BridgeCommunityDmlStatement::MultiInsert {
+                columns: columns.into_iter().map(bridge_dml_column).collect(),
+                rows: rows
+                    .into_iter()
+                    .map(bridge_dml_row)
+                    .collect::<Result<_, _>>()?,
+            }
+        }
+        CommunityDmlStatement::Update {
+            assignments,
+            predicates,
+        } => BridgeCommunityDmlStatement::Update {
+            assignments: assignments
+                .into_iter()
+                .map(bridge_dml_assignment)
+                .collect::<Result<_, _>>()?,
+            predicates: predicates
+                .into_iter()
+                .map(bridge_dml_assignment)
+                .collect::<Result<_, _>>()?,
+        },
+    })
+}
+
+fn bridge_dml_column(column: CommunityDmlColumn) -> BridgeCommunityDmlColumn {
+    BridgeCommunityDmlColumn {
+        name: column.name,
+        data_type_name: column.data_type_name,
+        precision: column.precision,
+        scale: column.scale,
+    }
+}
+
+fn bridge_dml_row(row: CommunityDmlRow) -> Result<BridgeCommunityDmlRow, AppError> {
+    Ok(BridgeCommunityDmlRow {
+        values: row
+            .values
+            .into_iter()
+            .map(bridge_dml_value)
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+fn bridge_dml_assignment(
+    assignment: CommunityDmlAssignment,
+) -> Result<BridgeCommunityDmlAssignment, AppError> {
+    Ok(BridgeCommunityDmlAssignment {
+        column: bridge_dml_column(assignment.column),
+        value: bridge_dml_value(assignment.value)?,
+    })
+}
+
+fn bridge_dml_value(value: CommunityDmlValue) -> Result<BridgeCommunityDmlValue, AppError> {
+    Ok(match value {
+        CommunityDmlValue::Null => BridgeCommunityDmlValue::Null,
+        CommunityDmlValue::String { value } => BridgeCommunityDmlValue::String(value),
+        CommunityDmlValue::Decimal { value } => BridgeCommunityDmlValue::Decimal(value),
+        CommunityDmlValue::Boolean { value } => BridgeCommunityDmlValue::Boolean(value),
+        CommunityDmlValue::Temporal {
+            temporal_kind,
+            value,
+        } => BridgeCommunityDmlValue::Temporal(BridgeCommunityDmlTemporal {
+            kind: match temporal_kind {
+                CommunityDmlTemporalKind::Date => BridgeCommunityDmlTemporalKind::Date,
+                CommunityDmlTemporalKind::Time => BridgeCommunityDmlTemporalKind::Time,
+                CommunityDmlTemporalKind::LocalDatetime => {
+                    BridgeCommunityDmlTemporalKind::LocalDatetime
+                }
+                CommunityDmlTemporalKind::OffsetDatetime => {
+                    BridgeCommunityDmlTemporalKind::OffsetDatetime
+                }
+            },
+            iso8601: value,
+        }),
+        CommunityDmlValue::Binary { base64 } => {
+            let bytes = STANDARD.decode(&base64).map_err(|_| {
+                AppError::invalid(
+                    "community.dml_invalid_value",
+                    "Community DML binary values must use canonical standard base64",
+                )
+            })?;
+            if STANDARD.encode(&bytes) != base64 {
+                return Err(AppError::invalid(
+                    "community.dml_invalid_value",
+                    "Community DML binary values must use canonical standard base64",
+                ));
+            }
+            BridgeCommunityDmlValue::Binary(bytes)
+        }
+    })
+}
+
 fn community_sql_analysis(analysis: BridgeCommunitySqlAnalysis) -> CommunitySqlAnalysis {
     CommunitySqlAnalysis {
         is_select: analysis.is_select,
@@ -1504,15 +1658,16 @@ fn preserve_primary_result<T>(
 #[cfg(test)]
 mod tests {
     use chat2db_contract::{
-        CommunityDatabase, CommunityDriverConfig, CommunityForeignKey, CommunityFormattedSql,
-        CommunityFunction, CommunityFunctionParameter, CommunityParsedStatement, CommunityPlugin,
-        CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
-        CommunityPrimaryKey, CommunityProcedure, CommunityProcedureParameter, CommunitySchema,
-        CommunitySqlAnalysis, CommunitySqlDiagnostic, CommunitySqlValidation, CommunityTable,
-        CommunityTableColumn, CommunityTableIndex, CommunityTableIndexColumn, CommunityTrigger,
-        ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityIndexesRequest,
-        ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
-        ListCommunityViewsRequest,
+        BuildCommunityDmlRequest, CommunityDatabase, CommunityDmlColumn, CommunityDmlRow,
+        CommunityDmlStatement, CommunityDmlTarget, CommunityDmlValue, CommunityDriverConfig,
+        CommunityForeignKey, CommunityFormattedSql, CommunityFunction, CommunityFunctionParameter,
+        CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
+        CommunityPluginServices, CommunityPrimaryKey, CommunityProcedure,
+        CommunityProcedureParameter, CommunitySchema, CommunitySqlAnalysis, CommunitySqlDiagnostic,
+        CommunitySqlValidation, CommunityTable, CommunityTableColumn, CommunityTableIndex,
+        CommunityTableIndexColumn, CommunityTrigger, ListCommunityColumnsRequest,
+        ListCommunityDatabasesRequest, ListCommunityIndexesRequest, ListCommunitySchemasRequest,
+        ListCommunityTableKeysRequest, ListCommunityTablesRequest, ListCommunityViewsRequest,
     };
     use chat2db_java_bridge::{
         CommunityDatabase as BridgeCommunityDatabase,
@@ -1544,7 +1699,7 @@ mod tests {
     use tokio::{sync::oneshot, time};
 
     use super::{
-        Application, bridge_schema, community_database, community_foreign_key,
+        Application, bridge_dml_request, bridge_schema, community_database, community_foreign_key,
         community_formatted_sql, community_function, community_function_parameter,
         community_plugin_catalog, community_primary_key, community_procedure,
         community_procedure_parameter, community_schema, community_sql_analysis,
@@ -1553,6 +1708,54 @@ mod tests {
         run_cancellation_safe_with_cleanup,
     };
     use crate::{AppError, AppErrorKind};
+
+    fn binary_dml_request(base64: &str) -> BuildCommunityDmlRequest {
+        BuildCommunityDmlRequest {
+            database_type: "H2".to_owned(),
+            target: CommunityDmlTarget {
+                database_name: None,
+                schema_name: Some("APP".to_owned()),
+                table_name: "items".to_owned(),
+            },
+            statement: CommunityDmlStatement::SingleInsert {
+                columns: vec![CommunityDmlColumn {
+                    name: "payload".to_owned(),
+                    data_type_name: "VARBINARY".to_owned(),
+                    precision: None,
+                    scale: None,
+                }],
+                row: CommunityDmlRow {
+                    values: vec![CommunityDmlValue::Binary {
+                        base64: base64.to_owned(),
+                    }],
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn dml_conversion_is_storage_independent_and_requires_canonical_standard_base64() {
+        let converted = bridge_dml_request(binary_dml_request("AAH/"))
+            .expect("canonical standard base64 must convert without product state");
+        let chat2db_java_bridge::CommunityDmlStatement::SingleInsert { row, .. } =
+            converted.statement
+        else {
+            panic!("single insert must retain its bridge variant");
+        };
+        assert_eq!(
+            row.values,
+            vec![chat2db_java_bridge::CommunityDmlValue::Binary(vec![
+                0, 1, 255
+            ])]
+        );
+
+        for invalid in ["AAH_", "AAH/==", "not base64"] {
+            let error = bridge_dml_request(binary_dml_request(invalid))
+                .expect_err("noncanonical binary JSON must fail before engine access");
+            assert_eq!(error.api_error().code, "community.dml_invalid_value");
+            assert_eq!(error.kind(), AppErrorKind::InvalidRequest);
+        }
+    }
 
     #[test]
     fn bridge_plugin_catalog_mapping_preserves_every_field() {
@@ -1578,6 +1781,9 @@ mod tests {
                     metadata_available: true,
                     sql_builder_available: true,
                     sql_parser_available: true,
+                    dml_builder_available: true,
+                    value_processor_available: true,
+                    identifier_processor_available: true,
                 },
             }],
         };
@@ -1603,6 +1809,9 @@ mod tests {
                     metadata_available: true,
                     sql_builder_available: true,
                     sql_parser_available: true,
+                    dml_builder_available: true,
+                    value_processor_available: true,
+                    identifier_processor_available: true,
                 },
             }],
         };

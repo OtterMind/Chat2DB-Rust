@@ -22,9 +22,11 @@ pub use agent::{
     UpdateProviderProfileRequest,
 };
 pub use community::{
-    BuildCommunityCreateSchemaRequest, CommunityBuiltSql, CommunityDatabase, CommunityDatabaseList,
-    CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList, CommunityFormattedSql,
-    CommunityFunction, CommunityFunctionList, CommunityFunctionParameter,
+    BuildCommunityCreateSchemaRequest, BuildCommunityDmlRequest, CommunityBuiltSql,
+    CommunityDatabase, CommunityDatabaseList, CommunityDmlAssignment, CommunityDmlColumn,
+    CommunityDmlRow, CommunityDmlStatement, CommunityDmlTarget, CommunityDmlTemporalKind,
+    CommunityDmlValue, CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList,
+    CommunityFormattedSql, CommunityFunction, CommunityFunctionList, CommunityFunctionParameter,
     CommunityFunctionParameterList, CommunityParsedStatement, CommunityPlugin,
     CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices, CommunityPrimaryKey,
     CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,

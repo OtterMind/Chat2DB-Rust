@@ -1,5 +1,6 @@
 .PHONY: verify rust rust-process-tests java ipc-integration jdbc-h2-integration \
-	community-h2-classpath community-h2-reproducibility community-h2-integration \
+	community-h2-classpath community-h2-reproducibility community-java-h2-integration \
+	community-h2-integration \
 	community-product-h2-integration product-h2-integration \
 	frontend-deps frontend desktop generate-contracts check-contracts
 
@@ -8,7 +9,8 @@ H2_DRIVER_JAR := $(CURDIR)/java/compat-runtime/target/test-drivers/h2-2.3.232.ja
 COMMUNITY_CLASSPATH_DIR := $(CURDIR)/target/community-h2-classpath
 
 verify: rust rust-process-tests java ipc-integration jdbc-h2-integration \
-	community-h2-integration community-product-h2-integration product-h2-integration frontend desktop
+	community-java-h2-integration community-h2-integration \
+	community-product-h2-integration product-h2-integration frontend desktop
 
 rust:
 	cargo fmt --all --check
@@ -32,6 +34,14 @@ community-h2-classpath:
 
 community-h2-reproducibility:
 	./scripts/verify-community-h2-reproducibility.sh
+
+community-java-h2-integration: java community-h2-classpath
+	cd java && \
+	CHAT2DB_COMMUNITY_CLASSPATH_DIR="$(COMMUNITY_CLASSPATH_DIR)" \
+	CHAT2DB_COMMUNITY_SOURCE_COMMIT="f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7" \
+	./mvnw -B -pl compat-runtime \
+	-Dtest='CommunityPluginRegistryTest#realCommunityH2BuildsAndExecutesBoundedDml,CommunityPluginRegistryTest#realCommunityMysqlRejectsBackslashCrossColumnInjection,CommunityPluginRegistryTest#realCommunityMysqlNormalizesBooleanAliasesAndBits,JdbcProtocolLoopTest#communityDmlDispatchDoesNotRequireAJdbcSession' \
+	test
 
 community-h2-integration: java community-h2-classpath
 	CHAT2DB_JAVA_ENGINE_JAR="$(JAVA_ENGINE_JAR)" CHAT2DB_H2_DRIVER_JAR="$(H2_DRIVER_JAR)" CHAT2DB_COMMUNITY_CLASSPATH_DIR="$(COMMUNITY_CLASSPATH_DIR)" cargo test -p chat2db-java-bridge --features java-integration --test java_community_h2 --locked

@@ -12,8 +12,10 @@ use chat2db_contract::{
     AgentPermissionStatus, AgentResultHandle, AgentRunAccepted, AgentRunSnapshot, AgentRunStatus,
     AgentSession, AgentSessionList, AgentStreamMessage, AgentSubscriptionAccepted, AgentToolCall,
     AgentToolOutput, AgentUsage, ApiError, ApiErrorDetails, BuildCommunityCreateSchemaRequest,
-    CancelAgentRunResponse, CancelDisposition, CancelOperationResponse, ColumnNullability,
-    CommunityBuiltSql, CommunityDatabase, CommunityDatabaseList, CommunityDriverConfig,
+    BuildCommunityDmlRequest, CancelAgentRunResponse, CancelDisposition, CancelOperationResponse,
+    ColumnNullability, CommunityBuiltSql, CommunityDatabase, CommunityDatabaseList,
+    CommunityDmlAssignment, CommunityDmlColumn, CommunityDmlRow, CommunityDmlStatement,
+    CommunityDmlTarget, CommunityDmlTemporalKind, CommunityDmlValue, CommunityDriverConfig,
     CommunityForeignKey, CommunityForeignKeyList, CommunityFormattedSql, CommunityFunction,
     CommunityFunctionList, CommunityFunctionParameter, CommunityFunctionParameterList,
     CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
@@ -104,9 +106,17 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         ComponentHealth,
         ComponentState,
         BuildCommunityCreateSchemaRequest,
+        BuildCommunityDmlRequest,
         CommunityBuiltSql,
         CommunityDatabase,
         CommunityDatabaseList,
+        CommunityDmlAssignment,
+        CommunityDmlColumn,
+        CommunityDmlRow,
+        CommunityDmlStatement,
+        CommunityDmlTarget,
+        CommunityDmlTemporalKind,
+        CommunityDmlValue,
         CommunityDriverConfig,
         CommunityForeignKey,
         CommunityForeignKeyList,
@@ -247,6 +257,7 @@ fn documented_router() -> OpenApiRouter<Application> {
         .routes(routes!(list_community_triggers))
         .routes(routes!(get_community_trigger))
         .routes(routes!(build_community_create_schema))
+        .routes(routes!(build_community_dml))
         .routes(routes!(parse_community_sql))
         .routes(routes!(validate_community_sql))
         .routes(routes!(format_community_sql))
@@ -763,6 +774,29 @@ async fn build_community_create_schema(
 ) -> Result<Json<CommunityBuiltSql>, WebError> {
     application
         .build_community_create_schema(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/sql/build-dml",
+    tag = "community",
+    request_body = BuildCommunityDmlRequest,
+    responses(
+        (status = 200, description = "Community dialect DML", body = CommunityBuiltSql),
+        (status = 400, description = "Invalid Community DML-builder request", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community DML-builder failure", body = ApiError)
+    )
+)]
+async fn build_community_dml(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<BuildCommunityDmlRequest>,
+) -> Result<Json<CommunityBuiltSql>, WebError> {
+    application
+        .build_community_dml(request)
         .await
         .map(Json)
         .map_err(Into::into)

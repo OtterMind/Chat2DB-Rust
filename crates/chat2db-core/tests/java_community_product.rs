@@ -7,7 +7,9 @@ use std::{
 };
 
 use chat2db_contract::{
-    BuildCommunityCreateSchemaRequest, CompleteCommunitySqlRequest, ComponentState,
+    BuildCommunityCreateSchemaRequest, BuildCommunityDmlRequest, CommunityDmlAssignment,
+    CommunityDmlColumn, CommunityDmlRow, CommunityDmlStatement, CommunityDmlTarget,
+    CommunityDmlTemporalKind, CommunityDmlValue, CompleteCommunitySqlRequest, ComponentState,
     CreateDatasourceRequest, DatasourceConnection, FormatCommunitySqlRequest,
     GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
     ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityFunctionsRequest,
@@ -20,7 +22,7 @@ use chat2db_core::{
 };
 use chat2db_java_bridge::{
     DriverArtifact, DriverClient, DriverSpec, EngineCommand, EngineConfig, EngineSupervisor,
-    SessionConfig, UpdateRequest,
+    JdbcValue, QueryEvent, QueryOptions, QueryRequest, Session, SessionConfig, UpdateRequest,
 };
 use chat2db_storage::{EncryptedFileVault, Storage};
 use tempfile::TempDir;
@@ -79,6 +81,7 @@ async fn product_services_invoke_the_fixed_community_h2_compatibility_slice() {
     assert_eq!(built.sql, "CREATE SCHEMA \"APP\";");
 
     create_metadata_fixture(&driver, &driver_id, jdbc_url, &built.sql).await;
+    verify_dml_builder(&application, &driver, &driver_id, jdbc_url).await;
 
     let schemas = application
         .list_community_schemas(ListCommunitySchemasRequest {
@@ -219,6 +222,7 @@ async fn create_metadata_fixture(
     for sql in [
         "CREATE TABLE APP.parents (id BIGINT NOT NULL, CONSTRAINT pk_parents PRIMARY KEY (id))",
         "CREATE TABLE APP.children (id BIGINT NOT NULL, parent_id BIGINT NOT NULL, CONSTRAINT pk_children PRIMARY KEY (id), CONSTRAINT fk_children_parent FOREIGN KEY (parent_id) REFERENCES APP.parents(id))",
+        "CREATE TABLE APP.dml_items (id BIGINT PRIMARY KEY, label VARCHAR(128) NOT NULL, note VARCHAR(128), amount DECIMAL(12, 2) NOT NULL, active BOOLEAN NOT NULL, created_at TIMESTAMP NOT NULL)",
         "CREATE VIEW APP.item_view AS SELECT id, label FROM APP.items",
         "CREATE ALIAS APP.add_one AS 'int addOne(int value) { return value + 1; }'",
         "CREATE ALIAS APP.record_event AS 'void recordEvent(int value) { }'",
@@ -238,6 +242,396 @@ async fn create_metadata_fixture(
         .close()
         .await
         .expect("setup JDBC session must close");
+}
+
+async fn verify_dml_builder(
+    application: &Application,
+    driver: &DriverClient,
+    driver_id: &str,
+    jdbc_url: &str,
+) {
+    let columns = dml_columns();
+    let target = CommunityDmlTarget {
+        database_name: None,
+        schema_name: Some("APP".to_owned()),
+        table_name: "dml_items".to_owned(),
+    };
+    let single = build_dml(application, &target, single_insert(&columns)).await;
+    assert!(single.contains("O''Brien"));
+    assert!(single.contains("NULL"));
+    let batch = build_dml(application, &target, batch_insert(&columns)).await;
+    assert!(batch.contains("batch-two"));
+    assert!(batch.contains("batch-three"));
+    let update_statement = update_statement();
+    let update = build_dml(application, &target, update_statement.clone()).await;
+    let repeated_update = build_dml(application, &target, update_statement).await;
+    assert_eq!(update, repeated_update);
+    assert_sql_order(
+        &update,
+        &[
+            "label =", "amount =", "active =", " WHERE ", "id =", "active =",
+        ],
+    );
+
+    verify_generated_dml_execution(driver, driver_id, jdbc_url, &single, &batch, &update).await;
+    verify_dml_rejections(application, target).await;
+}
+
+fn dml_columns() -> Vec<CommunityDmlColumn> {
+    vec![
+        dml_column("id", "BIGINT", None, None),
+        dml_column("label", "VARCHAR", Some(128), None),
+        dml_column("note", "VARCHAR", Some(128), None),
+        dml_column("amount", "DECIMAL", Some(12), Some(2)),
+        dml_column("active", "BOOLEAN", None, None),
+        dml_column("created_at", "TIMESTAMP", None, None),
+    ]
+}
+
+fn single_insert(columns: &[CommunityDmlColumn]) -> CommunityDmlStatement {
+    CommunityDmlStatement::SingleInsert {
+        columns: columns.to_vec(),
+        row: CommunityDmlRow {
+            values: dml_values("1", "O'Brien", None, "12.50", true, "2026-07-27T12:34:56"),
+        },
+    }
+}
+
+fn batch_insert(columns: &[CommunityDmlColumn]) -> CommunityDmlStatement {
+    CommunityDmlStatement::MultiInsert {
+        columns: columns.to_vec(),
+        rows: vec![
+            CommunityDmlRow {
+                values: dml_values(
+                    "2",
+                    "batch-two",
+                    Some("second"),
+                    "20.25",
+                    false,
+                    "2026-07-28T01:02:03",
+                ),
+            },
+            CommunityDmlRow {
+                values: dml_values(
+                    "3",
+                    "batch-three",
+                    Some("third"),
+                    "30.75",
+                    true,
+                    "2026-07-29T04:05:06",
+                ),
+            },
+        ],
+    }
+}
+
+fn update_statement() -> CommunityDmlStatement {
+    CommunityDmlStatement::Update {
+        assignments: vec![
+            dml_assignment(
+                "label",
+                "VARCHAR",
+                CommunityDmlValue::String {
+                    value: "updated-two".to_owned(),
+                },
+            ),
+            dml_assignment(
+                "amount",
+                "DECIMAL",
+                CommunityDmlValue::Decimal {
+                    value: "99.99".to_owned(),
+                },
+            ),
+            dml_assignment(
+                "active",
+                "BOOLEAN",
+                CommunityDmlValue::Boolean { value: true },
+            ),
+        ],
+        predicates: vec![
+            dml_assignment(
+                "id",
+                "BIGINT",
+                CommunityDmlValue::Decimal {
+                    value: "2".to_owned(),
+                },
+            ),
+            dml_assignment(
+                "active",
+                "BOOLEAN",
+                CommunityDmlValue::Boolean { value: false },
+            ),
+        ],
+    }
+}
+
+async fn build_dml(
+    application: &Application,
+    target: &CommunityDmlTarget,
+    statement: CommunityDmlStatement,
+) -> String {
+    application
+        .build_community_dml(BuildCommunityDmlRequest {
+            database_type: "H2".to_owned(),
+            target: target.clone(),
+            statement,
+        })
+        .await
+        .expect("Core must generate typed H2 DML without a JDBC session")
+        .sql
+}
+
+async fn verify_generated_dml_execution(
+    driver: &DriverClient,
+    driver_id: &str,
+    jdbc_url: &str,
+    single: &str,
+    batch: &str,
+    update: &str,
+) {
+    let session = driver
+        .open_session(SessionConfig {
+            driver_id: driver_id.to_owned(),
+            jdbc_url: jdbc_url.to_owned(),
+            properties: Vec::new(),
+            read_only: false,
+        })
+        .await
+        .expect("DML verification JDBC session must open after SQL generation");
+    assert_eq!(
+        query_values(&session, "SELECT COUNT(*) FROM APP.dml_items").await,
+        vec![vec![JdbcValue::SignedInteger(0)]],
+        "DML generation must never execute its generated SQL"
+    );
+    assert_eq!(execute_generated(&session, single).await, 1);
+    assert_eq!(execute_generated(&session, batch).await, 2);
+    assert_eq!(execute_generated(&session, update).await, 1);
+
+    let rows = query_values(
+        &session,
+        "SELECT id, label, note, amount, active, created_at FROM APP.dml_items ORDER BY id",
+    )
+    .await;
+    assert_eq!(rows.len(), 3);
+    assert!(matches!(
+        rows[0].as_slice(),
+        [
+            JdbcValue::SignedInteger(1),
+            JdbcValue::Text(label),
+            JdbcValue::Null,
+            JdbcValue::Decimal(amount),
+            JdbcValue::Boolean(true),
+            JdbcValue::Timestamp(created_at),
+        ] if label == "O'Brien"
+            && amount == "12.50"
+            && created_at.starts_with("2026-07-27T12:34:56")
+    ));
+    assert!(matches!(
+        rows[1].as_slice(),
+        [
+            JdbcValue::SignedInteger(2),
+            JdbcValue::Text(label),
+            JdbcValue::Text(note),
+            JdbcValue::Decimal(amount),
+            JdbcValue::Boolean(true),
+            JdbcValue::Timestamp(created_at),
+        ] if label == "updated-two"
+            && note == "second"
+            && amount == "99.99"
+            && created_at.starts_with("2026-07-28T01:02:03")
+    ));
+    assert!(matches!(
+        rows[2].as_slice(),
+        [
+            JdbcValue::SignedInteger(3),
+            JdbcValue::Text(label),
+            JdbcValue::Text(note),
+            JdbcValue::Decimal(amount),
+            JdbcValue::Boolean(true),
+            JdbcValue::Timestamp(created_at),
+        ] if label == "batch-three"
+            && note == "third"
+            && amount == "30.75"
+            && created_at.starts_with("2026-07-29T04:05:06")
+    ));
+    session
+        .close()
+        .await
+        .expect("DML verification JDBC session must close");
+}
+
+async fn verify_dml_rejections(application: &Application, target: CommunityDmlTarget) {
+    let malformed_temporal = application
+        .build_community_dml(BuildCommunityDmlRequest {
+            database_type: "H2".to_owned(),
+            target: target.clone(),
+            statement: CommunityDmlStatement::SingleInsert {
+                columns: vec![dml_column("created_at", "TIMESTAMP", None, None)],
+                row: CommunityDmlRow {
+                    values: vec![CommunityDmlValue::Temporal {
+                        temporal_kind: CommunityDmlTemporalKind::Date,
+                        value: "2026-02-30".to_owned(),
+                    }],
+                },
+            },
+        })
+        .await
+        .expect_err("the real Community adapter must reject an invalid calendar date");
+    assert_community_error(&malformed_temporal, "community.dml_temporal_invalid");
+
+    let unsafe_target = application
+        .build_community_dml(BuildCommunityDmlRequest {
+            database_type: "H2".to_owned(),
+            target: CommunityDmlTarget {
+                table_name: "APP.dml_items".to_owned(),
+                ..target.clone()
+            },
+            statement: CommunityDmlStatement::SingleInsert {
+                columns: vec![dml_column("id", "BIGINT", None, None)],
+                row: CommunityDmlRow {
+                    values: vec![CommunityDmlValue::Decimal {
+                        value: "4".to_owned(),
+                    }],
+                },
+            },
+        })
+        .await
+        .expect_err("raw qualified table identifiers must be rejected before Community");
+    assert_community_error(&unsafe_target, "invalid_database_request");
+
+    let unbounded_update = application
+        .build_community_dml(BuildCommunityDmlRequest {
+            database_type: "H2".to_owned(),
+            target,
+            statement: CommunityDmlStatement::Update {
+                assignments: vec![dml_assignment(
+                    "label",
+                    "VARCHAR",
+                    CommunityDmlValue::String {
+                        value: "unsafe".to_owned(),
+                    },
+                )],
+                predicates: Vec::new(),
+            },
+        })
+        .await
+        .expect_err("updates without equality predicates must never reach Community");
+    assert_community_error(&unbounded_update, "invalid_database_request");
+}
+
+fn dml_column(
+    name: &str,
+    data_type_name: &str,
+    precision: Option<u32>,
+    scale: Option<i32>,
+) -> CommunityDmlColumn {
+    CommunityDmlColumn {
+        name: name.to_owned(),
+        data_type_name: data_type_name.to_owned(),
+        precision,
+        scale,
+    }
+}
+
+fn dml_assignment(
+    name: &str,
+    data_type_name: &str,
+    value: CommunityDmlValue,
+) -> CommunityDmlAssignment {
+    CommunityDmlAssignment {
+        column: dml_column(name, data_type_name, None, None),
+        value,
+    }
+}
+
+fn dml_values(
+    id: &str,
+    label: &str,
+    note: Option<&str>,
+    amount: &str,
+    active: bool,
+    created_at: &str,
+) -> Vec<CommunityDmlValue> {
+    vec![
+        CommunityDmlValue::Decimal {
+            value: id.to_owned(),
+        },
+        CommunityDmlValue::String {
+            value: label.to_owned(),
+        },
+        note.map_or(CommunityDmlValue::Null, |value| CommunityDmlValue::String {
+            value: value.to_owned(),
+        }),
+        CommunityDmlValue::Decimal {
+            value: amount.to_owned(),
+        },
+        CommunityDmlValue::Boolean { value: active },
+        CommunityDmlValue::Temporal {
+            temporal_kind: CommunityDmlTemporalKind::LocalDatetime,
+            value: created_at.to_owned(),
+        },
+    ]
+}
+
+fn assert_sql_order(sql: &str, fragments: &[&str]) {
+    let mut previous = 0;
+    for fragment in fragments {
+        let offset = sql[previous..]
+            .find(fragment)
+            .unwrap_or_else(|| panic!("generated SQL must contain {fragment:?}: {sql}"));
+        previous += offset + fragment.len();
+    }
+}
+
+async fn execute_generated(session: &Session, sql: &str) -> u64 {
+    session
+        .execute_update(UpdateRequest {
+            sql: sql.to_owned(),
+            parameters: Vec::new(),
+            transaction_id: None,
+        })
+        .await
+        .unwrap_or_else(|error| {
+            panic!("generated DML must execute separately: {error}; SQL: {sql}")
+        })
+        .affected_rows
+}
+
+async fn query_values(session: &Session, sql: &str) -> Vec<Vec<JdbcValue>> {
+    let mut stream = session
+        .execute_query(QueryRequest {
+            sql: sql.to_owned(),
+            parameters: Vec::new(),
+            transaction_id: None,
+            options: QueryOptions {
+                max_rows: 16,
+                target_batch_rows: 16,
+                target_batch_bytes: 16 * 1024,
+                initial_batch_credits: 1,
+                max_result_bytes: 1024 * 1024,
+            },
+        })
+        .await
+        .unwrap_or_else(|error| panic!("DML verification query must start: {error}"));
+    let mut rows = Vec::new();
+    while let Some(event) = stream
+        .next_event()
+        .await
+        .unwrap_or_else(|error| panic!("DML verification query must stream: {error}"))
+    {
+        match event {
+            QueryEvent::Started(_) => {}
+            QueryEvent::Batch(batch) => {
+                rows.extend(batch.rows.into_iter().map(|row| row.values));
+            }
+            QueryEvent::Completed(completed) => {
+                assert!(!completed.truncated_by_max_rows);
+                assert!(!completed.truncated_by_max_result_bytes);
+                return rows;
+            }
+        }
+    }
+    panic!("DML verification query must complete")
 }
 
 async fn verify_community_catalog(application: &Application) {
@@ -262,6 +656,9 @@ async fn verify_community_catalog(application: &Application) {
     assert!(h2.services.metadata_available);
     assert!(h2.services.sql_builder_available);
     assert!(h2.services.sql_parser_available);
+    assert!(h2.services.dml_builder_available);
+    assert!(h2.services.value_processor_available);
+    assert!(h2.services.identifier_processor_available);
 }
 
 async fn verify_object_metadata(application: &Application, datasource_id: &str) {

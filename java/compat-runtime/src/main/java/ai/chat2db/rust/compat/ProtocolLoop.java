@@ -51,6 +51,7 @@ final class ProtocolLoop {
     static final String COMMUNITY_SQL_VALIDATION_CAPABILITY = "community.sql-validation.v1";
     static final String COMMUNITY_SQL_FORMATTER_CAPABILITY = "community.sql-formatter.v1";
     static final String COMMUNITY_SQL_COMPLETION_CAPABILITY = "community.sql-completion.v1";
+    static final String COMMUNITY_DML_BUILDER_CAPABILITY = "community.dml-builder.v1";
 
     private static final int MINIMUM_PEER_FRAME_BYTES = 1024;
     private static final List<String> BASE_CAPABILITIES = List.of(
@@ -377,6 +378,13 @@ final class ProtocolLoop {
                                     meta, envelope.getCompleteCommunitySql()));
                     yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
                 }
+                case BUILD_COMMUNITY_DML -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.buildCommunityDml(
+                                    meta, envelope.getBuildCommunityDml()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
                 case HELLO -> error(
                         meta,
                         "protocol.handshake_already_completed",
@@ -482,6 +490,7 @@ final class ProtocolLoop {
         capabilities.add(COMMUNITY_SQL_VALIDATION_CAPABILITY);
         capabilities.add(COMMUNITY_SQL_FORMATTER_CAPABILITY);
         capabilities.add(COMMUNITY_SQL_COMPLETION_CAPABILITY);
+        capabilities.add(COMMUNITY_DML_BUILDER_CAPABILITY);
         return List.copyOf(capabilities);
     }
 

@@ -1052,6 +1052,13 @@ fn validate_response_payload(
             validate_community_response_encoded_len(built)?;
             Ok(None)
         }
+        wire::server_envelope::Payload::CommunityBuiltDml(built) => {
+            validate_non_empty_bytes(&built.sql, MAX_SQL_BYTES, "Community built DML")?;
+            let mut field_bytes = 0;
+            add_community_response_field(&mut field_bytes, &built.sql)?;
+            validate_community_response_encoded_len(built)?;
+            Ok(None)
+        }
         wire::server_envelope::Payload::CommunitySqlAnalysis(analysis) => {
             let mut field_bytes = 0;
             validate_community_parsed_statements(&analysis.statements, &mut field_bytes)?;
@@ -3225,6 +3232,32 @@ mod tests {
         assert!(
             validate_response_payload(&oversized)
                 .expect_err("formatted SQL above one MiB must fail")
+                .contains(&format!("{MAX_SQL_BYTES}-byte limit"))
+        );
+    }
+
+    #[test]
+    fn community_built_dml_enforces_nonempty_one_megabyte_output() {
+        let empty =
+            wire::server_envelope::Payload::CommunityBuiltDml(wire::CommunityBuiltDml::default());
+        assert!(
+            validate_response_payload(&empty)
+                .expect_err("empty built DML must fail")
+                .contains("cannot be empty")
+        );
+
+        let exact = wire::server_envelope::Payload::CommunityBuiltDml(wire::CommunityBuiltDml {
+            sql: "x".repeat(MAX_SQL_BYTES),
+        });
+        validate_response_payload(&exact).expect("exact built-DML byte limit must pass");
+
+        let oversized =
+            wire::server_envelope::Payload::CommunityBuiltDml(wire::CommunityBuiltDml {
+                sql: "x".repeat(MAX_SQL_BYTES + 1),
+            });
+        assert!(
+            validate_response_payload(&oversized)
+                .expect_err("built DML above one MiB must fail")
                 .contains(&format!("{MAX_SQL_BYTES}-byte limit"))
         );
     }

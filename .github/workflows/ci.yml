@@ -106,6 +106,15 @@ jobs:
         run: cargo test -p chat2db-java-bridge --features java-integration --test java_jdbc_h2 --locked
       - name: Verify fixed Community H2 classpath reproducibility
         run: ./scripts/verify-community-h2-reproducibility.sh
+      - name: Verify configured Community Java DML adapter
+        working-directory: java
+        env:
+          CHAT2DB_COMMUNITY_CLASSPATH_DIR: "${{ github.workspace }}/target/community-h2-classpath"
+          CHAT2DB_COMMUNITY_SOURCE_COMMIT: "f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7"
+        run: >-
+          ./mvnw -B -pl compat-runtime
+          -Dtest='CommunityPluginRegistryTest#realCommunityH2BuildsAndExecutesBoundedDml,CommunityPluginRegistryTest#realCommunityMysqlRejectsBackslashCrossColumnInjection,CommunityPluginRegistryTest#realCommunityMysqlNormalizesBooleanAliasesAndBits,JdbcProtocolLoopTest#communityDmlDispatchDoesNotRequireAJdbcSession'
+          test
       - name: Verify real Community H2 SPI vertical slice
         env:
           CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"

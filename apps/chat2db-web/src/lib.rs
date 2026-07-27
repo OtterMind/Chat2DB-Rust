@@ -481,6 +481,33 @@ mod tests {
             (
                 json_request(
                     Method::POST,
+                    "/api/v1/community/sql/build-dml",
+                    &serde_json::json!({
+                        "databaseType": "H2",
+                        "target": {
+                            "schemaName": "APP",
+                            "tableName": "items"
+                        },
+                        "statement": {
+                            "kind": "singleInsert",
+                            "columns": [{
+                                "name": "label",
+                                "dataTypeName": "VARCHAR"
+                            }],
+                            "row": {
+                                "values": [{
+                                    "kind": "string",
+                                    "value": "O'Brien"
+                                }]
+                            }
+                        }
+                    }),
+                ),
+                "database_engine_unavailable",
+            ),
+            (
+                json_request(
+                    Method::POST,
                     "/api/v1/community/sql/parse",
                     &serde_json::json!({
                         "databaseType": "H2",
@@ -663,6 +690,7 @@ mod tests {
             "/api/v1/community/metadata/triggers",
             "/api/v1/community/metadata/trigger",
             "/api/v1/community/sql/build-create-schema",
+            "/api/v1/community/sql/build-dml",
             "/api/v1/community/sql/parse",
             "/api/v1/community/sql/validate",
             "/api/v1/community/sql/format",
@@ -711,6 +739,7 @@ mod tests {
             "/api/v1/community/metadata/triggers",
             "/api/v1/community/metadata/trigger",
             "/api/v1/community/sql/build-create-schema",
+            "/api/v1/community/sql/build-dml",
             "/api/v1/community/sql/parse",
             "/api/v1/community/sql/validate",
             "/api/v1/community/sql/format",
@@ -718,6 +747,17 @@ mod tests {
         ] {
             assert!(paths[path].get("post").is_some());
         }
+        let dml_responses = paths["/api/v1/community/sql/build-dml"]["post"]["responses"]
+            .as_object()
+            .expect("Community DML OpenAPI operation must declare responses");
+        assert_eq!(dml_responses.len(), 4);
+        for status in ["200", "400", "500", "503"] {
+            assert!(
+                dml_responses.contains_key(status),
+                "missing Community DML OpenAPI response {status}"
+            );
+        }
+        assert!(!dml_responses.contains_key("409"));
         assert!(
             paths["/api/v1/datasources/{datasource_id}"]
                 .get("delete")

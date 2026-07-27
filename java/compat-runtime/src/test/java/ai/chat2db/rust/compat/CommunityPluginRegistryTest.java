@@ -8,9 +8,22 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import ai.chat2db.rust.compat.protocol.v1.BuildCommunityDmlRequest;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDmlAssignment;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDmlColumn;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDmlMultiInsert;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDmlNull;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDmlRow;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDmlSingleInsert;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDmlTarget;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDmlTemporal;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDmlTemporalKind;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDmlUpdate;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDmlValue;
 import ai.chat2db.rust.compat.protocol.v1.CommunityForeignKey;
 import ai.chat2db.rust.compat.protocol.v1.CommunityPrimaryKey;
 import ai.chat2db.rust.compat.protocol.v1.CompleteCommunitySqlRequest;
+import com.google.protobuf.ByteString;
 import java.io.OutputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
@@ -508,6 +521,208 @@ class CommunityPluginRegistryTest {
         assertMissingDetail("community.trigger_not_found", "trigger");
     }
 
+    @Test
+    void realCommunityH2BuildsAndExecutesBoundedDml() throws Exception {
+        Path communityClasspath = communityClasspathDirectory();
+        assumeTrue(
+                Files.isDirectory(communityClasspath),
+                "the fixed Community H2 classpath is built by the extended integration lane");
+
+        try (URLClassLoader driverLoader = new URLClassLoader(
+                        new URL[] {h2DriverJar().toUri().toURL()},
+                        ClassLoader.getPlatformClassLoader());
+                CommunityPluginRegistry registry = openRegistry(communityClasspath);
+                Connection connection = h2Connection(driverLoader)) {
+            var descriptor = registry.catalog().getPluginsList().stream()
+                    .filter(plugin -> plugin.getDatabaseType().equalsIgnoreCase("H2"))
+                    .findFirst()
+                    .orElseThrow();
+            assertTrue(descriptor.getDmlBuilderAvailable());
+            assertTrue(descriptor.getValueProcessorAvailable());
+            assertTrue(descriptor.getIdentifierProcessorAvailable());
+
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate("CREATE SCHEMA IF NOT EXISTS APP");
+                statement.executeUpdate(
+                        "CREATE TABLE APP.items ("
+                                + "id BIGINT PRIMARY KEY, label VARCHAR(128), active BOOLEAN, "
+                                + "created_at TIMESTAMP, note VARCHAR(128), payload VARBINARY)");
+            }
+
+            BuildCommunityDmlRequest single = dmlRequest(CommunityDmlSingleInsert.newBuilder()
+                    .addColumns(dmlColumn("id", "BIGINT"))
+                    .addColumns(dmlColumn("label", "VARCHAR"))
+                    .addColumns(dmlColumn("active", "BOOLEAN"))
+                    .addColumns(dmlColumn("created_at", "TIMESTAMP"))
+                    .addColumns(dmlColumn("note", "VARCHAR"))
+                    .setRow(dmlRow(
+                            dmlDecimal("7"),
+                            dmlString("O'Brien"),
+                            dmlBoolean(true),
+                            dmlTemporal("2026-07-27T12:34:56"),
+                            dmlNull())));
+            String singleSql = registry.buildDml(single).getSql();
+            assertEquals(
+                    "INSERT INTO APP.items (id,label,active,created_at,note)  VALUES "
+                            + "('7','O''Brien',TRUE,'2026-07-27 12:34:56',NULL)",
+                    singleSql);
+
+            BuildCommunityDmlRequest multi = dmlRequest(CommunityDmlMultiInsert.newBuilder()
+                    .addColumns(dmlColumn("id", "BIGINT"))
+                    .addColumns(dmlColumn("label", "VARCHAR"))
+                    .addRows(dmlRow(dmlDecimal("1"), dmlString("first")))
+                    .addRows(dmlRow(dmlDecimal("2"), dmlString("second"))));
+            String multiSql = registry.buildDml(multi).getSql();
+            assertEquals(
+                    "INSERT INTO APP.items (id,label)  VALUES ('1','first'),\n('2','second')",
+                    multiSql);
+
+            BuildCommunityDmlRequest update = dmlRequest(CommunityDmlUpdate.newBuilder()
+                    .addAssignments(dmlAssignment("label", "VARCHAR", dmlString("next")))
+                    .addAssignments(dmlAssignment("active", "BOOLEAN", dmlBoolean(false)))
+                    .addPredicates(dmlAssignment("id", "BIGINT", dmlDecimal("7")))
+                    .addPredicates(dmlAssignment("active", "BOOLEAN", dmlBoolean(true))));
+            String updateSql = registry.buildDml(update).getSql();
+            assertEquals(
+                    "UPDATE APP.items SET label = 'next',active = FALSE "
+                            + "WHERE id = '7' AND active = TRUE",
+                    updateSql);
+
+            try (Statement statement = connection.createStatement()) {
+                assertEquals(1, statement.executeUpdate(singleSql));
+                assertEquals(2, statement.executeUpdate(multiSql));
+                assertEquals(1, statement.executeUpdate(updateSql));
+                try (var result = statement.executeQuery(
+                        "SELECT label, active, created_at, note FROM APP.items WHERE id = 7")) {
+                    assertTrue(result.next());
+                    assertEquals("next", result.getString(1));
+                    assertFalse(result.getBoolean(2));
+                    assertEquals("2026-07-27 12:34:56.0", result.getTimestamp(3).toString());
+                    assertNull(result.getString(4));
+                }
+            }
+
+            BuildCommunityDmlRequest binary = dmlRequest(CommunityDmlSingleInsert.newBuilder()
+                    .addColumns(dmlColumn("id", "BIGINT"))
+                    .addColumns(dmlColumn("payload", "VARBINARY"))
+                    .setRow(dmlRow(
+                            dmlDecimal("9"),
+                            CommunityDmlValue.newBuilder()
+                                    .setBinaryValue(ByteString.copyFrom(new byte[] {0, (byte) 0xff}))
+                                    .build())));
+            assertEquals(
+                    "community.dml_value_not_supported",
+                    assertFailureCode(
+                                    "community.dml_value_not_supported",
+                                    () -> registry.buildDml(binary))
+                            .code());
+        }
+    }
+
+    @Test
+    void realCommunityMysqlRejectsBackslashCrossColumnInjection() throws Exception {
+        Path communityClasspath = communityClasspathDirectory();
+        assumeTrue(
+                Files.isDirectory(communityClasspath),
+                "the fixed Community classpath is built by the extended integration lane");
+
+        String payload = "); DROP TABLE audit_log; -- ";
+        try (CommunityPluginRegistry registry = openRegistry(communityClasspath)) {
+            assumeTrue(
+                    registry.catalog().getPluginsList().stream()
+                            .anyMatch(plugin -> plugin.getDatabaseType().equalsIgnoreCase("MYSQL")),
+                    "the fixed Community classpath does not contain the MySQL plugin");
+            BuildCommunityDmlRequest request = BuildCommunityDmlRequest.newBuilder()
+                    .setDatabaseType("MYSQL")
+                    .setTarget(CommunityDmlTarget.newBuilder()
+                            .setDatabaseName("app")
+                            .setTableName("items"))
+                    .setSingleInsert(CommunityDmlSingleInsert.newBuilder()
+                            .addColumns(dmlColumn("a", "TIMESTAMP"))
+                            .addColumns(dmlColumn("b", "TIMESTAMP"))
+                            .setRow(dmlRow(dmlString("\\"), dmlString(payload))))
+                    .build();
+
+            RuntimeFailure failure = assertFailureCode(
+                    "community.dml_value_not_supported", () -> registry.buildDml(request));
+            assertFalse(failure.getMessage().contains(payload));
+        }
+    }
+
+    @Test
+    void realCommunityMysqlNormalizesBooleanAliasesAndBits() throws Exception {
+        Path communityClasspath = communityClasspathDirectory();
+        assumeTrue(
+                Files.isDirectory(communityClasspath),
+                "the fixed Community classpath is built by the extended integration lane");
+
+        try (CommunityPluginRegistry registry = openRegistry(communityClasspath)) {
+            assumeTrue(
+                    registry.catalog().getPluginsList().stream()
+                            .anyMatch(plugin -> plugin.getDatabaseType().equalsIgnoreCase("MYSQL")),
+                    "the fixed Community classpath does not contain the MySQL plugin");
+            BuildCommunityDmlRequest request = BuildCommunityDmlRequest.newBuilder()
+                    .setDatabaseType("MYSQL")
+                    .setTarget(CommunityDmlTarget.newBuilder()
+                            .setDatabaseName("app")
+                            .setTableName("items"))
+                    .setSingleInsert(CommunityDmlSingleInsert.newBuilder()
+                            .addColumns(dmlColumn("boolean_alias", "BOOLEAN"))
+                            .addColumns(dmlColumn("bit_value", "BIT"))
+                            .setRow(dmlRow(dmlBoolean(true), dmlBoolean(false))))
+                    .build();
+
+            String sql = registry.buildDml(request).getSql();
+            assertTrue(sql.contains("('1',b'0')"));
+            assertFalse(sql.contains("'true'"));
+            assertFalse(sql.contains("'false'"));
+        }
+    }
+
+    @Test
+    void realCommunitySqlServerOwnsIdentifierQuotingAndUsesNumericBits() throws Exception {
+        Path communityClasspath = communityClasspathDirectory();
+        assumeTrue(
+                Files.isDirectory(communityClasspath),
+                "the fixed Community classpath is built by the extended integration lane");
+
+        try (CommunityPluginRegistry registry = openRegistry(communityClasspath)) {
+            assumeTrue(
+                    registry.catalog().getPluginsList().stream()
+                            .anyMatch(plugin ->
+                                    plugin.getDatabaseType().equalsIgnoreCase("SQLSERVER")),
+                    "the fixed Community classpath does not contain the SQL Server plugin");
+            BuildCommunityDmlRequest request = BuildCommunityDmlRequest.newBuilder()
+                    .setDatabaseType("SQLSERVER")
+                    .setTarget(CommunityDmlTarget.newBuilder()
+                            .setDatabaseName("app")
+                            .setSchemaName("dbo")
+                            .setTableName("items"))
+                    .setSingleInsert(CommunityDmlSingleInsert.newBuilder()
+                            .addColumns(dmlColumn("select", "BIT"))
+                            .setRow(dmlRow(dmlBoolean(true))))
+                    .build();
+
+            String sql = registry.buildDml(request).getSql();
+            assertTrue(sql.contains("[app].[dbo].[items]"));
+            assertTrue(sql.contains("([select])"));
+            assertTrue(sql.contains("(1)"));
+            assertFalse(sql.contains("[["));
+
+            BuildCommunityDmlRequest update = BuildCommunityDmlRequest.newBuilder()
+                    .setDatabaseType("SQLSERVER")
+                    .setTarget(request.getTarget())
+                    .setUpdate(CommunityDmlUpdate.newBuilder()
+                            .addAssignments(dmlAssignment("select", "BIT", dmlBoolean(false)))
+                            .addPredicates(dmlAssignment("id", "BIGINT", dmlDecimal("7"))))
+                    .build();
+            String updateSql = registry.buildDml(update).getSql();
+            assertTrue(updateSql.contains("UPDATE [app].[dbo].[items]"));
+            assertTrue(updateSql.contains("[select] = 0"));
+            assertFalse(updateSql.contains("[["));
+        }
+    }
+
     private static void assertMissingDetail(String code, String field) {
         RuntimeFailure failure = assertFailureCode(
                 code, () -> CommunityPluginRegistry.requireDetail(null, code, field));
@@ -566,6 +781,85 @@ class CommunityPluginRegistryTest {
                 .setCursorUtf16(cursorUtf16)
                 .setKeywordCase("UPPER")
                 .setDatasourceScope(datasourceScope)
+                .build();
+    }
+
+    private static BuildCommunityDmlRequest dmlRequest(
+            CommunityDmlSingleInsert.Builder statement) {
+        return BuildCommunityDmlRequest.newBuilder()
+                .setDatabaseType("H2")
+                .setTarget(dmlTarget())
+                .setSingleInsert(statement)
+                .build();
+    }
+
+    private static BuildCommunityDmlRequest dmlRequest(
+            CommunityDmlMultiInsert.Builder statement) {
+        return BuildCommunityDmlRequest.newBuilder()
+                .setDatabaseType("H2")
+                .setTarget(dmlTarget())
+                .setMultiInsert(statement)
+                .build();
+    }
+
+    private static BuildCommunityDmlRequest dmlRequest(CommunityDmlUpdate.Builder statement) {
+        return BuildCommunityDmlRequest.newBuilder()
+                .setDatabaseType("H2")
+                .setTarget(dmlTarget())
+                .setUpdate(statement)
+                .build();
+    }
+
+    private static CommunityDmlTarget dmlTarget() {
+        return CommunityDmlTarget.newBuilder()
+                .setSchemaName("APP")
+                .setTableName("items")
+                .build();
+    }
+
+    private static CommunityDmlColumn dmlColumn(String name, String type) {
+        return CommunityDmlColumn.newBuilder()
+                .setName(name)
+                .setDataTypeName(type)
+                .build();
+    }
+
+    private static CommunityDmlAssignment dmlAssignment(
+            String name, String type, CommunityDmlValue value) {
+        return CommunityDmlAssignment.newBuilder()
+                .setColumn(dmlColumn(name, type))
+                .setValue(value)
+                .build();
+    }
+
+    private static CommunityDmlRow dmlRow(CommunityDmlValue... values) {
+        return CommunityDmlRow.newBuilder().addAllValues(List.of(values)).build();
+    }
+
+    private static CommunityDmlValue dmlString(String value) {
+        return CommunityDmlValue.newBuilder().setStringValue(value).build();
+    }
+
+    private static CommunityDmlValue dmlDecimal(String value) {
+        return CommunityDmlValue.newBuilder().setDecimalValue(value).build();
+    }
+
+    private static CommunityDmlValue dmlBoolean(boolean value) {
+        return CommunityDmlValue.newBuilder().setBooleanValue(value).build();
+    }
+
+    private static CommunityDmlValue dmlTemporal(String value) {
+        return CommunityDmlValue.newBuilder()
+                .setTemporalValue(CommunityDmlTemporal.newBuilder()
+                        .setKind(CommunityDmlTemporalKind
+                                .COMMUNITY_DML_TEMPORAL_KIND_LOCAL_DATETIME)
+                        .setIso8601(value))
+                .build();
+    }
+
+    private static CommunityDmlValue dmlNull() {
+        return CommunityDmlValue.newBuilder()
+                .setNullValue(CommunityDmlNull.getDefaultInstance())
                 .build();
     }
 

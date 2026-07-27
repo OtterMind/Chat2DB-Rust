@@ -468,6 +468,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/community/sql/build-dml": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["build_community_dml"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/community/sql/complete": {
         parameters: {
             query?: never;
@@ -1073,6 +1089,12 @@ export interface components {
             /** @description Schema description passed to the retained builder. */
             schema: components["schemas"]["CommunitySchema"];
         };
+        /** @description Request to generate typed dialect INSERT or UPDATE SQL without executing it. */
+        BuildCommunityDmlRequest: {
+            databaseType: string;
+            statement: components["schemas"]["CommunityDmlStatement"];
+            target: components["schemas"]["CommunityDmlTarget"];
+        };
         /** @description Result of an idempotent agent-run cancellation request. */
         CancelAgentRunResponse: {
             /** @description Idempotent cancellation disposition. */
@@ -1114,6 +1136,76 @@ export interface components {
         /** @description Stable database collection returned by Community metadata APIs. */
         CommunityDatabaseList: {
             items: components["schemas"]["CommunityDatabase"][];
+        };
+        CommunityDmlAssignment: {
+            column: components["schemas"]["CommunityDmlColumn"];
+            value: components["schemas"]["CommunityDmlValue"];
+        };
+        /** @description One column and the database type metadata used by the dialect value processor. */
+        CommunityDmlColumn: {
+            dataTypeName: string;
+            name: string;
+            /** Format: int32 */
+            precision?: number | null;
+            /** Format: int32 */
+            scale?: number | null;
+        };
+        CommunityDmlRow: {
+            values: components["schemas"]["CommunityDmlValue"][];
+        };
+        /** @description Supported DML statement shapes. Delete and raw expressions are intentionally absent. */
+        CommunityDmlStatement: {
+            columns: components["schemas"]["CommunityDmlColumn"][];
+            /** @enum {string} */
+            kind: "singleInsert";
+            row: components["schemas"]["CommunityDmlRow"];
+        } | {
+            columns: components["schemas"]["CommunityDmlColumn"][];
+            /** @enum {string} */
+            kind: "multiInsert";
+            rows: components["schemas"]["CommunityDmlRow"][];
+        } | {
+            assignments: components["schemas"]["CommunityDmlAssignment"][];
+            /** @enum {string} */
+            kind: "update";
+            predicates: components["schemas"]["CommunityDmlAssignment"][];
+        };
+        /** @description Raw qualified-name segments. Each segment is quoted independently by Community. */
+        CommunityDmlTarget: {
+            databaseName?: string | null;
+            schemaName?: string | null;
+            tableName: string;
+        };
+        /**
+         * @description Strict temporal kind carried separately from its ISO-8601 text.
+         * @enum {string}
+         */
+        CommunityDmlTemporalKind: "date" | "time" | "localDatetime" | "offsetDatetime";
+        /** @description Product-safe typed value. No variant accepts raw SQL or expressions. */
+        CommunityDmlValue: {
+            /** @enum {string} */
+            kind: "null";
+        } | {
+            /** @enum {string} */
+            kind: "string";
+            value: string;
+        } | {
+            /** @enum {string} */
+            kind: "decimal";
+            value: string;
+        } | {
+            /** @enum {string} */
+            kind: "boolean";
+            value: boolean;
+        } | {
+            /** @enum {string} */
+            kind: "temporal";
+            temporalKind: components["schemas"]["CommunityDmlTemporalKind"];
+            value: string;
+        } | {
+            base64: string;
+            /** @enum {string} */
+            kind: "binary";
         };
         /** @description One JDBC driver declaration retained from a Community plugin. */
         CommunityDriverConfig: {
@@ -1249,12 +1341,18 @@ export interface components {
         };
         /** @description Optional Community services exposed by one plugin. */
         CommunityPluginServices: {
+            /** @description Whether the plugin exposes a DML builder object. */
+            dmlBuilderAvailable: boolean;
+            /** @description Whether the plugin exposes a dialect identifier processor. */
+            identifierProcessorAvailable: boolean;
             /** @description Whether schema metadata is available. */
             metadataAvailable: boolean;
             /** @description Whether dialect SQL building is available. */
             sqlBuilderAvailable: boolean;
             /** @description Whether retained SQL parsing is available. */
             sqlParserAvailable: boolean;
+            /** @description Whether the plugin exposes a dialect value processor. */
+            valueProcessorAvailable: boolean;
         };
         /** @description Secret-free metadata for one primary-key column. */
         CommunityPrimaryKey: {
@@ -4252,6 +4350,57 @@ export interface operations {
                 };
             };
             /** @description Unexpected Community SQL-builder failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Community compatibility engine is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    build_community_dml: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BuildCommunityDmlRequest"];
+            };
+        };
+        responses: {
+            /** @description Community dialect DML */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityBuiltSql"];
+                };
+            };
+            /** @description Invalid Community DML-builder request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected Community DML-builder failure */
             500: {
                 headers: {
                     [name: string]: unknown;

@@ -14,6 +14,7 @@ import type {
   AgentSubscriptionOptions,
   BackendClient,
   BuildCommunityCreateSchemaRequest,
+  BuildCommunityDmlRequest,
   CancelAgentRunResponse,
   CancelOperationResponse,
   CommunityBuiltSql,
@@ -263,6 +264,13 @@ export class TauriBackendClient implements BackendClient {
     signal?: AbortSignal,
   ): Promise<CommunityBuiltSql> {
     return this.#request('build_community_create_schema', { request }, signal);
+  }
+
+  buildCommunityDml(
+    request: BuildCommunityDmlRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityBuiltSql> {
+    return this.#request('build_community_dml', { request }, signal);
   }
 
   parseCommunitySql(

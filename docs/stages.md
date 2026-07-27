@@ -12,7 +12,7 @@ in runtime health until then.
 | 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
 | 5 | Complete | Product transports | Generated OpenAPI/TypeScript contract, Axum JSON/SSE, Tauri 2 commands/channels, shared SQL workbench, product H2 tests |
 | 6 | Complete | Agent, MCP, and CLI | Direct providers, durable bounded tool loop, SQL tools/permissions, compaction, Web/Tauri run transports, owner-only local attachment, read-query CLI, and bounded `rmcp` stdio tools |
-| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs, 7B fixed Community H2 SPI/ANTLR, 7C product Core/Web/Tauri contracts, 7D relational object metadata, 7E relation metadata, 7F programmability metadata, 7G end-user object explorer, 7H SQL validation, 7I SQL formatting, and 7J SQL completion implemented; remaining plugin operations and per-dialect conformance explicit |
+| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs, 7B fixed Community H2 SPI/ANTLR, 7C product Core/Web/Tauri contracts, 7D relational object metadata, 7E relation metadata, 7F programmability metadata, 7G end-user object explorer, 7H SQL validation, 7I SQL formatting, 7J SQL completion, and 7K typed DML generation implemented; remaining plugin operations and per-dialect conformance explicit |
 | 8 | Planned | Packaging and release | License authorization, NOTICE/SBOM, jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
 
 Stage 3 completion means the versioned Rust-Java bridge can load an external
@@ -79,7 +79,7 @@ supervised Java generation. Java isolates them behind a platform-parent
 `URLClassLoader`, rejects manifest `Class-Path` escapes, discovers real `IPlugin`
 services, and exposes plugin catalog, H2 schema metadata, `CREATE SCHEMA`, and
 retained ANTLR parsing DTOs over Protobuf. Configuring the classpath requires all
-ten current Community capabilities at handshake, and Java plus Rust enforce the
+eleven current Community capabilities at handshake, and Java plus Rust enforce the
 generated 8 MiB cumulative response budget. Rust counts raw Community oneof
 values before decoding, including duplicate fields, and retains a generation
 snapshot whenever child reap cannot be proven. The real vertical test keeps the
@@ -216,10 +216,30 @@ desktop `1440x1000` and mobile `390x844` viewports verifies that the completion
 workbench has no overlapping or out-of-bounds content, horizontal page
 scrolling, or text overflow.
 
-Stage 7 remains incomplete. Type conversion, script execution, data
-import/export, non-relational behavior, remaining builders and plugin inventory,
-driver distribution, and per-dialect
-conformance are not implemented.
+Stage 7K adds the independent `community.dml-builder.v1` capability at
+request/response tag `223`. Java selects the real plugin-owned DML builder,
+value processor, and identifier processor. The closed request model supports
+single-row INSERT, batch INSERT, and UPDATE with non-empty ordered equality
+predicates; typed values are NULL, string, plain decimal, boolean, ISO-8601
+temporal, or binary. Database, schema, table, and column identifiers remain
+separate raw segments and are quoted by the selected plugin. Raw SQL,
+expressions, functions, DEFAULT, DELETE, and UPSERT are not accepted.
+
+Generation is datasource-free, opens no JDBC session, and returns SQL without
+executing it. Rust and Java apply matching count, field, encoded-request, and
+rendered-SQL limits; Rust also rejects duplicate raw tag-`223` responses before
+Protobuf allocation. Core, Axum, Tauri, generated OpenAPI/TypeScript, and the
+shared HTTP/Tauri frontend expose one product contract. The table-detail dialog
+supports multi-row INSERT, explicit NULL values, UPDATE SET/WHERE selection, and
+primary-key-first predicates; closing, switching table, or refreshing aborts
+the request and rejects a late response. Real H2 bridge and product gates prove
+generation does not execute SQL, then independently execute and read back
+apostrophe, NULL, decimal, boolean, and temporal values.
+
+Stage 7 remains incomplete. General type conversion, script execution, data
+import/export, non-relational behavior, remaining builder operations and plugin
+inventory, driver distribution, and per-dialect conformance are not
+implemented.
 
 Before Stage 8 may produce any Object-form distribution containing Community
 5.3.0 code, the release must record written commercial authorization compatible

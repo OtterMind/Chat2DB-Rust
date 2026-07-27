@@ -427,6 +427,9 @@ describe('selectCommunityPlugin', () => {
         metadataAvailable: true,
         sqlBuilderAvailable: true,
         sqlParserAvailable: true,
+        dmlBuilderAvailable: true,
+        valueProcessorAvailable: true,
+        identifierProcessorAvailable: true,
       },
     },
     {
@@ -449,6 +452,9 @@ describe('selectCommunityPlugin', () => {
         metadataAvailable: true,
         sqlBuilderAvailable: true,
         sqlParserAvailable: true,
+        dmlBuilderAvailable: true,
+        valueProcessorAvailable: true,
+        identifierProcessorAvailable: true,
       },
     },
   ] satisfies CommunityPluginCatalog['plugins'];

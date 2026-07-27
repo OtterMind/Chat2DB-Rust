@@ -8,6 +8,7 @@ export type AgentSessionList = Schema<'AgentSessionList'>;
 export type ApiError = Schema<'ApiError'>;
 export type CancelOperationResponse = Schema<'CancelOperationResponse'>;
 export type BuildCommunityCreateSchemaRequest = Schema<'BuildCommunityCreateSchemaRequest'>;
+export type BuildCommunityDmlRequest = Schema<'BuildCommunityDmlRequest'>;
 export type CommunityBuiltSql = Schema<'CommunityBuiltSql'>;
 export type CommunityDatabaseList = Schema<'CommunityDatabaseList'>;
 export type CommunityFormattedSql = Schema<'CommunityFormattedSql'>;
@@ -195,6 +196,10 @@ export interface BackendClient {
   ): Promise<CommunityTrigger>;
   buildCommunityCreateSchema(
     request: BuildCommunityCreateSchemaRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunityBuiltSql>;
+  buildCommunityDml(
+    request: BuildCommunityDmlRequest,
     signal?: AbortSignal,
   ): Promise<CommunityBuiltSql>;
   parseCommunitySql(

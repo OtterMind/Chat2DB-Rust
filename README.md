@@ -4,7 +4,7 @@ Private implementation of the Chat2DB Community hybrid runtime.
 
 ## Current state
 
-The repository has completed Stages 1 through 6 and the first ten independently
+The repository has completed Stages 1 through 6 and the first eleven independently
 buildable Stage 7 slices:
 
 - canonical Rust API contracts;
@@ -75,7 +75,10 @@ buildable Stage 7 slices:
   across HTTP and Tauri; and
 - retained Community SQL completion through a forced-read-only JDBC session,
   bounded UTF-16 edit ranges and suggestions, and one race-safe keyboard-driven
-  completion surface across HTTP and Tauri.
+  completion surface across HTTP and Tauri; and
+- typed Community single-row and batch INSERT plus ordered equality-predicate
+  UPDATE generation, with no raw-SQL value escape hatch, no JDBC session, and a
+  table-scoped editor dialog that inserts generated SQL without executing it.
 
 Stage 6 is complete. Web and desktop own the product runtime and publish its
 owner-only local endpoint; CLI and MCP attach to that host and never contact
@@ -101,6 +104,10 @@ datasource, and database type are still current. Stage 7J adds the separately
 negotiated `community.sql-completion.v1` capability, calls the real Community
 completion service against the existing read-only JDBC session, and exposes
 bounded suggestions through Core, Axum, Tauri, and the shared React editor.
+Stage 7K adds the separately negotiated `community.dml-builder.v1` capability,
+calls the selected plugin's real DML, value, and identifier processors without
+opening a JDBC session, and exposes typed INSERT/UPDATE generation through the
+same product boundary and table detail UI.
 Signing, downloading, updating, rollback, the remaining compatibility estate,
 and full per-dialect compatibility remain Stage 7 work.
 
@@ -146,12 +153,13 @@ JAR integration test rejects any build that embeds `org/h2/Driver.class`.
 The H2 gates cover the Stage 3 JDBC bridge, the Stage 5 product path from a
 vault-backed datasource through retained-result paging and cancellation, and
 the Stage 7B Community path through real `IPlugin`, `IDbMetaData`,
-`ISqlBuilder`, and ANTLR parser implementations. The Stage 7C-7J product gate
+`ISqlBuilder`, and ANTLR parser implementations. The Stage 7C-7K product gate
 repeats those calls through encrypted datasource storage and Core services,
 including forced-read-only schema, object, relation, and programmability
-metadata session cleanup plus datasource-free parsing, validation, and
-formatting, plus datasource-bound table and column completion. H2 remains an
-external test driver rather than a runtime dependency of either Java classpath.
+metadata session cleanup plus datasource-free parsing, validation, formatting,
+and typed DML generation, plus datasource-bound table and column completion. H2
+remains an external test driver rather than a runtime dependency of either Java
+classpath.
 The Stage 7J completion workbench also passes Playwright visual acceptance at
 desktop `1440x1000` and mobile `390x844` viewports, with no overlapping or
 out-of-bounds content, horizontal page scrolling, or text overflow.
@@ -179,7 +187,7 @@ make check-contracts
 ```
 
 Build the Java engine, fixed Community classpath, and shared frontend, then run
-the Web product host with the Stage 7C-7J services enabled:
+the Web product host with the Stage 7C-7K services enabled:
 
 ```bash
 make java community-h2-classpath frontend

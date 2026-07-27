@@ -28,10 +28,12 @@ frontend backend adapters expose catalog, schemas, databases, tables, columns,
 indexes, views, imported and exported foreign keys, primary keys, functions,
 function parameters, procedures, procedure parameters, triggers, schema SQL
 building, parsing, syntax validation, formatting, and datasource-aware SQL
-completion when the exact locked classpath is configured. The shared React
+completion plus datasource-free typed DML generation when the exact locked
+classpath is configured. The shared React
 workbench consumes the Community operations through an end-user object explorer,
 schema SQL insertion, explicit SQL analysis, separately negotiated validation,
-race-safe in-place formatting, and keyboard-driven bounded completion. Signing,
+race-safe in-place formatting, keyboard-driven bounded completion, and a
+table-scoped INSERT/UPDATE builder. Signing,
 distribution, the
 remaining dialect estate, and packaging remain target components. CLI and MCP
 attach to a running host rather than composing a second product runtime.
@@ -269,8 +271,29 @@ completion after `select * from ` and `ID`/`LABEL` column completion after
 `select items. from APP.items` through the fixed classpath and read-only product
 session.
 
-Remaining builders, type conversion, non-relational operations, script
-execution, import/export, and per-dialect conformance are not implemented yet.
+Stage 7K adds the independent `community.dml-builder.v1` capability at
+Protobuf request/response tag `223`. The adapter invokes the selected real
+plugin's DML builder, value processor, and identifier processor without opening
+a JDBC session. Its process-neutral contract contains independently quoted
+database/schema/table/column segments and a closed typed-value union, with no
+raw SQL or expression variant. It supports single and batch INSERT plus UPDATE
+with non-empty ordered equality predicates; DELETE, UPSERT, DEFAULT, functions,
+and arbitrary operators remain outside the contract.
+
+Core exposes datasource-free SQL generation, Axum publishes
+`POST /api/v1/community/sql/build-dml`, Tauri publishes
+`build_community_dml`, and both frontend adapters use the generated shared DTOs.
+The table detail opens a modal editor for selected columns, multiple INSERT
+rows, explicit NULL, and separate UPDATE SET/WHERE selections. Generated SQL is
+inserted into the existing editor and is never executed automatically. Abort
+identity covers close, table switch, and refresh so late responses cannot write
+into a newer editor scope. Real bridge and product gates generate first, prove
+the database is unchanged, then independently execute and read back typed H2
+values.
+
+Remaining builder operations, general type conversion, non-relational
+operations, script execution, import/export, and per-dialect conformance are not
+implemented yet.
 The current product slice proves H2 only.
 
 Spring Boot, Spring Web, Spring AI, MCP, JCEF, product storage, and updater logic
@@ -398,7 +421,10 @@ handling, schema SQL insertion, and explicit SQL analysis. The eighth and ninth
 slices add independently negotiated SQL validation and formatting. The tenth
 slice calls Community's retained completion service against the existing
 read-only JDBC session and exposes bounded UTF-16 suggestions through the same
-Core/Axum/Tauri/React product boundary. Signing,
+Core/Axum/Tauri/React product boundary. The eleventh slice generates typed
+single/batch INSERT and ordered UPDATE SQL through the real plugin-owned DML,
+value, and identifier processors and inserts it into the editor without
+execution. Signing,
 installation, hot reload, downloading, compatibility selection, updates,
 rollback, and the remaining compatibility operations are not implemented.
 
@@ -457,14 +483,15 @@ set.
   over-budget entries before the isolated Community loader is created; Java
   also rejects manifest `Class-Path` escapes. The fixed build removes such
   dependency attributes deterministically before lock verification and verifies
-  two consecutive clean builds byte-for-byte. Configuring it requires all ten
+  two consecutive clean builds byte-for-byte. Configuring it requires all eleven
   Community capabilities during handshake, and Community response projection
   is capped at 8 MiB in both Java and Rust. Rust applies that budget to raw
-  Community response tags `200..=222` before Protobuf decoding, including
+  Community response tags `200..=223` before Protobuf decoding, including
   duplicate fields, and allocation-free scans known nested repeated fields so
   collection limits are enforced before DTO allocation. It then validates
-  decoded collection counts, nested index columns and completion fields, UTF-16
-  ranges, field sizes, aggregate strings, and encoded message length again. The
+  decoded collection counts, nested index columns, completion fields, typed-DML
+  SQL, UTF-16 ranges, field sizes, aggregate strings, and encoded message length
+  again. The
   source build also rejects any artifact-set drift against its committed lock.
   Signing and installed-package verification remain Stage 8 work.
 

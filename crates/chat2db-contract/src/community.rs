@@ -32,6 +32,7 @@ pub struct CommunityPluginBehavior {
 }
 
 /// Optional Community services exposed by one plugin.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CommunityPluginServices {
@@ -41,6 +42,12 @@ pub struct CommunityPluginServices {
     pub sql_builder_available: bool,
     /// Whether retained SQL parsing is available.
     pub sql_parser_available: bool,
+    /// Whether the plugin exposes a DML builder object.
+    pub dml_builder_available: bool,
+    /// Whether the plugin exposes a dialect value processor.
+    pub value_processor_available: bool,
+    /// Whether the plugin exposes a dialect identifier processor.
+    pub identifier_processor_available: bool,
 }
 
 /// Stable product projection of one Community plugin.
@@ -572,6 +579,104 @@ pub struct CommunityBuiltSql {
     pub sql: String,
 }
 
+/// Request to generate typed dialect INSERT or UPDATE SQL without executing it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildCommunityDmlRequest {
+    pub database_type: String,
+    pub target: CommunityDmlTarget,
+    pub statement: CommunityDmlStatement,
+}
+
+/// Raw qualified-name segments. Each segment is quoted independently by Community.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityDmlTarget {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_name: Option<String>,
+    pub table_name: String,
+}
+
+/// One column and the database type metadata used by the dialect value processor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityDmlColumn {
+    pub name: String,
+    pub data_type_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub precision: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scale: Option<i32>,
+}
+
+/// Strict temporal kind carried separately from its ISO-8601 text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum CommunityDmlTemporalKind {
+    Date,
+    Time,
+    LocalDatetime,
+    OffsetDatetime,
+}
+
+/// Product-safe typed value. No variant accepts raw SQL or expressions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CommunityDmlValue {
+    Null,
+    String {
+        value: String,
+    },
+    Decimal {
+        value: String,
+    },
+    Boolean {
+        value: bool,
+    },
+    Temporal {
+        #[serde(rename = "temporalKind")]
+        temporal_kind: CommunityDmlTemporalKind,
+        value: String,
+    },
+    /// Canonical standard-base64 bytes at the JSON boundary.
+    Binary {
+        base64: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityDmlRow {
+    pub values: Vec<CommunityDmlValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityDmlAssignment {
+    pub column: CommunityDmlColumn,
+    pub value: CommunityDmlValue,
+}
+
+/// Supported DML statement shapes. Delete and raw expressions are intentionally absent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CommunityDmlStatement {
+    SingleInsert {
+        columns: Vec<CommunityDmlColumn>,
+        row: CommunityDmlRow,
+    },
+    MultiInsert {
+        columns: Vec<CommunityDmlColumn>,
+        rows: Vec<CommunityDmlRow>,
+    },
+    Update {
+        assignments: Vec<CommunityDmlAssignment>,
+        predicates: Vec<CommunityDmlAssignment>,
+    },
+}
+
 /// Request to analyze SQL through a retained Community parser.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -794,11 +899,13 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        BuildCommunityCreateSchemaRequest, CommunityBuiltSql, CommunityDatabase,
-        CommunityDatabaseList, CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList,
-        CommunityFormattedSql, CommunityFunction, CommunityFunctionList,
-        CommunityFunctionParameter, CommunityFunctionParameterList, CommunityParsedStatement,
-        CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
+        BuildCommunityCreateSchemaRequest, BuildCommunityDmlRequest, CommunityBuiltSql,
+        CommunityDatabase, CommunityDatabaseList, CommunityDmlColumn, CommunityDmlRow,
+        CommunityDmlStatement, CommunityDmlTarget, CommunityDmlTemporalKind, CommunityDmlValue,
+        CommunityDriverConfig, CommunityForeignKey, CommunityForeignKeyList, CommunityFormattedSql,
+        CommunityFunction, CommunityFunctionList, CommunityFunctionParameter,
+        CommunityFunctionParameterList, CommunityParsedStatement, CommunityPlugin,
+        CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
         CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
         CommunityProcedureParameter, CommunityProcedureParameterList, CommunitySchema,
         CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlCompletion,
@@ -838,6 +945,9 @@ mod tests {
                     metadata_available: true,
                     sql_builder_available: true,
                     sql_parser_available: true,
+                    dml_builder_available: true,
+                    value_processor_available: true,
+                    identifier_processor_available: true,
                 },
             }],
         };
@@ -859,6 +969,71 @@ mod tests {
             serde_json::from_value::<CommunityPluginCatalog>(value)
                 .expect("catalog must deserialize"),
             catalog
+        );
+    }
+
+    #[test]
+    fn dml_contract_uses_tagged_values_and_distinguishes_null_from_empty_string() {
+        let request = BuildCommunityDmlRequest {
+            database_type: "H2".to_owned(),
+            target: CommunityDmlTarget {
+                database_name: None,
+                schema_name: Some("APP".to_owned()),
+                table_name: "items".to_owned(),
+            },
+            statement: CommunityDmlStatement::SingleInsert {
+                columns: vec![
+                    CommunityDmlColumn {
+                        name: "note".to_owned(),
+                        data_type_name: "VARCHAR".to_owned(),
+                        precision: Some(255),
+                        scale: None,
+                    },
+                    CommunityDmlColumn {
+                        name: "label".to_owned(),
+                        data_type_name: "VARCHAR".to_owned(),
+                        precision: None,
+                        scale: None,
+                    },
+                ],
+                row: CommunityDmlRow {
+                    values: vec![
+                        CommunityDmlValue::Null,
+                        CommunityDmlValue::String {
+                            value: String::new(),
+                        },
+                    ],
+                },
+            },
+        };
+
+        let value = serde_json::to_value(&request).expect("DML request must serialize");
+        assert_eq!(value["statement"]["kind"], "singleInsert");
+        assert_eq!(
+            value["statement"]["row"]["values"],
+            json!([
+                {"kind": "null"},
+                {"kind": "string", "value": ""}
+            ])
+        );
+        assert!(value["target"].get("databaseName").is_none());
+        assert_eq!(
+            serde_json::from_value::<BuildCommunityDmlRequest>(value)
+                .expect("DML request must deserialize"),
+            request
+        );
+
+        assert_eq!(
+            serde_json::to_value(CommunityDmlValue::Temporal {
+                temporal_kind: CommunityDmlTemporalKind::OffsetDatetime,
+                value: "2026-07-27T12:30:00+08:00".to_owned(),
+            })
+            .expect("temporal DML value must serialize"),
+            json!({
+                "kind": "temporal",
+                "temporalKind": "offsetDatetime",
+                "value": "2026-07-27T12:30:00+08:00"
+            })
         );
     }
 

@@ -14,12 +14,15 @@ pub use state::{
     EngineIdentity, EngineState, PingReply, ProcessExit, SessionState, StderrSnapshot,
 };
 pub use supervisor::{
+    BuildCommunityDmlRequest, COMMUNITY_DML_BUILDER_CAPABILITY,
     COMMUNITY_OBJECT_METADATA_CAPABILITY, COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
     COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY, COMMUNITY_RELATION_METADATA_CAPABILITY,
     COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
     COMMUNITY_SQL_COMPLETION_CAPABILITY, COMMUNITY_SQL_FORMATTER_CAPABILITY,
     COMMUNITY_SQL_PARSER_CAPABILITY, COMMUNITY_SQL_VALIDATION_CAPABILITY, CancelDisposition,
     ColumnNullability, CommunityClasspath, CommunityClient, CommunityDatabase,
+    CommunityDmlAssignment, CommunityDmlColumn, CommunityDmlRow, CommunityDmlStatement,
+    CommunityDmlTarget, CommunityDmlTemporal, CommunityDmlTemporalKind, CommunityDmlValue,
     CommunityDriverConfig, CommunityForeignKey, CommunityFormattedSql, CommunityFunction,
     CommunityFunctionParameter, CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior,
     CommunityPluginCatalog, CommunityPluginServices, CommunityPrimaryKey, CommunityProcedure,

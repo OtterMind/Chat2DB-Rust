@@ -72,6 +72,7 @@ message ClientEnvelope {
     ValidateCommunitySqlRequest validate_community_sql = 220;
     FormatCommunitySqlRequest format_community_sql = 221;
     CompleteCommunitySqlRequest complete_community_sql = 222;
+    BuildCommunityDmlRequest build_community_dml = 223;
   }
 }
 
@@ -119,6 +120,7 @@ message ServerEnvelope {
     CommunitySqlValidation community_sql_validation = 220;
     CommunityFormattedSql community_formatted_sql = 221;
     CommunitySqlCompletion community_sql_completion = 222;
+    CommunityBuiltDml community_built_dml = 223;
   }
 }
 

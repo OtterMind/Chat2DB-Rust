@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type {
   BuildCommunityCreateSchemaRequest,
+  BuildCommunityDmlRequest,
   CommunityBuiltSql,
   CommunityDatabaseList,
   CommunityFormattedSql,
@@ -136,6 +137,16 @@ const parseSqlRequest = {
   sql: 'select 1',
 } satisfies ParseCommunitySqlRequest;
 
+const buildDmlRequest = {
+  databaseType: 'H2',
+  target: { databaseName: 'inventory', schemaName: 'APP', tableName: 'ITEMS' },
+  statement: {
+    kind: 'singleInsert',
+    columns: [{ name: 'LABEL', dataTypeName: 'VARCHAR', precision: 255, scale: 0 }],
+    row: { values: [{ kind: 'string', value: "O'Brien" }] },
+  },
+} satisfies BuildCommunityDmlRequest;
+
 const validateSqlRequest = {
   databaseType: 'H2',
   sql: 'select from',
@@ -185,6 +196,9 @@ const catalog = {
       metadataAvailable: true,
       sqlBuilderAvailable: true,
       sqlParserAvailable: true,
+      dmlBuilderAvailable: true,
+      valueProcessorAvailable: true,
+      identifierProcessorAvailable: true,
     },
   }],
 } satisfies CommunityPluginCatalog;
@@ -385,6 +399,7 @@ const triggers = {
 } satisfies CommunityTriggerList;
 const trigger = triggers.items[0] satisfies CommunityTrigger;
 const builtSql = { sql: 'CREATE SCHEMA reporting' } satisfies CommunityBuiltSql;
+const builtDml = { sql: "INSERT INTO inventory.APP.ITEMS (LABEL) VALUES ('O''Brien')" } satisfies CommunityBuiltSql;
 const analysis = {
   isSelect: true,
   statements: [{ sql: 'select 1', statementType: 'SELECT', kind: 'Select' }],
@@ -468,6 +483,7 @@ const responses = [
   triggers,
   trigger,
   builtSql,
+  builtDml,
   analysis,
   validation,
   formattedSql,
@@ -516,6 +532,7 @@ describe('Community backend adapter parity', () => {
       await client.listCommunityTriggers(listTriggersRequest),
       await client.getCommunityTrigger(getTriggerRequest),
       await client.buildCommunityCreateSchema(buildSchemaRequest),
+      await client.buildCommunityDml(buildDmlRequest),
       await client.parseCommunitySql(parseSqlRequest),
       await client.validateCommunitySql(validateSqlRequest),
       await client.formatCommunitySql(formatSqlRequest),
@@ -621,6 +638,7 @@ describe('Community backend adapter parity', () => {
         method: 'POST',
         body: buildSchemaRequest,
       },
+      { path: '/api/v1/community/sql/build-dml', method: 'POST', body: buildDmlRequest },
       { path: '/api/v1/community/sql/parse', method: 'POST', body: parseSqlRequest },
       { path: '/api/v1/community/sql/validate', method: 'POST', body: validateSqlRequest },
       { path: '/api/v1/community/sql/format', method: 'POST', body: formatSqlRequest },
@@ -659,6 +677,7 @@ describe('Community backend adapter parity', () => {
       await client.listCommunityTriggers(listTriggersRequest),
       await client.getCommunityTrigger(getTriggerRequest),
       await client.buildCommunityCreateSchema(buildSchemaRequest),
+      await client.buildCommunityDml(buildDmlRequest),
       await client.parseCommunitySql(parseSqlRequest),
       await client.validateCommunitySql(validateSqlRequest),
       await client.formatCommunitySql(formatSqlRequest),
@@ -694,6 +713,7 @@ describe('Community backend adapter parity', () => {
       { command: 'list_community_triggers', args: { request: listTriggersRequest } },
       { command: 'get_community_trigger', args: { request: getTriggerRequest } },
       { command: 'build_community_create_schema', args: { request: buildSchemaRequest } },
+      { command: 'build_community_dml', args: { request: buildDmlRequest } },
       { command: 'parse_community_sql', args: { request: parseSqlRequest } },
       { command: 'validate_community_sql', args: { request: validateSqlRequest } },
       { command: 'format_community_sql', args: { request: formatSqlRequest } },

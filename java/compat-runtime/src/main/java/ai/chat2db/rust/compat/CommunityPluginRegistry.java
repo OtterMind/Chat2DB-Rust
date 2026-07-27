@@ -1,5 +1,7 @@
 package ai.chat2db.rust.compat;
 
+import ai.chat2db.rust.compat.protocol.v1.BuildCommunityDmlRequest;
+import ai.chat2db.rust.compat.protocol.v1.CommunityBuiltDml;
 import ai.chat2db.rust.compat.protocol.v1.CommunityBuiltSql;
 import ai.chat2db.rust.compat.protocol.v1.CommunityByteLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunityColumnCountLimit;
@@ -169,6 +171,7 @@ final class CommunityPluginRegistry implements AutoCloseable {
     private final URLClassLoader loader;
     private final Map<String, PluginHandle> plugins;
     private final CommunitySqlCompletionBridge sqlCompletion;
+    private final CommunityDmlBuilder dmlBuilder;
     private boolean closed;
 
     private CommunityPluginRegistry(
@@ -185,6 +188,7 @@ final class CommunityPluginRegistry implements AutoCloseable {
         this.loader = loader;
         this.plugins = plugins;
         this.sqlCompletion = sqlCompletion;
+        this.dmlBuilder = loader == null ? null : new CommunityDmlBuilder(loader);
     }
 
     static CommunityPluginRegistry openConfigured() {
@@ -261,6 +265,19 @@ final class CommunityPluginRegistry implements AutoCloseable {
                     "Community SQL completion is not configured");
         }
         return sqlCompletion;
+    }
+
+    synchronized CommunityBuiltDml buildDml(BuildCommunityDmlRequest request)
+            throws RuntimeFailure {
+        ensureOpen();
+        CommunityDmlBuilder.validateRequest(request);
+        PluginHandle handle = requirePlugin(request.getDatabaseType());
+        if (dmlBuilder == null) {
+            throw RuntimeFailure.conflict(
+                    "community.dml_builder_unavailable",
+                    "Community DML generation is not configured");
+        }
+        return dmlBuilder.build(handle.plugin(), request);
     }
 
     void validateSchemasRequest(String databaseType, String databaseName)
@@ -1368,12 +1385,18 @@ final class CommunityPluginRegistry implements AutoCloseable {
                 descriptor.addDrivers(driver(driver, budget));
             }
             Object metadata = invoke(handle.plugin(), "getDbMetaData");
-            Object builder = metadata == null ? null : invoke(metadata, "getSqlBuilder");
+            Object builder = optionalComponent(handle.plugin(), "getSqlBuilder");
+            Object valueProcessor = optionalComponent(handle.plugin(), "getValueProcessor");
+            Object identifierProcessor =
+                    optionalComponent(handle.plugin(), "getSQLIdentifierProcessor");
             Object syntax = invoke(handle.plugin(), "getSqlSyntaxPlugin");
-            budget.consumeBooleans(3);
+            budget.consumeBooleans(6);
             descriptor.setMetadataAvailable(metadata != null);
             descriptor.setSqlBuilderAvailable(builder != null);
             descriptor.setSqlParserAvailable(syntax != null && invoke(syntax, "getSQLParser") != null);
+            descriptor.setDmlBuilderAvailable(dmlSegmentAvailable(builder));
+            descriptor.setValueProcessorAvailable(valueProcessor != null);
+            descriptor.setIdentifierProcessorAvailable(identifierProcessor != null);
             return descriptor.build();
         } catch (RuntimeFailure failure) {
             throw failure;
@@ -2313,6 +2336,33 @@ final class CommunityPluginRegistry implements AutoCloseable {
             return invocation.getCause();
         }
         return failure;
+    }
+
+    private static boolean dmlSegmentAvailable(Object builder)
+            throws ReflectiveOperationException {
+        if (builder == null) {
+            return false;
+        }
+        try {
+            return invoke(builder, "dml") != null;
+        } catch (InvocationTargetException failure) {
+            if (rootInvocationCause(failure) instanceof UnsupportedOperationException) {
+                return false;
+            }
+            throw failure;
+        }
+    }
+
+    private static Object optionalComponent(Object plugin, String method)
+            throws ReflectiveOperationException {
+        try {
+            return invoke(plugin, method);
+        } catch (InvocationTargetException failure) {
+            if (rootInvocationCause(failure) instanceof UnsupportedOperationException) {
+                return null;
+            }
+            throw failure;
+        }
     }
 
     private static Object invoke(Object target, String method)

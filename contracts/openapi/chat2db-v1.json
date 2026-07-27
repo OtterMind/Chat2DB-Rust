@@ -2304,6 +2304,66 @@
         }
       }
     },
+    "/api/v1/community/sql/build-dml": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "build_community_dml",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BuildCommunityDmlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community dialect DML",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityBuiltSql"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community DML-builder request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community DML-builder failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/community/sql/complete": {
       "post": {
         "tags": [
@@ -4445,6 +4505,26 @@
           }
         }
       },
+      "BuildCommunityDmlRequest": {
+        "type": "object",
+        "description": "Request to generate typed dialect INSERT or UPDATE SQL without executing it.",
+        "required": [
+          "databaseType",
+          "target",
+          "statement"
+        ],
+        "properties": {
+          "databaseType": {
+            "type": "string"
+          },
+          "statement": {
+            "$ref": "#/components/schemas/CommunityDmlStatement"
+          },
+          "target": {
+            "$ref": "#/components/schemas/CommunityDmlTarget"
+          }
+        }
+      },
       "CancelAgentRunResponse": {
         "type": "object",
         "description": "Result of an idempotent agent-run cancellation request.",
@@ -4558,6 +4638,300 @@
             }
           }
         }
+      },
+      "CommunityDmlAssignment": {
+        "type": "object",
+        "required": [
+          "column",
+          "value"
+        ],
+        "properties": {
+          "column": {
+            "$ref": "#/components/schemas/CommunityDmlColumn"
+          },
+          "value": {
+            "$ref": "#/components/schemas/CommunityDmlValue"
+          }
+        }
+      },
+      "CommunityDmlColumn": {
+        "type": "object",
+        "description": "One column and the database type metadata used by the dialect value processor.",
+        "required": [
+          "name",
+          "dataTypeName"
+        ],
+        "properties": {
+          "dataTypeName": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "precision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "scale": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        }
+      },
+      "CommunityDmlRow": {
+        "type": "object",
+        "required": [
+          "values"
+        ],
+        "properties": {
+          "values": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunityDmlValue"
+            }
+          }
+        }
+      },
+      "CommunityDmlStatement": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "columns",
+              "row",
+              "kind"
+            ],
+            "properties": {
+              "columns": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CommunityDmlColumn"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "singleInsert"
+                ]
+              },
+              "row": {
+                "$ref": "#/components/schemas/CommunityDmlRow"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "columns",
+              "rows",
+              "kind"
+            ],
+            "properties": {
+              "columns": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CommunityDmlColumn"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "multiInsert"
+                ]
+              },
+              "rows": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CommunityDmlRow"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "assignments",
+              "predicates",
+              "kind"
+            ],
+            "properties": {
+              "assignments": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CommunityDmlAssignment"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "update"
+                ]
+              },
+              "predicates": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CommunityDmlAssignment"
+                }
+              }
+            }
+          }
+        ],
+        "description": "Supported DML statement shapes. Delete and raw expressions are intentionally absent."
+      },
+      "CommunityDmlTarget": {
+        "type": "object",
+        "description": "Raw qualified-name segments. Each segment is quoted independently by Community.",
+        "required": [
+          "tableName"
+        ],
+        "properties": {
+          "databaseName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schemaName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tableName": {
+            "type": "string"
+          }
+        }
+      },
+      "CommunityDmlTemporalKind": {
+        "type": "string",
+        "description": "Strict temporal kind carried separately from its ISO-8601 text.",
+        "enum": [
+          "date",
+          "time",
+          "localDatetime",
+          "offsetDatetime"
+        ]
+      },
+      "CommunityDmlValue": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "null"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "value",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "string"
+                ]
+              },
+              "value": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "value",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "decimal"
+                ]
+              },
+              "value": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "value",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "boolean"
+                ]
+              },
+              "value": {
+                "type": "boolean"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "temporalKind",
+              "value",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "temporal"
+                ]
+              },
+              "temporalKind": {
+                "$ref": "#/components/schemas/CommunityDmlTemporalKind"
+              },
+              "value": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Canonical standard-base64 bytes at the JSON boundary.",
+            "required": [
+              "base64",
+              "kind"
+            ],
+            "properties": {
+              "base64": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "binary"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Product-safe typed value. No variant accepts raw SQL or expressions."
       },
       "CommunityDriverConfig": {
         "type": "object",
@@ -4981,9 +5355,20 @@
         "required": [
           "metadataAvailable",
           "sqlBuilderAvailable",
-          "sqlParserAvailable"
+          "sqlParserAvailable",
+          "dmlBuilderAvailable",
+          "valueProcessorAvailable",
+          "identifierProcessorAvailable"
         ],
         "properties": {
+          "dmlBuilderAvailable": {
+            "type": "boolean",
+            "description": "Whether the plugin exposes a DML builder object."
+          },
+          "identifierProcessorAvailable": {
+            "type": "boolean",
+            "description": "Whether the plugin exposes a dialect identifier processor."
+          },
           "metadataAvailable": {
             "type": "boolean",
             "description": "Whether schema metadata is available."
@@ -4995,6 +5380,10 @@
           "sqlParserAvailable": {
             "type": "boolean",
             "description": "Whether retained SQL parsing is available."
+          },
+          "valueProcessorAvailable": {
+            "type": "boolean",
+            "description": "Whether the plugin exposes a dialect value processor."
           }
         }
       },

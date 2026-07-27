@@ -6,12 +6,18 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.chat2db.rust.compat.protocol.v1.BeginTransactionRequest;
+import ai.chat2db.rust.compat.protocol.v1.BuildCommunityDmlRequest;
 import ai.chat2db.rust.compat.protocol.v1.CancelDisposition;
 import ai.chat2db.rust.compat.protocol.v1.CancelOperationRequest;
 import ai.chat2db.rust.compat.protocol.v1.ClientEnvelope;
 import ai.chat2db.rust.compat.protocol.v1.ClientHello;
 import ai.chat2db.rust.compat.protocol.v1.CloseSessionRequest;
 import ai.chat2db.rust.compat.protocol.v1.ConnectionProperty;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDmlColumn;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDmlRow;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDmlSingleInsert;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDmlTarget;
+import ai.chat2db.rust.compat.protocol.v1.CommunityDmlValue;
 import ai.chat2db.rust.compat.protocol.v1.DriverArtifact;
 import ai.chat2db.rust.compat.protocol.v1.ExecuteQueryRequest;
 import ai.chat2db.rust.compat.protocol.v1.ExecuteUpdateRequest;
@@ -75,6 +81,50 @@ class JdbcProtocolLoopTest {
     private static final String SQL_SENTINEL = "sql-do-not-log";
     private static final String CELL_SENTINEL = "cell-do-not-log";
     private static final String PASSWORD_SENTINEL = "password-do-not-log";
+
+    @Test
+    void communityDmlDispatchDoesNotRequireAJdbcSession() throws Exception {
+        String valueSentinel = "community-dml-value-do-not-log";
+        BuildCommunityDmlRequest request = BuildCommunityDmlRequest.newBuilder()
+                .setDatabaseType("H2")
+                .setTarget(CommunityDmlTarget.newBuilder()
+                        .setSchemaName("APP")
+                        .setTableName("items"))
+                .setSingleInsert(CommunityDmlSingleInsert.newBuilder()
+                        .addColumns(CommunityDmlColumn.newBuilder()
+                                .setName("label")
+                                .setDataTypeName("VARCHAR"))
+                        .setRow(CommunityDmlRow.newBuilder()
+                                .addValues(CommunityDmlValue.newBuilder()
+                                        .setStringValue(valueSentinel))))
+                .build();
+
+        try (Harness harness = new Harness()) {
+            harness.send(hello());
+            assertEquals(ServerEnvelope.PayloadCase.HELLO, harness.read().getPayloadCase());
+            harness.send(ClientEnvelope.newBuilder()
+                    .setMeta(meta("community-dml"))
+                    .setBuildCommunityDml(request)
+                    .build());
+
+            ServerEnvelope response = harness.read();
+            if (isCommunityCompatibilityConfigured()) {
+                assertEquals(
+                        ServerEnvelope.PayloadCase.COMMUNITY_BUILT_DML,
+                        response.getPayloadCase());
+                assertEquals(
+                        "INSERT INTO APP.items (label)  VALUES "
+                                + "('community-dml-value-do-not-log')",
+                        response.getCommunityBuiltDml().getSql());
+            } else {
+                assertEquals(ServerEnvelope.PayloadCase.ERROR, response.getPayloadCase());
+                assertEquals("community.plugin_not_found", response.getError().getCode());
+                assertFalse(response.getError().getCode().equals("session.id_required"));
+                assertFalse(response.getError().getMessage().contains(valueSentinel));
+            }
+            assertFalse(harness.diagnostics().contains(valueSentinel));
+        }
+    }
 
     @Test
     void loadsExternalH2AndStreamsTypedRowsWithTransactionsAndBackpressure()

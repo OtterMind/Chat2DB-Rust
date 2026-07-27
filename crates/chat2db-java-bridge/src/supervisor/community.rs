@@ -7,6 +7,7 @@ use std::{
 };
 
 use chat2db_engine_protocol::wire;
+use prost::Message;
 use sha2::{Digest, Sha256};
 
 use crate::BridgeError;
@@ -38,6 +39,8 @@ pub const COMMUNITY_SQL_VALIDATION_CAPABILITY: &str = "community.sql-validation.
 pub const COMMUNITY_SQL_FORMATTER_CAPABILITY: &str = "community.sql-formatter.v1";
 /// Completes SQL through the retained Community completion engines.
 pub const COMMUNITY_SQL_COMPLETION_CAPABILITY: &str = "community.sql-completion.v1";
+/// Builds typed dialect DML without opening a JDBC session or executing SQL.
+pub const COMMUNITY_DML_BUILDER_CAPABILITY: &str = "community.dml-builder.v1";
 
 pub(super) const COMMUNITY_CLASSPATH_ENV: &str = "CHAT2DB_COMMUNITY_CLASSPATH_DIR";
 pub(super) const COMMUNITY_SOURCE_COMMIT_ENV: &str = "CHAT2DB_COMMUNITY_SOURCE_COMMIT";
@@ -51,6 +54,16 @@ const MAX_SQL_FORMATTER_COMPLEXITY_UNITS: usize =
     wire::CommunitySqlFormatterLimit::MaxComplexityUnits as usize;
 const MAX_SQL_COMPLETION_PREFIX_LENGTH: u32 =
     wire::CommunitySqlCompletionPrefixLimit::MaxMinPrefixLength as u32;
+const MAX_DML_COLUMNS: usize = wire::CommunityDmlCountLimit::MaxColumns as usize;
+const MAX_DML_ROWS: usize = wire::CommunityDmlCountLimit::MaxRows as usize;
+const MAX_DML_VALUES: usize = wire::CommunityDmlCountLimit::MaxValues as usize;
+const MAX_DML_IDENTIFIER_BYTES: usize = wire::CommunityDmlByteLimit::MaxIdentifierBytes as usize;
+const MAX_DML_DATA_TYPE_NAME_BYTES: usize =
+    wire::CommunityDmlByteLimit::MaxDataTypeNameBytes as usize;
+const MAX_DML_DECIMAL_BYTES: usize = wire::CommunityDmlByteLimit::MaxDecimalBytes as usize;
+const MAX_DML_TEMPORAL_BYTES: usize = wire::CommunityDmlByteLimit::MaxTemporalBytes as usize;
+const MAX_DML_VALUE_BYTES: usize = wire::CommunityDmlByteLimit::MaxValueBytes as usize;
+const MAX_COMMUNITY_RESPONSE_BYTES: usize = wire::CommunityByteLimit::MaxResponseBytes as usize;
 const MAX_SQL_BYTES: usize = wire::JdbcProtocolLimit::MaxSqlBytes as usize;
 const MAX_SCALAR_BYTES: usize = wire::JdbcProtocolLimit::MaxScalarBytes as usize;
 const MAX_PROTOCOL_ID_BYTES: usize = wire::JdbcProtocolLimit::MaxDriverIdBytes as usize;
@@ -505,11 +518,15 @@ pub struct CommunityPluginBehavior {
 }
 
 /// Optional Community services exposed by one plugin.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommunityPluginServices {
     pub metadata_available: bool,
     pub sql_builder_available: bool,
     pub sql_parser_available: bool,
+    pub dml_builder_available: bool,
+    pub value_processor_available: bool,
+    pub identifier_processor_available: bool,
 }
 
 /// Community plugin inventory for one fixed source commit.
@@ -787,6 +804,85 @@ pub struct CommunitySqlValidation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommunityFormattedSql {
     pub sql: String,
+}
+
+/// Pure typed-DML generation request without product datasource identifiers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BuildCommunityDmlRequest {
+    pub database_type: String,
+    pub target: CommunityDmlTarget,
+    pub statement: CommunityDmlStatement,
+}
+
+/// Independently quoted database, schema, and table identifier segments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommunityDmlTarget {
+    pub database_name: Option<String>,
+    pub schema_name: Option<String>,
+    pub table_name: String,
+}
+
+/// One raw column name and its database type metadata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommunityDmlColumn {
+    pub name: String,
+    pub data_type_name: String,
+    pub precision: Option<u32>,
+    pub scale: Option<i32>,
+}
+
+/// One typed value. There is deliberately no raw-SQL or expression variant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommunityDmlValue {
+    Null,
+    String(String),
+    Decimal(String),
+    Boolean(bool),
+    Temporal(CommunityDmlTemporal),
+    Binary(Vec<u8>),
+}
+
+/// Strict ISO-8601 temporal value and its semantic kind.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommunityDmlTemporal {
+    pub kind: CommunityDmlTemporalKind,
+    pub iso8601: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommunityDmlTemporalKind {
+    Date,
+    Time,
+    LocalDatetime,
+    OffsetDatetime,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommunityDmlRow {
+    pub values: Vec<CommunityDmlValue>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommunityDmlAssignment {
+    pub column: CommunityDmlColumn,
+    pub value: CommunityDmlValue,
+}
+
+/// Supported Stage 7K statements. Delete and expression-bearing statements are absent by design.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommunityDmlStatement {
+    SingleInsert {
+        columns: Vec<CommunityDmlColumn>,
+        row: CommunityDmlRow,
+    },
+    MultiInsert {
+        columns: Vec<CommunityDmlColumn>,
+        rows: Vec<CommunityDmlRow>,
+    },
+    Update {
+        assignments: Vec<CommunityDmlAssignment>,
+        predicates: Vec<CommunityDmlAssignment>,
+    },
 }
 
 /// Session-bound SQL-completion input without product storage identifiers.
@@ -1794,6 +1890,39 @@ impl CommunityClient {
         Ok(built.sql)
     }
 
+    /// Builds typed INSERT or UPDATE SQL through the selected Community plugin.
+    /// This pure generation call neither opens a JDBC session nor executes SQL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid shape, identifiers or values, unavailable
+    /// plugin services, engine failure, or an invalid response.
+    pub async fn build_dml(
+        &self,
+        request: BuildCommunityDmlRequest,
+    ) -> Result<String, BridgeError> {
+        let request = community_dml_request(request)?;
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_DML_BUILDER_CAPABILITY,
+                None,
+                None,
+                wire::client_envelope::Payload::BuildCommunityDml(request),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunityBuiltDml(built)) = response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community built-DML response")
+                .await;
+        };
+        Ok(built.sql)
+    }
+
     /// Parses SQL through the selected plugin's retained syntax plugin.
     ///
     /// # Errors
@@ -2056,6 +2185,9 @@ impl From<wire::CommunityPluginDescriptor> for CommunityPlugin {
                 metadata_available: plugin.metadata_available,
                 sql_builder_available: plugin.sql_builder_available,
                 sql_parser_available: plugin.sql_parser_available,
+                dml_builder_available: plugin.dml_builder_available,
+                value_processor_available: plugin.value_processor_available,
+                identifier_processor_available: plugin.identifier_processor_available,
             },
         }
     }
@@ -3005,6 +3137,333 @@ fn validate_source_commit(commit: &str) -> Result<(), BridgeError> {
     Ok(())
 }
 
+fn community_dml_request(
+    request: BuildCommunityDmlRequest,
+) -> Result<wire::BuildCommunityDmlRequest, BridgeError> {
+    validate_database_type(&request.database_type)?;
+    let target = community_dml_target(request.target)?;
+    let statement = match request.statement {
+        CommunityDmlStatement::SingleInsert { columns, row } => {
+            validate_dml_columns(&columns, "insert columns")?;
+            if row.values.len() != columns.len() {
+                return Err(BridgeError::InvalidRequest(
+                    "Community DML insert row width must equal its column count".to_owned(),
+                ));
+            }
+            let values = dml_values(row.values, false)?;
+            wire::build_community_dml_request::Statement::SingleInsert(
+                wire::CommunityDmlSingleInsert {
+                    columns: columns
+                        .into_iter()
+                        .map(dml_column)
+                        .collect::<Result<_, _>>()?,
+                    row: Some(wire::CommunityDmlRow { values }),
+                },
+            )
+        }
+        CommunityDmlStatement::MultiInsert { columns, rows } => {
+            validate_dml_columns(&columns, "batch insert columns")?;
+            if rows.is_empty() || rows.len() > MAX_DML_ROWS {
+                return Err(BridgeError::InvalidRequest(format!(
+                    "Community DML batch row count must be between 1 and {MAX_DML_ROWS}"
+                )));
+            }
+            let total = columns.len().checked_mul(rows.len()).ok_or_else(|| {
+                BridgeError::InvalidRequest("Community DML value count overflowed".to_owned())
+            })?;
+            if total > MAX_DML_VALUES {
+                return Err(BridgeError::InvalidRequest(format!(
+                    "Community DML cannot contain more than {MAX_DML_VALUES} values"
+                )));
+            }
+            let mut wire_rows = Vec::with_capacity(rows.len());
+            for row in rows {
+                if row.values.len() != columns.len() {
+                    return Err(BridgeError::InvalidRequest(
+                        "Community DML batch row width must equal its column count".to_owned(),
+                    ));
+                }
+                wire_rows.push(wire::CommunityDmlRow {
+                    values: dml_values(row.values, false)?,
+                });
+            }
+            wire::build_community_dml_request::Statement::MultiInsert(
+                wire::CommunityDmlMultiInsert {
+                    columns: columns
+                        .into_iter()
+                        .map(dml_column)
+                        .collect::<Result<_, _>>()?,
+                    rows: wire_rows,
+                },
+            )
+        }
+        CommunityDmlStatement::Update {
+            assignments,
+            predicates,
+        } => {
+            validate_dml_assignments(&assignments, "update assignments", false)?;
+            validate_dml_assignments(&predicates, "update predicates", true)?;
+            if assignments.len().saturating_add(predicates.len()) > MAX_DML_VALUES {
+                return Err(BridgeError::InvalidRequest(format!(
+                    "Community DML cannot contain more than {MAX_DML_VALUES} values"
+                )));
+            }
+            wire::build_community_dml_request::Statement::Update(wire::CommunityDmlUpdate {
+                assignments: assignments
+                    .into_iter()
+                    .map(|assignment| dml_assignment(assignment, false))
+                    .collect::<Result<_, _>>()?,
+                predicates: predicates
+                    .into_iter()
+                    .map(|assignment| dml_assignment(assignment, true))
+                    .collect::<Result<_, _>>()?,
+            })
+        }
+    };
+    let request = wire::BuildCommunityDmlRequest {
+        database_type: request.database_type,
+        target: Some(target),
+        statement: Some(statement),
+    };
+    if request.encoded_len() > MAX_COMMUNITY_RESPONSE_BYTES {
+        return Err(BridgeError::InvalidRequest(format!(
+            "Community DML request cannot exceed {MAX_COMMUNITY_RESPONSE_BYTES} encoded bytes"
+        )));
+    }
+    Ok(request)
+}
+
+fn community_dml_target(
+    target: CommunityDmlTarget,
+) -> Result<wire::CommunityDmlTarget, BridgeError> {
+    Ok(wire::CommunityDmlTarget {
+        database_name: target
+            .database_name
+            .map(|value| validate_dml_identifier_owned(value, "database name"))
+            .transpose()?,
+        schema_name: target
+            .schema_name
+            .map(|value| validate_dml_identifier_owned(value, "schema name"))
+            .transpose()?,
+        table_name: validate_dml_identifier_owned(target.table_name, "table name")?,
+    })
+}
+
+fn validate_dml_columns(columns: &[CommunityDmlColumn], field: &str) -> Result<(), BridgeError> {
+    if columns.is_empty() || columns.len() > MAX_DML_COLUMNS {
+        return Err(BridgeError::InvalidRequest(format!(
+            "Community DML {field} count must be between 1 and {MAX_DML_COLUMNS}"
+        )));
+    }
+    let mut names = HashSet::with_capacity(columns.len());
+    for column in columns {
+        validate_dml_column(column)?;
+        if !names.insert(column.name.as_str()) {
+            return Err(BridgeError::InvalidRequest(format!(
+                "Community DML {field} cannot contain duplicate column names"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_dml_assignments(
+    assignments: &[CommunityDmlAssignment],
+    field: &str,
+    reject_null: bool,
+) -> Result<(), BridgeError> {
+    if assignments.is_empty() || assignments.len() > MAX_DML_COLUMNS {
+        return Err(BridgeError::InvalidRequest(format!(
+            "Community DML {field} count must be between 1 and {MAX_DML_COLUMNS}"
+        )));
+    }
+    let mut names = HashSet::with_capacity(assignments.len());
+    for assignment in assignments {
+        validate_dml_column(&assignment.column)?;
+        validate_dml_value(&assignment.value, reject_null)?;
+        if !names.insert(assignment.column.name.as_str()) {
+            return Err(BridgeError::InvalidRequest(format!(
+                "Community DML {field} cannot contain duplicate column names"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_dml_column(column: &CommunityDmlColumn) -> Result<(), BridgeError> {
+    validate_dml_identifier(&column.name, "column name")?;
+    validate_non_blank_utf8(
+        &column.data_type_name,
+        MAX_DML_DATA_TYPE_NAME_BYTES,
+        "DML data type name",
+    )?;
+    if column.data_type_name.chars().any(char::is_control) {
+        return Err(BridgeError::InvalidRequest(
+            "Community DML data type names cannot contain control characters".to_owned(),
+        ));
+    }
+    if column
+        .precision
+        .is_some_and(|value| value > i32::MAX as u32)
+    {
+        return Err(BridgeError::InvalidRequest(
+            "Community DML precision cannot exceed the Java Integer range".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn dml_column(column: CommunityDmlColumn) -> Result<wire::CommunityDmlColumn, BridgeError> {
+    validate_dml_column(&column)?;
+    Ok(wire::CommunityDmlColumn {
+        name: column.name,
+        data_type_name: column.data_type_name,
+        precision: column.precision,
+        scale: column.scale,
+    })
+}
+
+fn dml_assignment(
+    assignment: CommunityDmlAssignment,
+    reject_null: bool,
+) -> Result<wire::CommunityDmlAssignment, BridgeError> {
+    Ok(wire::CommunityDmlAssignment {
+        column: Some(dml_column(assignment.column)?),
+        value: Some(dml_value(assignment.value, reject_null)?),
+    })
+}
+
+fn dml_values(
+    values: Vec<CommunityDmlValue>,
+    reject_null: bool,
+) -> Result<Vec<wire::CommunityDmlValue>, BridgeError> {
+    if values.len() > MAX_DML_VALUES {
+        return Err(BridgeError::InvalidRequest(format!(
+            "Community DML cannot contain more than {MAX_DML_VALUES} values"
+        )));
+    }
+    values
+        .into_iter()
+        .map(|value| dml_value(value, reject_null))
+        .collect()
+}
+
+fn validate_dml_value(value: &CommunityDmlValue, reject_null: bool) -> Result<(), BridgeError> {
+    match value {
+        CommunityDmlValue::Null if reject_null => Err(BridgeError::InvalidRequest(
+            "Community DML equality predicates cannot compare NULL".to_owned(),
+        )),
+        CommunityDmlValue::String(value) => {
+            validate_utf8(value, MAX_DML_VALUE_BYTES, "DML string value")
+        }
+        CommunityDmlValue::Decimal(value) => validate_dml_decimal(value),
+        CommunityDmlValue::Temporal(value) => {
+            validate_non_blank_utf8(&value.iso8601, MAX_DML_TEMPORAL_BYTES, "DML temporal value")?;
+            if value.iso8601.chars().any(char::is_control) {
+                return Err(BridgeError::InvalidRequest(
+                    "Community DML temporal values cannot contain control characters".to_owned(),
+                ));
+            }
+            Ok(())
+        }
+        CommunityDmlValue::Binary(value) if value.len() > MAX_DML_VALUE_BYTES => {
+            Err(BridgeError::InvalidRequest(format!(
+                "Community DML binary values cannot exceed {MAX_DML_VALUE_BYTES} bytes"
+            )))
+        }
+        CommunityDmlValue::Null | CommunityDmlValue::Boolean(_) | CommunityDmlValue::Binary(_) => {
+            Ok(())
+        }
+    }
+}
+
+fn dml_value(
+    value: CommunityDmlValue,
+    reject_null: bool,
+) -> Result<wire::CommunityDmlValue, BridgeError> {
+    validate_dml_value(&value, reject_null)?;
+    let value = match value {
+        CommunityDmlValue::Null => {
+            wire::community_dml_value::Value::NullValue(wire::CommunityDmlNull {})
+        }
+        CommunityDmlValue::String(value) => wire::community_dml_value::Value::StringValue(value),
+        CommunityDmlValue::Decimal(value) => wire::community_dml_value::Value::DecimalValue(value),
+        CommunityDmlValue::Boolean(value) => wire::community_dml_value::Value::BooleanValue(value),
+        CommunityDmlValue::Temporal(value) => {
+            let kind = match value.kind {
+                CommunityDmlTemporalKind::Date => wire::CommunityDmlTemporalKind::Date,
+                CommunityDmlTemporalKind::Time => wire::CommunityDmlTemporalKind::Time,
+                CommunityDmlTemporalKind::LocalDatetime => {
+                    wire::CommunityDmlTemporalKind::LocalDatetime
+                }
+                CommunityDmlTemporalKind::OffsetDatetime => {
+                    wire::CommunityDmlTemporalKind::OffsetDatetime
+                }
+            };
+            wire::community_dml_value::Value::TemporalValue(wire::CommunityDmlTemporal {
+                kind: kind.into(),
+                iso8601: value.iso8601,
+            })
+        }
+        CommunityDmlValue::Binary(value) => wire::community_dml_value::Value::BinaryValue(value),
+    };
+    Ok(wire::CommunityDmlValue { value: Some(value) })
+}
+
+fn validate_dml_decimal(value: &str) -> Result<(), BridgeError> {
+    validate_non_blank_utf8(value, MAX_DML_DECIMAL_BYTES, "DML decimal value")?;
+    let bytes = value.as_bytes();
+    let mut index = usize::from(bytes.first() == Some(&b'-'));
+    let integer_start = index;
+    while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+        index += 1;
+    }
+    if index == integer_start {
+        return Err(BridgeError::InvalidRequest(
+            "Community DML decimal values must use plain base-10 notation".to_owned(),
+        ));
+    }
+    if bytes.get(index) == Some(&b'.') {
+        index += 1;
+        let fraction_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        if index == fraction_start {
+            return Err(BridgeError::InvalidRequest(
+                "Community DML decimal fractions require at least one digit".to_owned(),
+            ));
+        }
+    }
+    if index != bytes.len() {
+        return Err(BridgeError::InvalidRequest(
+            "Community DML decimal values must use plain base-10 notation".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_dml_identifier_owned(value: String, field: &str) -> Result<String, BridgeError> {
+    validate_dml_identifier(&value, field)?;
+    Ok(value)
+}
+
+fn validate_dml_identifier(value: &str, field: &str) -> Result<(), BridgeError> {
+    validate_non_blank_utf8(value, MAX_DML_IDENTIFIER_BYTES, field)?;
+    if value.trim() != value
+        || value.chars().any(char::is_control)
+        || value.contains(['.', ';', '\'', '"', '`', '[', ']'])
+        || value.contains("--")
+        || value.contains("/*")
+        || value.contains("*/")
+    {
+        return Err(BridgeError::InvalidRequest(format!(
+            "Community DML {field} contains unsafe identifier syntax"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_database_type(database_type: &str) -> Result<(), BridgeError> {
     validate_non_blank_utf8(database_type, MAX_DATABASE_TYPE_BYTES, "database type")
 }
@@ -3077,19 +3536,197 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        CommunityClasspath, CommunityForeignKey, CommunityFormattedSql, CommunityFunction,
-        CommunityFunctionParameter, CommunityPrimaryKey, CommunityProcedure,
+        BuildCommunityDmlRequest, CommunityClasspath, CommunityDmlAssignment, CommunityDmlColumn,
+        CommunityDmlRow, CommunityDmlStatement, CommunityDmlTarget, CommunityDmlTemporal,
+        CommunityDmlTemporalKind, CommunityDmlValue, CommunityForeignKey, CommunityFormattedSql,
+        CommunityFunction, CommunityFunctionParameter, CommunityPrimaryKey, CommunityProcedure,
         CommunityProcedureParameter, CommunitySqlCompletion, CommunitySqlCompletionCandidate,
         CommunitySqlCompletionEditorHint, CommunitySqlCompletionEditorHintItem,
         CommunitySqlCompletionRange, CommunitySqlDiagnostic, CommunitySqlValidation,
-        CommunityTrigger, MAX_SCALAR_BYTES, MAX_SQL_COMPLETION_PREFIX_LENGTH,
-        MAX_SQL_FORMATTER_COMPLEXITY_UNITS, SqlUtf16Layout, next_java_long_scope,
-        next_sql_completion_datasource_scope, normalize_keyword_case, validate_completion_for_sql,
-        validate_completion_prefix_length, validate_non_blank_utf8,
+        CommunityTrigger, MAX_DML_VALUE_BYTES, MAX_SCALAR_BYTES, MAX_SQL_COMPLETION_PREFIX_LENGTH,
+        MAX_SQL_FORMATTER_COMPLEXITY_UNITS, SqlUtf16Layout, community_dml_request,
+        next_java_long_scope, next_sql_completion_datasource_scope, normalize_keyword_case,
+        validate_completion_for_sql, validate_completion_prefix_length, validate_non_blank_utf8,
         validate_sql_formatter_complexity,
     };
 
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    fn dml_test_column(name: &str, data_type_name: &str) -> CommunityDmlColumn {
+        CommunityDmlColumn {
+            name: name.to_owned(),
+            data_type_name: data_type_name.to_owned(),
+            precision: None,
+            scale: None,
+        }
+    }
+
+    fn dml_test_request(statement: CommunityDmlStatement) -> BuildCommunityDmlRequest {
+        BuildCommunityDmlRequest {
+            database_type: "H2".to_owned(),
+            target: CommunityDmlTarget {
+                database_name: Some("inventory".to_owned()),
+                schema_name: Some("APP".to_owned()),
+                table_name: "items".to_owned(),
+            },
+            statement,
+        }
+    }
+
+    #[test]
+    fn dml_request_preserves_typed_values_and_qualified_segments() {
+        let columns = vec![
+            dml_test_column("nullable", "VARCHAR"),
+            dml_test_column("label", "VARCHAR"),
+            dml_test_column("amount", "DECIMAL"),
+            dml_test_column("active", "BOOLEAN"),
+            dml_test_column("created_at", "TIMESTAMP"),
+            dml_test_column("payload", "VARBINARY"),
+        ];
+        let values = vec![
+            CommunityDmlValue::Null,
+            CommunityDmlValue::String(String::new()),
+            CommunityDmlValue::Decimal("12.50".to_owned()),
+            CommunityDmlValue::Boolean(true),
+            CommunityDmlValue::Temporal(CommunityDmlTemporal {
+                kind: CommunityDmlTemporalKind::LocalDatetime,
+                iso8601: "2026-07-27T12:34:56".to_owned(),
+            }),
+            CommunityDmlValue::Binary(vec![0, 1, 255]),
+        ];
+        let request =
+            community_dml_request(dml_test_request(CommunityDmlStatement::SingleInsert {
+                columns,
+                row: CommunityDmlRow { values },
+            }))
+            .expect("valid typed DML must encode");
+
+        assert_eq!(request.database_type, "H2");
+        let target = request.target.expect("target must be present");
+        assert_eq!(target.database_name.as_deref(), Some("inventory"));
+        assert_eq!(target.schema_name.as_deref(), Some("APP"));
+        assert_eq!(target.table_name, "items");
+        let wire::build_community_dml_request::Statement::SingleInsert(insert) =
+            request.statement.expect("statement must be present")
+        else {
+            panic!("single insert must retain its wire variant");
+        };
+        let values = insert.row.expect("row must be present").values;
+        assert!(matches!(
+            values[0].value,
+            Some(wire::community_dml_value::Value::NullValue(_))
+        ));
+        assert!(matches!(
+            values[1].value,
+            Some(wire::community_dml_value::Value::StringValue(ref value)) if value.is_empty()
+        ));
+        assert!(matches!(
+            values[2].value,
+            Some(wire::community_dml_value::Value::DecimalValue(ref value)) if value == "12.50"
+        ));
+        assert!(matches!(
+            values[3].value,
+            Some(wire::community_dml_value::Value::BooleanValue(true))
+        ));
+        assert!(matches!(
+            values[4].value,
+            Some(wire::community_dml_value::Value::TemporalValue(ref value))
+                if value.kind == wire::CommunityDmlTemporalKind::LocalDatetime as i32
+                    && value.iso8601 == "2026-07-27T12:34:56"
+        ));
+        assert!(matches!(
+            values[5].value,
+            Some(wire::community_dml_value::Value::BinaryValue(ref value))
+                if value == &[0, 1, 255]
+        ));
+    }
+
+    #[test]
+    fn dml_request_rejects_duplicate_columns_unsafe_identifiers_and_row_widths() {
+        let duplicate =
+            community_dml_request(dml_test_request(CommunityDmlStatement::SingleInsert {
+                columns: vec![
+                    dml_test_column("id", "BIGINT"),
+                    dml_test_column("id", "BIGINT"),
+                ],
+                row: CommunityDmlRow {
+                    values: vec![
+                        CommunityDmlValue::Decimal("1".to_owned()),
+                        CommunityDmlValue::Decimal("2".to_owned()),
+                    ],
+                },
+            }))
+            .expect_err("duplicate insert columns must fail");
+        assert!(duplicate.to_string().contains("duplicate column names"));
+
+        let mut unsafe_target = dml_test_request(CommunityDmlStatement::SingleInsert {
+            columns: vec![dml_test_column("id", "BIGINT")],
+            row: CommunityDmlRow {
+                values: vec![CommunityDmlValue::Decimal("1".to_owned())],
+            },
+        });
+        unsafe_target.target.table_name = "APP.items".to_owned();
+        let unsafe_identifier =
+            community_dml_request(unsafe_target).expect_err("qualified raw table names must fail");
+        assert!(
+            unsafe_identifier
+                .to_string()
+                .contains("unsafe identifier syntax")
+        );
+
+        let wrong_width =
+            community_dml_request(dml_test_request(CommunityDmlStatement::MultiInsert {
+                columns: vec![
+                    dml_test_column("id", "BIGINT"),
+                    dml_test_column("label", "VARCHAR"),
+                ],
+                rows: vec![CommunityDmlRow {
+                    values: vec![CommunityDmlValue::Decimal("1".to_owned())],
+                }],
+            }))
+            .expect_err("batch row width mismatch must fail");
+        assert!(wrong_width.to_string().contains("row width"));
+    }
+
+    #[test]
+    fn dml_update_requires_nonempty_nonnull_equality_predicates() {
+        let assignment = CommunityDmlAssignment {
+            column: dml_test_column("label", "VARCHAR"),
+            value: CommunityDmlValue::String("next".to_owned()),
+        };
+        let empty = community_dml_request(dml_test_request(CommunityDmlStatement::Update {
+            assignments: vec![assignment.clone()],
+            predicates: Vec::new(),
+        }))
+        .expect_err("an update without predicates must fail");
+        assert!(empty.to_string().contains("update predicates count"));
+
+        let null = community_dml_request(dml_test_request(CommunityDmlStatement::Update {
+            assignments: vec![assignment],
+            predicates: vec![CommunityDmlAssignment {
+                column: dml_test_column("id", "BIGINT"),
+                value: CommunityDmlValue::Null,
+            }],
+        }))
+        .expect_err("a null equality predicate must fail");
+        assert!(null.to_string().contains("cannot compare NULL"));
+    }
+
+    #[test]
+    fn dml_request_enforces_the_encoded_eight_megabyte_budget() {
+        let columns = (0..33)
+            .map(|index| dml_test_column(&format!("value_{index}"), "VARCHAR"))
+            .collect::<Vec<_>>();
+        let values = (0..columns.len())
+            .map(|_| CommunityDmlValue::String("x".repeat(MAX_DML_VALUE_BYTES)))
+            .collect();
+        let error = community_dml_request(dml_test_request(CommunityDmlStatement::SingleInsert {
+            columns,
+            row: CommunityDmlRow { values },
+        }))
+        .expect_err("encoded DML above eight MiB must fail");
+        assert!(error.to_string().contains("8388608 encoded bytes"));
+    }
 
     #[test]
     fn sql_formatter_complexity_rejects_token_dense_input_at_the_shared_limit() {

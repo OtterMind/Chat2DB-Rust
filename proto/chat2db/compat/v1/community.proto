@@ -105,6 +105,22 @@ enum CommunitySqlCompletionPrefixLimit {
   COMMUNITY_SQL_COMPLETION_PREFIX_LIMIT_MAX_MIN_PREFIX_LENGTH = 1024;
 }
 
+enum CommunityDmlCountLimit {
+  COMMUNITY_DML_COUNT_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_DML_COUNT_LIMIT_MAX_COLUMNS = 2048;
+  COMMUNITY_DML_COUNT_LIMIT_MAX_ROWS = 4096;
+  COMMUNITY_DML_COUNT_LIMIT_MAX_VALUES = 32768;
+}
+
+enum CommunityDmlByteLimit {
+  COMMUNITY_DML_BYTE_LIMIT_UNSPECIFIED = 0;
+  COMMUNITY_DML_BYTE_LIMIT_MAX_IDENTIFIER_BYTES = 512;
+  COMMUNITY_DML_BYTE_LIMIT_MAX_DATA_TYPE_NAME_BYTES = 256;
+  COMMUNITY_DML_BYTE_LIMIT_MAX_DECIMAL_BYTES = 1024;
+  COMMUNITY_DML_BYTE_LIMIT_MAX_TEMPORAL_BYTES = 128;
+  COMMUNITY_DML_BYTE_LIMIT_MAX_VALUE_BYTES = 262144;
+}
+
 enum CommunityColumnCountLimit {
   COMMUNITY_COLUMN_COUNT_LIMIT_UNSPECIFIED = 0;
   COMMUNITY_COLUMN_COUNT_LIMIT_MAX_COLUMNS = 65536;
@@ -154,6 +170,9 @@ message CommunityPluginDescriptor {
   bool metadata_available = 7;
   bool sql_builder_available = 8;
   bool sql_parser_available = 9;
+  bool dml_builder_available = 10;
+  bool value_processor_available = 11;
+  bool identifier_processor_available = 12;
 }
 
 message CommunityPluginCatalog {
@@ -522,6 +541,84 @@ message BuildCommunityCreateSchemaRequest {
 }
 
 message CommunityBuiltSql {
+  string sql = 1;
+}
+
+message BuildCommunityDmlRequest {
+  string database_type = 1;
+  CommunityDmlTarget target = 2;
+
+  oneof statement {
+    CommunityDmlSingleInsert single_insert = 3;
+    CommunityDmlMultiInsert multi_insert = 4;
+    CommunityDmlUpdate update = 5;
+  }
+}
+
+message CommunityDmlTarget {
+  optional string database_name = 1;
+  optional string schema_name = 2;
+  string table_name = 3;
+}
+
+message CommunityDmlColumn {
+  string name = 1;
+  string data_type_name = 2;
+  optional uint32 precision = 3;
+  optional int32 scale = 4;
+}
+
+message CommunityDmlNull {}
+
+enum CommunityDmlTemporalKind {
+  COMMUNITY_DML_TEMPORAL_KIND_UNSPECIFIED = 0;
+  COMMUNITY_DML_TEMPORAL_KIND_DATE = 1;
+  COMMUNITY_DML_TEMPORAL_KIND_TIME = 2;
+  COMMUNITY_DML_TEMPORAL_KIND_LOCAL_DATETIME = 3;
+  COMMUNITY_DML_TEMPORAL_KIND_OFFSET_DATETIME = 4;
+}
+
+message CommunityDmlTemporal {
+  CommunityDmlTemporalKind kind = 1;
+  string iso8601 = 2;
+}
+
+message CommunityDmlValue {
+  oneof value {
+    CommunityDmlNull null_value = 1;
+    string string_value = 2;
+    string decimal_value = 3;
+    bool boolean_value = 4;
+    CommunityDmlTemporal temporal_value = 5;
+    bytes binary_value = 6;
+  }
+}
+
+message CommunityDmlRow {
+  repeated CommunityDmlValue values = 1;
+}
+
+message CommunityDmlSingleInsert {
+  repeated CommunityDmlColumn columns = 1;
+  CommunityDmlRow row = 2;
+}
+
+message CommunityDmlMultiInsert {
+  repeated CommunityDmlColumn columns = 1;
+  repeated CommunityDmlRow rows = 2;
+}
+
+message CommunityDmlAssignment {
+  CommunityDmlColumn column = 1;
+  CommunityDmlValue value = 2;
+}
+
+message CommunityDmlUpdate {
+  repeated CommunityDmlAssignment assignments = 1;
+  repeated CommunityDmlAssignment predicates = 2;
+}
+
+message CommunityBuiltDml {
   string sql = 1;
 }
 

@@ -14,6 +14,7 @@ import {
   Search,
   Sigma,
   Table2,
+  TableProperties,
   Workflow,
   X,
   Zap,
@@ -41,6 +42,8 @@ import type {
   HealthResponse,
   JdbcDriverList,
 } from './backend';
+import { CommunityDmlDialog } from './CommunityDmlDialog';
+import { isCurrentCommunityDmlRequest } from './community-dml-model';
 import {
   CommunityFunctionDetail,
   CommunityLoadFailure,
@@ -75,13 +78,23 @@ type ExplorerSelection =
   | { kind: 'trigger'; name: string; item?: CommunityTrigger };
 
 type ExplorerDetail =
-  | { kind: 'table' | 'view'; value: CommunityTableDetail }
-  | { kind: 'function'; value: CommunityFunctionDetail }
-  | { kind: 'procedure'; value: CommunityProcedureDetail }
-  | { kind: 'trigger'; value: CommunityTriggerDetail };
+  | { kind: 'table' | 'view'; scope: string; value: CommunityTableDetail }
+  | { kind: 'function'; scope: string; value: CommunityFunctionDetail }
+  | { kind: 'procedure'; scope: string; value: CommunityProcedureDetail }
+  | { kind: 'trigger'; scope: string; value: CommunityTriggerDetail };
 
 type DetailTab = 'columns' | 'indexes' | 'keys';
 type LookupKind = 'function' | 'procedure' | 'trigger';
+
+interface DmlDialogState {
+  scope: string;
+  databaseType: string;
+  databaseName: string;
+  schemaName: string;
+  tableName: string;
+  columns: CommunityTableDetail['columns'];
+  primaryKeys: CommunityTableDetail['primaryKeys'];
+}
 
 const EMPTY_NAMESPACE: CommunityNamespaceSnapshot = {
   tables: [],
@@ -467,10 +480,16 @@ export function CommunityExplorer({
   const [schemaDialogOpen, setSchemaDialogOpen] = useState(false);
   const [schemaBusy, setSchemaBusy] = useState(false);
   const [schemaError, setSchemaError] = useState<string | null>(null);
+  const [dmlDialog, setDmlDialog] = useState<DmlDialogState | null>(null);
+  const [dmlBusy, setDmlBusy] = useState(false);
+  const [dmlError, setDmlError] = useState<string | null>(null);
   const [mobileCollapsed, setMobileCollapsed] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(max-width: 720px)').matches,
   );
   const schemaRequestRef = useRef<AbortController | null>(null);
+  const dmlRequestRef = useRef<AbortController | null>(null);
+  const dmlRequestSequenceRef = useRef(0);
+  const activeDmlScopeRef = useRef<string | null>(null);
   const databaseNameRef = useRef('');
   const schemaNameRef = useRef('');
   const databaseScopeRef = useRef('');
@@ -497,8 +516,41 @@ export function CommunityExplorer({
     : '';
   const scopeReady = Boolean(namespaceScopeKey);
   const loadingScope = loadingDatabases || loadingSchemas;
+  const detailScopeKey = selection && namespaceScopeKey
+    ? `${namespaceScopeKey}:${selectionKey(selection)}:${refreshRevision}`
+    : '';
+  const scopedDetail = detail?.scope === detailScopeKey ? detail : null;
+  const currentDmlScope = selection?.kind === 'table' && scopedDetail?.kind === 'table'
+    ? detailScopeKey
+    : null;
+  const dmlBuilderAvailable = Boolean(
+    selectedPlugin?.services.dmlBuilderAvailable
+    && selectedPlugin.services.valueProcessorAvailable
+    && selectedPlugin.services.identifierProcessorAvailable,
+  );
+  const canOpenDml = Boolean(
+    currentDmlScope
+    && dmlBuilderAvailable
+    && scopedDetail?.kind === 'table'
+    && scopedDetail.value.columns.length > 0
+    && !loadingDetail,
+  );
 
-  useEffect(() => () => schemaRequestRef.current?.abort(), []);
+  useEffect(() => () => {
+    schemaRequestRef.current?.abort();
+    dmlRequestRef.current?.abort();
+  }, []);
+
+  useEffect(() => {
+    if (!dmlDialog || dmlDialog.scope === currentDmlScope) return;
+    dmlRequestRef.current?.abort();
+    dmlRequestRef.current = null;
+    dmlRequestSequenceRef.current += 1;
+    activeDmlScopeRef.current = null;
+    setDmlBusy(false);
+    setDmlError(null);
+    setDmlDialog(null);
+  }, [currentDmlScope, dmlDialog]);
 
   useEffect(() => { databaseNameRef.current = databaseName; }, [databaseName]);
   useEffect(() => { schemaNameRef.current = schemaName; }, [schemaName]);
@@ -702,6 +754,7 @@ export function CommunityExplorer({
       databaseName,
       schemaName,
     };
+    const requestedDetailScope = detailScopeKey;
     setLoadingDetail(true);
     let request: Promise<ExplorerDetail>;
     if (selection.kind === 'table' || selection.kind === 'view') {
@@ -710,28 +763,38 @@ export function CommunityExplorer({
         client,
         { ...scope, tableName: selection.item.name },
         controller.signal,
-        (value) => { if (!controller.signal.aborted) setDetail({ kind, value }); },
+        (value) => {
+          if (!controller.signal.aborted) setDetail({ kind, scope: requestedDetailScope, value });
+        },
       )
-        .then((value) => ({ kind, value }));
+        .then((value) => ({ kind, scope: requestedDetailScope, value }));
     } else if (selection.kind === 'function') {
       request = loadCommunityFunctionDetail(
         client,
         { ...scope, functionName: selection.name },
         controller.signal,
-        (value) => { if (!controller.signal.aborted) setDetail({ kind: 'function', value }); },
+        (value) => {
+          if (!controller.signal.aborted) {
+            setDetail({ kind: 'function', scope: requestedDetailScope, value });
+          }
+        },
       )
-        .then((value) => ({ kind: 'function', value }));
+        .then((value) => ({ kind: 'function', scope: requestedDetailScope, value }));
     } else if (selection.kind === 'procedure') {
       request = loadCommunityProcedureDetail(
         client,
         { ...scope, procedureName: selection.name },
         controller.signal,
-        (value) => { if (!controller.signal.aborted) setDetail({ kind: 'procedure', value }); },
+        (value) => {
+          if (!controller.signal.aborted) {
+            setDetail({ kind: 'procedure', scope: requestedDetailScope, value });
+          }
+        },
       )
-        .then((value) => ({ kind: 'procedure', value }));
+        .then((value) => ({ kind: 'procedure', scope: requestedDetailScope, value }));
     } else {
       request = loadCommunityTriggerDetail(client, { ...scope, triggerName: selection.name }, controller.signal)
-        .then((value) => ({ kind: 'trigger', value }));
+        .then((value) => ({ kind: 'trigger', scope: requestedDetailScope, value }));
     }
     void request.then((response) => {
       if (!controller.signal.aborted) setDetail(response);
@@ -741,7 +804,17 @@ export function CommunityExplorer({
       if (!controller.signal.aborted) setLoadingDetail(false);
     });
     return () => controller.abort();
-  }, [client, databaseName, databaseType, datasource, refreshRevision, scopeReady, schemaName, selection]);
+  }, [
+    client,
+    databaseName,
+    databaseType,
+    datasource,
+    detailScopeKey,
+    refreshRevision,
+    scopeReady,
+    schemaName,
+    selection,
+  ]);
 
   const toggleGroup = (group: string) => {
     setOpenGroups((current) => ({ ...current, [group]: !current[group] }));
@@ -825,6 +898,75 @@ export function CommunityExplorer({
     setSchemaBusy(false);
     setSchemaDialogOpen(false);
     setSchemaError(null);
+  };
+
+  const openDmlDialog = () => {
+    if (
+      !canOpenDml
+      || !currentDmlScope
+      || !selectedPlugin
+      || selection?.kind !== 'table'
+      || scopedDetail?.kind !== 'table'
+    ) return;
+    activeDmlScopeRef.current = currentDmlScope;
+    setDmlError(null);
+    setDmlDialog({
+      scope: currentDmlScope,
+      databaseType: selectedPlugin.databaseType,
+      databaseName,
+      schemaName,
+      tableName: selection.item.name,
+      columns: scopedDetail.value.columns,
+      primaryKeys: scopedDetail.value.primaryKeys,
+    });
+  };
+
+  const closeDmlDialog = () => {
+    dmlRequestRef.current?.abort();
+    dmlRequestRef.current = null;
+    dmlRequestSequenceRef.current += 1;
+    activeDmlScopeRef.current = null;
+    setDmlBusy(false);
+    setDmlError(null);
+    setDmlDialog(null);
+  };
+
+  const buildDml = async (request: Parameters<BackendClient['buildCommunityDml']>[0]) => {
+    if (!dmlDialog) return;
+    dmlRequestRef.current?.abort();
+    const controller = new AbortController();
+    const identity = {
+      sequence: ++dmlRequestSequenceRef.current,
+      scope: dmlDialog.scope,
+    };
+    dmlRequestRef.current = controller;
+    setDmlBusy(true);
+    setDmlError(null);
+    try {
+      const response = await client.buildCommunityDml(request, controller.signal);
+      if (!isCurrentCommunityDmlRequest(
+        identity,
+        dmlRequestSequenceRef.current,
+        activeDmlScopeRef.current,
+      )) return;
+      onInsertSql(response.sql);
+      activeDmlScopeRef.current = null;
+      setDmlDialog(null);
+    } catch (requestError) {
+      if (
+        !isAbortError(requestError)
+        && isCurrentCommunityDmlRequest(
+          identity,
+          dmlRequestSequenceRef.current,
+          activeDmlScopeRef.current,
+        )
+      ) setDmlError(messageFromError(requestError));
+    } finally {
+      if (dmlRequestRef.current === controller) {
+        dmlRequestRef.current = null;
+        setDmlBusy(false);
+      }
+    }
   };
 
   const panelBody = (() => {
@@ -914,17 +1056,33 @@ export function CommunityExplorer({
           <section className="object-detail" aria-label="Object details" aria-busy={loadingDetail}>
             <header>
               <div><span className="section-kicker">Details</span><strong>{selection ? selectionName(selection) : 'No selection'}</strong></div>
-              {selection ? <code>{selection.kind}</code> : null}
+              <div className="object-detail-actions">
+                {selection?.kind === 'table' ? (
+                  <button
+                    className="icon-button compact-button"
+                    type="button"
+                    disabled={!canOpenDml}
+                    onClick={openDmlDialog}
+                    aria-label="Build INSERT or UPDATE SQL"
+                    title={dmlBuilderAvailable
+                      ? (loadingDetail ? 'Loading table metadata' : 'Build INSERT or UPDATE SQL')
+                      : 'DML builder unavailable for this plugin'}
+                  >
+                    <TableProperties size={15} aria-hidden="true" />
+                  </button>
+                ) : null}
+                {selection ? <code>{selection.kind}</code> : null}
+              </div>
             </header>
-            {loadingDetail && !detail ? <ExplorerState icon={<LoaderCircle className="spinning" size={18} />}>Loading details</ExplorerState> : null}
+            {loadingDetail && !scopedDetail ? <ExplorerState icon={<LoaderCircle className="spinning" size={18} />}>Loading details</ExplorerState> : null}
             {detailError ? <div className="detail-error" role="alert">{detailError}</div> : null}
-            {!loadingDetail && !detailError && !detail ? <ExplorerState icon={<FolderTree size={20} />}>Select an object</ExplorerState> : null}
-            {loadingDetail && detail ? <div className="partial-warning" role="status">Loading remaining metadata</div> : null}
-            {detail?.kind === 'table' ? <TableDetailView detail={detail.value} tab={detailTab} onTabChange={setDetailTab} /> : null}
-            {detail?.kind === 'view' ? <TableDetailView detail={detail.value} tab={detailTab} onTabChange={setDetailTab} /> : null}
-            {detail?.kind === 'function' ? <FunctionDetailView detail={detail.value} /> : null}
-            {detail?.kind === 'procedure' ? <ProcedureDetailView detail={detail.value} /> : null}
-            {detail?.kind === 'trigger' ? <TriggerDetailView detail={detail.value} /> : null}
+            {!loadingDetail && !detailError && !scopedDetail ? <ExplorerState icon={<FolderTree size={20} />}>Select an object</ExplorerState> : null}
+            {loadingDetail && scopedDetail ? <div className="partial-warning" role="status">Loading remaining metadata</div> : null}
+            {scopedDetail?.kind === 'table' ? <TableDetailView detail={scopedDetail.value} tab={detailTab} onTabChange={setDetailTab} /> : null}
+            {scopedDetail?.kind === 'view' ? <TableDetailView detail={scopedDetail.value} tab={detailTab} onTabChange={setDetailTab} /> : null}
+            {scopedDetail?.kind === 'function' ? <FunctionDetailView detail={scopedDetail.value} /> : null}
+            {scopedDetail?.kind === 'procedure' ? <ProcedureDetailView detail={scopedDetail.value} /> : null}
+            {scopedDetail?.kind === 'trigger' ? <TriggerDetailView detail={scopedDetail.value} /> : null}
           </section>
         </>
       )}
@@ -936,6 +1094,21 @@ export function CommunityExplorer({
           error={schemaError}
           onClose={closeSchemaDialog}
           onBuild={buildSchemaSql}
+        />
+      ) : null}
+      {dmlDialog ? (
+        <CommunityDmlDialog
+          key={dmlDialog.scope}
+          databaseType={dmlDialog.databaseType}
+          databaseName={dmlDialog.databaseName}
+          schemaName={dmlDialog.schemaName}
+          tableName={dmlDialog.tableName}
+          columns={dmlDialog.columns}
+          primaryKeys={dmlDialog.primaryKeys}
+          busy={dmlBusy}
+          error={dmlError}
+          onClose={closeDmlDialog}
+          onBuild={buildDml}
         />
       ) : null}
     </aside>
