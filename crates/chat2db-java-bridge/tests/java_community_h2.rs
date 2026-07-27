@@ -9,10 +9,11 @@ use chat2db_java_bridge::{
     COMMUNITY_OBJECT_METADATA_CAPABILITY, COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
     COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY, COMMUNITY_RELATION_METADATA_CAPABILITY,
     COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
-    COMMUNITY_SQL_FORMATTER_CAPABILITY, COMMUNITY_SQL_PARSER_CAPABILITY,
-    COMMUNITY_SQL_VALIDATION_CAPABILITY, CommunityClasspath, CommunityClient,
-    CommunityPluginCatalog, CommunitySchema, DriverArtifact, DriverSpec, EngineCommand,
-    EngineConfig, EngineState, EngineSupervisor, Session, SessionConfig, UpdateRequest,
+    COMMUNITY_SQL_COMPLETION_CAPABILITY, COMMUNITY_SQL_FORMATTER_CAPABILITY,
+    COMMUNITY_SQL_PARSER_CAPABILITY, COMMUNITY_SQL_VALIDATION_CAPABILITY, CommunityClasspath,
+    CommunityClient, CommunityPluginCatalog, CommunitySchema, CompleteCommunitySqlRequest,
+    DriverArtifact, DriverSpec, EngineCommand, EngineConfig, EngineState, EngineSupervisor,
+    Session, SessionConfig, UpdateRequest,
 };
 use tempfile::TempDir;
 
@@ -54,6 +55,7 @@ async fn invokes_real_community_h2_spi_metadata_builder_and_parser() {
         COMMUNITY_SQL_PARSER_CAPABILITY,
         COMMUNITY_SQL_VALIDATION_CAPABILITY,
         COMMUNITY_SQL_FORMATTER_CAPABILITY,
+        COMMUNITY_SQL_COMPLETION_CAPABILITY,
     ] {
         assert!(
             identity
@@ -265,8 +267,71 @@ async fn verify_object_tree(community: &CommunityClient, session: &Session) {
                 .any(|column| column.column_name.eq_ignore_ascii_case("id"))
     }));
 
+    verify_sql_completion(community, session, &database.name).await;
     verify_relation_metadata(community, session, &database.name).await;
     verify_programmability_metadata(community, session, &database.name).await;
+}
+
+async fn verify_sql_completion(
+    community: &CommunityClient,
+    session: &Session,
+    database_name: &str,
+) {
+    let table_sql = "select * from ";
+    let tables = community
+        .complete_sql(
+            session,
+            CompleteCommunitySqlRequest {
+                database_type: "H2".to_owned(),
+                database_name: database_name.to_owned(),
+                schema_name: "APP".to_owned(),
+                datasource_name: "Community H2".to_owned(),
+                sql: table_sql.to_owned(),
+                cursor_utf16: utf16_len(table_sql),
+                min_prefix_length: 0,
+                need_full_name: false,
+                keyword_case: "UPPER".to_owned(),
+                active_snippet_slot: None,
+                transaction_id: None,
+            },
+        )
+        .await
+        .expect("Community domain-core must complete real H2 table metadata");
+    assert_eq!(tables.status, "SUCCESS");
+    assert!(tables.candidates.iter().any(|candidate| {
+        candidate.label.eq_ignore_ascii_case("items") && candidate.candidate_type == "TABLE"
+    }));
+
+    let column_sql = "select items. from APP.items";
+    let columns = community
+        .complete_sql(
+            session,
+            CompleteCommunitySqlRequest {
+                database_type: "H2".to_owned(),
+                database_name: database_name.to_owned(),
+                schema_name: "APP".to_owned(),
+                datasource_name: "Community H2".to_owned(),
+                sql: column_sql.to_owned(),
+                cursor_utf16: utf16_len("select items."),
+                min_prefix_length: 0,
+                need_full_name: false,
+                keyword_case: "UPPER".to_owned(),
+                active_snippet_slot: None,
+                transaction_id: None,
+            },
+        )
+        .await
+        .expect("Community domain-core must complete real H2 column metadata");
+    assert_eq!(columns.status, "SUCCESS");
+    for expected in ["id", "label"] {
+        assert!(columns.candidates.iter().any(|candidate| {
+            candidate.label.eq_ignore_ascii_case(expected) && candidate.candidate_type == "COLUMN"
+        }));
+    }
+}
+
+fn utf16_len(value: &str) -> u32 {
+    u32::try_from(value.encode_utf16().count()).expect("test SQL UTF-16 length must fit u32")
 }
 
 async fn verify_programmability_metadata(

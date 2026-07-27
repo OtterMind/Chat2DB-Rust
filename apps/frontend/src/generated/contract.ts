@@ -468,6 +468,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/community/sql/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["complete_community_sql"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/community/sql/format": {
         parameters: {
             query?: never;
@@ -1330,6 +1346,97 @@ export interface components {
             /** @description Parsed statements in source order. */
             statements: components["schemas"]["CommunityParsedStatement"][];
         };
+        /** @description Bounded SQL completion result returned by the retained Community engine. */
+        CommunitySqlCompletion: {
+            candidates: components["schemas"]["CommunitySqlCompletionCandidate"][];
+            editorHints: components["schemas"]["CommunitySqlCompletionEditorHint"][];
+            reasonCode?: string | null;
+            /**
+             * Format: int32
+             * @description Exclusive replacement end in JavaScript/Java UTF-16 code units.
+             */
+            replaceEndUtf16: number;
+            /**
+             * Format: int32
+             * @description Inclusive replacement start in JavaScript/Java UTF-16 code units.
+             */
+            replaceStartUtf16: number;
+            status: string;
+        };
+        /** @description Active editor snippet slot supplied to Community completion. */
+        CommunitySqlCompletionActiveSnippetSlot: {
+            /**
+             * Format: int32
+             * @description Exclusive end offset in JavaScript/Java UTF-16 code units.
+             */
+            replaceEndUtf16: number;
+            /**
+             * Format: int32
+             * @description Inclusive start offset in JavaScript/Java UTF-16 code units.
+             */
+            replaceStartUtf16: number;
+            type: string;
+        };
+        /** @description One completion candidate projected from the Community Web contract. */
+        CommunitySqlCompletionCandidate: {
+            columnName?: string | null;
+            comment?: string | null;
+            dataType?: string | null;
+            databaseName?: string | null;
+            datasourceName?: string | null;
+            description?: string | null;
+            detail?: string | null;
+            id?: string | null;
+            insertText?: string | null;
+            insertType: string;
+            label: string;
+            objectName?: string | null;
+            objectType?: string | null;
+            parameterMode?: string | null;
+            /** Format: int32 */
+            replaceEndUtf16?: number | null;
+            /** Format: int32 */
+            replaceStartUtf16?: number | null;
+            schemaName?: string | null;
+            snippetSlots: string[];
+            /** Format: int32 */
+            sortRank?: number | null;
+            sortText?: string | null;
+            tableAlias?: string | null;
+            tableName?: string | null;
+            type: string;
+        };
+        /** @description One editor hint projected from the Community Web contract. */
+        CommunitySqlCompletionEditorHint: {
+            items: components["schemas"]["CommunitySqlCompletionEditorHintItem"][];
+            rowRange?: null | components["schemas"]["CommunitySqlCompletionRange"];
+            statementRange?: null | components["schemas"]["CommunitySqlCompletionRange"];
+            type: string;
+            valueRange?: null | components["schemas"]["CommunitySqlCompletionRange"];
+        };
+        /** @description One item inside a Community editor hint. */
+        CommunitySqlCompletionEditorHintItem: {
+            active: boolean;
+            /** Format: int32 */
+            columnIndex: number;
+            fieldName?: string | null;
+            fieldType?: string | null;
+            label?: string | null;
+            range?: null | components["schemas"]["CommunitySqlCompletionRange"];
+            /** Format: int32 */
+            rowIndex: number;
+        };
+        /** @description One 1-based editor range returned by Community completion. */
+        CommunitySqlCompletionRange: {
+            /** Format: int32 */
+            endColumn: number;
+            /** Format: int32 */
+            endLineNumber: number;
+            /** Format: int32 */
+            startColumn: number;
+            /** Format: int32 */
+            startLineNumber: number;
+        };
         /** @description One syntax diagnostic returned by the retained Community parser. */
         CommunitySqlDiagnostic: {
             /** Format: int32 */
@@ -1490,6 +1597,24 @@ export interface components {
         CommunityViewList: {
             /** @description Views represented by the same bounded metadata projection as tables. */
             items: components["schemas"]["CommunityTable"][];
+        };
+        /** @description Request to complete SQL against one datasource's live JDBC metadata. */
+        CompleteCommunitySqlRequest: {
+            activeSnippetSlot?: null | components["schemas"]["CommunitySqlCompletionActiveSnippetSlot"];
+            /**
+             * Format: int32
+             * @description Cursor offset in JavaScript/Java UTF-16 code units.
+             */
+            cursorUtf16: number;
+            databaseName: string;
+            databaseType: string;
+            datasourceId: string;
+            keywordCase: string;
+            /** Format: int32 */
+            minPrefixLength: number;
+            needFullName: boolean;
+            schemaName: string;
+            sql: string;
         };
         /** @description Health information for one owned component. */
         ComponentHealth: {
@@ -4127,6 +4252,66 @@ export interface operations {
                 };
             };
             /** @description Unexpected Community SQL-builder failure */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Community compatibility engine is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    complete_community_sql: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CompleteCommunitySqlRequest"];
+            };
+        };
+        responses: {
+            /** @description Community SQL completion */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunitySqlCompletion"];
+                };
+            };
+            /** @description Invalid Community SQL-completion request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Datasource session cannot serve completion */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected Community SQL-completion failure */
             500: {
                 headers: {
                     [name: string]: unknown;

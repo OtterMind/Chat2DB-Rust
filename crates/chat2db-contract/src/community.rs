@@ -656,6 +656,139 @@ pub struct CommunityFormattedSql {
     pub sql: String,
 }
 
+/// Active editor snippet slot supplied to Community completion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunitySqlCompletionActiveSnippetSlot {
+    pub r#type: String,
+    /// Inclusive start offset in JavaScript/Java UTF-16 code units.
+    pub replace_start_utf16: u32,
+    /// Exclusive end offset in JavaScript/Java UTF-16 code units.
+    pub replace_end_utf16: u32,
+}
+
+/// Request to complete SQL against one datasource's live JDBC metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CompleteCommunitySqlRequest {
+    pub datasource_id: String,
+    pub database_type: String,
+    pub database_name: String,
+    pub schema_name: String,
+    pub sql: String,
+    /// Cursor offset in JavaScript/Java UTF-16 code units.
+    pub cursor_utf16: u32,
+    pub min_prefix_length: u32,
+    pub need_full_name: bool,
+    pub keyword_case: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_snippet_slot: Option<CommunitySqlCompletionActiveSnippetSlot>,
+}
+
+/// One completion candidate projected from the Community Web contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunitySqlCompletionCandidate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub label: String,
+    pub r#type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub insert_text: Option<String>,
+    pub insert_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replace_start_utf16: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replace_end_utf16: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub datasource_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table_alias: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameter_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_rank: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_text: Option<String>,
+    pub snippet_slots: Vec<String>,
+}
+
+/// One 1-based editor range returned by Community completion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunitySqlCompletionRange {
+    pub start_line_number: u32,
+    pub start_column: u32,
+    pub end_line_number: u32,
+    pub end_column: u32,
+}
+
+/// One item inside a Community editor hint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunitySqlCompletionEditorHintItem {
+    pub row_index: u32,
+    pub column_index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range: Option<CommunitySqlCompletionRange>,
+    pub active: bool,
+}
+
+/// One editor hint projected from the Community Web contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunitySqlCompletionEditorHint {
+    pub r#type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statement_range: Option<CommunitySqlCompletionRange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row_range: Option<CommunitySqlCompletionRange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_range: Option<CommunitySqlCompletionRange>,
+    pub items: Vec<CommunitySqlCompletionEditorHintItem>,
+}
+
+/// Bounded SQL completion result returned by the retained Community engine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunitySqlCompletion {
+    pub status: String,
+    /// Inclusive replacement start in JavaScript/Java UTF-16 code units.
+    pub replace_start_utf16: u32,
+    /// Exclusive replacement end in JavaScript/Java UTF-16 code units.
+    pub replace_end_utf16: u32,
+    pub candidates: Vec<CommunitySqlCompletionCandidate>,
+    pub editor_hints: Vec<CommunitySqlCompletionEditorHint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -668,10 +801,12 @@ mod tests {
         CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
         CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
         CommunityProcedureParameter, CommunityProcedureParameterList, CommunitySchema,
-        CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlDiagnostic, CommunitySqlValidation,
-        CommunityTable, CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex,
-        CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList, CommunityTrigger,
-        CommunityTriggerList, CommunityViewList, FormatCommunitySqlRequest,
+        CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlCompletion,
+        CommunitySqlCompletionActiveSnippetSlot, CommunitySqlCompletionCandidate,
+        CommunitySqlDiagnostic, CommunitySqlValidation, CommunityTable, CommunityTableColumn,
+        CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
+        CommunityTableIndexList, CommunityTableList, CommunityTrigger, CommunityTriggerList,
+        CommunityViewList, CompleteCommunitySqlRequest, FormatCommunitySqlRequest,
         GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
         ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityFunctionsRequest,
         ListCommunityIndexesRequest, ListCommunityProceduresRequest, ListCommunitySchemasRequest,
@@ -725,6 +860,66 @@ mod tests {
                 .expect("catalog must deserialize"),
             catalog
         );
+    }
+
+    #[test]
+    fn sql_completion_contract_exposes_explicit_utf16_offsets() {
+        let request = CompleteCommunitySqlRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: "PUBLIC".to_owned(),
+            sql: "select 😀.".to_owned(),
+            cursor_utf16: 10,
+            min_prefix_length: 1,
+            need_full_name: false,
+            keyword_case: "UPPER".to_owned(),
+            active_snippet_slot: Some(CommunitySqlCompletionActiveSnippetSlot {
+                r#type: "INSERT_COLUMN_LIST".to_owned(),
+                replace_start_utf16: 7,
+                replace_end_utf16: 9,
+            }),
+        };
+        let request_json = serde_json::to_value(&request).expect("request must serialize");
+        assert_eq!(request_json["cursorUtf16"], 10);
+        assert!(request_json.get("cursor").is_none());
+
+        let response = CommunitySqlCompletion {
+            status: "SUCCESS".to_owned(),
+            replace_start_utf16: 7,
+            replace_end_utf16: 10,
+            candidates: vec![CommunitySqlCompletionCandidate {
+                label: "display_name".to_owned(),
+                r#type: "COLUMN".to_owned(),
+                insert_type: "PLAIN_TEXT".to_owned(),
+                snippet_slots: Vec::new(),
+                id: None,
+                insert_text: Some("display_name".to_owned()),
+                replace_start_utf16: Some(7),
+                replace_end_utf16: Some(10),
+                detail: None,
+                description: None,
+                data_type: None,
+                object_type: None,
+                comment: None,
+                datasource_name: None,
+                database_name: None,
+                schema_name: None,
+                table_name: None,
+                table_alias: None,
+                column_name: None,
+                object_name: None,
+                parameter_mode: None,
+                sort_rank: None,
+                sort_text: None,
+            }],
+            editor_hints: Vec::new(),
+            reason_code: None,
+        };
+        let response_json = serde_json::to_value(&response).expect("response must serialize");
+        assert_eq!(response_json["replaceStartUtf16"], 7);
+        assert_eq!(response_json["candidates"][0]["type"], "COLUMN");
+        assert!(response_json.get("reasonCode").is_none());
     }
 
     #[test]

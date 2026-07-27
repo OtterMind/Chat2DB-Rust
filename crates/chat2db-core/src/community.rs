@@ -8,10 +8,13 @@ use chat2db_contract::{
     CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices, CommunityPrimaryKey,
     CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
     CommunityProcedureParameter, CommunityProcedureParameterList, CommunitySchema,
-    CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlDiagnostic, CommunitySqlValidation,
-    CommunityTable, CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex,
-    CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList, CommunityTrigger,
-    CommunityTriggerList, CommunityViewList, FormatCommunitySqlRequest,
+    CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlCompletion,
+    CommunitySqlCompletionActiveSnippetSlot, CommunitySqlCompletionCandidate,
+    CommunitySqlCompletionEditorHint, CommunitySqlCompletionEditorHintItem,
+    CommunitySqlCompletionRange, CommunitySqlDiagnostic, CommunitySqlValidation, CommunityTable,
+    CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
+    CommunityTableIndexList, CommunityTableList, CommunityTrigger, CommunityTriggerList,
+    CommunityViewList, CompleteCommunitySqlRequest, FormatCommunitySqlRequest,
     GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
     ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityFunctionsRequest,
     ListCommunityIndexesRequest, ListCommunityProceduresRequest, ListCommunitySchemasRequest,
@@ -32,12 +35,19 @@ use chat2db_java_bridge::{
     CommunityProcedure as BridgeCommunityProcedure,
     CommunityProcedureParameter as BridgeCommunityProcedureParameter,
     CommunitySchema as BridgeCommunitySchema, CommunitySqlAnalysis as BridgeCommunitySqlAnalysis,
+    CommunitySqlCompletion as BridgeCommunitySqlCompletion,
+    CommunitySqlCompletionActiveSnippetSlot as BridgeCommunitySqlCompletionActiveSnippetSlot,
+    CommunitySqlCompletionCandidate as BridgeCommunitySqlCompletionCandidate,
+    CommunitySqlCompletionEditorHint as BridgeCommunitySqlCompletionEditorHint,
+    CommunitySqlCompletionEditorHintItem as BridgeCommunitySqlCompletionEditorHintItem,
+    CommunitySqlCompletionRange as BridgeCommunitySqlCompletionRange,
     CommunitySqlDiagnostic as BridgeCommunitySqlDiagnostic,
     CommunitySqlValidation as BridgeCommunitySqlValidation, CommunityTable as BridgeCommunityTable,
     CommunityTableColumn as BridgeCommunityTableColumn,
     CommunityTableIndex as BridgeCommunityTableIndex,
     CommunityTableIndexColumn as BridgeCommunityTableIndexColumn,
-    CommunityTrigger as BridgeCommunityTrigger, EngineClient, Session,
+    CommunityTrigger as BridgeCommunityTrigger,
+    CompleteCommunitySqlRequest as BridgeCompleteCommunitySqlRequest, EngineClient, Session,
 };
 use chat2db_storage::Storage;
 
@@ -860,6 +870,63 @@ impl Application {
             .map_err(AppError::from)
     }
 
+    /// Completes SQL through Community against a forced read-only datasource session.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, completion, protocol, or
+    /// session-cleanup errors.
+    pub async fn complete_community_sql(
+        &self,
+        request: CompleteCommunitySqlRequest,
+    ) -> Result<CommunitySqlCompletion, AppError> {
+        let storage = self.require_storage()?;
+        let engine = self.require_community_engine()?;
+        let CompleteCommunitySqlRequest {
+            datasource_id,
+            database_type,
+            database_name,
+            schema_name,
+            sql,
+            cursor_utf16,
+            min_prefix_length,
+            need_full_name,
+            keyword_case,
+            active_snippet_slot,
+        } = request;
+        let client = engine.community_client().map_err(AppError::from)?;
+        run_community_named_metadata_session(
+            storage,
+            engine,
+            datasource_id,
+            "close_community_sql_completion_session",
+            move |session, datasource_name| async move {
+                client
+                    .complete_sql(
+                        &session,
+                        BridgeCompleteCommunitySqlRequest {
+                            database_type,
+                            database_name,
+                            schema_name,
+                            datasource_name,
+                            sql,
+                            cursor_utf16,
+                            min_prefix_length,
+                            need_full_name,
+                            keyword_case,
+                            active_snippet_slot: active_snippet_slot
+                                .map(bridge_completion_active_snippet_slot),
+                            transaction_id: None,
+                        },
+                    )
+                    .await
+                    .map(community_sql_completion)
+                    .map_err(AppError::from)
+            },
+        )
+        .await
+    }
+
     fn require_community_engine(&self) -> Result<chat2db_java_bridge::EngineClient, AppError> {
         let engine = self.require_engine()?;
         if !engine.community_compatibility_configured() {
@@ -910,6 +977,33 @@ where
         cleanup_phase,
         operation,
         |session| async move { session.close().await.map_err(AppError::from) },
+    )
+    .await
+}
+
+async fn run_community_named_metadata_session<T, F, Fut>(
+    storage: Storage,
+    engine: EngineClient,
+    datasource_id: String,
+    cleanup_phase: &'static str,
+    operation: F,
+) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: FnOnce(Session, String) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, AppError>> + Send + 'static,
+{
+    run_cancellation_safe_with_cleanup(
+        async move {
+            let resolved = resolve_datasource_connection(&storage, &datasource_id).await?;
+            let datasource_name = resolved.datasource_name.clone();
+            let session =
+                open_datasource_session(&engine, resolved, SessionReadOnly::Forced).await?;
+            Ok((session, datasource_name))
+        },
+        cleanup_phase,
+        move |(session, datasource_name)| operation(session, datasource_name),
+        |(session, _)| async move { session.close().await.map_err(AppError::from) },
     )
     .await
 }
@@ -1268,6 +1362,112 @@ fn community_sql_diagnostic(diagnostic: BridgeCommunitySqlDiagnostic) -> Communi
 
 fn community_formatted_sql(formatted: BridgeCommunityFormattedSql) -> CommunityFormattedSql {
     CommunityFormattedSql { sql: formatted.sql }
+}
+
+fn bridge_completion_active_snippet_slot(
+    slot: CommunitySqlCompletionActiveSnippetSlot,
+) -> BridgeCommunitySqlCompletionActiveSnippetSlot {
+    BridgeCommunitySqlCompletionActiveSnippetSlot {
+        slot_type: slot.r#type,
+        replace_start_utf16: slot.replace_start_utf16,
+        replace_end_utf16: slot.replace_end_utf16,
+    }
+}
+
+fn community_sql_completion(completion: BridgeCommunitySqlCompletion) -> CommunitySqlCompletion {
+    CommunitySqlCompletion {
+        status: completion.status.to_ascii_lowercase(),
+        replace_start_utf16: completion.replace_start_utf16,
+        replace_end_utf16: completion.replace_end_utf16,
+        candidates: completion
+            .candidates
+            .into_iter()
+            .map(community_sql_completion_candidate)
+            .collect(),
+        editor_hints: completion
+            .editor_hints
+            .into_iter()
+            .map(community_sql_completion_editor_hint)
+            .collect(),
+        reason_code: completion.reason_code,
+    }
+}
+
+fn community_sql_completion_candidate(
+    candidate: BridgeCommunitySqlCompletionCandidate,
+) -> CommunitySqlCompletionCandidate {
+    CommunitySqlCompletionCandidate {
+        id: candidate.id,
+        label: candidate.label,
+        r#type: candidate.candidate_type,
+        insert_text: candidate.insert_text,
+        insert_type: candidate.insert_type,
+        replace_start_utf16: candidate.replace_start_utf16,
+        replace_end_utf16: candidate.replace_end_utf16,
+        detail: candidate.detail,
+        description: candidate.description,
+        data_type: candidate.data_type,
+        object_type: candidate.object_type,
+        comment: candidate.comment,
+        datasource_name: candidate.datasource_name,
+        database_name: candidate.database_name,
+        schema_name: candidate.schema_name,
+        table_name: candidate.table_name,
+        table_alias: candidate.table_alias,
+        column_name: candidate.column_name,
+        object_name: candidate.object_name,
+        parameter_mode: candidate.parameter_mode,
+        sort_rank: candidate.sort_rank,
+        sort_text: candidate.sort_text,
+        snippet_slots: candidate.snippet_slots,
+    }
+}
+
+fn community_sql_completion_editor_hint(
+    hint: BridgeCommunitySqlCompletionEditorHint,
+) -> CommunitySqlCompletionEditorHint {
+    CommunitySqlCompletionEditorHint {
+        r#type: hint.hint_type,
+        statement_range: hint
+            .statement_range
+            .as_ref()
+            .map(community_sql_completion_range),
+        row_range: hint.row_range.as_ref().map(community_sql_completion_range),
+        value_range: hint
+            .value_range
+            .as_ref()
+            .map(community_sql_completion_range),
+        items: hint
+            .items
+            .into_iter()
+            .map(community_sql_completion_editor_hint_item)
+            .collect(),
+    }
+}
+
+fn community_sql_completion_editor_hint_item(
+    item: BridgeCommunitySqlCompletionEditorHintItem,
+) -> CommunitySqlCompletionEditorHintItem {
+    CommunitySqlCompletionEditorHintItem {
+        row_index: item.row_index,
+        column_index: item.column_index,
+        field_name: item.field_name,
+        field_type: item.field_type,
+        label: item.label,
+        range: item.range.as_ref().map(community_sql_completion_range),
+        active: item.active,
+    }
+}
+
+fn community_sql_completion_range(
+    range: &BridgeCommunitySqlCompletionRange,
+) -> CommunitySqlCompletionRange {
+    CommunitySqlCompletionRange {
+        start_line_number: range.start_line_number,
+        start_column: range.start_column,
+        end_line_number: range.end_line_number,
+        end_column: range.end_column,
+    }
 }
 
 fn community_parsed_statement(

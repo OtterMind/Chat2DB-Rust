@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly lock_format_version="1"
-readonly expected_artifact_count="148"
+readonly expected_artifact_count="149"
 
 usage() {
   echo "usage: $0 <generate|verify> <classpath-directory> <lock-file> <source-commit>" >&2

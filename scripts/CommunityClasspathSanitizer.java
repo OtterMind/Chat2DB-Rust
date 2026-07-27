@@ -52,6 +52,8 @@ public final class CommunityClasspathSanitizer {
     private static final Map<String, CommunityArtifact> COMMUNITY_ARTIFACTS = Map.of(
             "chat2db-community-domain-api-5.3.0.jar",
             new CommunityArtifact("chat2db-community-domain-api"),
+            "chat2db-community-domain-core-5.3.0.jar",
+            new CommunityArtifact("chat2db-community-domain-core"),
             "chat2db-community-h2-5.3.0.jar",
             new CommunityArtifact("chat2db-community-h2"),
             "chat2db-community-mysql-5.3.0.jar",

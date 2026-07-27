@@ -9,11 +9,12 @@ and updates, typed row streams, credit flow control, cancellation, deadlines,
 bounded errors, conservative delivery outcomes, Community plugin inventory,
 H2 schema, database, table, column, index, view, imported/exported foreign-key,
 primary-key, function, function-parameter, procedure, procedure-parameter, and
-trigger metadata, `CREATE SCHEMA` building, and retained SQL parsing.
+trigger metadata, `CREATE SCHEMA` building, retained SQL parsing, bounded syntax
+validation, SQL formatting, and datasource-aware SQL completion.
 
 Not implemented in the compatibility protocol: general-purpose SQL builder
-operations, script execution, data import/export, formatting, completion,
-non-relational operations, or retained result handles. Driver-pack discovery
+operations, script execution, data import/export, non-relational operations, or
+retained result handles. Driver-pack discovery
 and inventory are product-level Rust contracts; the process protocol continues
 to receive only ordered canonical JDBC JAR paths and expected digests.
 
@@ -79,6 +80,7 @@ The implemented capability names are:
 - `community.sql-parser.v1`
 - `community.sql-validation.v1`
 - `community.sql-formatter.v1`
+- `community.sql-completion.v1`
 
 No common version or missing required capability returns a fatal structured
 error and terminates the engine. Rust rejects a selected version it did not
@@ -211,7 +213,7 @@ before lock verification by rebuilding only affected JARs with sorted entries,
 the source-commit timestamp, and the `STORED` method. A two-clean-build gate
 compares every resulting JAR digest and length.
 
-Configuring the classpath automatically makes all seven Community capabilities
+Configuring the classpath automatically makes all ten Community capabilities
 required during handshake. A sidecar that lacks any one of them fails startup
 and is reaped before the generation becomes ready.
 
@@ -225,8 +227,9 @@ the raw length-delimited values of every Community response field, including
 unknown nested bytes and duplicate oneof fields. The same allocation-free scan
 parses known Community submessages and rejects plugin, driver, download URL,
 schema, statement, object, nested index-column, function, function-parameter,
-procedure, procedure-parameter, and trigger counts before Protobuf DTO decoding
-can allocate their repeated collections. More than 8 MiB is fatal
+procedure, procedure-parameter, trigger, completion-candidate, editor-hint,
+hint-item, and snippet-slot counts before Protobuf DTO decoding can allocate
+their repeated collections. More than 8 MiB is fatal
 while non-Community responses retain the negotiated limit up to 16 MiB.
 Decoded counts, string totals, and message sizes are checked again against the
 same generated limits. Rust requires the catalog's source commit to equal the
@@ -296,23 +299,54 @@ rejected before the claim leave the transaction active and retain
 parsing uses the plugin's retained syntax parser. No Community, JDBC, ANTLR, or
 exception object crosses the process boundary.
 
-All twenty Community operations use the fatal-on-unknown lane. Once delivered,
-a timeout or abandoned response terminates and reaps the Java generation because
-the host can no longer prove the plugin invocation's state. The checked-in
+The SQL-completion capability adds one unary, session-bound operation at client
+and server envelope tag `222`. Its request carries the database type and scope,
+SQL, cursor, prefix policy, keyword case, optional active snippet slot, and a
+non-zero bridge-generated `datasource_scope`. Product datasource ids never enter
+the wire request. All cursor, global replacement, candidate replacement, active
+snippet, and editor-range columns are JavaScript/Java UTF-16 units. Rust
+validates outbound offsets against the SQL before dispatch and validates every
+returned range against the same SQL after response routing.
+
+The fixed classpath includes Community domain-core so Java can reflectively
+construct and invoke `DbSqlCompletionServiceImpl.complete`. The adapter attaches
+the existing session connection to a temporary `ConnectInfo`; MySQL reaches
+`DefaultSqlSyntaxHandler`, while other relational types reach
+`GenericSqlCompletionEngine`. A dynamic `IDbTableService` proxy services column
+lookups through the retained JDBC metadata path. Request cleanup removes only
+the adapter's private thread-local and `MemoryCacheManage` scope; it does not call
+the Community context helper that would close the Rust-owned connection. The
+adapter verifies the connection remains open when completion returns.
+
+Completion responses carry status, a default replacement range, candidates,
+editor hints, and an optional reason code. Rust's allocation-free raw scanner
+accumulates every tag-`222` payload, including duplicate oneof values, under the
+8 MiB Community budget and caps candidates and editor hints at 4,096 each and
+hint items and snippet slots at 65,536 each. Decoded routing validates status and
+enumerated values, scalar and aggregate strings, paired and ordered replacement
+ranges, one-based editor positions, collection counts, and encoded size before
+the bridge converts the result to its public type.
+
+All twenty-three Community operations use the fatal-on-unknown lane. Once
+delivered, a timeout or abandoned response terminates and reaps the Java
+generation because the host can no longer prove the plugin invocation's state.
+The checked-in
 `third_party/community-h2-classpath.lock` additionally binds the current
-source build to exactly 148 filenames, lengths, and SHA-256 values. This lock is
+source build to exactly 149 filenames, lengths, and SHA-256 values. This lock is
 a reproducibility and drift gate, not a package signature or distribution
 authorization.
 
 The product runtime embeds that lock and accepts only a directory matching it
 exactly. `CHAT2DB_COMMUNITY_CLASSPATH_DIR` selects the directory but cannot
-override its source commit or inventory. Core maps all twenty protocol
+override its source commit or inventory. Core maps all twenty-three protocol
 operations to stable external DTOs; schema, object, relation, and
-programmability metadata resolve a vault-backed datasource and use a
-forced-read-only JDBC session before invoking this protocol. Core keeps each
-bounded metadata operation alive if its transport waiter is cancelled so it can
-consume the response and close the session. These product rules sit above the
-compatibility wire contract.
+programmability metadata plus completion resolve a vault-backed datasource and
+use a forced-read-only JDBC session before invoking this protocol. Completion
+also injects the stored datasource display name; only Rust's private
+`datasource_scope`, never the product id, crosses the Java boundary. Core keeps
+each bounded session operation alive if its transport waiter is cancelled so it
+can consume the response and close the session. These product rules sit above
+the compatibility wire contract.
 
 ## Supervision
 
@@ -342,8 +376,11 @@ repository-local Maven cache, rejects classpath lock drift, keeps the H2 JDBC
 driver external, and executes catalog, schema, object, relation,
 programmability, schema-builder, and ANTLR-parser calls through the real
 Community H2 plugin. CI runs that same Community sidecar path on Linux and
-Windows. The Stage 7C-7F product gate starts from the exact embedded lock,
-stores an encrypted H2 datasource, invokes all twenty operations through Core,
+Windows. The Stage 7C-7J product gate starts from the exact embedded lock,
+stores an encrypted H2 datasource, invokes the fixed operations through Core,
 and verifies database/table/column/index, view, foreign-key, primary-key,
 function, procedure, parameter, and trigger projection plus metadata-session
-and driver cleanup; CI runs this product boundary on Linux and Windows as well.
+and driver cleanup. Its completion cases verify table suggestions after
+`select * from ` and `ID`/`LABEL` column suggestions after
+`select items. from APP.items`, using H2's actual JDBC catalog and the same
+forced-read-only product-session boundary.

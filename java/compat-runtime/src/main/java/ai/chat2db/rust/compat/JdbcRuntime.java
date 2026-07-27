@@ -17,6 +17,7 @@ import ai.chat2db.rust.compat.protocol.v1.CommunityProcedureList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityProcedureParameterList;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySchemaList;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySqlAnalysis;
+import ai.chat2db.rust.compat.protocol.v1.CommunitySqlCompletion;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySqlValidation;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableColumnList;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableIndexList;
@@ -31,6 +32,7 @@ import ai.chat2db.rust.compat.protocol.v1.DriverUnloaded;
 import ai.chat2db.rust.compat.protocol.v1.ExecuteQueryRequest;
 import ai.chat2db.rust.compat.protocol.v1.ExecuteUpdateRequest;
 import ai.chat2db.rust.compat.protocol.v1.FormatCommunitySqlRequest;
+import ai.chat2db.rust.compat.protocol.v1.CompleteCommunitySqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.GrantCreditsRequest;
 import ai.chat2db.rust.compat.protocol.v1.GetCommunityFunctionRequest;
 import ai.chat2db.rust.compat.protocol.v1.GetCommunityProcedureRequest;
@@ -361,7 +363,7 @@ final class JdbcRuntime implements AutoCloseable {
         try {
             return invocation.invoke(connection);
         } catch (RuntimeFailure failure) {
-            session.markQueryFailure();
+            markCommunityFailure(session, failure);
             throw session.decorate(afterOperationClaim(failure));
         } catch (RuntimeException | LinkageError failure) {
             session.markQueryFailure();
@@ -371,6 +373,15 @@ final class JdbcRuntime implements AutoCloseable {
                     failure)));
         } finally {
             session.finishOperation(requestId);
+        }
+    }
+
+    private static void markCommunityFailure(JdbcSession session, RuntimeFailure failure) {
+        if (failure.code().equals("community.sql_completion_connection_closed")
+                || failure.code().equals("community.sql_completion_connection_state_failed")) {
+            session.markBroken();
+        } else {
+            session.markQueryFailure();
         }
     }
 
@@ -817,6 +828,22 @@ final class JdbcRuntime implements AutoCloseable {
         CommunityFormattedSql formatted =
                 communitySqlFormatter.format(request.getDatabaseType(), request.getSql());
         return terminal(meta).setCommunityFormattedSql(formatted).build();
+    }
+
+    ServerEnvelope completeCommunitySql(
+            RequestMeta meta, CompleteCommunitySqlRequest request) throws RuntimeFailure {
+        String sessionId = requireSessionId(meta);
+        JdbcSession session = sessions.require(sessionId);
+        community.validateSqlCompletionRequest(request);
+        Optional<String> transactionId = request.hasTransactionId()
+                ? Optional.of(request.getTransactionId())
+                : Optional.empty();
+        CommunitySqlCompletion completion = invokeCommunityMetadata(
+                session,
+                meta.getRequestId(),
+                transactionId,
+                connection -> community.completeSql(connection, request));
+        return terminal(meta).setCommunitySqlCompletion(completion).build();
     }
 
     boolean communityCompatibilityConfigured() {

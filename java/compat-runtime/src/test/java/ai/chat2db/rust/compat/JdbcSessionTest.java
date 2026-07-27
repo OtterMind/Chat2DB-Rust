@@ -145,6 +145,45 @@ class JdbcSessionTest {
     }
 
     @Test
+    void communityCompletionConnectionOwnershipFailureBreaksSession(
+            @TempDir Path temporaryDirectory) throws Exception {
+        Path snapshotRoot = Files.createDirectory(temporaryDirectory.resolve("snapshots"));
+        try (DriverRegistry registry = new DriverRegistry(snapshotRoot)) {
+            DriverRegistry.DriverDescriptor descriptor = loadH2(registry);
+            Connection connection = connection((proxy, method, arguments) -> switch (method.getName()) {
+                case "getAutoCommit" -> true;
+                case "getTransactionIsolation" -> Connection.TRANSACTION_READ_COMMITTED;
+                case "isReadOnly", "isClosed" -> false;
+                default -> defaultValue(method.getReturnType());
+            });
+            JdbcSession session = session(connection, registry.acquire(descriptor.driverId()));
+
+            RuntimeFailure failure = assertThrows(
+                    RuntimeFailure.class,
+                    () -> JdbcRuntime.invokeCommunitySchemas(
+                            session,
+                            "community-completion-closed-connection",
+                            Optional.empty(),
+                            claimed -> {
+                                assertSame(connection, claimed);
+                                throw RuntimeFailure.internal(
+                                        "community.sql_completion_connection_closed",
+                                        "completion closed the host connection",
+                                        null);
+                            }));
+
+            assertEquals("community.sql_completion_connection_closed", failure.code());
+            assertEquals(JdbcSession.State.BROKEN, session.state());
+            assertEquals(
+                    SessionState.SESSION_STATE_BROKEN,
+                    failure.toEngineError().getSessionState());
+            assertTrue(session.activeOperationId().isEmpty());
+            session.close();
+            registry.unload(descriptor.driverId());
+        }
+    }
+
+    @Test
     void uncheckedBeginFailureIsUnknownAndBreaksSession(
             @TempDir Path temporaryDirectory) throws Exception {
         Path snapshotRoot = Files.createDirectory(temporaryDirectory.resolve("snapshots"));

@@ -380,6 +380,7 @@ impl Application {
             .map_err(DatabaseWriteError::not_started)?;
         let ResolvedDatasourceConnection {
             driver_id,
+            datasource_name: _,
             connection,
         } = resolve_datasource_connection(&storage, &datasource_id)
             .await

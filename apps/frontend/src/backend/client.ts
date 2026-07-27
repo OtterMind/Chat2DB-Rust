@@ -22,6 +22,10 @@ export type CommunityProcedureList = Schema<'CommunityProcedureList'>;
 export type CommunityProcedureParameterList = Schema<'CommunityProcedureParameterList'>;
 export type CommunitySchemaList = Schema<'CommunitySchemaList'>;
 export type CommunitySqlAnalysis = Schema<'CommunitySqlAnalysis'>;
+export type CommunitySqlCompletion = Schema<'CommunitySqlCompletion'>;
+export type CommunitySqlCompletionActiveSnippetSlot = Schema<'CommunitySqlCompletionActiveSnippetSlot'>;
+export type CommunitySqlCompletionCandidate = Schema<'CommunitySqlCompletionCandidate'>;
+export type CommunitySqlCompletionEditorHint = Schema<'CommunitySqlCompletionEditorHint'>;
 export type CommunitySqlValidation = Schema<'CommunitySqlValidation'>;
 export type CommunityTableColumnList = Schema<'CommunityTableColumnList'>;
 export type CommunityTableIndexList = Schema<'CommunityTableIndexList'>;
@@ -32,6 +36,7 @@ export type CommunityViewList = Schema<'CommunityViewList'>;
 export type CreateAgentSessionRequest = Schema<'CreateAgentSessionRequest'>;
 export type CreateDatasourceRequest = Schema<'CreateDatasourceRequest'>;
 export type CreateProviderProfileRequest = Schema<'CreateProviderProfileRequest'>;
+export type CompleteCommunitySqlRequest = Schema<'CompleteCommunitySqlRequest'>;
 export type Datasource = Schema<'Datasource'>;
 export type DatasourceConnection = Schema<'DatasourceConnection'>;
 export type DatasourceConnectionProperty = Schema<'DatasourceConnectionProperty'>;
@@ -204,6 +209,10 @@ export interface BackendClient {
     request: FormatCommunitySqlRequest,
     signal?: AbortSignal,
   ): Promise<CommunityFormattedSql>;
+  completeCommunitySql(
+    request: CompleteCommunitySqlRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunitySqlCompletion>;
   listDatasources(signal?: AbortSignal): Promise<DatasourceList>;
   createDatasource(
     request: CreateDatasourceRequest,

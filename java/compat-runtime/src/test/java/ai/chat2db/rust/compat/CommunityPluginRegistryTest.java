@@ -3,12 +3,14 @@ package ai.chat2db.rust.compat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import ai.chat2db.rust.compat.protocol.v1.CommunityForeignKey;
 import ai.chat2db.rust.compat.protocol.v1.CommunityPrimaryKey;
+import ai.chat2db.rust.compat.protocol.v1.CompleteCommunitySqlRequest;
 import java.io.OutputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
@@ -21,6 +23,7 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.Driver;
 import java.sql.Statement;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.jar.Attributes;
@@ -375,6 +378,96 @@ class CommunityPluginRegistryTest {
         }
     }
 
+    @Test
+    void realCommunityH2SqlCompletionClearsRequestStateAndKeepsTheConnectionOpen()
+            throws Exception {
+        Path communityClasspath = communityClasspathDirectory();
+        assumeTrue(
+                Files.isDirectory(communityClasspath),
+                "the fixed Community H2 classpath is built by the extended integration lane");
+
+        try (URLClassLoader driverLoader = new URLClassLoader(
+                        new URL[] {h2DriverJar().toUri().toURL()},
+                        ClassLoader.getPlatformClassLoader());
+                CommunityPluginRegistry registry = openRegistry(communityClasspath);
+                Connection connection = h2Connection(driverLoader)) {
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate("CREATE SCHEMA IF NOT EXISTS APP");
+                statement.executeUpdate(
+                        "CREATE TABLE APP.completion_users "
+                                + "(id BIGINT PRIMARY KEY, display_name VARCHAR(64))");
+            }
+
+            String databaseName = connection.getCatalog();
+            ClassLoader communityLoader = registryLoader(registry);
+            long tableScope = 7_001L;
+            String adjacentCacheKey =
+                    "databases_datasourceId_70010_schemaName_APP_tables";
+            String unrelatedCacheKey = "custom_datasourceId_7001_value";
+            putCommunityCache(communityLoader, adjacentCacheKey, "adjacent");
+            putCommunityCache(communityLoader, unrelatedCacheKey, "unrelated");
+
+            ClassLoader previous = Thread.currentThread().getContextClassLoader();
+            var tables = registry.completeSql(
+                    connection,
+                    completionRequest(
+                            databaseName,
+                            "select * from ",
+                            "select * from ".length(),
+                            tableScope));
+            assertEquals(previous, Thread.currentThread().getContextClassLoader());
+            assertEquals("SUCCESS", tables.getStatus());
+            assertTrue(tables.getCandidatesList().stream().anyMatch(candidate ->
+                    candidate.getLabel().equalsIgnoreCase("completion_users")
+                            && candidate.getType().equals("TABLE")));
+            assertCompletionStateCleared(communityLoader, tableScope);
+            assertEquals("adjacent", getCommunityCache(communityLoader, adjacentCacheKey));
+            assertEquals("unrelated", getCommunityCache(communityLoader, unrelatedCacheKey));
+
+            long columnScope = tableScope + 1;
+            String columnSql = "select completion_users. from APP.completion_users";
+            var columns = registry.completeSql(
+                    connection,
+                    completionRequest(
+                            databaseName,
+                            columnSql,
+                            "select completion_users.".length(),
+                            columnScope));
+            assertEquals("SUCCESS", columns.getStatus());
+            for (String expected : List.of("id", "display_name")) {
+                assertTrue(columns.getCandidatesList().stream().anyMatch(candidate ->
+                        candidate.getLabel().equalsIgnoreCase(expected)
+                                && candidate.getType().equals("COLUMN")));
+            }
+            assertCompletionStateCleared(communityLoader, columnScope);
+            assertFalse(connection.isClosed());
+            try (Statement statement = connection.createStatement()) {
+                assertTrue(statement.execute("SELECT 1"));
+            }
+
+            long failureScope = tableScope + 2;
+            try (Connection closedConnection = h2Connection(driverLoader)) {
+                String closedDatabaseName = closedConnection.getCatalog();
+                closedConnection.close();
+                RuntimeFailure failure = assertThrows(
+                        RuntimeFailure.class,
+                        () -> registry.completeSql(
+                                closedConnection,
+                                completionRequest(
+                                        closedDatabaseName,
+                                        "select * from ",
+                                        "select * from ".length(),
+                                        failureScope)));
+                assertEquals("community.sql_completion_connection_closed", failure.code());
+            }
+            assertEquals(previous, Thread.currentThread().getContextClassLoader());
+            assertCompletionStateCleared(communityLoader, failureScope);
+
+            removeCommunityCache(communityLoader, adjacentCacheKey);
+            removeCommunityCache(communityLoader, unrelatedCacheKey);
+        }
+    }
+
     private static URLClassLoader h2DriverWithTrigger(Path temporaryDirectory)
             throws Exception {
         Path h2Jar = h2DriverJar();
@@ -446,14 +539,78 @@ class CommunityPluginRegistryTest {
             Map<String, ?> plugins = (Map<String, ?>) discover.invoke(null, loader);
             Constructor<CommunityPluginRegistry> constructor =
                     CommunityPluginRegistry.class.getDeclaredConstructor(
-                            String.class, URLClassLoader.class, Map.class);
+                            String.class,
+                            URLClassLoader.class,
+                            Map.class,
+                            CommunitySqlCompletionBridge.class);
             constructor.setAccessible(true);
             return constructor.newInstance(
-                    "f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7", loader, plugins);
+                    "f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7",
+                    loader,
+                    plugins,
+                    CommunitySqlCompletionBridge.open(loader));
         } catch (Exception | LinkageError failure) {
             loader.close();
             throw failure;
         }
+    }
+
+    private static CompleteCommunitySqlRequest completionRequest(
+            String databaseName, String sql, int cursorUtf16, long datasourceScope) {
+        return CompleteCommunitySqlRequest.newBuilder()
+                .setDatabaseType("H2")
+                .setDatabaseName(databaseName)
+                .setSchemaName("APP")
+                .setDatasourceName("Community H2")
+                .setSql(sql)
+                .setCursorUtf16(cursorUtf16)
+                .setKeywordCase("UPPER")
+                .setDatasourceScope(datasourceScope)
+                .build();
+    }
+
+    private static ClassLoader registryLoader(CommunityPluginRegistry registry) throws Exception {
+        var field = CommunityPluginRegistry.class.getDeclaredField("loader");
+        field.setAccessible(true);
+        return (ClassLoader) field.get(registry);
+    }
+
+    private static void assertCompletionStateCleared(ClassLoader loader, long datasourceScope)
+            throws Exception {
+        Class<?> contextType = Class.forName("ai.chat2db.spi.sql.Chat2DBContext", true, loader);
+        assertNull(contextType.getMethod("getConnectInfo").invoke(null));
+        Class<?> cacheType = Class.forName(
+                "ai.chat2db.community.domain.core.cache.MemoryCacheManage", true, loader);
+        var cacheField = cacheType.getDeclaredField("CACHE");
+        cacheField.setAccessible(true);
+        Object cache = cacheField.get(null);
+        Class<?> guavaCacheType = Class.forName("com.google.common.cache.Cache", true, loader);
+        @SuppressWarnings("unchecked")
+        Map<String, ?> entries =
+                (Map<String, ?>) guavaCacheType.getMethod("asMap").invoke(cache);
+        assertFalse(entries.keySet().stream().anyMatch(
+                key -> CommunitySqlCompletionBridge.belongsToDatasourceScope(
+                        key, datasourceScope)));
+    }
+
+    private static void putCommunityCache(ClassLoader loader, String key, String value)
+            throws Exception {
+        communityCacheType(loader)
+                .getMethod("put", String.class, java.io.Serializable.class)
+                .invoke(null, key, value);
+    }
+
+    private static Object getCommunityCache(ClassLoader loader, String key) throws Exception {
+        return communityCacheType(loader).getMethod("get", String.class).invoke(null, key);
+    }
+
+    private static void removeCommunityCache(ClassLoader loader, String key) throws Exception {
+        communityCacheType(loader).getMethod("remove", String.class).invoke(null, key);
+    }
+
+    private static Class<?> communityCacheType(ClassLoader loader) throws Exception {
+        return Class.forName(
+                "ai.chat2db.community.domain.core.cache.MemoryCacheManage", true, loader);
     }
 
     private static Connection h2Connection(ClassLoader loader) throws Exception {

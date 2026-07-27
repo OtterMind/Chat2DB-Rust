@@ -47,6 +47,14 @@ const MAX_COMMUNITY_INDEX_COLUMNS: usize =
 const MAX_COMMUNITY_STATEMENTS: usize = wire::CommunityCountLimit::MaxStatements as usize;
 const MAX_COMMUNITY_SQL_DIAGNOSTICS: usize =
     wire::CommunitySqlDiagnosticCountLimit::MaxDiagnostics as usize;
+const MAX_COMMUNITY_SQL_COMPLETION_CANDIDATES: usize =
+    wire::CommunitySqlCompletionCandidateCountLimit::MaxCandidates as usize;
+const MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINTS: usize =
+    wire::CommunitySqlCompletionEditorHintCountLimit::MaxEditorHints as usize;
+const MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINT_ITEMS: usize =
+    wire::CommunitySqlCompletionEditorHintItemCountLimit::MaxEditorHintItems as usize;
+const MAX_COMMUNITY_SQL_COMPLETION_SNIPPET_SLOTS: usize =
+    wire::CommunitySqlCompletionSnippetSlotCountLimit::MaxSnippetSlots as usize;
 const MAX_COMMUNITY_DATABASE_TYPE_BYTES: usize =
     wire::CommunityByteLimit::MaxDatabaseTypeBytes as usize;
 const MAX_COMMUNITY_PLUGIN_NAME_BYTES: usize =
@@ -1087,8 +1095,294 @@ fn validate_response_payload(
             validate_community_response_encoded_len(formatted)?;
             Ok(None)
         }
+        wire::server_envelope::Payload::CommunitySqlCompletion(completion) => {
+            validate_community_sql_completion(completion)?;
+            Ok(None)
+        }
         _ => Ok(None),
     }
+}
+
+fn validate_community_sql_completion(
+    completion: &wire::CommunitySqlCompletion,
+) -> Result<(), String> {
+    validate_completion_status(&completion.status)?;
+    validate_offset_range(
+        completion.replace_start_utf16,
+        completion.replace_end_utf16,
+        "Community SQL-completion replacement",
+    )?;
+    if completion.candidates.len() > MAX_COMMUNITY_SQL_COMPLETION_CANDIDATES {
+        return Err(format!(
+            "Community SQL completion exceeded the {MAX_COMMUNITY_SQL_COMPLETION_CANDIDATES}-candidate limit"
+        ));
+    }
+    if completion.editor_hints.len() > MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINTS {
+        return Err(format!(
+            "Community SQL completion exceeded the {MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINTS}-editor-hint limit"
+        ));
+    }
+
+    let mut field_bytes = 0_usize;
+    add_community_response_field(&mut field_bytes, &completion.status)?;
+    validate_optional_scalar(
+        completion.reason_code.as_deref(),
+        "Community SQL-completion reason code",
+    )?;
+    add_optional_community_response_field(&mut field_bytes, completion.reason_code.as_deref())?;
+    let mut snippet_slots = 0_usize;
+    for candidate in &completion.candidates {
+        validate_completion_candidate(candidate, &mut field_bytes, &mut snippet_slots)?;
+    }
+    let mut hint_items = 0_usize;
+    for hint in &completion.editor_hints {
+        validate_completion_editor_hint(hint, &mut field_bytes, &mut hint_items)?;
+    }
+    validate_community_response_encoded_len(completion)
+}
+
+fn validate_completion_candidate(
+    candidate: &wire::CommunitySqlCompletionCandidate,
+    field_bytes: &mut usize,
+    snippet_slots: &mut usize,
+) -> Result<(), String> {
+    validate_non_empty_bytes(
+        &candidate.label,
+        MAX_SCALAR_BYTES,
+        "Community SQL-completion candidate label",
+    )?;
+    validate_completion_candidate_type(&candidate.r#type)?;
+    validate_completion_insert_type(&candidate.insert_type)?;
+    match (candidate.replace_start_utf16, candidate.replace_end_utf16) {
+        (Some(start), Some(end)) => {
+            validate_offset_range(start, end, "Community SQL-completion candidate replacement")?;
+        }
+        (None, None) => {}
+        _ => {
+            return Err(
+                "Community SQL-completion candidate provided only one replacement endpoint"
+                    .to_owned(),
+            );
+        }
+    }
+    if let Some(mode) = candidate.parameter_mode.as_deref() {
+        validate_completion_parameter_mode(mode)?;
+    }
+
+    for (value, field) in [
+        (candidate.id.as_deref(), "candidate id"),
+        (candidate.insert_text.as_deref(), "candidate insert text"),
+        (candidate.detail.as_deref(), "candidate detail"),
+        (candidate.description.as_deref(), "candidate description"),
+        (candidate.data_type.as_deref(), "candidate data type"),
+        (candidate.object_type.as_deref(), "candidate object type"),
+        (
+            candidate.datasource_name.as_deref(),
+            "candidate datasource name",
+        ),
+        (
+            candidate.database_name.as_deref(),
+            "candidate database name",
+        ),
+        (candidate.schema_name.as_deref(), "candidate schema name"),
+        (candidate.table_name.as_deref(), "candidate table name"),
+        (candidate.table_alias.as_deref(), "candidate table alias"),
+        (candidate.column_name.as_deref(), "candidate column name"),
+        (candidate.object_name.as_deref(), "candidate object name"),
+        (candidate.sort_text.as_deref(), "candidate sort text"),
+    ] {
+        validate_optional_scalar(value, &format!("Community SQL-completion {field}"))?;
+        add_optional_community_response_field(field_bytes, value)?;
+    }
+    if let Some(comment) = candidate.comment.as_deref() {
+        validate_bytes_limit(
+            comment,
+            MAX_COMMUNITY_COMMENT_BYTES,
+            "Community SQL-completion candidate comment",
+        )?;
+        add_community_response_field(field_bytes, comment)?;
+    }
+    add_community_response_field(field_bytes, &candidate.label)?;
+    add_community_response_field(field_bytes, &candidate.r#type)?;
+    add_community_response_field(field_bytes, &candidate.insert_type)?;
+    add_optional_community_response_field(field_bytes, candidate.parameter_mode.as_deref())?;
+
+    *snippet_slots = snippet_slots
+        .checked_add(candidate.snippet_slots.len())
+        .ok_or_else(|| "Community SQL-completion snippet-slot count overflowed".to_owned())?;
+    if *snippet_slots > MAX_COMMUNITY_SQL_COMPLETION_SNIPPET_SLOTS {
+        return Err(format!(
+            "Community SQL completion exceeded the {MAX_COMMUNITY_SQL_COMPLETION_SNIPPET_SLOTS}-snippet-slot limit"
+        ));
+    }
+    for slot in &candidate.snippet_slots {
+        validate_completion_snippet_slot_type(slot)?;
+        add_community_response_field(field_bytes, slot)?;
+    }
+    Ok(())
+}
+
+fn validate_completion_editor_hint(
+    hint: &wire::CommunitySqlCompletionEditorHint,
+    field_bytes: &mut usize,
+    hint_items: &mut usize,
+) -> Result<(), String> {
+    validate_completion_editor_hint_type(&hint.r#type)?;
+    add_community_response_field(field_bytes, &hint.r#type)?;
+    for (label, range) in [
+        ("statement", hint.statement_range.as_ref()),
+        ("row", hint.row_range.as_ref()),
+        ("value", hint.value_range.as_ref()),
+    ] {
+        if let Some(range) = range {
+            validate_completion_range(range, label)?;
+        }
+    }
+
+    *hint_items = hint_items
+        .checked_add(hint.items.len())
+        .ok_or_else(|| "Community SQL-completion editor-hint item count overflowed".to_owned())?;
+    if *hint_items > MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINT_ITEMS {
+        return Err(format!(
+            "Community SQL completion exceeded the {MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINT_ITEMS}-editor-hint-item limit"
+        ));
+    }
+    for item in &hint.items {
+        for (value, field) in [
+            (item.field_name.as_deref(), "field name"),
+            (item.field_type.as_deref(), "field type"),
+            (item.label.as_deref(), "label"),
+        ] {
+            validate_optional_scalar(
+                value,
+                &format!("Community SQL-completion editor-hint item {field}"),
+            )?;
+            add_optional_community_response_field(field_bytes, value)?;
+        }
+        if let Some(range) = item.range.as_ref() {
+            validate_completion_range(range, "item")?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_offset_range(start: u32, end: u32, field: &str) -> Result<(), String> {
+    if start > end {
+        return Err(format!("{field} start exceeds its end"));
+    }
+    Ok(())
+}
+
+fn validate_completion_range(
+    range: &wire::CommunitySqlCompletionRange,
+    label: &str,
+) -> Result<(), String> {
+    if range.start_line_number == 0
+        || range.start_column == 0
+        || range.end_line_number == 0
+        || range.end_column == 0
+    {
+        return Err(format!(
+            "Community SQL-completion {label} range must use one-based lines and columns"
+        ));
+    }
+    if (range.start_line_number, range.start_column) > (range.end_line_number, range.end_column) {
+        return Err(format!(
+            "Community SQL-completion {label} range start exceeds its end"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_completion_status(value: &str) -> Result<(), String> {
+    validate_completion_value(
+        value,
+        &["SUCCESS", "EMPTY", "REJECTED", "UNSUPPORTED", "ERROR"],
+        "status",
+    )
+}
+
+fn validate_completion_insert_type(value: &str) -> Result<(), String> {
+    validate_completion_value(value, &["PLAIN_TEXT", "SNIPPET"], "candidate insert type")
+}
+
+fn validate_completion_parameter_mode(value: &str) -> Result<(), String> {
+    validate_completion_value(
+        value,
+        &["UNKNOWN", "IN", "OUT", "INOUT", "RETURN", "RESULT"],
+        "candidate parameter mode",
+    )
+}
+
+fn validate_completion_snippet_slot_type(value: &str) -> Result<(), String> {
+    validate_completion_value(
+        value,
+        &["SELECT_FUNCTION", "CALL_PROCEDURE", "INSERT_COLUMN_LIST"],
+        "candidate snippet slot",
+    )
+}
+
+fn validate_completion_editor_hint_type(value: &str) -> Result<(), String> {
+    validate_completion_value(
+        value,
+        &["INSERT_VALUE", "ROUTINE_PARAMETER"],
+        "editor-hint type",
+    )
+}
+
+fn validate_completion_candidate_type(value: &str) -> Result<(), String> {
+    validate_completion_value(
+        value,
+        &[
+            "CATALOG",
+            "DATABASE",
+            "SCHEMA",
+            "KEYWORD",
+            "TABLE",
+            "VIEW",
+            "TABLE_VIEW",
+            "COLUMN",
+            "ALL_COLUMN",
+            "JOIN_CLAUSE",
+            "INDEX",
+            "PROCEDURE",
+            "FUNCTION",
+            "EVENT",
+            "PARAMETER",
+            "TYPE",
+            "USER",
+            "ROLE",
+            "TABLESPACE",
+            "TRIGGER",
+            "SEQUENCE",
+            "MATERIALIZED_VIEW",
+            "PACKAGE",
+            "CONSTRAINT",
+            "SYNONYM",
+            "ALIAS",
+            "VARIABLE",
+            "DBLINK",
+            "ROUTINE",
+            "SNIPPET",
+            "TEMP_TABLE",
+            "OTHER",
+        ],
+        "candidate type",
+    )
+}
+
+fn validate_completion_value(value: &str, allowed: &[&str], field: &str) -> Result<(), String> {
+    validate_non_empty_bytes(
+        value,
+        MAX_SCALAR_BYTES,
+        &format!("Community SQL-completion {field}"),
+    )?;
+    if !allowed.contains(&value) {
+        return Err(format!(
+            "Community SQL-completion {field} used unknown value {value}"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_community_parsed_statements(
@@ -1830,6 +2124,16 @@ fn add_community_response_field(total: &mut usize, value: &str) -> Result<(), St
         return Err(format!(
             "Community response string fields exceeded the {MAX_COMMUNITY_RESPONSE_BYTES}-byte limit"
         ));
+    }
+    Ok(())
+}
+
+fn add_optional_community_response_field(
+    total: &mut usize,
+    value: Option<&str>,
+) -> Result<(), String> {
+    if let Some(value) = value {
+        add_community_response_field(total, value)?;
     }
     Ok(())
 }
@@ -2922,6 +3226,180 @@ mod tests {
             validate_response_payload(&oversized)
                 .expect_err("formatted SQL above one MiB must fail")
                 .contains(&format!("{MAX_SQL_BYTES}-byte limit"))
+        );
+    }
+
+    fn valid_completion_candidate() -> wire::CommunitySqlCompletionCandidate {
+        wire::CommunitySqlCompletionCandidate {
+            id: Some("table:customer".to_owned()),
+            label: "CUSTOMER".to_owned(),
+            r#type: "TABLE".to_owned(),
+            insert_text: Some("CUSTOMER".to_owned()),
+            insert_type: "PLAIN_TEXT".to_owned(),
+            detail: Some("APP.CUSTOMER".to_owned()),
+            snippet_slots: vec!["INSERT_COLUMN_LIST".to_owned()],
+            ..Default::default()
+        }
+    }
+
+    fn valid_completion() -> wire::CommunitySqlCompletion {
+        wire::CommunitySqlCompletion {
+            status: "SUCCESS".to_owned(),
+            replace_start_utf16: 14,
+            replace_end_utf16: 14,
+            candidates: vec![valid_completion_candidate()],
+            editor_hints: vec![wire::CommunitySqlCompletionEditorHint {
+                r#type: "INSERT_VALUE".to_owned(),
+                statement_range: Some(wire::CommunitySqlCompletionRange {
+                    start_line_number: 1,
+                    start_column: 1,
+                    end_line_number: 1,
+                    end_column: 15,
+                }),
+                items: vec![wire::CommunitySqlCompletionEditorHintItem {
+                    row_index: 0,
+                    column_index: 0,
+                    label: Some("id".to_owned()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn community_sql_completion_accepts_the_bounded_projection() {
+        validate_response_payload(&wire::server_envelope::Payload::CommunitySqlCompletion(
+            valid_completion(),
+        ))
+        .expect("valid completion projection must pass");
+    }
+
+    #[test]
+    fn community_sql_completion_rejects_unknown_enum_strings_and_invalid_ranges() {
+        for mutate in [
+            |completion: &mut wire::CommunitySqlCompletion| completion.status = "MAYBE".to_owned(),
+            |completion: &mut wire::CommunitySqlCompletion| {
+                completion.candidates[0].r#type = "UNKNOWN_TYPE".to_owned();
+            },
+            |completion: &mut wire::CommunitySqlCompletion| {
+                completion.candidates[0].insert_type = "TEMPLATE".to_owned();
+            },
+            |completion: &mut wire::CommunitySqlCompletion| {
+                completion.candidates[0].snippet_slots = vec!["OTHER_SLOT".to_owned()];
+            },
+            |completion: &mut wire::CommunitySqlCompletion| {
+                completion.editor_hints[0].r#type = "OTHER_HINT".to_owned();
+            },
+        ] {
+            let mut completion = valid_completion();
+            mutate(&mut completion);
+            assert!(
+                validate_response_payload(&wire::server_envelope::Payload::CommunitySqlCompletion(
+                    completion
+                ))
+                .expect_err("unknown completion enum string must fail")
+                .contains("unknown value")
+            );
+        }
+
+        let mut reversed = valid_completion();
+        reversed.replace_start_utf16 = 15;
+        reversed.replace_end_utf16 = 14;
+        assert!(
+            validate_response_payload(&wire::server_envelope::Payload::CommunitySqlCompletion(
+                reversed
+            ))
+            .expect_err("reversed completion replacement must fail")
+            .contains("start exceeds")
+        );
+
+        let mut zero_based = valid_completion();
+        zero_based.editor_hints[0]
+            .statement_range
+            .as_mut()
+            .expect("test range must exist")
+            .start_column = 0;
+        assert!(
+            validate_response_payload(&wire::server_envelope::Payload::CommunitySqlCompletion(
+                zero_based
+            ))
+            .expect_err("editor ranges must be one-based")
+            .contains("one-based")
+        );
+    }
+
+    #[test]
+    fn community_sql_completion_enforces_all_collection_limits_after_decode() {
+        let too_many_candidates = wire::CommunitySqlCompletion {
+            status: "EMPTY".to_owned(),
+            candidates: vec![
+                wire::CommunitySqlCompletionCandidate::default();
+                MAX_COMMUNITY_SQL_COMPLETION_CANDIDATES + 1
+            ],
+            ..Default::default()
+        };
+        assert!(
+            validate_response_payload(&wire::server_envelope::Payload::CommunitySqlCompletion(
+                too_many_candidates
+            ))
+            .expect_err("candidate limit plus one must fail")
+            .contains("candidate limit")
+        );
+
+        let too_many_hints = wire::CommunitySqlCompletion {
+            status: "EMPTY".to_owned(),
+            editor_hints: vec![
+                wire::CommunitySqlCompletionEditorHint::default();
+                MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINTS + 1
+            ],
+            ..Default::default()
+        };
+        assert!(
+            validate_response_payload(&wire::server_envelope::Payload::CommunitySqlCompletion(
+                too_many_hints
+            ))
+            .expect_err("editor-hint limit plus one must fail")
+            .contains("editor-hint limit")
+        );
+
+        let mut too_many_slots = valid_completion();
+        too_many_slots.candidates[0].snippet_slots =
+            vec!["SELECT_FUNCTION".to_owned(); MAX_COMMUNITY_SQL_COMPLETION_SNIPPET_SLOTS + 1];
+        assert!(
+            validate_response_payload(&wire::server_envelope::Payload::CommunitySqlCompletion(
+                too_many_slots
+            ))
+            .expect_err("snippet-slot limit plus one must fail")
+            .contains("snippet-slot limit")
+        );
+
+        let mut too_many_items = valid_completion();
+        too_many_items.editor_hints[0].items = vec![
+            wire::CommunitySqlCompletionEditorHintItem::default();
+            MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINT_ITEMS + 1
+        ];
+        assert!(
+            validate_response_payload(&wire::server_envelope::Payload::CommunitySqlCompletion(
+                too_many_items
+            ))
+            .expect_err("editor-hint-item limit plus one must fail")
+            .contains("editor-hint-item limit")
+        );
+    }
+
+    #[test]
+    fn community_sql_completion_enforces_the_cumulative_string_budget() {
+        let mut completion = valid_completion();
+        completion.candidates[0].id = Some("i".repeat(MAX_SCALAR_BYTES));
+        completion.candidates[0].detail = Some("d".repeat(MAX_SCALAR_BYTES));
+        assert!(
+            validate_response_payload(&wire::server_envelope::Payload::CommunitySqlCompletion(
+                completion
+            ))
+            .expect_err("aggregate completion strings above eight MiB must fail")
+            .contains("string fields")
         );
     }
 

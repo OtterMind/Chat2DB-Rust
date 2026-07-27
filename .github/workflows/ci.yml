@@ -87,6 +87,8 @@ jobs:
             java/compat-runtime/pom.xml
             third_party/chat2db-community/chat2db-community-server/chat2db-community-bom/pom.xml
             third_party/chat2db-community/chat2db-community-server/chat2db-community-spi/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-domain/chat2db-community-domain-api/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-domain/chat2db-community-domain-core/pom.xml
             third_party/chat2db-community/chat2db-community-server/chat2db-community-plugins/chat2db-community-mysql/pom.xml
             third_party/chat2db-community/chat2db-community-server/chat2db-community-plugins/chat2db-community-h2/pom.xml
       - name: Package Java engine
@@ -216,6 +218,8 @@ jobs:
             java/compat-runtime/pom.xml
             third_party/chat2db-community/chat2db-community-server/chat2db-community-bom/pom.xml
             third_party/chat2db-community/chat2db-community-server/chat2db-community-spi/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-domain/chat2db-community-domain-api/pom.xml
+            third_party/chat2db-community/chat2db-community-server/chat2db-community-domain/chat2db-community-domain-core/pom.xml
             third_party/chat2db-community/chat2db-community-server/chat2db-community-plugins/chat2db-community-mysql/pom.xml
             third_party/chat2db-community/chat2db-community-server/chat2db-community-plugins/chat2db-community-h2/pom.xml
       - name: Package Java engine for Windows managed-driver test

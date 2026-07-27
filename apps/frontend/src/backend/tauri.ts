@@ -30,6 +30,7 @@ import type {
   CommunityProcedureParameterList,
   CommunitySchemaList,
   CommunitySqlAnalysis,
+  CommunitySqlCompletion,
   CommunitySqlValidation,
   CommunityTableColumnList,
   CommunityTableIndexList,
@@ -40,6 +41,7 @@ import type {
   CreateAgentSessionRequest,
   CreateDatasourceRequest,
   CreateProviderProfileRequest,
+  CompleteCommunitySqlRequest,
   Datasource,
   DatasourceList,
   DecideAgentPermissionRequest,
@@ -282,6 +284,13 @@ export class TauriBackendClient implements BackendClient {
     signal?: AbortSignal,
   ): Promise<CommunityFormattedSql> {
     return this.#request('format_community_sql', { request }, signal);
+  }
+
+  completeCommunitySql(
+    request: CompleteCommunitySqlRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunitySqlCompletion> {
+    return this.#request('complete_community_sql', { request }, signal);
   }
 
   listDatasources(signal?: AbortSignal): Promise<DatasourceList> {

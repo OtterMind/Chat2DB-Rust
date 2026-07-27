@@ -20,20 +20,20 @@ use chat2db_contract::{
     CommunityFormattedSql, CommunityFunction, CommunityFunctionList,
     CommunityFunctionParameterList, CommunityPluginCatalog, CommunityPrimaryKeyList,
     CommunityProcedure, CommunityProcedureList, CommunityProcedureParameterList,
-    CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlValidation, CommunityTableColumnList,
-    CommunityTableIndexList, CommunityTableList, CommunityTrigger, CommunityTriggerList,
-    CommunityViewList, CreateAgentSessionRequest, CreateDatasourceRequest,
-    CreateProviderProfileRequest, Datasource, DatasourceList, DecideAgentPermissionRequest,
-    FormatCommunitySqlRequest, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
-    GetCommunityTriggerRequest, HealthResponse, JdbcDriverList, ListCommunityColumnsRequest,
-    ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
-    ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
-    ListCommunityTablesRequest, ListCommunityTriggersRequest, ListCommunityViewsRequest,
-    OperationEventEnvelope, OperationSnapshot, OperationStreamMessage,
-    OperationSubscriptionAccepted, ParseCommunitySqlRequest, ProviderProfile, ProviderProfileList,
-    QueryAccepted, ResultPage, ResultPageRequest, StartAgentRunRequest, StartQueryRequest,
-    UpdateAgentSessionRequest, UpdateDatasourceRequest, UpdateProviderProfileRequest,
-    ValidateCommunitySqlRequest,
+    CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlCompletion, CommunitySqlValidation,
+    CommunityTableColumnList, CommunityTableIndexList, CommunityTableList, CommunityTrigger,
+    CommunityTriggerList, CommunityViewList, CompleteCommunitySqlRequest,
+    CreateAgentSessionRequest, CreateDatasourceRequest, CreateProviderProfileRequest, Datasource,
+    DatasourceList, DecideAgentPermissionRequest, FormatCommunitySqlRequest,
+    GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
+    HealthResponse, JdbcDriverList, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
+    ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
+    ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
+    ListCommunityTriggersRequest, ListCommunityViewsRequest, OperationEventEnvelope,
+    OperationSnapshot, OperationStreamMessage, OperationSubscriptionAccepted,
+    ParseCommunitySqlRequest, ProviderProfile, ProviderProfileList, QueryAccepted, ResultPage,
+    ResultPageRequest, StartAgentRunRequest, StartQueryRequest, UpdateAgentSessionRequest,
+    UpdateDatasourceRequest, UpdateProviderProfileRequest, ValidateCommunitySqlRequest,
 };
 use chat2db_core::{
     AppError, Application, RuntimeConfig, RuntimeHost, load_fixed_community_classpath,
@@ -288,6 +288,7 @@ pub fn run() -> Result<i32, DesktopError> {
             parse_community_sql,
             validate_community_sql,
             format_community_sql,
+            complete_community_sql,
             list_datasources,
             create_datasource,
             get_datasource,
@@ -694,6 +695,24 @@ async fn format_community_sql_for(
 ) -> Result<CommunityFormattedSql, ApiError> {
     application
         .format_community_sql(request)
+        .await
+        .map_err(|error| api_error(&error))
+}
+
+#[tauri::command]
+async fn complete_community_sql(
+    state: State<'_, Arc<DesktopState>>,
+    request: CompleteCommunitySqlRequest,
+) -> Result<CommunitySqlCompletion, ApiError> {
+    complete_community_sql_for(&state.application, request).await
+}
+
+async fn complete_community_sql_for(
+    application: &Application,
+    request: CompleteCommunitySqlRequest,
+) -> Result<CommunitySqlCompletion, ApiError> {
+    application
+        .complete_community_sql(request)
         .await
         .map_err(|error| api_error(&error))
 }
@@ -1180,17 +1199,17 @@ mod tests {
     use std::{ffi::OsString, fs::File, sync::Arc};
 
     use chat2db_contract::{
-        AgentEvent, AgentEventEnvelope, AgentStreamMessage, FormatCommunitySqlRequest,
-        OperationEvent, OperationEventEnvelope, OperationStreamMessage,
+        AgentEvent, AgentEventEnvelope, AgentStreamMessage, CompleteCommunitySqlRequest,
+        FormatCommunitySqlRequest, OperationEvent, OperationEventEnvelope, OperationStreamMessage,
         ValidateCommunitySqlRequest,
     };
     use chat2db_core::{AppError, Application};
     use tokio::sync::oneshot;
 
     use super::{
-        DesktopError, SubscriptionRegistry, agent_stream_message, format_community_sql_for,
-        operation_stream_message, parse_after_sequence, validate_community_sql_for,
-        validate_java_engine_jar, validate_optional_os_env,
+        DesktopError, SubscriptionRegistry, agent_stream_message, complete_community_sql_for,
+        format_community_sql_for, operation_stream_message, parse_after_sequence,
+        validate_community_sql_for, validate_java_engine_jar, validate_optional_os_env,
     };
 
     #[tokio::test]
@@ -1221,6 +1240,29 @@ mod tests {
         .expect_err("formatting without an engine must fail");
 
         assert_eq!(error.code, "database_engine_unavailable");
+    }
+
+    #[tokio::test]
+    async fn sql_completion_command_maps_unavailable_storage_errors() {
+        let error = complete_community_sql_for(
+            &Application::new(),
+            CompleteCommunitySqlRequest {
+                datasource_id: "datasource-1".to_owned(),
+                database_type: "H2".to_owned(),
+                database_name: "inventory".to_owned(),
+                schema_name: "PUBLIC".to_owned(),
+                sql: "select * from ".to_owned(),
+                cursor_utf16: 14,
+                min_prefix_length: 0,
+                need_full_name: false,
+                keyword_case: "UPPER".to_owned(),
+                active_snippet_slot: None,
+            },
+        )
+        .await
+        .expect_err("completion without storage must fail");
+
+        assert_eq!(error.code, "storage_unavailable");
     }
 
     #[test]

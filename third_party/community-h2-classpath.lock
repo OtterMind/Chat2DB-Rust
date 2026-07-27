@@ -1,6 +1,6 @@
 format_version	1
 source_commit	f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7
-artifact_count	148
+artifact_count	149
 artifact	FastInfoset-2.1.1.jar	75d6635e09101ef1545d9a59bb4d9524ec6bf15246540af5435750f271612765	317728
 artifact	HikariCP-5.0.1.jar	26d492397e6775b4296737a8919bf04047afe5827fdd2c08b4557595436b3a2b	161902
 artifact	SparseBitSet-1.2.jar	91e6b318c901a0f2dd1f6ce781d62474435ae627d22fbac9b21bbc39ffd804b6	24510
@@ -18,6 +18,7 @@ artifact	cache-api-1.1.1.jar	9f34e007edfa82a7b2a2e1b969477dcf5099ce7f4f926fb54ce
 artifact	calcite-core-1.38.0.jar	b55427c5e98fdc59e4722062d1414b18db3bc08998a00f42959751200ff09624	8315387
 artifact	calcite-linq4j-1.38.0.jar	1c4bb46a6ed58f62923ec20c64401f015ef59813647ddb2ca2fc60d7959a21df	518500
 artifact	chat2db-community-domain-api-5.3.0.jar	cc02f78fd247906f6a403cca6919c91afa76b17cbb737030a1c7582afae7e75c	2100744
+artifact	chat2db-community-domain-core-5.3.0.jar	0e7e3de673e3adf08ebc5c86b766fac58a3ea04f1a99ba58bcb21b8267ce08d3	1003427
 artifact	chat2db-community-h2-5.3.0.jar	6f4e0734af09bde873ec36c30b4e8188f5552c68524a617a0794880da1543d95	30480
 artifact	chat2db-community-mysql-5.3.0.jar	c5aa7b6120d380696a8e68ffc0f72bc83997c6c97c77e8ff2cd7d8f1b8793dac	5696156
 artifact	chat2db-community-spi-5.3.0.jar	901abca2bf862fbb757eaf083823bae4b279f848e2429bbaaff45a551b004cdd	779815

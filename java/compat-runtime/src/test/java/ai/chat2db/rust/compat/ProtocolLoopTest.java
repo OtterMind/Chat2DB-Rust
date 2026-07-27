@@ -9,6 +9,7 @@ import ai.chat2db.rust.compat.protocol.v1.CancelDisposition;
 import ai.chat2db.rust.compat.protocol.v1.CancelOperationRequest;
 import ai.chat2db.rust.compat.protocol.v1.ClientEnvelope;
 import ai.chat2db.rust.compat.protocol.v1.ClientHello;
+import ai.chat2db.rust.compat.protocol.v1.CompleteCommunitySqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.Ping;
 import ai.chat2db.rust.compat.protocol.v1.ProtocolVersion;
 import ai.chat2db.rust.compat.protocol.v1.RequestMeta;
@@ -17,10 +18,16 @@ import ai.chat2db.rust.compat.protocol.v1.Shutdown;
 import com.google.protobuf.MessageLite;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.PipedInputStream;
+import java.io.PipedOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 
@@ -72,13 +79,72 @@ class ProtocolLoopTest {
                 .contains(ProtocolLoop.COMMUNITY_SQL_VALIDATION_CAPABILITY));
         assertFalse(ProtocolLoop.capabilities(false)
                 .contains(ProtocolLoop.COMMUNITY_SQL_FORMATTER_CAPABILITY));
+        assertFalse(ProtocolLoop.capabilities(false)
+                .contains(ProtocolLoop.COMMUNITY_SQL_COMPLETION_CAPABILITY));
         assertTrue(ProtocolLoop.capabilities(true)
                 .contains(ProtocolLoop.COMMUNITY_SQL_VALIDATION_CAPABILITY));
         assertTrue(ProtocolLoop.capabilities(true)
                 .contains(ProtocolLoop.COMMUNITY_SQL_FORMATTER_CAPABILITY));
+        assertTrue(ProtocolLoop.capabilities(true)
+                .contains(ProtocolLoop.COMMUNITY_SQL_COMPLETION_CAPABILITY));
         assertEquals(
-                ProtocolLoop.capabilities(false).size() + 2,
+                ProtocolLoop.capabilities(false).size() + 3,
                 ProtocolLoop.capabilities(true).size());
+    }
+
+    @Test
+    void dispatchesCommunitySqlCompletionToJdbcRuntime() throws Exception {
+        ClientEnvelope completion = ClientEnvelope.newBuilder()
+                .setMeta(meta("complete"))
+                .setCompleteCommunitySql(CompleteCommunitySqlRequest.newBuilder()
+                        .setDatabaseType("H2")
+                        .setDatabaseName("catalog")
+                        .setSchemaName("PUBLIC")
+                        .setDatasourceName("test")
+                        .setSql("SELECT ")
+                        .setCursorUtf16(7)
+                        .setKeywordCase("UPPER")
+                        .setDatasourceScope(1))
+                .build();
+        ClientEnvelope shutdown = ClientEnvelope.newBuilder()
+                .setMeta(meta("shutdown"))
+                .setShutdown(Shutdown.getDefaultInstance())
+                .build();
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try (PipedInputStream runtimeInput = new PipedInputStream(64 * 1024);
+                PipedOutputStream clientOutput = new PipedOutputStream(runtimeInput);
+                PipedInputStream clientInput = new PipedInputStream(64 * 1024);
+                PipedOutputStream runtimeOutput = new PipedOutputStream(clientInput);
+                PrintStream diagnostics = new PrintStream(
+                        new ByteArrayOutputStream(), true, StandardCharsets.UTF_8)) {
+            ProtocolLoop loop = new ProtocolLoop(diagnostics);
+            Future<Integer> loopResult =
+                    executor.submit(() -> loop.serve(runtimeInput, runtimeOutput));
+
+            FrameCodec.writeFrame(
+                    clientOutput,
+                    hello(
+                            "hello",
+                            List.of(version(1, 0)),
+                            List.of(ProtocolLoop.SHUTDOWN_CAPABILITY)));
+            assertEquals(
+                    ServerEnvelope.PayloadCase.HELLO,
+                    read(clientInput, executor).getPayloadCase());
+
+            FrameCodec.writeFrame(clientOutput, completion);
+            ServerEnvelope completionResponse = read(clientInput, executor);
+            assertEquals(ServerEnvelope.PayloadCase.ERROR, completionResponse.getPayloadCase());
+            assertEquals("session.id_required", completionResponse.getError().getCode());
+
+            FrameCodec.writeFrame(clientOutput, shutdown);
+            assertEquals(
+                    ServerEnvelope.PayloadCase.SHUTDOWN_ACK,
+                    read(clientInput, executor).getPayloadCase());
+            assertEquals(CompatibilityRuntime.EXIT_OK, loopResult.get(5, TimeUnit.SECONDS));
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+        }
     }
 
     @Test
@@ -297,6 +363,13 @@ class ProtocolLoopTest {
             }
             responses.add(response.orElseThrow());
         }
+    }
+
+    private static ServerEnvelope read(PipedInputStream input, ExecutorService executor)
+            throws Exception {
+        Future<ServerEnvelope> response = executor.submit(
+                () -> FrameCodec.readFrame(input, ServerEnvelope.parser()).orElseThrow());
+        return response.get(5, TimeUnit.SECONDS);
     }
 
     private static ClientEnvelope hello(

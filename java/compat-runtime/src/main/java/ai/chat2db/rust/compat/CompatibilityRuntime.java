@@ -36,9 +36,7 @@ public final class CompatibilityRuntime {
         }
 
         int exitCode = run(args, System.in, standardOutput, diagnostics);
-        if (exitCode != 0) {
-            System.exit(exitCode);
-        }
+        System.exit(exitCode);
     }
 
     static int run(

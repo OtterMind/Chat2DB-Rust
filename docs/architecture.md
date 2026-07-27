@@ -27,11 +27,12 @@ building, and retained ANTLR parsing. Product Core, Axum, Tauri, and both
 frontend backend adapters expose catalog, schemas, databases, tables, columns,
 indexes, views, imported and exported foreign keys, primary keys, functions,
 function parameters, procedures, procedure parameters, triggers, schema SQL
-building, parsing, syntax validation, and formatting when the exact locked
-classpath is configured. The shared React workbench consumes the Community
-operations through an end-user object explorer, schema SQL insertion, explicit
-SQL analysis, separately negotiated validation, and race-safe in-place
-formatting actions. Signing, distribution, the
+building, parsing, syntax validation, formatting, and datasource-aware SQL
+completion when the exact locked classpath is configured. The shared React
+workbench consumes the Community operations through an end-user object explorer,
+schema SQL insertion, explicit SQL analysis, separately negotiated validation,
+race-safe in-place formatting, and keyboard-driven bounded completion. Signing,
+distribution, the
 remaining dialect estate, and packaging remain target components. CLI and MCP
 attach to a running host rather than composing a second product runtime.
 
@@ -47,7 +48,7 @@ attach to a running host rather than composing a second product runtime.
 | AI agent | Rust | Provider adapters, tool loop, limits, compaction, and cancellation |
 | MCP and CLI | Rust | Adapters around the same product services and policy |
 | Database compatibility | Java 17 | Existing SPI/plugins, JDBC, metadata, builders, and execution |
-| SQL parsing and formatting | Java 17 | Existing Java ANTLR grammars, parser behavior, formatter behavior, and completion |
+| SQL parsing, formatting, and completion | Java 17 | Existing Java ANTLR grammars, parser behavior, formatter behavior, and completion |
 | Rust-to-Java IPC | Shared Protobuf contract | Length-prefixed frames over private stdin/stdout |
 
 ## Process topology
@@ -114,8 +115,10 @@ Stage 7B additionally implements:
 
 - a Git submodule fixed at Community commit
   `f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7`;
-- a reproducible 148-JAR H2 compatibility classpath whose filenames, byte
-  lengths, and SHA-256 digests are bound to that commit by the checked-in
+- a reproducible H2 compatibility classpath, established with 148 JARs and
+  extended in Stage 7J to 149 JARs for the retained Community domain-core
+  completion implementation, whose filenames, byte lengths, and SHA-256
+  digests are bound to that commit by the checked-in
   `third_party/community-h2-classpath.lock`;
 - deterministic build-time removal of dependency-manifest `Class-Path` entries,
   with affected JARs rebuilt as sorted, commit-timestamped `STORED` archives;
@@ -135,7 +138,7 @@ bounded, process-neutral DTOs cross Protobuf.
 
 Stage 7C composes that boundary into the product runtime. The Web and desktop
 bootstrap paths accept `CHAT2DB_COMMUNITY_CLASSPATH_DIR`, but the source commit
-and 148 filenames, byte lengths, and SHA-256 digests come only from the lock
+and 149 filenames, byte lengths, and SHA-256 digests come only from the lock
 embedded in `chat2db-core`; environment configuration cannot replace them.
 Core exposes catalog, schema metadata, `CREATE SCHEMA`, and parser services.
 Schema metadata resolves the encrypted datasource connection and always opens
@@ -233,9 +236,42 @@ the editor replaces its SQL only if the originating SQL, datasource, and
 database type remain current. Real H2 bridge and product tests cover the
 generic fallback through the fixed Community classpath.
 
+Stage 7J adds the independent `community.sql-completion.v1` capability at
+Protobuf request/response tag `222`. The fixed classpath grows from 148 to 149
+JARs by adding Community domain-core. The compatibility adapter reflectively
+invokes `DbSqlCompletionServiceImpl.complete` rather than reimplementing
+completion policy: MySQL reaches `DefaultSqlSyntaxHandler`, while other
+relational database types reach `GenericSqlCompletionEngine`, with metadata
+resolved through the already-open JDBC connection. The adapter attaches that
+connection to a temporary `ConnectInfo`, supplies `IDbTableService.queryColumns`
+through a dynamic proxy, clears only the private Community thread-local and the
+per-request `MemoryCacheManage` entries, and verifies that completion did not
+close the external connection.
+
+The product datasource id never enters the Java wire contract. Rust assigns a
+fresh non-zero `datasource_scope` to isolate Community's process-global
+completion cache, while Core supplies the stored datasource display name and
+owns a forced-read-only, cancellation-safe session. Cursor positions, global
+and candidate replacement ranges, snippet ranges, and editor columns use UTF-16
+units so Rust, Java, and the browser agree even for non-BMP text. Before
+Protobuf allocation, Rust accumulates duplicate tag-`222` payloads under the
+shared 8 MiB budget and caps 4,096 candidates, 4,096 editor hints, 65,536 hint
+items, and 65,536 snippet slots. Decoded validation reapplies collection,
+string, enum, range, semantic, and encoded-size limits.
+
+Axum exposes `POST /api/v1/community/sql/complete`, Tauri exposes
+`complete_community_sql`, and generated OpenAPI/TypeScript plus the shared
+HTTP/Tauri adapters use one product-owned contract. The React editor requests
+completion explicitly, discards responses after SQL, cursor, datasource,
+database/schema scope, or refresh changes, and applies a candidate only through
+a valid UTF-16 edit range. Real H2 bridge and product gates cover table
+completion after `select * from ` and `ID`/`LABEL` column completion after
+`select items. from APP.items` through the fixed classpath and read-only product
+session.
+
 Remaining builders, type conversion, non-relational operations, script
-execution, import/export, completion, and per-dialect conformance are not
-implemented yet. The current product slice proves H2 only.
+execution, import/export, and per-dialect conformance are not implemented yet.
+The current product slice proves H2 only.
 
 Spring Boot, Spring Web, Spring AI, MCP, JCEF, product storage, and updater logic
 do not belong in the final Java engine.
@@ -358,7 +394,11 @@ directions, and primary keys through another independent capability. The sixth
 slice adds functions, procedures, their parameters, and triggers through eight
 more product operations. The seventh slice connects all 20 operations to the
 shared React workbench through an object explorer, lazy details, partial-result
-handling, schema SQL insertion, and explicit SQL analysis. Signing,
+handling, schema SQL insertion, and explicit SQL analysis. The eighth and ninth
+slices add independently negotiated SQL validation and formatting. The tenth
+slice calls Community's retained completion service against the existing
+read-only JDBC session and exposes bounded UTF-16 suggestions through the same
+Core/Axum/Tauri/React product boundary. Signing,
 installation, hot reload, downloading, compatibility selection, updates,
 rollback, and the remaining compatibility operations are not implemented.
 
@@ -417,16 +457,16 @@ set.
   over-budget entries before the isolated Community loader is created; Java
   also rejects manifest `Class-Path` escapes. The fixed build removes such
   dependency attributes deterministically before lock verification and verifies
-  two consecutive clean builds byte-for-byte. Configuring it requires all seven
+  two consecutive clean builds byte-for-byte. Configuring it requires all ten
   Community capabilities during handshake, and Community response projection
   is capped at 8 MiB in both Java and Rust. Rust applies that budget to raw
-  Community response tags `200..=219` before Protobuf decoding, including
+  Community response tags `200..=222` before Protobuf decoding, including
   duplicate fields, and allocation-free scans known nested repeated fields so
   collection limits are enforced before DTO allocation. It then validates
-  decoded collection counts, nested index columns, field sizes, aggregate
-  strings, and encoded message length again. The source build also rejects any
-  artifact-set drift against its committed lock. Signing and installed-package
-  verification remain Stage 8 work.
+  decoded collection counts, nested index columns and completion fields, UTF-16
+  ranges, field sizes, aggregate strings, and encoded message length again. The
+  source build also rejects any artifact-set drift against its committed lock.
+  Signing and installed-package verification remain Stage 8 work.
 
 ## Packaging target
 

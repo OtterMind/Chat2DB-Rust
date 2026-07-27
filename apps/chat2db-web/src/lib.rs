@@ -511,6 +511,24 @@ mod tests {
                 ),
                 "database_engine_unavailable",
             ),
+            (
+                json_request(
+                    Method::POST,
+                    "/api/v1/community/sql/complete",
+                    &serde_json::json!({
+                        "datasourceId": "datasource-1",
+                        "databaseType": "H2",
+                        "databaseName": "inventory",
+                        "schemaName": "PUBLIC",
+                        "sql": "select * from ",
+                        "cursorUtf16": 14,
+                        "minPrefixLength": 0,
+                        "needFullName": false,
+                        "keywordCase": "UPPER"
+                    }),
+                ),
+                "storage_unavailable",
+            ),
         ];
 
         for (request, expected_code) in requests {
@@ -648,6 +666,7 @@ mod tests {
             "/api/v1/community/sql/parse",
             "/api/v1/community/sql/validate",
             "/api/v1/community/sql/format",
+            "/api/v1/community/sql/complete",
             "/api/v1/datasources",
             "/api/v1/datasources/{datasource_id}",
             "/api/v1/agent/providers",
@@ -695,6 +714,7 @@ mod tests {
             "/api/v1/community/sql/parse",
             "/api/v1/community/sql/validate",
             "/api/v1/community/sql/format",
+            "/api/v1/community/sql/complete",
         ] {
             assert!(paths[path].get("post").is_some());
         }
@@ -793,6 +813,12 @@ mod tests {
             "CommunitySqlAnalysis",
             "CommunitySqlDiagnostic",
             "CommunitySqlValidation",
+            "CommunitySqlCompletion",
+            "CommunitySqlCompletionActiveSnippetSlot",
+            "CommunitySqlCompletionCandidate",
+            "CommunitySqlCompletionEditorHint",
+            "CommunitySqlCompletionEditorHintItem",
+            "CommunitySqlCompletionRange",
             "CommunityTable",
             "CommunityTableColumn",
             "CommunityTableColumnList",
@@ -808,6 +834,7 @@ mod tests {
             "CreateProviderProfileRequest",
             "DecideAgentPermissionRequest",
             "FormatCommunitySqlRequest",
+            "CompleteCommunitySqlRequest",
             "GetCommunityFunctionRequest",
             "GetCommunityProcedureRequest",
             "GetCommunityTriggerRequest",

@@ -37,6 +37,8 @@ import ai.chat2db.rust.compat.protocol.v1.CommunitySqlAnalysis;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySqlDiagnostic;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySqlDiagnosticCountLimit;
 import ai.chat2db.rust.compat.protocol.v1.CommunitySqlValidation;
+import ai.chat2db.rust.compat.protocol.v1.CommunitySqlCompletion;
+import ai.chat2db.rust.compat.protocol.v1.CompleteCommunitySqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTable;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableColumn;
 import ai.chat2db.rust.compat.protocol.v1.CommunityTableColumnList;
@@ -166,13 +168,23 @@ final class CommunityPluginRegistry implements AutoCloseable {
     private final String sourceCommit;
     private final URLClassLoader loader;
     private final Map<String, PluginHandle> plugins;
+    private final CommunitySqlCompletionBridge sqlCompletion;
     private boolean closed;
 
     private CommunityPluginRegistry(
             String sourceCommit, URLClassLoader loader, Map<String, PluginHandle> plugins) {
+        this(sourceCommit, loader, plugins, null);
+    }
+
+    private CommunityPluginRegistry(
+            String sourceCommit,
+            URLClassLoader loader,
+            Map<String, PluginHandle> plugins,
+            CommunitySqlCompletionBridge sqlCompletion) {
         this.sourceCommit = sourceCommit;
         this.loader = loader;
         this.plugins = plugins;
+        this.sqlCompletion = sqlCompletion;
     }
 
     static CommunityPluginRegistry openConfigured() {
@@ -183,7 +195,7 @@ final class CommunityPluginRegistry implements AutoCloseable {
                 throw new IllegalStateException(
                         "Community source commit cannot be configured without a classpath");
             }
-            return new CommunityPluginRegistry("", null, Map.of());
+            return new CommunityPluginRegistry("", null, Map.of(), null);
         }
         validateSourceCommit(configuredCommit);
 
@@ -193,7 +205,9 @@ final class CommunityPluginRegistry implements AutoCloseable {
             URL[] urls = paths.stream().map(CommunityPluginRegistry::toUrl).toArray(URL[]::new);
             loader = new URLClassLoader(urls, ClassLoader.getPlatformClassLoader());
             Map<String, PluginHandle> plugins = discover(loader);
-            return new CommunityPluginRegistry(configuredCommit, loader, Map.copyOf(plugins));
+            CommunitySqlCompletionBridge sqlCompletion = CommunitySqlCompletionBridge.open(loader);
+            return new CommunityPluginRegistry(
+                    configuredCommit, loader, Map.copyOf(plugins), sqlCompletion);
         } catch (RuntimeException
                 | ReflectiveOperationException
                 | LinkageError
@@ -223,6 +237,30 @@ final class CommunityPluginRegistry implements AutoCloseable {
             catalog.addPlugins(descriptor(plugin, budget));
         }
         return catalog.build();
+    }
+
+    void validateSqlCompletionRequest(CompleteCommunitySqlRequest request)
+            throws RuntimeFailure {
+        ensureOpen();
+        requirePlugin(request.getDatabaseType());
+        requireSqlCompletion().validateRequest(request);
+    }
+
+    CommunitySqlCompletion completeSql(
+            Connection connection, CompleteCommunitySqlRequest request)
+            throws RuntimeFailure {
+        ensureOpen();
+        PluginHandle handle = requirePlugin(request.getDatabaseType());
+        return requireSqlCompletion().complete(handle.databaseType(), connection, request);
+    }
+
+    private CommunitySqlCompletionBridge requireSqlCompletion() throws RuntimeFailure {
+        if (sqlCompletion == null) {
+            throw RuntimeFailure.conflict(
+                    "community.sql_completion_unavailable",
+                    "Community SQL completion is not configured");
+        }
+        return sqlCompletion;
     }
 
     void validateSchemasRequest(String databaseType, String databaseName)

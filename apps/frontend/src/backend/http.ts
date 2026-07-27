@@ -28,6 +28,7 @@ import type {
   CommunityProcedureParameterList,
   CommunitySchemaList,
   CommunitySqlAnalysis,
+  CommunitySqlCompletion,
   CommunitySqlValidation,
   CommunityTableColumnList,
   CommunityTableIndexList,
@@ -38,6 +39,7 @@ import type {
   CreateAgentSessionRequest,
   CreateDatasourceRequest,
   CreateProviderProfileRequest,
+  CompleteCommunitySqlRequest,
   Datasource,
   DatasourceList,
   DecideAgentPermissionRequest,
@@ -380,6 +382,17 @@ export class HttpBackendClient implements BackendClient {
   ): Promise<CommunityFormattedSql> {
     return this.#json(
       '/api/v1/community/sql/format',
+      { method: 'POST', body: JSON.stringify(request), signal },
+      [200],
+    );
+  }
+
+  completeCommunitySql(
+    request: CompleteCommunitySqlRequest,
+    signal?: AbortSignal,
+  ): Promise<CommunitySqlCompletion> {
+    return this.#json(
+      '/api/v1/community/sql/complete',
       { method: 'POST', body: JSON.stringify(request), signal },
       [200],
     );

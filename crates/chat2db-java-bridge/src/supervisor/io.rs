@@ -34,7 +34,15 @@ const MAX_COMMUNITY_INDEX_COLUMNS: usize =
 const MAX_COMMUNITY_STATEMENTS: usize = wire::CommunityCountLimit::MaxStatements as usize;
 const MAX_COMMUNITY_SQL_DIAGNOSTICS: usize =
     wire::CommunitySqlDiagnosticCountLimit::MaxDiagnostics as usize;
-const COMMUNITY_RESPONSE_TAGS: std::ops::RangeInclusive<u32> = 200..=221;
+const MAX_COMMUNITY_SQL_COMPLETION_CANDIDATES: usize =
+    wire::CommunitySqlCompletionCandidateCountLimit::MaxCandidates as usize;
+const MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINTS: usize =
+    wire::CommunitySqlCompletionEditorHintCountLimit::MaxEditorHints as usize;
+const MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINT_ITEMS: usize =
+    wire::CommunitySqlCompletionEditorHintItemCountLimit::MaxEditorHintItems as usize;
+const MAX_COMMUNITY_SQL_COMPLETION_SNIPPET_SLOTS: usize =
+    wire::CommunitySqlCompletionSnippetSlotCountLimit::MaxSnippetSlots as usize;
+const COMMUNITY_RESPONSE_TAGS: std::ops::RangeInclusive<u32> = 200..=222;
 const MAX_PROTOBUF_FIELD_NUMBER: u64 = (1 << 29) - 1;
 const MAX_PROTOBUF_GROUP_DEPTH: usize = 100;
 
@@ -161,6 +169,10 @@ struct CommunityWireCounts {
     routine_parameters: usize,
     statements: usize,
     diagnostics: usize,
+    completion_candidates: usize,
+    completion_editor_hints: usize,
+    completion_editor_hint_items: usize,
+    completion_snippet_slots: usize,
 }
 
 fn validate_community_response_wire_counts(
@@ -252,8 +264,91 @@ fn validate_community_response_wire_counts(
             "trigger",
         ),
         220 => scan_community_sql_validation(payload, counts),
+        222 => scan_community_sql_completion(payload, counts),
         _ => Ok(()),
     }
+}
+
+fn scan_community_sql_completion(
+    payload: &[u8],
+    counts: &mut CommunityWireCounts,
+) -> Result<(), String> {
+    scan_message_fields(
+        payload,
+        |field_number, wire_type, value| match field_number {
+            4 => {
+                let candidate = require_length_delimited(
+                    wire_type,
+                    value,
+                    "Community SQL-completion candidate",
+                )?;
+                add_wire_count(
+                    &mut counts.completion_candidates,
+                    MAX_COMMUNITY_SQL_COMPLETION_CANDIDATES,
+                    "completion-candidate",
+                )?;
+                scan_community_sql_completion_candidate(
+                    candidate,
+                    &mut counts.completion_snippet_slots,
+                )
+            }
+            5 => {
+                let hint = require_length_delimited(
+                    wire_type,
+                    value,
+                    "Community SQL-completion editor hint",
+                )?;
+                add_wire_count(
+                    &mut counts.completion_editor_hints,
+                    MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINTS,
+                    "completion-editor-hint",
+                )?;
+                scan_community_sql_completion_editor_hint(
+                    hint,
+                    &mut counts.completion_editor_hint_items,
+                )
+            }
+            _ => Ok(()),
+        },
+    )
+}
+
+fn scan_community_sql_completion_candidate(
+    payload: &[u8],
+    snippet_slots: &mut usize,
+) -> Result<(), String> {
+    scan_message_fields(payload, |field_number, wire_type, value| {
+        if field_number != 23 {
+            return Ok(());
+        }
+        require_length_delimited(wire_type, value, "Community SQL-completion snippet slot")?;
+        add_wire_count(
+            snippet_slots,
+            MAX_COMMUNITY_SQL_COMPLETION_SNIPPET_SLOTS,
+            "completion-snippet-slot",
+        )
+    })
+}
+
+fn scan_community_sql_completion_editor_hint(
+    payload: &[u8],
+    items: &mut usize,
+) -> Result<(), String> {
+    scan_message_fields(payload, |field_number, wire_type, value| {
+        if field_number != 5 {
+            return Ok(());
+        }
+        require_length_delimited(
+            wire_type,
+            value,
+            "Community SQL-completion editor-hint item",
+        )?;
+        add_wire_count(
+            items,
+            MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINT_ITEMS,
+            "completion-editor-hint-item",
+        )
+    })
 }
 
 fn scan_community_sql_validation(
@@ -587,6 +682,8 @@ mod tests {
         MAX_COMMUNITY_DRIVERS, MAX_COMMUNITY_FUNCTIONS, MAX_COMMUNITY_INDEX_COLUMNS,
         MAX_COMMUNITY_INDEXES, MAX_COMMUNITY_KEYS, MAX_COMMUNITY_PLUGINS, MAX_COMMUNITY_PROCEDURES,
         MAX_COMMUNITY_RESPONSE_BYTES, MAX_COMMUNITY_ROUTINE_PARAMETERS, MAX_COMMUNITY_SCHEMAS,
+        MAX_COMMUNITY_SQL_COMPLETION_CANDIDATES, MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINT_ITEMS,
+        MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINTS, MAX_COMMUNITY_SQL_COMPLETION_SNIPPET_SLOTS,
         MAX_COMMUNITY_SQL_DIAGNOSTICS, MAX_COMMUNITY_STATEMENTS, MAX_COMMUNITY_TABLES,
         MAX_COMMUNITY_TRIGGERS, MAX_COMMUNITY_VIEWS, ReaderEvent, WriterCommand, WriterEvent,
         reader_loop, validate_community_response_wire_budget, writer_loop,
@@ -614,7 +711,8 @@ mod tests {
     const COMMUNITY_TRIGGER_LIST_TAG: u32 = 218;
     const COMMUNITY_SQL_VALIDATION_TAG: u32 = 220;
     const COMMUNITY_FORMATTED_SQL_TAG: u32 = 221;
-    const NON_COMMUNITY_TAG: u32 = 222;
+    const COMMUNITY_SQL_COMPLETION_TAG: u32 = 222;
+    const NON_COMMUNITY_TAG: u32 = 223;
 
     fn encode_varint(mut value: u64, output: &mut Vec<u8>) {
         loop {
@@ -1109,6 +1207,96 @@ mod tests {
         assert!(
             validate_community_response_wire_budget(&duplicate)
                 .expect_err("duplicate formatter payloads must share the Community byte budget")
+                .contains(&format!("{} bytes", MAX_COMMUNITY_RESPONSE_BYTES + 1))
+        );
+    }
+
+    #[test]
+    fn raw_scanner_enforces_completion_top_level_counts_across_duplicate_payloads() {
+        for (field_number, maximum, label) in [
+            (
+                4,
+                MAX_COMMUNITY_SQL_COMPLETION_CANDIDATES,
+                "completion-candidate",
+            ),
+            (
+                5,
+                MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINTS,
+                "completion-editor-hint",
+            ),
+        ] {
+            let exact = community_response(
+                COMMUNITY_SQL_COMPLETION_TAG,
+                &repeated_empty_fields(field_number, maximum),
+            );
+            validate_community_response_wire_budget(&exact)
+                .unwrap_or_else(|error| panic!("exact {label} limit must pass: {error}"));
+
+            let mut duplicate = exact;
+            push_length_delimited_field(
+                COMMUNITY_SQL_COMPLETION_TAG,
+                &repeated_empty_fields(field_number, 1),
+                &mut duplicate,
+            );
+            let error = validate_community_response_wire_budget(&duplicate)
+                .expect_err("duplicate completion payloads must share top-level counts");
+            assert!(error.contains(&format!("{maximum}-{label} limit")));
+            assert!(error.contains("before Protobuf decode"));
+        }
+    }
+
+    #[test]
+    fn raw_scanner_enforces_completion_nested_counts_across_duplicate_payloads() {
+        let exact_slots = repeated_empty_fields(23, MAX_COMMUNITY_SQL_COMPLETION_SNIPPET_SLOTS);
+        let exact_candidate = community_response(4, &exact_slots);
+        let mut duplicate_slots =
+            community_response(COMMUNITY_SQL_COMPLETION_TAG, &exact_candidate);
+        push_length_delimited_field(
+            COMMUNITY_SQL_COMPLETION_TAG,
+            &community_response(4, &repeated_empty_fields(23, 1)),
+            &mut duplicate_slots,
+        );
+        assert!(
+            validate_community_response_wire_budget(&duplicate_slots)
+                .expect_err("duplicate completion payloads must share snippet-slot counts")
+                .contains(&format!(
+                    "{MAX_COMMUNITY_SQL_COMPLETION_SNIPPET_SLOTS}-completion-snippet-slot limit"
+                ))
+        );
+
+        let exact_items = repeated_empty_fields(5, MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINT_ITEMS);
+        let exact_hint = community_response(5, &exact_items);
+        let mut duplicate_items = community_response(COMMUNITY_SQL_COMPLETION_TAG, &exact_hint);
+        push_length_delimited_field(
+            COMMUNITY_SQL_COMPLETION_TAG,
+            &community_response(5, &repeated_empty_fields(5, 1)),
+            &mut duplicate_items,
+        );
+        assert!(
+            validate_community_response_wire_budget(&duplicate_items)
+                .expect_err("duplicate completion payloads must share editor-hint-item counts")
+                .contains(&format!(
+                    "{MAX_COMMUNITY_SQL_COMPLETION_EDITOR_HINT_ITEMS}-completion-editor-hint-item limit"
+                ))
+        );
+    }
+
+    #[test]
+    fn raw_scanner_enforces_completion_byte_budget_across_duplicate_payloads() {
+        let first_length = MAX_COMMUNITY_RESPONSE_BYTES / 2;
+        let second_length = MAX_COMMUNITY_RESPONSE_BYTES - first_length + 1;
+        let mut duplicate = community_response(
+            COMMUNITY_SQL_COMPLETION_TAG,
+            &unknown_nested_message(first_length),
+        );
+        push_length_delimited_field(
+            COMMUNITY_SQL_COMPLETION_TAG,
+            &unknown_nested_message(second_length),
+            &mut duplicate,
+        );
+        assert!(
+            validate_community_response_wire_budget(&duplicate)
+                .expect_err("duplicate completion payloads must share the Community byte budget")
                 .contains(&format!("{} bytes", MAX_COMMUNITY_RESPONSE_BYTES + 1))
         );
     }

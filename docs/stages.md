@@ -12,7 +12,7 @@ in runtime health until then.
 | 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
 | 5 | Complete | Product transports | Generated OpenAPI/TypeScript contract, Axum JSON/SSE, Tauri 2 commands/channels, shared SQL workbench, product H2 tests |
 | 6 | Complete | Agent, MCP, and CLI | Direct providers, durable bounded tool loop, SQL tools/permissions, compaction, Web/Tauri run transports, owner-only local attachment, read-query CLI, and bounded `rmcp` stdio tools |
-| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs, 7B fixed Community H2 SPI/ANTLR, 7C product Core/Web/Tauri contracts, 7D relational object metadata, 7E relation metadata, 7F programmability metadata, 7G end-user object explorer, 7H SQL validation, and 7I SQL formatting implemented; remaining plugin operations and per-dialect conformance explicit |
+| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs, 7B fixed Community H2 SPI/ANTLR, 7C product Core/Web/Tauri contracts, 7D relational object metadata, 7E relation metadata, 7F programmability metadata, 7G end-user object explorer, 7H SQL validation, 7I SQL formatting, and 7J SQL completion implemented; remaining plugin operations and per-dialect conformance explicit |
 | 8 | Planned | Packaging and release | License authorization, NOTICE/SBOM, jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
 
 Stage 3 completion means the versioned Rust-Java bridge can load an external
@@ -71,21 +71,21 @@ rollback, and hot reload remain incomplete.
 
 Stage 7B fixes the Community source at commit
 `f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7`, builds its H2 compatibility
-classpath reproducibly, and locks all 148 JAR filenames, lengths, and SHA-256
-digests. Before lock verification, the fixed build strips dependency-manifest
+classpath reproducibly, and initially locks 148 JAR filenames, lengths, and
+SHA-256 digests. Before lock verification, the fixed build strips dependency-manifest
 `Class-Path` entries deterministically and proves two clean builds have
 identical artifact bytes. Rust snapshots and re-verifies those JARs for one
 supervised Java generation. Java isolates them behind a platform-parent
 `URLClassLoader`, rejects manifest `Class-Path` escapes, discovers real `IPlugin`
 services, and exposes plugin catalog, H2 schema metadata, `CREATE SCHEMA`, and
 retained ANTLR parsing DTOs over Protobuf. Configuring the classpath requires all
-nine current Community capabilities at handshake, and Java plus Rust enforce the
+ten current Community capabilities at handshake, and Java plus Rust enforce the
 generated 8 MiB cumulative response budget. Rust counts raw Community oneof
 values before decoding, including duplicate fields, and retains a generation
 snapshot whenever child reap cannot be proven. The real vertical test keeps the
 H2 JDBC driver in its separate driver loader.
 
-Stage 7C embeds that exact 148-JAR lock in the product Core and allows Web or
+Stage 7C embeds that exact classpath lock in the product Core and allows Web or
 desktop startup to opt into it through `CHAT2DB_COMMUNITY_CLASSPATH_DIR`. Any
 missing, extra, renamed, symbolic-link, length-drifted, or digest-drifted entry
 fails startup before Java launches. Core projects the four compatibility calls
@@ -113,7 +113,7 @@ metadata services and converts nullable 64-bit metadata integers to decimal
 strings at the JavaScript boundary; Axum, Tauri, and the shared HTTP/Tauri
 frontend backend expose matching contracts. Real H2 bridge and product tests
 verify the current catalog, created table and columns, primary index, and custom
-unique index through the exact fixed 148-JAR classpath.
+unique index through the exact fixed classpath.
 
 Stage 7E adds the independent `community.metadata.relations.v1` capability and
 preserves every existing wire field number by assigning `208..=211` to views,
@@ -190,9 +190,35 @@ provides a Format action and rejects stale responses after SQL, datasource, or
 database-type changes. Real H2 bridge and product gates cover generic fallback
 through the fixed Community classpath.
 
+Stage 7J adds the independent `community.sql-completion.v1` capability at
+request/response tag `222` and extends the fixed classpath from 148 to 149 JARs
+with Community domain-core. Java reflectively invokes the fixed
+`DbSqlCompletionServiceImpl.complete` entrypoint. MySQL delegates to
+`DefaultSqlSyntaxHandler`; other relational database types delegate to
+`GenericSqlCompletionEngine`; both reuse the session's existing JDBC connection
+and metadata. The adapter supplies `IDbTableService.queryColumns`, isolates
+Community's process-global caches with a Rust-generated non-zero
+`datasource_scope`, clears only request-owned context/cache entries, and leaves
+the external connection open.
+
+All cursor and replacement offsets are explicit UTF-16 units. Rust scans every
+raw tag-`222` value before decode, including duplicate oneof fields, and enforces
+the shared 8 MiB budget plus limits of 4,096 candidates, 4,096 editor hints,
+65,536 hint items, and 65,536 snippet slots. Decoded status, enum, count, string,
+range, semantic, and encoded-size checks apply again. Core resolves the
+datasource display name and runs completion in a forced-read-only,
+cancellation-safe session; Axum, Tauri, generated OpenAPI/TypeScript, and the
+shared HTTP/Tauri frontend expose one product contract. The React editor rejects
+stale responses and applies only valid UTF-16 edits. Real H2 bridge and product
+gates verify table candidates after `select * from ` and `ID`/`LABEL` column
+candidates after `select items. from APP.items`. Playwright visual acceptance at
+desktop `1440x1000` and mobile `390x844` viewports verifies that the completion
+workbench has no overlapping or out-of-bounds content, horizontal page
+scrolling, or text overflow.
+
 Stage 7 remains incomplete. Type conversion, script execution, data
-import/export, completion, non-relational behavior, remaining builders and
-plugin inventory, driver distribution, and per-dialect
+import/export, non-relational behavior, remaining builders and plugin inventory,
+driver distribution, and per-dialect
 conformance are not implemented.
 
 Before Stage 8 may produce any Object-form distribution containing Community

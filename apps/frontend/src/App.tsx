@@ -7,6 +7,7 @@ import {
   Code2,
   Database,
   KeyRound,
+  ListPlus,
   LoaderCircle,
   Pencil,
   Play,
@@ -17,12 +18,22 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 import {
   ApiRequestError,
   BackendClient,
   CommunitySqlAnalysis,
+  CommunitySqlCompletion,
+  CommunitySqlCompletionCandidate,
   CommunitySqlValidation,
   CreateDatasourceRequest,
   Datasource,
@@ -39,12 +50,24 @@ import {
   createBackendClient,
   observeOperation,
 } from './backend';
-import { CommunityExplorer } from './CommunityExplorer';
+import { CommunityCompletionContext, CommunityExplorer } from './CommunityExplorer';
+import {
+  applySqlCompletion,
+  isCurrentSqlCompletionRequest,
+  moveSqlCompletionSelection,
+} from './sql-completion-model';
 import { isCurrentSqlFormatRequest } from './sql-format-model';
 
 const PAGE_ROWS = 50n;
 const PAGE_BYTES = '1048576';
 const VALIDATION_PREVIEW_ITEMS = 8;
+const MAX_VISIBLE_COMPLETION_CANDIDATES = 200;
+const INITIAL_SQL = 'SELECT 1;';
+const INITIAL_COMPLETION_CONTEXT: CommunityCompletionContext = {
+  databaseName: '',
+  schemaName: '',
+  refreshGeneration: 0,
+};
 
 interface ConnectionPropertyForm extends DatasourceConnectionProperty {
   id: number;
@@ -72,6 +95,13 @@ interface QueryOperation {
 type SqlInspection =
   | { kind: 'analysis'; result: CommunitySqlAnalysis }
   | { kind: 'validation'; result: CommunitySqlValidation };
+
+type SqlCompletionState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'empty'; message: string }
+  | { status: 'success'; result: CommunitySqlCompletion; selectedIndex: number };
 
 type DialogState = { kind: 'create' } | { kind: 'edit'; datasource: Datasource };
 
@@ -409,12 +439,15 @@ export default function App() {
   const [dialogBusy, setDialogBusy] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [loadingDatasources, setLoadingDatasources] = useState(true);
-  const [sql, setSql] = useState('SELECT 1;');
+  const [sql, setSql] = useState(INITIAL_SQL);
   const [communitySelection, setCommunitySelection] = useState({ datasourceKey: '', databaseType: '' });
+  const [communityCompletionContext, setCommunityCompletionContext] = useState(INITIAL_COMPLETION_CONTEXT);
   const [communityParserAvailable, setCommunityParserAvailable] = useState(false);
   const [sqlInspection, setSqlInspection] = useState<SqlInspection | null>(null);
   const [inspectionLoading, setInspectionLoading] = useState<'analysis' | 'validation' | null>(null);
   const [formatLoading, setFormatLoading] = useState(false);
+  const [sqlCompletion, setSqlCompletion] = useState<SqlCompletionState>({ status: 'idle' });
+  const [editorCursorUtf16, setEditorCursorUtf16] = useState(INITIAL_SQL.length);
   const [operation, setOperation] = useState<QueryOperation | null>(null);
   const [resultPage, setResultPage] = useState<ResultPage | null>(null);
   const [resultLoading, setResultLoading] = useState(false);
@@ -423,6 +456,11 @@ export default function App() {
   const resultRequestRef = useRef(0);
   const inspectionRequestRef = useRef(0);
   const formatRequestRef = useRef(0);
+  const completionRequestRef = useRef(0);
+  const sqlEditorRef = useRef<HTMLTextAreaElement | null>(null);
+  const editorCursorRef = useRef(INITIAL_SQL.length);
+  const completionContextRef = useRef(INITIAL_COMPLETION_CONTEXT);
+  const completionOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const selectedDatasource = datasources.find((datasource) => datasource.id === selectedId);
   const selectedDatasourceKey = selectedDatasource
@@ -441,9 +479,41 @@ export default function App() {
   };
   const formatScopeRef = useRef(currentFormatScope);
   formatScopeRef.current = currentFormatScope;
+  const currentCompletionScope = {
+    datasourceKey: selectedDatasourceKey,
+    databaseType: communityDatabaseType,
+    databaseName: communityCompletionContext.databaseName,
+    schemaName: communityCompletionContext.schemaName,
+    sql,
+    cursorUtf16: editorCursorUtf16,
+    refreshGeneration: communityCompletionContext.refreshGeneration,
+  };
+  const completionScopeRef = useRef(currentCompletionScope);
+  completionScopeRef.current = currentCompletionScope;
+  const visibleCompletionCandidates = sqlCompletion.status === 'success'
+    ? sqlCompletion.result.candidates.slice(0, MAX_VISIBLE_COMPLETION_CANDIDATES)
+    : [];
   const queryRunning = operation?.status === 'running' || operation?.status === 'starting';
 
-  const updateSql = useCallback((nextSql: string) => {
+  const invalidateSqlCompletion = useCallback(() => {
+    completionRequestRef.current += 1;
+    setSqlCompletion((current) => current.status === 'idle' ? current : { status: 'idle' });
+  }, []);
+
+  const trackEditorCursor = useCallback((cursorUtf16: number, sqlLength: number) => {
+    const safeCursor = Math.max(0, Math.min(cursorUtf16, sqlLength));
+    if (editorCursorRef.current === safeCursor) return;
+    editorCursorRef.current = safeCursor;
+    setEditorCursorUtf16(safeCursor);
+    invalidateSqlCompletion();
+  }, [invalidateSqlCompletion]);
+
+  const updateSql = useCallback((nextSql: string, nextCursorUtf16 = nextSql.length) => {
+    completionRequestRef.current += 1;
+    setSqlCompletion((current) => current.status === 'idle' ? current : { status: 'idle' });
+    const safeCursor = Math.max(0, Math.min(nextCursorUtf16, nextSql.length));
+    editorCursorRef.current = safeCursor;
+    setEditorCursorUtf16(safeCursor);
     formatRequestRef.current += 1;
     setFormatLoading(false);
     inspectionRequestRef.current += 1;
@@ -452,7 +522,19 @@ export default function App() {
     setSql(nextSql);
   }, []);
 
+  const resetCompletionContext = useCallback(() => {
+    const context = {
+      databaseName: '',
+      schemaName: '',
+      refreshGeneration: completionContextRef.current.refreshGeneration,
+    };
+    completionContextRef.current = context;
+    setCommunityCompletionContext(context);
+  }, []);
+
   const selectCommunityDatabaseType = useCallback((databaseType: string) => {
+    invalidateSqlCompletion();
+    resetCompletionContext();
     formatRequestRef.current += 1;
     setFormatLoading(false);
     inspectionRequestRef.current += 1;
@@ -460,7 +542,19 @@ export default function App() {
     setSqlInspection(null);
     setCommunityParserAvailable(false);
     setCommunitySelection({ datasourceKey: selectedDatasourceKey, databaseType });
-  }, [selectedDatasourceKey]);
+  }, [invalidateSqlCompletion, resetCompletionContext, selectedDatasourceKey]);
+
+  const setCompletionContext = useCallback((context: CommunityCompletionContext) => {
+    const current = completionContextRef.current;
+    if (
+      current.databaseName === context.databaseName
+      && current.schemaName === context.schemaName
+      && current.refreshGeneration === context.refreshGeneration
+    ) return;
+    completionContextRef.current = context;
+    invalidateSqlCompletion();
+    setCommunityCompletionContext(context);
+  }, [invalidateSqlCompletion]);
 
   const setParserAvailability = useCallback((available: boolean) => {
     if (!available) {
@@ -472,12 +566,16 @@ export default function App() {
   }, []);
 
   const selectDatasource = useCallback((datasourceId: string) => {
+    if (datasourceId === selectedId) return;
+    invalidateSqlCompletion();
+    resetCompletionContext();
     formatRequestRef.current += 1;
     setFormatLoading(false);
     setSelectedId(datasourceId);
-  }, []);
+  }, [invalidateSqlCompletion, resetCompletionContext, selectedId]);
 
   const refreshDatasources = useCallback(async (signal?: AbortSignal) => {
+    invalidateSqlCompletion();
     formatRequestRef.current += 1;
     setFormatLoading(false);
     setLoadingDatasources(true);
@@ -494,7 +592,7 @@ export default function App() {
     } finally {
       if (!signal?.aborted) setLoadingDatasources(false);
     }
-  }, [client]);
+  }, [client, invalidateSqlCompletion]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -510,13 +608,20 @@ export default function App() {
   useEffect(() => () => subscriptionRef.current?.close(), []);
 
   useEffect(() => {
+    invalidateSqlCompletion();
     formatRequestRef.current += 1;
     setFormatLoading(false);
     inspectionRequestRef.current += 1;
     setInspectionLoading(null);
     setSqlInspection(null);
     setCommunityParserAvailable(false);
-  }, [selectedDatasourceKey]);
+  }, [invalidateSqlCompletion, selectedDatasourceKey]);
+
+  useEffect(() => {
+    if (sqlCompletion.status === 'success') {
+      completionOptionRefs.current[sqlCompletion.selectedIndex]?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [sqlCompletion]);
 
   const saveDatasource = async (form: DatasourceFormValue) => {
     if (!dialog) return;
@@ -787,10 +892,7 @@ export default function App() {
         formatScopeRef.current,
       )) return;
       if (formatted.sql !== sourceSql) {
-        inspectionRequestRef.current += 1;
-        setInspectionLoading(null);
-        setSqlInspection(null);
-        setSql(formatted.sql);
+        updateSql(formatted.sql);
       }
     } catch (requestError) {
       if (isCurrentSqlFormatRequest(
@@ -800,6 +902,154 @@ export default function App() {
       )) setError(errorMessage(requestError));
     } finally {
       if (formatRequestRef.current === request.sequence) setFormatLoading(false);
+    }
+  };
+
+  const completeSql = async () => {
+    const editor = sqlEditorRef.current;
+    if (
+      !editor
+      || !selectedDatasource?.hasSecret
+      || !sql.trim()
+      || !communityDatabaseType
+      || communityCompatibility?.state !== 'ready'
+      || sqlCompletion.status === 'loading'
+    ) return;
+
+    const cursorUtf16 = editor.selectionStart;
+    editorCursorRef.current = cursorUtf16;
+    setEditorCursorUtf16(cursorUtf16);
+    const context = completionContextRef.current;
+    const scope = {
+      datasourceKey: selectedDatasourceKey,
+      databaseType: communityDatabaseType,
+      databaseName: context.databaseName,
+      schemaName: context.schemaName,
+      sql,
+      cursorUtf16,
+      refreshGeneration: context.refreshGeneration,
+    };
+    const request = {
+      sequence: ++completionRequestRef.current,
+      scope,
+    };
+    completionScopeRef.current = scope;
+    setError(null);
+    setSqlCompletion({ status: 'loading' });
+    try {
+      const completion = await client.completeCommunitySql({
+        datasourceId: selectedDatasource.id,
+        databaseType: communityDatabaseType,
+        databaseName: context.databaseName,
+        schemaName: context.schemaName,
+        sql,
+        cursorUtf16,
+        minPrefixLength: 0,
+        needFullName: false,
+        keywordCase: 'UPPER',
+      });
+      if (!isCurrentSqlCompletionRequest(
+        request,
+        completionRequestRef.current,
+        completionScopeRef.current,
+      )) return;
+      const status = completion.status.toLowerCase();
+      if (status === 'success' && completion.candidates.length > 0) {
+        completionOptionRefs.current = [];
+        setSqlCompletion({ status: 'success', result: completion, selectedIndex: 0 });
+      } else if (status === 'empty' || status === 'success') {
+        setSqlCompletion({ status: 'empty', message: 'No suggestions at this cursor' });
+      } else {
+        setSqlCompletion({
+          status: 'error',
+          message: completion.reasonCode ?? `SQL completion ${status || 'failed'}`,
+        });
+      }
+    } catch (requestError) {
+      if (isCurrentSqlCompletionRequest(
+        request,
+        completionRequestRef.current,
+        completionScopeRef.current,
+      )) setSqlCompletion({ status: 'error', message: errorMessage(requestError) });
+    }
+  };
+
+  const applyCompletionCandidate = (
+    completion: CommunitySqlCompletion,
+    candidate: CommunitySqlCompletionCandidate,
+  ) => {
+    const replacement = applySqlCompletion(
+      sql,
+      completion.replaceStartUtf16,
+      completion.replaceEndUtf16,
+      candidate,
+    );
+    if (!replacement) {
+      setSqlCompletion({ status: 'error', message: 'The completion returned an invalid edit range' });
+      return;
+    }
+    updateSql(replacement.sql, replacement.caret);
+    requestAnimationFrame(() => {
+      const editor = sqlEditorRef.current;
+      if (!editor) return;
+      editor.focus();
+      editor.setSelectionRange(replacement.caret, replacement.caret);
+    });
+  };
+
+  const closeSqlCompletion = () => {
+    invalidateSqlCompletion();
+    requestAnimationFrame(() => {
+      const editor = sqlEditorRef.current;
+      if (!editor) return;
+      const caret = Math.min(editorCursorRef.current, editor.value.length);
+      editor.focus();
+      editor.setSelectionRange(caret, caret);
+    });
+  };
+
+  const handleSqlEditorKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) return;
+    if ((event.ctrlKey || event.metaKey) && event.code === 'Space') {
+      event.preventDefault();
+      void completeSql();
+      return;
+    }
+    if (event.key === 'Escape' && sqlCompletion.status !== 'idle') {
+      event.preventDefault();
+      closeSqlCompletion();
+      return;
+    }
+    if (
+      sqlCompletion.status === 'success'
+      && (event.key === 'ArrowDown' || event.key === 'ArrowUp')
+    ) {
+      event.preventDefault();
+      const direction = event.key === 'ArrowDown' ? 1 : -1;
+      setSqlCompletion((current) => current.status === 'success'
+        ? {
+            ...current,
+            selectedIndex: moveSqlCompletionSelection(
+              current.selectedIndex,
+              Math.min(current.result.candidates.length, MAX_VISIBLE_COMPLETION_CANDIDATES),
+              direction,
+            ),
+          }
+        : current);
+      return;
+    }
+    if (sqlCompletion.status === 'success' && event.key === 'Enter') {
+      const candidate = visibleCompletionCandidates[sqlCompletion.selectedIndex];
+      if (!candidate) return;
+      event.preventDefault();
+      applyCompletionCandidate(sqlCompletion.result, candidate);
+      return;
+    }
+    if (
+      sqlCompletion.status !== 'idle'
+      && !['Shift', 'Control', 'Alt', 'Meta'].includes(event.key)
+    ) {
+      invalidateSqlCompletion();
     }
   };
 
@@ -870,6 +1120,7 @@ export default function App() {
         databaseType={communityDatabaseType}
         onDatabaseTypeChange={selectCommunityDatabaseType}
         onParserAvailabilityChange={setParserAvailability}
+        onCompletionContextChange={setCompletionContext}
         onInsertSql={updateSql}
       />
 
@@ -910,6 +1161,21 @@ export default function App() {
           <div className="editor-toolbar">
             <div><span className="section-kicker">SQL console</span><strong>Query</strong></div>
             <div className="query-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => void completeSql()}
+                disabled={
+                  sqlCompletion.status === 'loading'
+                  || !selectedDatasource?.hasSecret
+                  || !sql.trim()
+                  || !communityDatabaseType
+                  || communityCompatibility?.state !== 'ready'
+                }
+              >
+                {sqlCompletion.status === 'loading' ? <LoaderCircle className="spinning" size={16} aria-hidden="true" /> : <ListPlus size={16} aria-hidden="true" />}
+                {sqlCompletion.status === 'loading' ? 'Completing' : 'Complete'}
+              </button>
               <button
                 className="secondary-button"
                 type="button"
@@ -965,12 +1231,101 @@ export default function App() {
               </button>
             </div>
           </div>
-          <textarea
-            value={sql}
-            onChange={(event) => updateSql(event.target.value)}
-            spellCheck={false}
-            aria-label="SQL query"
-          />
+          <div className="sql-editor-surface">
+            <textarea
+              ref={sqlEditorRef}
+              value={sql}
+              onChange={(event) => updateSql(event.currentTarget.value, event.currentTarget.selectionStart)}
+              onSelect={(event) => trackEditorCursor(
+                event.currentTarget.selectionStart,
+                event.currentTarget.value.length,
+              )}
+              onMouseDown={() => {
+                if (sqlCompletion.status !== 'idle') invalidateSqlCompletion();
+              }}
+              onKeyDown={handleSqlEditorKeyDown}
+              spellCheck={false}
+              aria-label="SQL query"
+              aria-autocomplete="list"
+              aria-busy={sqlCompletion.status === 'loading'}
+              aria-controls={sqlCompletion.status === 'success' ? 'sql-completion-listbox' : undefined}
+              aria-expanded={sqlCompletion.status === 'success'}
+              aria-activedescendant={sqlCompletion.status === 'success'
+                ? `sql-completion-option-${sqlCompletion.selectedIndex}`
+                : undefined}
+            />
+            {sqlCompletion.status !== 'idle' ? (
+              <section className={`sql-completion-panel completion-${sqlCompletion.status}`} aria-live="polite">
+                {sqlCompletion.status === 'loading' ? (
+                  <div className="completion-message" role="status">
+                    <LoaderCircle className="spinning" size={16} aria-hidden="true" />
+                    <span>Loading suggestions</span>
+                    <button className="completion-close" type="button" onMouseDown={(event) => event.preventDefault()} onClick={closeSqlCompletion} aria-label="Close suggestions" title="Close suggestions">
+                      <X size={14} aria-hidden="true" />
+                    </button>
+                  </div>
+                ) : null}
+                {sqlCompletion.status === 'error' ? (
+                  <div className="completion-message completion-error" role="alert">
+                    <AlertCircle size={16} aria-hidden="true" />
+                    <span>{sqlCompletion.message}</span>
+                    <button className="completion-close" type="button" onMouseDown={(event) => event.preventDefault()} onClick={closeSqlCompletion} aria-label="Close suggestions" title="Close suggestions">
+                      <X size={14} aria-hidden="true" />
+                    </button>
+                  </div>
+                ) : null}
+                {sqlCompletion.status === 'empty' ? (
+                  <div className="completion-message" role="status">
+                    <ListPlus size={16} aria-hidden="true" />
+                    <span>{sqlCompletion.message}</span>
+                    <button className="completion-close" type="button" onMouseDown={(event) => event.preventDefault()} onClick={closeSqlCompletion} aria-label="Close suggestions" title="Close suggestions">
+                      <X size={14} aria-hidden="true" />
+                    </button>
+                  </div>
+                ) : null}
+                {sqlCompletion.status === 'success' ? (
+                  <>
+                    <header className="completion-heading">
+                      <strong>Suggestions</strong>
+                      <span>
+                        {visibleCompletionCandidates.length}
+                        {visibleCompletionCandidates.length < sqlCompletion.result.candidates.length
+                          ? ` / ${sqlCompletion.result.candidates.length}`
+                          : ''}
+                      </span>
+                      <button className="completion-close" type="button" onMouseDown={(event) => event.preventDefault()} onClick={closeSqlCompletion} aria-label="Close suggestions" title="Close suggestions">
+                        <X size={14} aria-hidden="true" />
+                      </button>
+                    </header>
+                    <div className="completion-options" id="sql-completion-listbox" role="listbox" aria-label="SQL completions">
+                      {visibleCompletionCandidates.map((candidate, index) => (
+                        <button
+                          className="completion-option"
+                          id={`sql-completion-option-${index}`}
+                          type="button"
+                          role="option"
+                          tabIndex={-1}
+                          aria-selected={index === sqlCompletion.selectedIndex}
+                          key={`${candidate.id}:${index}`}
+                          ref={(option) => { completionOptionRefs.current[index] = option; }}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => applyCompletionCandidate(sqlCompletion.result, candidate)}
+                        >
+                          <span className="completion-type" title={candidate.type}>{candidate.type}</span>
+                          <span className="completion-copy">
+                            <strong title={candidate.label}>{candidate.label}</strong>
+                            <small title={candidate.detail || candidate.description || candidate.insertText || candidate.label}>
+                              {candidate.detail || candidate.description || candidate.insertText || candidate.label}
+                            </small>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                ) : null}
+              </section>
+            ) : null}
+          </div>
           {sqlInspection?.kind === 'analysis' ? (
             <section className="analysis-strip" aria-label="Community SQL analysis">
               <header>

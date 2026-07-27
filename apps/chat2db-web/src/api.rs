@@ -19,10 +19,13 @@ use chat2db_contract::{
     CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
     CommunityPluginServices, CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure,
     CommunityProcedureList, CommunityProcedureParameter, CommunityProcedureParameterList,
-    CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlDiagnostic,
-    CommunitySqlValidation, CommunityTable, CommunityTableColumn, CommunityTableColumnList,
-    CommunityTableIndex, CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList,
-    CommunityTrigger, CommunityTriggerList, CommunityViewList, ComponentHealth, ComponentState,
+    CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlCompletion,
+    CommunitySqlCompletionActiveSnippetSlot, CommunitySqlCompletionCandidate,
+    CommunitySqlCompletionEditorHint, CommunitySqlCompletionEditorHintItem,
+    CommunitySqlCompletionRange, CommunitySqlDiagnostic, CommunitySqlValidation, CommunityTable,
+    CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
+    CommunityTableIndexList, CommunityTableList, CommunityTrigger, CommunityTriggerList,
+    CommunityViewList, CompleteCommunitySqlRequest, ComponentHealth, ComponentState,
     ContextCompactionStrategy, CreateAgentSessionRequest, CreateDatasourceRequest,
     CreateProviderProfileRequest, Datasource, DatasourceConnection, DatasourceConnectionProperty,
     DatasourceList, DatasourceSecretChange, DecideAgentPermissionRequest,
@@ -126,6 +129,12 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         CommunitySchema,
         CommunitySchemaList,
         CommunitySqlAnalysis,
+        CommunitySqlCompletion,
+        CommunitySqlCompletionActiveSnippetSlot,
+        CommunitySqlCompletionCandidate,
+        CommunitySqlCompletionEditorHint,
+        CommunitySqlCompletionEditorHintItem,
+        CommunitySqlCompletionRange,
         CommunitySqlDiagnostic,
         CommunitySqlValidation,
         CommunityTable,
@@ -139,6 +148,7 @@ const SSE_KEEP_ALIVE_SECONDS: u64 = 15;
         CommunityTriggerList,
         CommunityViewList,
         ContextCompactionStrategy,
+        CompleteCommunitySqlRequest,
         CreateAgentSessionRequest,
         CreateDatasourceRequest,
         CreateProviderProfileRequest,
@@ -240,6 +250,7 @@ fn documented_router() -> OpenApiRouter<Application> {
         .routes(routes!(parse_community_sql))
         .routes(routes!(validate_community_sql))
         .routes(routes!(format_community_sql))
+        .routes(routes!(complete_community_sql))
         .routes(routes!(list_datasources, create_datasource))
         .routes(routes!(
             get_datasource,
@@ -821,6 +832,30 @@ async fn format_community_sql(
 ) -> Result<Json<CommunityFormattedSql>, WebError> {
     application
         .format_community_sql(request)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/community/sql/complete",
+    tag = "community",
+    request_body = CompleteCommunitySqlRequest,
+    responses(
+        (status = 200, description = "Community SQL completion", body = CommunitySqlCompletion),
+        (status = 400, description = "Invalid Community SQL-completion request", body = ApiError),
+        (status = 409, description = "Datasource session cannot serve completion", body = ApiError),
+        (status = 503, description = "Community compatibility engine is unavailable", body = ApiError),
+        (status = 500, description = "Unexpected Community SQL-completion failure", body = ApiError)
+    )
+)]
+async fn complete_community_sql(
+    State(application): State<Application>,
+    ApiJson(request): ApiJson<CompleteCommunitySqlRequest>,
+) -> Result<Json<CommunitySqlCompletion>, WebError> {
+    application
+        .complete_community_sql(request)
         .await
         .map(Json)
         .map_err(Into::into)

@@ -2304,6 +2304,76 @@
         }
       }
     },
+    "/api/v1/community/sql/complete": {
+      "post": {
+        "tags": [
+          "community"
+        ],
+        "operationId": "complete_community_sql",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompleteCommunitySqlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Community SQL completion",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunitySqlCompletion"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Community SQL-completion request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Datasource session cannot serve completion",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Community SQL-completion failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Community compatibility engine is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/community/sql/format": {
       "post": {
         "tags": [
@@ -5231,6 +5301,357 @@
           }
         }
       },
+      "CommunitySqlCompletion": {
+        "type": "object",
+        "description": "Bounded SQL completion result returned by the retained Community engine.",
+        "required": [
+          "status",
+          "replaceStartUtf16",
+          "replaceEndUtf16",
+          "candidates",
+          "editorHints"
+        ],
+        "properties": {
+          "candidates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunitySqlCompletionCandidate"
+            }
+          },
+          "editorHints": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunitySqlCompletionEditorHint"
+            }
+          },
+          "reasonCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replaceEndUtf16": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Exclusive replacement end in JavaScript/Java UTF-16 code units.",
+            "minimum": 0
+          },
+          "replaceStartUtf16": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Inclusive replacement start in JavaScript/Java UTF-16 code units.",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "CommunitySqlCompletionActiveSnippetSlot": {
+        "type": "object",
+        "description": "Active editor snippet slot supplied to Community completion.",
+        "required": [
+          "type",
+          "replaceStartUtf16",
+          "replaceEndUtf16"
+        ],
+        "properties": {
+          "replaceEndUtf16": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Exclusive end offset in JavaScript/Java UTF-16 code units.",
+            "minimum": 0
+          },
+          "replaceStartUtf16": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Inclusive start offset in JavaScript/Java UTF-16 code units.",
+            "minimum": 0
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "CommunitySqlCompletionCandidate": {
+        "type": "object",
+        "description": "One completion candidate projected from the Community Web contract.",
+        "required": [
+          "label",
+          "type",
+          "insertType",
+          "snippetSlots"
+        ],
+        "properties": {
+          "columnName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dataType": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "databaseName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "datasourceName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "insertText": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "insertType": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "objectName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "objectType": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parameterMode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replaceEndUtf16": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "replaceStartUtf16": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "schemaName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "snippetSlots": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sortRank": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "sortText": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tableAlias": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tableName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "CommunitySqlCompletionEditorHint": {
+        "type": "object",
+        "description": "One editor hint projected from the Community Web contract.",
+        "required": [
+          "type",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommunitySqlCompletionEditorHintItem"
+            }
+          },
+          "rowRange": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CommunitySqlCompletionRange"
+              }
+            ]
+          },
+          "statementRange": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CommunitySqlCompletionRange"
+              }
+            ]
+          },
+          "type": {
+            "type": "string"
+          },
+          "valueRange": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CommunitySqlCompletionRange"
+              }
+            ]
+          }
+        }
+      },
+      "CommunitySqlCompletionEditorHintItem": {
+        "type": "object",
+        "description": "One item inside a Community editor hint.",
+        "required": [
+          "rowIndex",
+          "columnIndex",
+          "active"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "columnIndex": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "fieldName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fieldType": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "range": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CommunitySqlCompletionRange"
+              }
+            ]
+          },
+          "rowIndex": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "CommunitySqlCompletionRange": {
+        "type": "object",
+        "description": "One 1-based editor range returned by Community completion.",
+        "required": [
+          "startLineNumber",
+          "startColumn",
+          "endLineNumber",
+          "endColumn"
+        ],
+        "properties": {
+          "endColumn": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "endLineNumber": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "startColumn": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "startLineNumber": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "CommunitySqlDiagnostic": {
         "type": "object",
         "description": "One syntax diagnostic returned by the retained Community parser.",
@@ -5825,6 +6246,65 @@
               "$ref": "#/components/schemas/CommunityTable"
             },
             "description": "Views represented by the same bounded metadata projection as tables."
+          }
+        }
+      },
+      "CompleteCommunitySqlRequest": {
+        "type": "object",
+        "description": "Request to complete SQL against one datasource's live JDBC metadata.",
+        "required": [
+          "datasourceId",
+          "databaseType",
+          "databaseName",
+          "schemaName",
+          "sql",
+          "cursorUtf16",
+          "minPrefixLength",
+          "needFullName",
+          "keywordCase"
+        ],
+        "properties": {
+          "activeSnippetSlot": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CommunitySqlCompletionActiveSnippetSlot"
+              }
+            ]
+          },
+          "cursorUtf16": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Cursor offset in JavaScript/Java UTF-16 code units.",
+            "minimum": 0
+          },
+          "databaseName": {
+            "type": "string"
+          },
+          "databaseType": {
+            "type": "string"
+          },
+          "datasourceId": {
+            "type": "string"
+          },
+          "keywordCase": {
+            "type": "string"
+          },
+          "minPrefixLength": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "needFullName": {
+            "type": "boolean"
+          },
+          "schemaName": {
+            "type": "string"
+          },
+          "sql": {
+            "type": "string"
           }
         }
       },

@@ -4,7 +4,7 @@ Private implementation of the Chat2DB Community hybrid runtime.
 
 ## Current state
 
-The repository has completed Stages 1 through 6 and the first nine independently
+The repository has completed Stages 1 through 6 and the first ten independently
 buildable Stage 7 slices:
 
 - canonical Rust API contracts;
@@ -58,7 +58,7 @@ buildable Stage 7 slices:
   `IPlugin` implementations and exposes H2 plugin catalog, schema, object,
   view, foreign-key, primary-key, function, procedure, parameter, and trigger
   metadata, `CREATE SCHEMA` builder, and retained ANTLR parser operations over
-  Protobuf, with every one of its 148 JARs bound to the source commit by a
+  Protobuf, with every one of its 149 JARs bound to the source commit by a
   checked-in filename, byte-length, and SHA-256 lock; and
 - product-owned Community DTOs and Core services exposed consistently through
   Axum, Tauri, and the shared HTTP/Tauri frontend backend contract, with exact
@@ -72,7 +72,10 @@ buildable Stage 7 slices:
   and
 - Community-compatible SQL formatting with bounded input, output, and lexical
   complexity, negotiated capability support, and one race-safe Format action
-  across HTTP and Tauri.
+  across HTTP and Tauri; and
+- retained Community SQL completion through a forced-read-only JDBC session,
+  bounded UTF-16 edit ranges and suggestions, and one race-safe keyboard-driven
+  completion surface across HTTP and Tauri.
 
 Stage 6 is complete. Web and desktop own the product runtime and publish its
 owner-only local endpoint; CLI and MCP attach to that host and never contact
@@ -94,9 +97,12 @@ capability and an explicit editor Validate action without opening a JDBC
 session. Stage 7I adds separately negotiated SQL formatting through the retained
 Community formatter dependency, preserves Community's dialect mapping and
 fallback behavior, and replaces editor SQL only while the originating SQL,
-datasource, and database type are still current. Signing, downloading,
-updating, rollback, the remaining builder/parser estate, and full per-dialect
-compatibility remain Stage 7 work.
+datasource, and database type are still current. Stage 7J adds the separately
+negotiated `community.sql-completion.v1` capability, calls the real Community
+completion service against the existing read-only JDBC session, and exposes
+bounded suggestions through Core, Axum, Tauri, and the shared React editor.
+Signing, downloading, updating, rollback, the remaining compatibility estate,
+and full per-dialect compatibility remain Stage 7 work.
 
 ## Architecture
 
@@ -140,13 +146,15 @@ JAR integration test rejects any build that embeds `org/h2/Driver.class`.
 The H2 gates cover the Stage 3 JDBC bridge, the Stage 5 product path from a
 vault-backed datasource through retained-result paging and cancellation, and
 the Stage 7B Community path through real `IPlugin`, `IDbMetaData`,
-`ISqlBuilder`, and ANTLR parser implementations. The Stage 7C-7I product gate
+`ISqlBuilder`, and ANTLR parser implementations. The Stage 7C-7J product gate
 repeats those calls through encrypted datasource storage and Core services,
 including forced-read-only schema, object, relation, and programmability
 metadata session cleanup plus datasource-free parsing, validation, and
-formatting. H2
-remains an external test driver rather than a runtime dependency of either Java
-classpath.
+formatting, plus datasource-bound table and column completion. H2 remains an
+external test driver rather than a runtime dependency of either Java classpath.
+The Stage 7J completion workbench also passes Playwright visual acceptance at
+desktop `1440x1000` and mobile `390x844` viewports, with no overlapping or
+out-of-bounds content, horizontal page scrolling, or text overflow.
 
 Build and run only the fixed Community H2 compatibility gate with:
 
@@ -171,7 +179,7 @@ make check-contracts
 ```
 
 Build the Java engine, fixed Community classpath, and shared frontend, then run
-the Web product host with the Stage 7C-7I services enabled:
+the Web product host with the Stage 7C-7J services enabled:
 
 ```bash
 make java community-h2-classpath frontend

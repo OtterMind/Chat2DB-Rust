@@ -415,7 +415,14 @@ export interface CommunityExplorerProps {
   databaseType: string;
   onDatabaseTypeChange: (databaseType: string) => void;
   onParserAvailabilityChange: (available: boolean) => void;
+  onCompletionContextChange: (context: CommunityCompletionContext) => void;
   onInsertSql: (sql: string) => void;
+}
+
+export interface CommunityCompletionContext {
+  databaseName: string;
+  schemaName: string;
+  refreshGeneration: number;
 }
 
 export function CommunityExplorer({
@@ -425,6 +432,7 @@ export function CommunityExplorer({
   databaseType,
   onDatabaseTypeChange,
   onParserAvailabilityChange,
+  onCompletionContextChange,
   onInsertSql,
 }: CommunityExplorerProps) {
   const [catalog, setCatalog] = useState<CommunityPluginCatalog | null>(null);
@@ -496,6 +504,14 @@ export function CommunityExplorer({
   useEffect(() => { schemaNameRef.current = schemaName; }, [schemaName]);
 
   useEffect(() => {
+    onCompletionContextChange({
+      databaseName,
+      schemaName,
+      refreshGeneration: refreshRevision,
+    });
+  }, [databaseName, onCompletionContextChange, refreshRevision, schemaName]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     const media = window.matchMedia('(max-width: 720px)');
     const syncCollapsedState = () => setMobileCollapsed(media.matches);
@@ -557,6 +573,7 @@ export function CommunityExplorer({
     const currentDatabaseName = scopeChanged ? '' : databaseNameRef.current;
     if (scopeChanged) {
       databaseNameRef.current = '';
+      onCompletionContextChange({ databaseName: '', schemaName: '', refreshGeneration: refreshRevision });
       setDatabases([]);
       setDatabaseName('');
       setSchemas([]);
@@ -575,6 +592,11 @@ export function CommunityExplorer({
       setDatabases(response.items);
       const nextDatabaseName = selectCommunityItem(response.items, currentDatabaseName)?.name ?? '';
       databaseNameRef.current = nextDatabaseName;
+      onCompletionContextChange({
+        databaseName: nextDatabaseName,
+        schemaName: '',
+        refreshGeneration: refreshRevision,
+      });
       setDatabaseName(nextDatabaseName);
     }).catch((requestError: unknown) => {
       if (!isAbortError(requestError)) setError(messageFromError(requestError));
@@ -582,7 +604,7 @@ export function CommunityExplorer({
       if (!controller.signal.aborted) setLoadingDatabases(false);
     });
     return () => controller.abort();
-  }, [client, databaseScopeKey, databaseType, datasource, refreshRevision]);
+  }, [client, databaseScopeKey, databaseType, datasource, onCompletionContextChange, refreshRevision]);
 
   useEffect(() => {
     const scopeChanged = schemaScopeRef.current !== schemaScopeKey;
@@ -590,6 +612,7 @@ export function CommunityExplorer({
     const currentSchemaName = scopeChanged ? '' : schemaNameRef.current;
     if (scopeChanged) {
       schemaNameRef.current = '';
+      onCompletionContextChange({ databaseName, schemaName: '', refreshGeneration: refreshRevision });
       setSchemas([]);
       setSchemaName('');
       setNamespace(EMPTY_NAMESPACE);
@@ -613,6 +636,11 @@ export function CommunityExplorer({
       const nextSchemaName = (current ?? preferred ?? selectCommunityItem(response.items))?.name
         ?? '';
       schemaNameRef.current = nextSchemaName;
+      onCompletionContextChange({
+        databaseName,
+        schemaName: nextSchemaName,
+        refreshGeneration: refreshRevision,
+      });
       setSchemaName(nextSchemaName);
     }).catch((requestError: unknown) => {
       if (!isAbortError(requestError)) setError(messageFromError(requestError));
@@ -620,7 +648,15 @@ export function CommunityExplorer({
       if (!controller.signal.aborted) setLoadingSchemas(false);
     });
     return () => controller.abort();
-  }, [client, databaseName, databaseType, datasource, refreshRevision, schemaScopeKey]);
+  }, [
+    client,
+    databaseName,
+    databaseType,
+    datasource,
+    onCompletionContextChange,
+    refreshRevision,
+    schemaScopeKey,
+  ]);
 
   useEffect(() => {
     const scopeChanged = namespaceScopeRef.current !== namespaceScopeKey;
@@ -711,6 +747,37 @@ export function CommunityExplorer({
     setOpenGroups((current) => ({ ...current, [group]: !current[group] }));
   };
 
+  const selectDatabaseName = (nextDatabaseName: string) => {
+    onCompletionContextChange({
+      databaseName: nextDatabaseName,
+      schemaName: '',
+      refreshGeneration: refreshRevision,
+    });
+    setDatabaseName(nextDatabaseName);
+  };
+
+  const selectSchemaName = (nextSchemaName: string) => {
+    onCompletionContextChange({
+      databaseName,
+      schemaName: nextSchemaName,
+      refreshGeneration: refreshRevision,
+    });
+    setSchemaName(nextSchemaName);
+  };
+
+  const refreshObjects = () => {
+    setCatalogError(null);
+    setError(null);
+    setDetailError(null);
+    const nextRefreshRevision = refreshRevision + 1;
+    onCompletionContextChange({
+      databaseName,
+      schemaName,
+      refreshGeneration: nextRefreshRevision,
+    });
+    setRefreshRevision(nextRefreshRevision);
+  };
+
   const submitLookup = (event: FormEvent) => {
     event.preventDefault();
     const name = lookupName.trim();
@@ -797,12 +864,7 @@ export function CommunityExplorer({
           <button
             className="icon-button compact-button"
             type="button"
-            onClick={() => {
-              setCatalogError(null);
-              setError(null);
-              setDetailError(null);
-              setRefreshRevision((revision) => revision + 1);
-            }}
+            onClick={refreshObjects}
             disabled={!ready}
             aria-label="Retry and refresh objects"
             title="Retry and refresh objects"
@@ -815,8 +877,8 @@ export function CommunityExplorer({
         <>
           <div className="explorer-selectors">
             <label><span>Plugin</span><select value={databaseType} onChange={(event) => onDatabaseTypeChange(event.target.value)}>{databaseType ? null : <option value="" disabled>Select plugin</option>}{plugins.map((plugin) => <option value={plugin.databaseType} key={plugin.databaseType}>{plugin.name}</option>)}</select></label>
-            <label><span>Database</span><select value={databaseName} onChange={(event) => setDatabaseName(event.target.value)} disabled={loadingScope || databases.length === 0}>{databases.map((database) => <option value={database.name} key={database.name}>{database.name}</option>)}</select></label>
-            <label><span>Schema</span><select value={schemaName} onChange={(event) => setSchemaName(event.target.value)} disabled={loadingScope || schemas.length === 0}>{schemas.map((schema) => <option value={schema.name} key={`${schema.databaseName}:${schema.name}`}>{schema.name}</option>)}</select></label>
+            <label><span>Database</span><select value={databaseName} onChange={(event) => selectDatabaseName(event.target.value)} disabled={loadingScope || databases.length === 0}>{databases.map((database) => <option value={database.name} key={database.name}>{database.name}</option>)}</select></label>
+            <label><span>Schema</span><select value={schemaName} onChange={(event) => selectSchemaName(event.target.value)} disabled={loadingScope || schemas.length === 0}>{schemas.map((schema) => <option value={schema.name} key={`${schema.databaseName}:${schema.name}`}>{schema.name}</option>)}</select></label>
           </div>
 
           <div className="object-tree" aria-busy={loadingNamespace}>

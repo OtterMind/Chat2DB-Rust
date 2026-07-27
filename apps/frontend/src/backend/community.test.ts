@@ -16,6 +16,7 @@ import type {
   CommunityProcedureParameterList,
   CommunitySchemaList,
   CommunitySqlAnalysis,
+  CommunitySqlCompletion,
   CommunitySqlValidation,
   CommunityTableColumnList,
   CommunityTableIndexList,
@@ -26,6 +27,7 @@ import type {
   GetCommunityFunctionRequest,
   GetCommunityProcedureRequest,
   GetCommunityTriggerRequest,
+  CompleteCommunitySqlRequest,
   FormatCommunitySqlRequest,
   ListCommunityColumnsRequest,
   ListCommunityDatabasesRequest,
@@ -143,6 +145,23 @@ const formatSqlRequest = {
   databaseType: 'H2',
   sql: 'select 1',
 } satisfies FormatCommunitySqlRequest;
+
+const completeSqlRequest = {
+  datasourceId: 'datasource-1',
+  databaseType: 'H2',
+  databaseName: 'inventory',
+  schemaName: 'APP',
+  sql: 'select * fr',
+  cursorUtf16: 11,
+  minPrefixLength: 0,
+  needFullName: false,
+  keywordCase: 'UPPER',
+  activeSnippetSlot: {
+    type: 'SELECT_FUNCTION',
+    replaceStartUtf16: 7,
+    replaceEndUtf16: 11,
+  },
+} satisfies CompleteCommunitySqlRequest;
 
 const catalog = {
   sourceCommit: 'f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7',
@@ -385,6 +404,49 @@ const validation = {
 const formattedSql = {
   sql: 'SELECT\n  1',
 } satisfies CommunityFormattedSql;
+const completion = {
+  status: 'SUCCESS',
+  replaceStartUtf16: 9,
+  replaceEndUtf16: 11,
+  candidates: [{
+    id: 'keyword:FROM',
+    label: 'FROM',
+    type: 'KEYWORD',
+    insertText: 'FROM',
+    insertType: 'PLAIN_TEXT',
+    detail: 'keyword',
+    description: 'SQL keyword',
+    dataType: '',
+    objectType: '',
+    comment: '',
+    datasourceName: '',
+    databaseName: 'inventory',
+    schemaName: 'APP',
+    tableName: '',
+    tableAlias: '',
+    columnName: '',
+    objectName: '',
+    sortText: 'FROM',
+    snippetSlots: [],
+  }],
+  editorHints: [{
+    type: 'INSERT_VALUE',
+    statementRange: {
+      startLineNumber: 1,
+      startColumn: 1,
+      endLineNumber: 1,
+      endColumn: 12,
+    },
+    items: [{
+      rowIndex: 0,
+      columnIndex: 0,
+      fieldName: 'ID',
+      fieldType: 'BIGINT',
+      label: 'ID',
+      active: true,
+    }],
+  }],
+} satisfies CommunitySqlCompletion;
 
 const responses = [
   catalog,
@@ -409,6 +471,7 @@ const responses = [
   analysis,
   validation,
   formattedSql,
+  completion,
 ] as const;
 
 function jsonResponse(value: unknown): Response {
@@ -456,6 +519,7 @@ describe('Community backend adapter parity', () => {
       await client.parseCommunitySql(parseSqlRequest),
       await client.validateCommunitySql(validateSqlRequest),
       await client.formatCommunitySql(formatSqlRequest),
+      await client.completeCommunitySql(completeSqlRequest),
     ];
 
     expect(received).toEqual(responses);
@@ -560,6 +624,7 @@ describe('Community backend adapter parity', () => {
       { path: '/api/v1/community/sql/parse', method: 'POST', body: parseSqlRequest },
       { path: '/api/v1/community/sql/validate', method: 'POST', body: validateSqlRequest },
       { path: '/api/v1/community/sql/format', method: 'POST', body: formatSqlRequest },
+      { path: '/api/v1/community/sql/complete', method: 'POST', body: completeSqlRequest },
     ]);
   });
 
@@ -597,6 +662,7 @@ describe('Community backend adapter parity', () => {
       await client.parseCommunitySql(parseSqlRequest),
       await client.validateCommunitySql(validateSqlRequest),
       await client.formatCommunitySql(formatSqlRequest),
+      await client.completeCommunitySql(completeSqlRequest),
     ];
 
     expect(received).toEqual(responses);
@@ -631,6 +697,7 @@ describe('Community backend adapter parity', () => {
       { command: 'parse_community_sql', args: { request: parseSqlRequest } },
       { command: 'validate_community_sql', args: { request: validateSqlRequest } },
       { command: 'format_community_sql', args: { request: formatSqlRequest } },
+      { command: 'complete_community_sql', args: { request: completeSqlRequest } },
     ]);
   });
 });

@@ -52,7 +52,7 @@ java "${classpath_sanitizer}" self-test
   -Dmaven.repo.local="${maven_repository}" \
   -Dproject.build.outputTimestamp="${community_output_timestamp}" \
   -f "${server_root}/pom.xml" \
-  -pl chat2db-community-plugins/chat2db-community-h2 \
+  -pl chat2db-community-domain/chat2db-community-domain-core,chat2db-community-plugins/chat2db-community-h2 \
   -am -DskipTests clean install
 
 case "${output_directory}" in
@@ -75,6 +75,9 @@ mkdir -p "${output_directory}"
   -DexcludeGroupIds=com.h2database \
   -DoutputDirectory="${output_directory}"
 
+cp \
+  "${server_root}/chat2db-community-domain/chat2db-community-domain-core/target/chat2db-community-domain-core-${community_version}.jar" \
+  "${output_directory}/"
 cp \
   "${server_root}/chat2db-community-plugins/chat2db-community-h2/target/chat2db-community-h2-${community_version}.jar" \
   "${output_directory}/"

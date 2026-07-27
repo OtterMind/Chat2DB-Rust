@@ -7,13 +7,13 @@ use std::{
 };
 
 use chat2db_contract::{
-    BuildCommunityCreateSchemaRequest, ComponentState, CreateDatasourceRequest,
-    DatasourceConnection, FormatCommunitySqlRequest, GetCommunityFunctionRequest,
-    GetCommunityProcedureRequest, GetCommunityTriggerRequest, ListCommunityColumnsRequest,
-    ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
-    ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
-    ListCommunityTablesRequest, ListCommunityTriggersRequest, ListCommunityViewsRequest,
-    ParseCommunitySqlRequest, ValidateCommunitySqlRequest,
+    BuildCommunityCreateSchemaRequest, CompleteCommunitySqlRequest, ComponentState,
+    CreateDatasourceRequest, DatasourceConnection, FormatCommunitySqlRequest,
+    GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
+    ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityFunctionsRequest,
+    ListCommunityIndexesRequest, ListCommunityProceduresRequest, ListCommunitySchemasRequest,
+    ListCommunityTableKeysRequest, ListCommunityTablesRequest, ListCommunityTriggersRequest,
+    ListCommunityViewsRequest, ParseCommunitySqlRequest, ValidateCommunitySqlRequest,
 };
 use chat2db_core::{
     AppError, AppErrorKind, Application, RuntimeHost, load_fixed_community_classpath,
@@ -91,6 +91,7 @@ async fn product_services_invoke_the_fixed_community_h2_compatibility_slice() {
     assert!(schemas.items.iter().any(|schema| schema.name == "APP"));
 
     verify_object_metadata(&application, &datasource.id).await;
+    verify_sql_completion(&application, &datasource.id).await;
 
     let analysis = application
         .parse_community_sql(ParseCommunitySqlRequest {
@@ -108,6 +109,71 @@ async fn product_services_invoke_the_fixed_community_h2_compatibility_slice() {
     host.shutdown()
         .await
         .expect("product host must shut down cleanly");
+}
+
+async fn verify_sql_completion(application: &Application, datasource_id: &str) {
+    let databases = application
+        .list_community_databases(ListCommunityDatabasesRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: "H2".to_owned(),
+        })
+        .await
+        .expect("Core must resolve the H2 catalog used by completion");
+    let database_name = databases
+        .items
+        .iter()
+        .find(|database| !database.name.is_empty())
+        .expect("H2 must expose its current catalog")
+        .name
+        .clone();
+
+    let table_sql = "select * from ";
+    let tables = application
+        .complete_community_sql(CompleteCommunitySqlRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: "H2".to_owned(),
+            database_name: database_name.clone(),
+            schema_name: "APP".to_owned(),
+            sql: table_sql.to_owned(),
+            cursor_utf16: utf16_len(table_sql),
+            min_prefix_length: 0,
+            need_full_name: false,
+            keyword_case: "UPPER".to_owned(),
+            active_snippet_slot: None,
+        })
+        .await
+        .expect("Core must expose Community generic table completion");
+    assert_eq!(tables.status, "success");
+    assert!(tables.candidates.iter().any(|candidate| {
+        candidate.label.eq_ignore_ascii_case("items") && candidate.r#type == "TABLE"
+    }));
+
+    let column_sql = "select items. from APP.items";
+    let columns = application
+        .complete_community_sql(CompleteCommunitySqlRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: "H2".to_owned(),
+            database_name,
+            schema_name: "APP".to_owned(),
+            sql: column_sql.to_owned(),
+            cursor_utf16: utf16_len("select items."),
+            min_prefix_length: 0,
+            need_full_name: false,
+            keyword_case: "UPPER".to_owned(),
+            active_snippet_slot: None,
+        })
+        .await
+        .expect("Core must expose Community generic column completion");
+    assert_eq!(columns.status, "success");
+    for expected in ["id", "label"] {
+        assert!(columns.candidates.iter().any(|candidate| {
+            candidate.label.eq_ignore_ascii_case(expected) && candidate.r#type == "COLUMN"
+        }));
+    }
+}
+
+fn utf16_len(value: &str) -> u32 {
+    u32::try_from(value.encode_utf16().count()).expect("test SQL UTF-16 length must fit u32")
 }
 
 async fn create_metadata_fixture(

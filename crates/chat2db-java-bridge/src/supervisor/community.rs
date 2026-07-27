@@ -3,6 +3,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use chat2db_engine_protocol::wire;
@@ -35,6 +36,8 @@ pub const COMMUNITY_SQL_PARSER_CAPABILITY: &str = "community.sql-parser.v1";
 pub const COMMUNITY_SQL_VALIDATION_CAPABILITY: &str = "community.sql-validation.v1";
 /// Formats SQL through the retained Community-compatible `SqlFormatter`.
 pub const COMMUNITY_SQL_FORMATTER_CAPABILITY: &str = "community.sql-formatter.v1";
+/// Completes SQL through the retained Community completion engines.
+pub const COMMUNITY_SQL_COMPLETION_CAPABILITY: &str = "community.sql-completion.v1";
 
 pub(super) const COMMUNITY_CLASSPATH_ENV: &str = "CHAT2DB_COMMUNITY_CLASSPATH_DIR";
 pub(super) const COMMUNITY_SOURCE_COMMIT_ENV: &str = "CHAT2DB_COMMUNITY_SOURCE_COMMIT";
@@ -46,10 +49,13 @@ const MAX_SOURCE_COMMIT_BYTES: usize = wire::CommunityByteLimit::MaxSourceCommit
 const MAX_COMMENT_BYTES: usize = wire::CommunityByteLimit::MaxCommentBytes as usize;
 const MAX_SQL_FORMATTER_COMPLEXITY_UNITS: usize =
     wire::CommunitySqlFormatterLimit::MaxComplexityUnits as usize;
+const MAX_SQL_COMPLETION_PREFIX_LENGTH: u32 =
+    wire::CommunitySqlCompletionPrefixLimit::MaxMinPrefixLength as u32;
 const MAX_SQL_BYTES: usize = wire::JdbcProtocolLimit::MaxSqlBytes as usize;
 const MAX_SCALAR_BYTES: usize = wire::JdbcProtocolLimit::MaxScalarBytes as usize;
 const MAX_PROTOCOL_ID_BYTES: usize = wire::JdbcProtocolLimit::MaxDriverIdBytes as usize;
 const MAX_PATH_BYTES: usize = wire::JdbcProtocolLimit::MaxPathBytes as usize;
+static NEXT_SQL_COMPLETION_DATASOURCE_SCOPE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
 struct CommunityArtifact {
@@ -781,6 +787,100 @@ pub struct CommunitySqlValidation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommunityFormattedSql {
     pub sql: String,
+}
+
+/// Session-bound SQL-completion input without product storage identifiers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompleteCommunitySqlRequest {
+    pub database_type: String,
+    pub database_name: String,
+    pub schema_name: String,
+    pub datasource_name: String,
+    pub sql: String,
+    pub cursor_utf16: u32,
+    pub min_prefix_length: u32,
+    pub need_full_name: bool,
+    pub keyword_case: String,
+    pub active_snippet_slot: Option<CommunitySqlCompletionActiveSnippetSlot>,
+    pub transaction_id: Option<String>,
+}
+
+/// Active snippet edit range supplied by the editor, in UTF-16 code units.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommunitySqlCompletionActiveSnippetSlot {
+    pub slot_type: String,
+    pub replace_start_utf16: u32,
+    pub replace_end_utf16: u32,
+}
+
+/// One SQL-completion result projected out of the Community runtime.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommunitySqlCompletion {
+    pub status: String,
+    pub replace_start_utf16: u32,
+    pub replace_end_utf16: u32,
+    pub candidates: Vec<CommunitySqlCompletionCandidate>,
+    pub editor_hints: Vec<CommunitySqlCompletionEditorHint>,
+    pub reason_code: Option<String>,
+}
+
+/// One bounded SQL-completion candidate.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommunitySqlCompletionCandidate {
+    pub id: Option<String>,
+    pub label: String,
+    pub candidate_type: String,
+    pub insert_text: Option<String>,
+    pub insert_type: String,
+    pub replace_start_utf16: Option<u32>,
+    pub replace_end_utf16: Option<u32>,
+    pub detail: Option<String>,
+    pub description: Option<String>,
+    pub data_type: Option<String>,
+    pub object_type: Option<String>,
+    pub comment: Option<String>,
+    pub datasource_name: Option<String>,
+    pub database_name: Option<String>,
+    pub schema_name: Option<String>,
+    pub table_name: Option<String>,
+    pub table_alias: Option<String>,
+    pub column_name: Option<String>,
+    pub object_name: Option<String>,
+    pub parameter_mode: Option<String>,
+    pub sort_rank: Option<i32>,
+    pub sort_text: Option<String>,
+    pub snippet_slots: Vec<String>,
+}
+
+/// One Community editor hint and its bounded items.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommunitySqlCompletionEditorHint {
+    pub hint_type: String,
+    pub statement_range: Option<CommunitySqlCompletionRange>,
+    pub row_range: Option<CommunitySqlCompletionRange>,
+    pub value_range: Option<CommunitySqlCompletionRange>,
+    pub items: Vec<CommunitySqlCompletionEditorHintItem>,
+}
+
+/// One item inside a Community editor hint.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommunitySqlCompletionEditorHintItem {
+    pub row_index: u32,
+    pub column_index: u32,
+    pub field_name: Option<String>,
+    pub field_type: Option<String>,
+    pub label: Option<String>,
+    pub range: Option<CommunitySqlCompletionRange>,
+    pub active: bool,
+}
+
+/// One-based line and UTF-16-column range returned by Community.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommunitySqlCompletionRange {
+    pub start_line_number: u32,
+    pub start_column: u32,
+    pub end_line_number: u32,
+    pub end_column: u32,
 }
 
 /// Client bound to one validated Java engine generation.
@@ -1812,6 +1912,94 @@ impl CommunityClient {
         Ok(formatted.into())
     }
 
+    /// Completes SQL through Community using one claimed read-only JDBC session.
+    ///
+    /// The product datasource identifier never crosses this boundary. A fresh,
+    /// non-zero monotonic scope isolates Community's process-global caches.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a session from another engine,
+    /// completion/JDBC failure, timeout, or an invalid response.
+    pub async fn complete_sql(
+        &self,
+        session: &Session,
+        request: CompleteCommunitySqlRequest,
+    ) -> Result<CommunitySqlCompletion, BridgeError> {
+        let CompleteCommunitySqlRequest {
+            database_type,
+            database_name,
+            schema_name,
+            datasource_name,
+            sql,
+            cursor_utf16,
+            min_prefix_length,
+            need_full_name,
+            keyword_case,
+            active_snippet_slot,
+            transaction_id,
+        } = request;
+        validate_database_type(&database_type)?;
+        validate_utf8(&database_name, MAX_SCALAR_BYTES, "database name")?;
+        validate_utf8(&schema_name, MAX_SCALAR_BYTES, "schema name")?;
+        validate_utf8(&datasource_name, MAX_SCALAR_BYTES, "datasource name")?;
+        validate_non_blank_utf8(&sql, MAX_SQL_BYTES, "SQL")?;
+        let layout = SqlUtf16Layout::new(&sql)?;
+        if cursor_utf16 > layout.length {
+            return Err(BridgeError::InvalidRequest(format!(
+                "SQL completion cursor {cursor_utf16} exceeds the {} UTF-16-unit SQL length",
+                layout.length
+            )));
+        }
+        validate_completion_prefix_length(min_prefix_length)?;
+        let keyword_case = normalize_keyword_case(&keyword_case)?;
+        let active_snippet_slot = active_snippet_slot
+            .as_ref()
+            .map(|slot| completion_active_snippet_slot(slot, layout.length))
+            .transpose()?;
+        validate_metadata_session(&self.binding, session, transaction_id.as_deref())?;
+        let datasource_scope = next_sql_completion_datasource_scope()?;
+
+        let response = self
+            .client
+            .send_bound_request(
+                &self.binding,
+                COMMUNITY_SQL_COMPLETION_CAPABILITY,
+                Some(&session.id),
+                Some(session.state.clone()),
+                wire::client_envelope::Payload::CompleteCommunitySql(
+                    wire::CompleteCommunitySqlRequest {
+                        database_type,
+                        database_name,
+                        schema_name,
+                        datasource_name,
+                        sql,
+                        cursor_utf16,
+                        min_prefix_length,
+                        need_full_name,
+                        keyword_case,
+                        active_snippet_slot,
+                        transaction_id,
+                        datasource_scope,
+                    },
+                ),
+                PendingLane::FatalOnUnknown,
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::CommunitySqlCompletion(completion)) =
+            response.payload
+        else {
+            return self
+                .client
+                .protocol_violation("expected Community SQL-completion response")
+                .await;
+        };
+        if let Err(message) = validate_completion_for_sql(&completion, &layout) {
+            return self.client.protocol_violation(message).await;
+        }
+        Ok(completion.into())
+    }
+
     #[must_use]
     pub const fn generation(&self) -> u64 {
         self.binding.generation
@@ -2192,6 +2380,90 @@ impl From<wire::CommunityFormattedSql> for CommunityFormattedSql {
     }
 }
 
+impl From<wire::CommunitySqlCompletion> for CommunitySqlCompletion {
+    fn from(completion: wire::CommunitySqlCompletion) -> Self {
+        Self {
+            status: completion.status,
+            replace_start_utf16: completion.replace_start_utf16,
+            replace_end_utf16: completion.replace_end_utf16,
+            candidates: completion.candidates.into_iter().map(Into::into).collect(),
+            editor_hints: completion
+                .editor_hints
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            reason_code: completion.reason_code,
+        }
+    }
+}
+
+impl From<wire::CommunitySqlCompletionCandidate> for CommunitySqlCompletionCandidate {
+    fn from(candidate: wire::CommunitySqlCompletionCandidate) -> Self {
+        Self {
+            id: candidate.id,
+            label: candidate.label,
+            candidate_type: candidate.r#type,
+            insert_text: candidate.insert_text,
+            insert_type: candidate.insert_type,
+            replace_start_utf16: candidate.replace_start_utf16,
+            replace_end_utf16: candidate.replace_end_utf16,
+            detail: candidate.detail,
+            description: candidate.description,
+            data_type: candidate.data_type,
+            object_type: candidate.object_type,
+            comment: candidate.comment,
+            datasource_name: candidate.datasource_name,
+            database_name: candidate.database_name,
+            schema_name: candidate.schema_name,
+            table_name: candidate.table_name,
+            table_alias: candidate.table_alias,
+            column_name: candidate.column_name,
+            object_name: candidate.object_name,
+            parameter_mode: candidate.parameter_mode,
+            sort_rank: candidate.sort_rank,
+            sort_text: candidate.sort_text,
+            snippet_slots: candidate.snippet_slots,
+        }
+    }
+}
+
+impl From<wire::CommunitySqlCompletionEditorHint> for CommunitySqlCompletionEditorHint {
+    fn from(hint: wire::CommunitySqlCompletionEditorHint) -> Self {
+        Self {
+            hint_type: hint.r#type,
+            statement_range: hint.statement_range.map(Into::into),
+            row_range: hint.row_range.map(Into::into),
+            value_range: hint.value_range.map(Into::into),
+            items: hint.items.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<wire::CommunitySqlCompletionEditorHintItem> for CommunitySqlCompletionEditorHintItem {
+    fn from(item: wire::CommunitySqlCompletionEditorHintItem) -> Self {
+        Self {
+            row_index: item.row_index,
+            column_index: item.column_index,
+            field_name: item.field_name,
+            field_type: item.field_type,
+            label: item.label,
+            range: item.range.map(Into::into),
+            active: item.active,
+        }
+    }
+}
+
+impl From<wire::CommunitySqlCompletionRange> for CommunitySqlCompletionRange {
+    fn from(range: wire::CommunitySqlCompletionRange) -> Self {
+        Self {
+            start_line_number: range.start_line_number,
+            start_column: range.start_column,
+            end_line_number: range.end_line_number,
+            end_column: range.end_column,
+        }
+    }
+}
+
 impl From<wire::CommunityParsedStatement> for CommunityParsedStatement {
     fn from(statement: wire::CommunityParsedStatement) -> Self {
         Self {
@@ -2216,6 +2488,214 @@ fn validate_metadata_session(
         ));
     }
     Ok(())
+}
+
+fn next_sql_completion_datasource_scope() -> Result<u64, BridgeError> {
+    NEXT_SQL_COMPLETION_DATASOURCE_SCOPE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, next_java_long_scope)
+        .map_err(|_| {
+            BridgeError::InvalidRequest(
+                "Community SQL-completion datasource scope exhausted".to_owned(),
+            )
+        })
+}
+
+fn next_java_long_scope(scope: u64) -> Option<u64> {
+    if i64::try_from(scope).is_ok() {
+        Some(scope + 1)
+    } else {
+        None
+    }
+}
+
+fn normalize_keyword_case(value: &str) -> Result<String, BridgeError> {
+    validate_non_blank_utf8(value, MAX_SCALAR_BYTES, "SQL completion keyword case")?;
+    match value.trim().to_ascii_uppercase().as_str() {
+        "UPPER" => Ok("UPPER".to_owned()),
+        "LOWER" => Ok("LOWER".to_owned()),
+        _ => Err(BridgeError::InvalidRequest(
+            "SQL completion keyword case must be UPPER or LOWER".to_owned(),
+        )),
+    }
+}
+
+fn validate_completion_prefix_length(value: u32) -> Result<(), BridgeError> {
+    if value > MAX_SQL_COMPLETION_PREFIX_LENGTH {
+        return Err(BridgeError::InvalidRequest(format!(
+            "SQL completion minimum prefix length cannot exceed {MAX_SQL_COMPLETION_PREFIX_LENGTH}"
+        )));
+    }
+    Ok(())
+}
+
+fn completion_active_snippet_slot(
+    slot: &CommunitySqlCompletionActiveSnippetSlot,
+    sql_utf16_length: u32,
+) -> Result<wire::CommunitySqlCompletionActiveSnippetSlot, BridgeError> {
+    validate_non_blank_utf8(
+        &slot.slot_type,
+        MAX_SCALAR_BYTES,
+        "SQL completion snippet slot type",
+    )?;
+    let slot_type = match slot.slot_type.trim().to_ascii_uppercase().as_str() {
+        "SELECT_FUNCTION" => "SELECT_FUNCTION",
+        "CALL_PROCEDURE" => "CALL_PROCEDURE",
+        "INSERT_COLUMN_LIST" => "INSERT_COLUMN_LIST",
+        _ => {
+            return Err(BridgeError::InvalidRequest(
+                "SQL completion snippet slot type is invalid".to_owned(),
+            ));
+        }
+    };
+    validate_utf16_offset_range(
+        slot.replace_start_utf16,
+        slot.replace_end_utf16,
+        sql_utf16_length,
+        "SQL completion active snippet slot",
+    )
+    .map_err(BridgeError::InvalidRequest)?;
+    Ok(wire::CommunitySqlCompletionActiveSnippetSlot {
+        r#type: slot_type.to_owned(),
+        replace_start_utf16: slot.replace_start_utf16,
+        replace_end_utf16: slot.replace_end_utf16,
+    })
+}
+
+fn validate_completion_for_sql(
+    completion: &wire::CommunitySqlCompletion,
+    layout: &SqlUtf16Layout,
+) -> Result<(), String> {
+    validate_utf16_offset_range(
+        completion.replace_start_utf16,
+        completion.replace_end_utf16,
+        layout.length,
+        "Community SQL-completion replacement",
+    )?;
+    for candidate in &completion.candidates {
+        match (candidate.replace_start_utf16, candidate.replace_end_utf16) {
+            (Some(start), Some(end)) => validate_utf16_offset_range(
+                start,
+                end,
+                layout.length,
+                "Community SQL-completion candidate replacement",
+            )?,
+            (None, None) => {}
+            _ => {
+                return Err(
+                    "Community SQL-completion candidate provided only one replacement endpoint"
+                        .to_owned(),
+                );
+            }
+        }
+    }
+    for hint in &completion.editor_hints {
+        for (label, range) in [
+            ("statement", hint.statement_range.as_ref()),
+            ("row", hint.row_range.as_ref()),
+            ("value", hint.value_range.as_ref()),
+        ] {
+            if let Some(range) = range {
+                layout.validate_range(range, label)?;
+            }
+        }
+        for item in &hint.items {
+            if let Some(range) = item.range.as_ref() {
+                layout.validate_range(range, "item")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_utf16_offset_range(
+    start: u32,
+    end: u32,
+    maximum: u32,
+    field: &str,
+) -> Result<(), String> {
+    if start > end {
+        return Err(format!("{field} start exceeds its end"));
+    }
+    if end > maximum {
+        return Err(format!(
+            "{field} end {end} exceeds the {maximum}-unit UTF-16 SQL length"
+        ));
+    }
+    Ok(())
+}
+
+struct SqlUtf16Layout {
+    length: u32,
+    line_lengths: Vec<u32>,
+}
+
+impl SqlUtf16Layout {
+    fn new(sql: &str) -> Result<Self, BridgeError> {
+        let mut length = 0_u32;
+        let mut current_line = 0_u32;
+        let mut line_lengths = Vec::new();
+        for character in sql.chars() {
+            let units = u32::try_from(character.len_utf16()).map_err(|_| {
+                BridgeError::InvalidRequest("SQL UTF-16 length is not representable".to_owned())
+            })?;
+            length = length.checked_add(units).ok_or_else(|| {
+                BridgeError::InvalidRequest("SQL UTF-16 length is not representable".to_owned())
+            })?;
+            if character == '\n' {
+                line_lengths.push(current_line);
+                current_line = 0;
+            } else {
+                current_line = current_line.checked_add(units).ok_or_else(|| {
+                    BridgeError::InvalidRequest(
+                        "SQL UTF-16 line length is not representable".to_owned(),
+                    )
+                })?;
+            }
+        }
+        line_lengths.push(current_line);
+        Ok(Self {
+            length,
+            line_lengths,
+        })
+    }
+
+    fn validate_range(
+        &self,
+        range: &wire::CommunitySqlCompletionRange,
+        label: &str,
+    ) -> Result<(), String> {
+        let start = self.validate_position(
+            range.start_line_number,
+            range.start_column,
+            &format!("Community SQL-completion {label} range start"),
+        )?;
+        let end = self.validate_position(
+            range.end_line_number,
+            range.end_column,
+            &format!("Community SQL-completion {label} range end"),
+        )?;
+        if start > end {
+            return Err(format!(
+                "Community SQL-completion {label} range start exceeds its end"
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_position(&self, line: u32, column: u32, field: &str) -> Result<(u32, u32), String> {
+        let line_index = line
+            .checked_sub(1)
+            .and_then(|index| usize::try_from(index).ok())
+            .filter(|index| *index < self.line_lengths.len())
+            .ok_or_else(|| format!("{field} line {line} is outside the SQL"))?;
+        let maximum_column = self.line_lengths[line_index].saturating_add(1);
+        if column == 0 || column > maximum_column {
+            return Err(format!(
+                "{field} column {column} exceeds the UTF-16 line boundary {maximum_column}"
+            ));
+        }
+        Ok((line, column))
+    }
 }
 
 fn metadata_scope_request(
@@ -2599,9 +3079,14 @@ mod tests {
     use super::{
         CommunityClasspath, CommunityForeignKey, CommunityFormattedSql, CommunityFunction,
         CommunityFunctionParameter, CommunityPrimaryKey, CommunityProcedure,
-        CommunityProcedureParameter, CommunitySqlDiagnostic, CommunitySqlValidation,
-        CommunityTrigger, MAX_SCALAR_BYTES, MAX_SQL_FORMATTER_COMPLEXITY_UNITS,
-        validate_non_blank_utf8, validate_sql_formatter_complexity,
+        CommunityProcedureParameter, CommunitySqlCompletion, CommunitySqlCompletionCandidate,
+        CommunitySqlCompletionEditorHint, CommunitySqlCompletionEditorHintItem,
+        CommunitySqlCompletionRange, CommunitySqlDiagnostic, CommunitySqlValidation,
+        CommunityTrigger, MAX_SCALAR_BYTES, MAX_SQL_COMPLETION_PREFIX_LENGTH,
+        MAX_SQL_FORMATTER_COMPLEXITY_UNITS, SqlUtf16Layout, next_java_long_scope,
+        next_sql_completion_datasource_scope, normalize_keyword_case, validate_completion_for_sql,
+        validate_completion_prefix_length, validate_non_blank_utf8,
+        validate_sql_formatter_complexity,
     };
 
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -2628,6 +3113,188 @@ mod tests {
                 sql: "SELECT\n  1;".to_owned(),
             }
         );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn sql_completion_wire_mapping_preserves_every_field() {
+        let completion = wire::CommunitySqlCompletion {
+            status: "SUCCESS".to_owned(),
+            replace_start_utf16: 2,
+            replace_end_utf16: 4,
+            candidates: vec![wire::CommunitySqlCompletionCandidate {
+                id: Some("column:id".to_owned()),
+                label: "id".to_owned(),
+                r#type: "COLUMN".to_owned(),
+                insert_text: Some("c.id".to_owned()),
+                insert_type: "PLAIN_TEXT".to_owned(),
+                replace_start_utf16: Some(2),
+                replace_end_utf16: Some(4),
+                detail: Some("APP.CUSTOMER.id".to_owned()),
+                description: Some("customer identifier".to_owned()),
+                data_type: Some("BIGINT".to_owned()),
+                object_type: Some("TABLE".to_owned()),
+                comment: Some("primary key".to_owned()),
+                datasource_name: Some("local".to_owned()),
+                database_name: Some("inventory".to_owned()),
+                schema_name: Some("APP".to_owned()),
+                table_name: Some("CUSTOMER".to_owned()),
+                table_alias: Some("c".to_owned()),
+                column_name: Some("id".to_owned()),
+                object_name: Some("CUSTOMER".to_owned()),
+                parameter_mode: Some("IN".to_owned()),
+                sort_rank: Some(1),
+                sort_text: Some("0001".to_owned()),
+                snippet_slots: vec!["INSERT_COLUMN_LIST".to_owned()],
+            }],
+            editor_hints: vec![wire::CommunitySqlCompletionEditorHint {
+                r#type: "INSERT_VALUE".to_owned(),
+                statement_range: Some(wire::CommunitySqlCompletionRange {
+                    start_line_number: 1,
+                    start_column: 1,
+                    end_line_number: 1,
+                    end_column: 5,
+                }),
+                row_range: None,
+                value_range: None,
+                items: vec![wire::CommunitySqlCompletionEditorHintItem {
+                    row_index: 0,
+                    column_index: 1,
+                    field_name: Some("id".to_owned()),
+                    field_type: Some("BIGINT".to_owned()),
+                    label: Some("identifier".to_owned()),
+                    range: None,
+                    active: true,
+                }],
+            }],
+            reason_code: Some("ok".to_owned()),
+        };
+
+        assert_eq!(
+            CommunitySqlCompletion::from(completion),
+            CommunitySqlCompletion {
+                status: "SUCCESS".to_owned(),
+                replace_start_utf16: 2,
+                replace_end_utf16: 4,
+                candidates: vec![CommunitySqlCompletionCandidate {
+                    id: Some("column:id".to_owned()),
+                    label: "id".to_owned(),
+                    candidate_type: "COLUMN".to_owned(),
+                    insert_text: Some("c.id".to_owned()),
+                    insert_type: "PLAIN_TEXT".to_owned(),
+                    replace_start_utf16: Some(2),
+                    replace_end_utf16: Some(4),
+                    detail: Some("APP.CUSTOMER.id".to_owned()),
+                    description: Some("customer identifier".to_owned()),
+                    data_type: Some("BIGINT".to_owned()),
+                    object_type: Some("TABLE".to_owned()),
+                    comment: Some("primary key".to_owned()),
+                    datasource_name: Some("local".to_owned()),
+                    database_name: Some("inventory".to_owned()),
+                    schema_name: Some("APP".to_owned()),
+                    table_name: Some("CUSTOMER".to_owned()),
+                    table_alias: Some("c".to_owned()),
+                    column_name: Some("id".to_owned()),
+                    object_name: Some("CUSTOMER".to_owned()),
+                    parameter_mode: Some("IN".to_owned()),
+                    sort_rank: Some(1),
+                    sort_text: Some("0001".to_owned()),
+                    snippet_slots: vec!["INSERT_COLUMN_LIST".to_owned()],
+                }],
+                editor_hints: vec![CommunitySqlCompletionEditorHint {
+                    hint_type: "INSERT_VALUE".to_owned(),
+                    statement_range: Some(CommunitySqlCompletionRange {
+                        start_line_number: 1,
+                        start_column: 1,
+                        end_line_number: 1,
+                        end_column: 5,
+                    }),
+                    row_range: None,
+                    value_range: None,
+                    items: vec![CommunitySqlCompletionEditorHintItem {
+                        row_index: 0,
+                        column_index: 1,
+                        field_name: Some("id".to_owned()),
+                        field_type: Some("BIGINT".to_owned()),
+                        label: Some("identifier".to_owned()),
+                        range: None,
+                        active: true,
+                    }],
+                }],
+                reason_code: Some("ok".to_owned()),
+            }
+        );
+    }
+
+    #[test]
+    fn sql_completion_validates_utf16_offsets_and_editor_ranges() {
+        let layout = SqlUtf16Layout::new("a\u{1f600}\n中")
+            .expect("bounded SQL must have a representable UTF-16 layout");
+        assert_eq!(layout.length, 5);
+        assert_eq!(layout.line_lengths, vec![3, 1]);
+        let mut completion = wire::CommunitySqlCompletion {
+            status: "SUCCESS".to_owned(),
+            replace_start_utf16: 1,
+            replace_end_utf16: 3,
+            candidates: vec![wire::CommunitySqlCompletionCandidate {
+                replace_start_utf16: Some(1),
+                replace_end_utf16: Some(3),
+                ..Default::default()
+            }],
+            editor_hints: vec![wire::CommunitySqlCompletionEditorHint {
+                statement_range: Some(wire::CommunitySqlCompletionRange {
+                    start_line_number: 1,
+                    start_column: 2,
+                    end_line_number: 2,
+                    end_column: 2,
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        validate_completion_for_sql(&completion, &layout)
+            .expect("UTF-16 offsets and one-based editor range must pass");
+
+        completion.replace_end_utf16 = 6;
+        assert!(
+            validate_completion_for_sql(&completion, &layout)
+                .expect_err("offset beyond UTF-16 SQL length must fail")
+                .contains("UTF-16 SQL length")
+        );
+        completion.replace_end_utf16 = 3;
+        completion.editor_hints[0]
+            .statement_range
+            .as_mut()
+            .expect("test range must exist")
+            .end_column = 3;
+        assert!(
+            validate_completion_for_sql(&completion, &layout)
+                .expect_err("column beyond the UTF-16 line boundary must fail")
+                .contains("line boundary")
+        );
+    }
+
+    #[test]
+    fn sql_completion_normalizes_options_and_allocates_nonzero_monotonic_scopes() {
+        assert_eq!(normalize_keyword_case(" upper ").unwrap(), "UPPER");
+        assert_eq!(normalize_keyword_case("Lower").unwrap(), "LOWER");
+        assert!(normalize_keyword_case("title").is_err());
+        validate_completion_prefix_length(MAX_SQL_COMPLETION_PREFIX_LENGTH)
+            .expect("exact prefix limit must pass");
+        assert!(validate_completion_prefix_length(MAX_SQL_COMPLETION_PREFIX_LENGTH + 1).is_err());
+
+        let first = next_sql_completion_datasource_scope().expect("scope must allocate");
+        let second = next_sql_completion_datasource_scope().expect("next scope must allocate");
+        assert_ne!(first, 0);
+        assert_eq!(second, first + 1);
+    }
+
+    #[test]
+    fn sql_completion_scope_never_exceeds_a_positive_java_long() {
+        let maximum = i64::MAX.unsigned_abs();
+        assert_eq!(next_java_long_scope(maximum), Some(maximum + 1));
+        assert_eq!(next_java_long_scope(maximum + 1), None);
+        assert_eq!(next_java_long_scope(u64::MAX), None);
     }
 
     #[test]
