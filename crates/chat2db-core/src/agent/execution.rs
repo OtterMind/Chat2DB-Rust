@@ -353,8 +353,9 @@ impl Application {
                                 StorageError::AgentRunNotFound(missing_run_id),
                             ))
                         })?;
-                let permission_for_snapshot =
-                    (permission.status == ToolPermissionStatus::Approved).then_some(&permission);
+                let permission_for_snapshot = (permission.status == ToolPermissionStatus::Approved
+                    && run.status == StorageRunStatus::WaitingPermission)
+                    .then_some(&permission);
                 let mut snapshot = snapshot_from_run(run, permission_for_snapshot)
                     .map_err(AgentTransitionFailure::indeterminate)?;
                 snapshot.status = ContractRunStatus::Running;
@@ -2726,20 +2727,33 @@ mod tests {
         application: &Application,
         run_id: &str,
     ) -> AgentRunSnapshot {
-        tokio::time::timeout(Duration::from_secs(2), async {
+        let mut subscription = application
+            .subscribe_agent_run(run_id, None)
+            .await
+            .expect("run subscription opens");
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                let snapshot = application
-                    .agent_run_snapshot(run_id)
+                let event = subscription
+                    .next_event()
                     .await
-                    .expect("snapshot reads");
-                if is_contract_terminal(snapshot.status) {
-                    break snapshot;
+                    .expect("run subscription remains available")
+                    .expect("nonterminal run keeps its event stream open");
+                if matches!(
+                    event.event,
+                    AgentEvent::Completed { .. }
+                        | AgentEvent::Failed { .. }
+                        | AgentEvent::Cancelled { .. }
+                ) {
+                    break;
                 }
-                tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("run reaches a terminal state")
+        .expect("run reaches a terminal state");
+        application
+            .agent_run_snapshot(run_id)
+            .await
+            .expect("terminal snapshot reads")
     }
 
     async fn collect_events(mut subscription: AgentRunSubscription) -> Vec<AgentEventEnvelope> {
@@ -2890,8 +2904,15 @@ mod tests {
             fixture.application.cancel_agent_run(&accepted.run_id),
         );
         cancellation.expect("cancellation is durable");
-        if let Ok(response) = decision {
-            assert_eq!(response.status, AgentPermissionStatus::Approved);
+        match decision {
+            Ok(response) => assert_eq!(response.status, AgentPermissionStatus::Approved),
+            Err(error) => assert!(
+                matches!(
+                    error.api_error().code.as_str(),
+                    "tool_permission_revision_conflict" | "tool_permission_not_executable"
+                ),
+                "unexpected permission decision failure: {error:?}"
+            ),
         }
         let terminal = wait_for_terminal_snapshot(&fixture.application, &accepted.run_id).await;
         assert_eq!(terminal.status, AgentRunStatus::Cancelled);

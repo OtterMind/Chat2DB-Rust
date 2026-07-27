@@ -2446,11 +2446,10 @@ impl Storage {
                 reason: "owning run changed during the permission decision",
             });
         }
+        let decided = load_permission(&transaction, id)?
+            .ok_or_else(|| StorageError::PermissionNotFound(id.to_owned()))?;
         transaction.commit()?;
-        load_permission(&connection, id)?.ok_or_else(|| StorageError::OutcomeUnknown {
-            operation: "decide tool permission",
-            id: id.to_owned(),
-        })
+        Ok(decided)
     }
 
     /// Expires one pending or approved permission and resumes its run.
