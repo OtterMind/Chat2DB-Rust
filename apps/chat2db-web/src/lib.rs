@@ -3,6 +3,7 @@
 mod api;
 mod error;
 mod extract;
+pub mod legacy;
 
 use std::{
     error::Error,
@@ -236,6 +237,212 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let inventory: JdbcDriverList = response_json(response).await;
         assert!(inventory.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn legacy_system_uses_the_community_envelope_without_masking_unknown_api_routes() {
+        let application = router(Application::new());
+        let response = application
+            .clone()
+            .oneshot(request(Method::GET, "/api/system"))
+            .await
+            .expect("router must respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = response_json(response).await;
+        assert_eq!(body["success"], true);
+        assert_eq!(body["data"]["systemUuid"], "chat2db-rust-community");
+        assert!(body["errorCode"].is_null());
+        assert!(body["errorMessage"].is_null());
+
+        let unknown = application
+            .oneshot(request(Method::GET, "/api/legacy/not-implemented"))
+            .await
+            .expect("router must respond");
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        let error: ApiError = response_json(unknown).await;
+        assert_eq!(error.code, "route_not_found");
+    }
+
+    #[tokio::test]
+    async fn legacy_dispatcher_is_transport_neutral_for_desktop_reuse() {
+        let response = crate::legacy::dispatch(
+            &Application::new(),
+            crate::legacy::LegacyDispatchRequest {
+                request_url: "/api/system".to_owned(),
+                method: "get".to_owned(),
+                message: serde_json::Value::Null,
+            },
+        )
+        .await;
+
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"]["systemUuid"], "chat2db-rust-community");
+
+        let missing = crate::legacy::dispatch(
+            &Application::new(),
+            crate::legacy::LegacyDispatchRequest {
+                request_url: "/api/not-implemented".to_owned(),
+                method: "get".to_owned(),
+                message: serde_json::Value::Null,
+            },
+        )
+        .await;
+        assert_eq!(missing["success"], false);
+        assert_eq!(missing["errorCode"], "route_not_found");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn legacy_datasource_routes_cover_crud_without_echoing_connection_secrets() {
+        let directory = TempDir::new().expect("temp directory");
+        let storage =
+            Storage::open(directory.path(), Arc::new(TestVault)).expect("test storage must open");
+        let application = router(Application::with_storage(storage));
+
+        let create_response = application
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/connection/datasource/create",
+                &serde_json::json!({
+                    "alias": "Legacy MySQL",
+                    "url": "jdbc:mysql://localhost:3306/sentinel-database",
+                    "user": "sentinel-user",
+                    "password": "sentinel-password",
+                    "type": "MYSQL",
+                    "driverConfig": {
+                        "jdbcDriver": "mysql",
+                        "jdbcDriverClass": "com.mysql.cj.jdbc.Driver"
+                    },
+                    "environmentId": 1
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        assert_eq!(create_response.status(), StatusCode::OK);
+        let create_text = response_text(create_response).await;
+        for forbidden in [
+            "sentinel-database",
+            "sentinel-user",
+            "sentinel-password",
+            "jdbc:mysql",
+        ] {
+            assert!(
+                !create_text.contains(forbidden),
+                "legacy response leaked {forbidden}"
+            );
+        }
+        let created: serde_json::Value =
+            serde_json::from_str(&create_text).expect("legacy create response must be JSON");
+        assert_eq!(created["success"], true);
+        assert_eq!(created["data"]["alias"], "Legacy MySQL");
+        assert_eq!(created["data"]["type"], "MYSQL");
+        assert_eq!(created["data"]["url"], "");
+        assert_eq!(created["data"]["password"], "");
+        let datasource_id = created["data"]["id"]
+            .as_str()
+            .expect("datasource id must be an opaque string");
+
+        let list_response = application
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/api/connection/datasource/list?pageNo=1&pageSize=20",
+            ))
+            .await
+            .expect("router must respond");
+        let listed: serde_json::Value = response_json(list_response).await;
+        assert_eq!(listed["data"]["total"], 1);
+        assert_eq!(listed["data"]["data"][0]["id"], datasource_id);
+
+        let tree_response = application
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/api/namespaces/tree_list?refresh=true",
+            ))
+            .await
+            .expect("router must respond");
+        let tree: serde_json::Value = response_json(tree_response).await;
+        assert_eq!(tree["data"][0]["type"], "DATA_SOURCE");
+        assert_eq!(tree["data"][0]["data"]["id"], datasource_id);
+
+        let update_uri = "/api/connection/datasource/update";
+        let update_response = application
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                update_uri,
+                &serde_json::json!({
+                    "id": datasource_id,
+                    "alias": "Renamed MySQL"
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        let updated: serde_json::Value = response_json(update_response).await;
+        assert_eq!(updated["success"], true);
+        assert_eq!(updated["data"]["alias"], "Renamed MySQL");
+
+        let delete_uri = format!("/api/connection/datasource?id={datasource_id}");
+        let delete_response = application
+            .clone()
+            .oneshot(dynamic_request(Method::DELETE, &delete_uri))
+            .await
+            .expect("router must respond");
+        let deleted: serde_json::Value = response_json(delete_response).await;
+        assert_eq!(deleted["success"], true);
+
+        let missing_response = application
+            .oneshot(dynamic_request(
+                Method::GET,
+                &format!("/api/connection/datasource?id={datasource_id}"),
+            ))
+            .await
+            .expect("router must respond");
+        assert_eq!(missing_response.status(), StatusCode::OK);
+        let missing: serde_json::Value = response_json(missing_response).await;
+        assert_eq!(missing["success"], false);
+        assert_eq!(missing["errorCode"], "datasource_not_found");
+    }
+
+    #[tokio::test]
+    async fn legacy_metadata_and_preview_failures_keep_the_community_envelope() {
+        let application = router(Application::new());
+        let database_response = application
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/api/rdb/database/list?dataSourceId=missing&type=MYSQL",
+            ))
+            .await
+            .expect("router must respond");
+        assert_eq!(database_response.status(), StatusCode::OK);
+        let database_error: serde_json::Value = response_json(database_response).await;
+        assert_eq!(database_error["success"], false);
+        assert_eq!(database_error["errorCode"], "storage_unavailable");
+
+        let preview_response = application
+            .oneshot(json_request(
+                Method::POST,
+                "/api/rdb/dml/execute_table",
+                &serde_json::json!({
+                    "dataSourceId": "missing",
+                    "databaseName": "inventory",
+                    "schemaName": null,
+                    "tableName": "",
+                    "sql": "DROP TABLE inventory.items",
+                    "pageNo": 1,
+                    "pageSize": 200
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        assert_eq!(preview_response.status(), StatusCode::OK);
+        let preview_error: serde_json::Value = response_json(preview_response).await;
+        assert_eq!(preview_error["success"], false);
+        assert_eq!(preview_error["errorCode"], "invalid_table_preview_request");
     }
 
     #[tokio::test]

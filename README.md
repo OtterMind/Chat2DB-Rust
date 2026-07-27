@@ -269,8 +269,11 @@ cd apps/frontend
 npm run dev
 ```
 
-The Web API listens on `127.0.0.1:4200` by default. The Vite development server
-listens on `127.0.0.1:4210` and proxies `/api` to the Rust runtime.
+The Web API listens on `127.0.0.1:4200` by default. The pinned Community Umi
+development server listens on `127.0.0.1:4210` and proxies `/api` to the Rust
+runtime. Frontend commands export the exact Git tree recorded in
+`scripts/community-frontend.lock.json` into `target/`; they never install into
+or modify the `third_party/chat2db-community` submodule worktree.
 `CHAT2DB_DATA_DIR` selects a profile directory. Omitting
 `CHAT2DB_VAULT_MASTER_KEY` selects the OS credential store. Any non-loopback
 `CHAT2DB_BIND` also requires `CHAT2DB_ACCESS_TOKEN` with at least 32 bytes.

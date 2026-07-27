@@ -18,8 +18,8 @@ use std::{
 
 use chat2db_contract::{
     CancelOperationResponse, ComponentHealth, ComponentState, CreateDatasourceRequest, Datasource,
-    DatasourceList, DatasourceSecretChange, HealthResponse, JdbcDriver, JdbcDriverList,
-    OperationSnapshot, ProductInfo, ResultPage, ResultPageRequest, RuntimeStatus,
+    DatasourceConnection, DatasourceList, DatasourceSecretChange, HealthResponse, JdbcDriver,
+    JdbcDriverList, OperationSnapshot, ProductInfo, ResultPage, ResultPageRequest, RuntimeStatus,
     UpdateDatasourceRequest,
 };
 use chat2db_java_bridge::{
@@ -340,6 +340,39 @@ impl Application {
         JdbcDriverList {
             items: self.inner.drivers.clone(),
         }
+    }
+
+    /// Opens and immediately closes an ephemeral JDBC session without
+    /// persisting the supplied connection descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, driver, or engine errors when the connection cannot
+    /// be established.
+    pub async fn test_datasource_connection(
+        &self,
+        driver_id: &str,
+        connection: DatasourceConnection,
+    ) -> Result<(), AppError> {
+        if driver_id.trim().is_empty() {
+            return Err(AppError::invalid(
+                "invalid_datasource_connection",
+                "driverId cannot be empty",
+            ));
+        }
+        self.require_managed_driver(driver_id)?;
+        let engine = self.require_engine()?;
+        let session = datasource_session::open_datasource_session(
+            &engine,
+            datasource_session::ResolvedDatasourceConnection {
+                driver_id: driver_id.to_owned(),
+                datasource_name: "Connection test".to_owned(),
+                connection,
+            },
+            datasource_session::SessionReadOnly::Configured,
+        )
+        .await?;
+        session.close().await.map_err(AppError::from)
     }
 
     /// Lists secret-free datasource metadata.

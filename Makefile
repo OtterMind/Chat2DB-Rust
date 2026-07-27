@@ -3,7 +3,7 @@
 	community-h2-integration \
 	community-product-h2-integration product-h2-integration mysql-driver-pack \
 	community-product-mysql-integration \
-	frontend-deps frontend desktop generate-contracts check-contracts
+	frontend-deps frontend-source frontend desktop generate-contracts check-contracts
 
 JAVA_ENGINE_JAR := $(CURDIR)/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar
 H2_DRIVER_JAR := $(CURDIR)/java/compat-runtime/target/test-drivers/h2-2.3.232.jar
@@ -77,13 +77,16 @@ community-product-mysql-integration: java community-h2-classpath mysql-driver-pa
 frontend-deps:
 	cd apps/frontend && npm ci
 
+frontend-source: frontend-deps
+	cd apps/frontend && npm run verify-upstream
+
 generate-contracts: frontend-deps
 	./scripts/generate-contracts.sh
 
 check-contracts: frontend-deps
 	./scripts/check-contracts.sh
 
-frontend: frontend-deps check-contracts
+frontend: frontend-source check-contracts
 	cd apps/frontend && npm run typecheck && npm test && npm run build
 
 desktop: frontend

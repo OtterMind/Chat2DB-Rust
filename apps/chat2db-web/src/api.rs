@@ -309,6 +309,7 @@ pub(crate) fn router(application: Application) -> Router {
     let (router, document) = documented_router().split_for_parts();
 
     router
+        .merge(crate::legacy::routes())
         .layer(Extension(Arc::new(document)))
         .with_state(application)
 }

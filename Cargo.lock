@@ -647,6 +647,8 @@ dependencies = [
  "chat2db-core",
  "chat2db-java-bridge",
  "chat2db-local",
+ "chat2db-web",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-runtime",

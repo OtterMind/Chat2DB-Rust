@@ -3,7 +3,6 @@
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "isolatedModules": true,
-    "jsx": "react-jsx",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
@@ -14,5 +13,5 @@
     "target": "ES2022",
     "useDefineForClassFields": true
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src/api.ts", "src/backend", "src/generated"]
 }

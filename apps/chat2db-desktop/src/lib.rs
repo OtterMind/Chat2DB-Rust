@@ -267,6 +267,7 @@ pub fn run() -> Result<i32, DesktopError> {
         .manage(managed_state)
         .invoke_handler(tauri::generate_handler![
             health,
+            legacy_request,
             list_drivers,
             list_community_plugins,
             list_community_schemas,
@@ -402,6 +403,68 @@ fn validate_java_engine_jar(path: &Path) -> Result<(), DesktopError> {
 
 fn api_error(error: &AppError) -> ApiError {
     error.api_error()
+}
+
+#[tauri::command]
+async fn legacy_request(
+    state: State<'_, Arc<DesktopState>>,
+    request: String,
+) -> Result<String, String> {
+    legacy_request_for(&state.application, &request).await
+}
+
+async fn legacy_request_for(application: &Application, request: &str) -> Result<String, String> {
+    let request: serde_json::Value = serde_json::from_str(request)
+        .map_err(|_| "Community desktop request must be valid JSON".to_owned())?;
+    let request = request
+        .as_object()
+        .ok_or_else(|| "Community desktop request must be a JSON object".to_owned())?;
+    let request_url = legacy_request_string(request, "requestUrl")?;
+    let method = legacy_request_string(request, "method")?;
+    let uuid = request
+        .get("uuid")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let action_type = request
+        .get("actionType")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let message = request
+        .get("message")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    let response = chat2db_web::legacy::dispatch(
+        application,
+        chat2db_web::legacy::LegacyDispatchRequest {
+            request_url: request_url.clone(),
+            method: method.clone(),
+            message,
+        },
+    )
+    .await;
+
+    Ok(serde_json::json!({
+        "uuid": uuid,
+        "message": response,
+        "actionType": action_type,
+        "requestUrl": request_url,
+        "method": method,
+        "param": null,
+    })
+    .to_string())
+}
+
+fn legacy_request_string(
+    request: &serde_json::Map<String, serde_json::Value>,
+    field: &'static str,
+) -> Result<String, String> {
+    request
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| format!("Community desktop request requires a non-empty {field}"))
 }
 
 fn parse_after_sequence(value: Option<String>) -> Result<Option<u64>, Box<ApiError>> {
@@ -1271,9 +1334,73 @@ mod tests {
     use super::{
         DesktopError, SubscriptionRegistry, agent_stream_message, build_community_dml_for,
         build_community_namespace_sql_for, complete_community_sql_for, format_community_sql_for,
-        operation_stream_message, parse_after_sequence, start_community_table_preview_for,
-        validate_community_sql_for, validate_java_engine_jar, validate_optional_os_env,
+        legacy_request_for, operation_stream_message, parse_after_sequence,
+        start_community_table_preview_for, validate_community_sql_for, validate_java_engine_jar,
+        validate_optional_os_env,
     };
+
+    #[tokio::test]
+    async fn legacy_request_preserves_the_community_jcef_response_shape() {
+        let response = legacy_request_for(
+            &Application::new(),
+            r#"{
+                "actionType":"execute",
+                "uuid":"request-1",
+                "requestUrl":"/api/system",
+                "method":"get",
+                "message":{}
+            }"#,
+        )
+        .await
+        .expect("legacy request must be serialized");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("legacy response must be JSON");
+
+        assert_eq!(response["uuid"], "request-1");
+        assert_eq!(response["actionType"], "execute");
+        assert_eq!(response["requestUrl"], "/api/system");
+        assert_eq!(response["method"], "get");
+        assert!(response["param"].is_null());
+        assert_eq!(response["message"]["success"], true);
+        assert_eq!(
+            response["message"]["data"]["systemUuid"],
+            "chat2db-rust-community"
+        );
+        assert!(response["message"]["errorCode"].is_null());
+        assert!(response["message"]["errorMessage"].is_null());
+    }
+
+    #[tokio::test]
+    async fn legacy_request_keeps_correlation_fields_for_dispatch_failures() {
+        let response = legacy_request_for(
+            &Application::new(),
+            r#"{
+                "actionType":"execute",
+                "uuid":"request-2",
+                "requestUrl":"/api/not-implemented",
+                "method":"get",
+                "message":null
+            }"#,
+        )
+        .await
+        .expect("dispatch failures use the Community envelope");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("legacy response must be JSON");
+
+        assert_eq!(response["uuid"], "request-2");
+        assert_eq!(response["message"]["success"], false);
+        assert_eq!(response["message"]["errorCode"], "route_not_found");
+    }
+
+    #[tokio::test]
+    async fn legacy_request_rejects_invalid_bridge_payloads_without_echoing_them() {
+        let error = legacy_request_for(&Application::new(), "sentinel-secret")
+            .await
+            .expect_err("invalid JSON must fail at the IPC boundary");
+
+        assert_eq!(error, "Community desktop request must be valid JSON");
+        assert!(!error.contains("sentinel-secret"));
+    }
 
     #[tokio::test]
     async fn namespace_builder_command_maps_unavailable_engine_errors() {

@@ -11,27 +11,21 @@
     "js-yaml": "4.3.0"
   },
   "scripts": {
-    "build": "tsc --noEmit && vite build",
-    "dev": "vite --host 127.0.0.1 --port 4210",
+    "build": "node ../../scripts/community-frontend.mjs build",
+    "dev": "node ../../scripts/community-frontend.mjs dev",
     "generate-contract": "openapi-typescript ../../contracts/openapi/chat2db-v1.json -o src/generated/contract.ts",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "test": "vitest run && node ../../scripts/community-frontend.mjs test",
+    "typecheck": "tsc --noEmit",
+    "verify-upstream": "node ../../scripts/community-frontend.mjs verify"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
-    "eventsource-parser": "3.1.0",
-    "lucide-react": "1.26.0",
-    "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "eventsource-parser": "3.1.0"
   },
   "devDependencies": {
-    "@types/react": "19.2.17",
-    "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "6.0.4",
-    "happy-dom": "20.11.1",
     "openapi-typescript": "7.13.0",
     "typescript": "5.9.3",
-    "vite": "8.1.5",
-    "vitest": "4.1.10"
+    "vitest": "4.1.10",
+    "yarn": "1.22.22"
   }
 }
