@@ -35,7 +35,7 @@ jobs:
           exit 1
       - name: Verify ARM64 runner
         run: test "$(uname -m)" = arm64
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9ed843567869ab1699d4
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
           toolchain: 1.88.0
           components: clippy
