@@ -62,6 +62,12 @@ pub enum StorageError {
     /// A datasource field violates the durable contract.
     #[error("invalid datasource: {0}")]
     InvalidDatasource(&'static str),
+    /// The requested saved Console does not exist.
+    #[error("saved Console not found: {0}")]
+    SavedConsoleNotFound(i64),
+    /// A saved Console field or page request violates the durable contract.
+    #[error("invalid saved Console: {0}")]
+    InvalidSavedConsole(&'static str),
     /// The requested provider profile does not exist.
     #[error("provider profile not found: {0}")]
     ProviderNotFound(String),

@@ -269,6 +269,13 @@ impl From<StorageError> for AppError {
             StorageError::InvalidDatasource(message) => {
                 Self::invalid("invalid_datasource", message)
             }
+            StorageError::SavedConsoleNotFound(id) => Self::not_found(
+                "saved_console_not_found",
+                format!("Saved Console {id} does not exist"),
+            ),
+            StorageError::InvalidSavedConsole(message) => {
+                Self::invalid("invalid_saved_console", message)
+            }
             StorageError::ProviderNotFound(id) => Self::not_found(
                 "provider_not_found",
                 format!("Provider profile {id} does not exist"),

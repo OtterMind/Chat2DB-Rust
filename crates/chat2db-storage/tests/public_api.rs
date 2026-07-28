@@ -1,8 +1,9 @@
 use chat2db_storage::{
     AgentCompaction, AgentMessageRole, AgentRunStatus, AgentRunUpdate, AppendAgentMessage,
-    CompactAgentRun, CreateAgentSession, CreateProviderProfile, MAX_AGENT_MESSAGE_BYTES,
-    MAX_RESULT_PAGE_BYTES, MAX_RESULT_PAGE_ROWS, MIN_RESULT_PAGE_BYTES, PageRequest, ProviderKind,
-    PurgeReport, ToolPermissionDecision, UpdateAgentSession,
+    CompactAgentRun, CreateAgentSession, CreateProviderProfile, CreateSavedConsole,
+    MAX_AGENT_MESSAGE_BYTES, MAX_RESULT_PAGE_BYTES, MAX_RESULT_PAGE_ROWS, MIN_RESULT_PAGE_BYTES,
+    PageRequest, ProviderKind, PurgeReport, SavedConsoleListQuery, ToolPermissionDecision,
+    UpdateAgentSession, UpdateSavedConsole,
 };
 
 #[test]
@@ -17,6 +18,39 @@ fn paging_and_purge_contracts_are_nameable_outside_the_crate() {
     assert_eq!(request.offset, 7);
     assert!(request.max_bytes >= MIN_RESULT_PAGE_BYTES);
     assert_eq!(report.results_removed, 0);
+}
+
+#[test]
+fn saved_console_contracts_are_nameable_outside_the_crate() {
+    let create = CreateSavedConsole {
+        id: Some(42),
+        name: "query".to_owned(),
+        data_source_id: Some("opaque-datasource-id".to_owned()),
+        data_source_name: Some("Local MySQL".to_owned()),
+        database_name: Some("chat2db".to_owned()),
+        schema_name: None,
+        database_type: Some("MYSQL".to_owned()),
+        ddl: "SELECT 1".to_owned(),
+        status: "DRAFT".to_owned(),
+        tab_opened: "y".to_owned(),
+        operation_type: "console".to_owned(),
+    };
+    let query = SavedConsoleListQuery {
+        data_source_id: Some("opaque-datasource-id".to_owned()),
+        page_size: 100,
+        ..SavedConsoleListQuery::default()
+    };
+    let update = UpdateSavedConsole {
+        schema_name: Some(None),
+        ddl: Some("SELECT 1".to_owned()),
+        ..UpdateSavedConsole::default()
+    };
+
+    assert_eq!(create.id, Some(42));
+    assert_eq!(query.page_no, 1);
+    assert_eq!(query.page_size, 100);
+    assert_eq!(update.schema_name, Some(None));
+    assert_eq!(update.ddl.as_deref(), Some("SELECT 1"));
 }
 
 #[test]
