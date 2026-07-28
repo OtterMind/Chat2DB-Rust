@@ -4,7 +4,7 @@
 	community-product-h2-integration product-h2-integration mysql-driver-pack \
 	community-product-mysql-integration \
 	frontend-deps frontend-source frontend desktop generate-contracts check-contracts \
-	macos-runtime macos-package macos-package-verify
+	macos-runtime macos-package-java macos-package macos-package-verify
 
 JAVA_ENGINE_JAR := $(CURDIR)/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar
 H2_DRIVER_JAR := $(CURDIR)/java/compat-runtime/target/test-drivers/h2-2.3.232.jar
@@ -97,7 +97,10 @@ desktop: frontend
 macos-runtime:
 	./scripts/build-macos-runtime.sh
 
-macos-package: java community-h2-classpath mysql-driver-pack frontend macos-runtime
+macos-package-java: community-h2-classpath
+	$(MAKE) java
+
+macos-package: macos-package-java mysql-driver-pack frontend macos-runtime
 	./scripts/build-macos-package.sh
 
 macos-package-verify:
