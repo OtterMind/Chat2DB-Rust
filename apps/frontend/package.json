@@ -14,7 +14,7 @@
     "build": "node ../../scripts/community-frontend.mjs build",
     "dev": "node ../../scripts/community-frontend.mjs dev",
     "generate-contract": "openapi-typescript ../../contracts/openapi/chat2db-v1.json -o src/generated/contract.ts",
-    "test": "vitest run && node ../../scripts/community-frontend.mjs test",
+    "test": "vitest run && node ../../scripts/community-tauri-bridge.test.mjs && node ../../scripts/community-frontend.mjs test",
     "typecheck": "tsc --noEmit",
     "verify-upstream": "node ../../scripts/community-frontend.mjs verify"
   },

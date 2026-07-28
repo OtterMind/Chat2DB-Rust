@@ -21,6 +21,7 @@ chat2db-core = { path = "../../crates/chat2db-core" }
 chat2db-java-bridge = { path = "../../crates/chat2db-java-bridge" }
 chat2db-local = { path = "../../crates/chat2db-local" }
 chat2db-web = { path = "../chat2db-web" }
+serde.workspace = true
 serde_json.workspace = true
 tauri = { workspace = true, features = ["wry"] }
 tauri-runtime = "=2.9.2"

@@ -10,6 +10,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use chat2db_contract::{
@@ -17,8 +18,8 @@ use chat2db_contract::{
     AgentRunSnapshot, AgentSession, AgentSessionList, AgentStreamMessage,
     AgentSubscriptionAccepted, ApiError, BuildCommunityCreateSchemaRequest,
     BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest, CancelAgentRunResponse,
-    CancelOperationResponse, CommunityBuiltSql, CommunityDatabaseList, CommunityForeignKeyList,
-    CommunityFormattedSql, CommunityFunction, CommunityFunctionList,
+    CancelDisposition, CancelOperationResponse, CommunityBuiltSql, CommunityDatabaseList,
+    CommunityForeignKeyList, CommunityFormattedSql, CommunityFunction, CommunityFunctionList,
     CommunityFunctionParameterList, CommunityPluginCatalog, CommunityPrimaryKeyList,
     CommunityProcedure, CommunityProcedureList, CommunityProcedureParameterList,
     CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlCompletion, CommunitySqlValidation,
@@ -31,7 +32,7 @@ use chat2db_contract::{
     ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
     ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
     ListCommunityTablesRequest, ListCommunityTriggersRequest, ListCommunityViewsRequest,
-    OperationEventEnvelope, OperationSnapshot, OperationStreamMessage,
+    OperationEvent, OperationEventEnvelope, OperationSnapshot, OperationStreamMessage,
     OperationSubscriptionAccepted, ParseCommunitySqlRequest, ProviderProfile, ProviderProfileList,
     QueryAccepted, ResultPage, ResultPageRequest, StartAgentRunRequest,
     StartCommunityTablePreviewRequest, StartQueryRequest, UpdateAgentSessionRequest,
@@ -42,7 +43,7 @@ use chat2db_core::{
 };
 use chat2db_java_bridge::{BridgeError, EngineCommand, EngineConfig};
 use chat2db_local::{LocalError, LocalServer};
-use tauri::{State, ipc::Channel};
+use tauri::{Emitter, State, WebviewWindow, ipc::Channel};
 use tokio::sync::{Mutex, oneshot};
 
 const DATA_DIR_ENV: &str = "CHAT2DB_DATA_DIR";
@@ -56,6 +57,7 @@ const BUNDLED_JAVA_BIN: &str = "Java binary";
 const BUNDLED_JAVA_ENGINE_JAR: &str = "compatibility-engine JAR";
 const BUNDLED_COMMUNITY_CLASSPATH: &str = "Community classpath";
 const BUNDLED_DRIVER_PACKS: &str = "driver packs";
+const COMMUNITY_JAVA_MESSAGE_EVENT: &str = "chat2db://java-message";
 
 #[derive(Debug, Default)]
 struct RuntimeResourceOverrides {
@@ -565,9 +567,400 @@ fn api_error(error: &AppError) -> ApiError {
 #[tauri::command]
 async fn legacy_request(
     state: State<'_, Arc<DesktopState>>,
+    window: WebviewWindow,
     request: String,
 ) -> Result<String, String> {
+    if let Some(response) = legacy_client_command_for(&state.application, &window, &request).await?
+    {
+        return Ok(response);
+    }
     legacy_request_for(&state.application, &request).await
+}
+
+async fn legacy_client_command_for(
+    application: &Application,
+    window: &WebviewWindow,
+    request: &str,
+) -> Result<Option<String>, String> {
+    let value: serde_json::Value = serde_json::from_str(request)
+        .map_err(|_| "Community desktop request must be valid JSON".to_owned())?;
+    let request = value
+        .as_object()
+        .ok_or_else(|| "Community desktop request must be a JSON object".to_owned())?;
+    let method = legacy_request_string(request, "method")?;
+    if method != "client-command" {
+        return Ok(None);
+    }
+    let request_url = legacy_request_string(request, "requestUrl")?;
+    match request_url.as_str() {
+        "handle-java-message-is-ready" => {
+            Ok(Some(client_command_response(&serde_json::json!(true))))
+        }
+        "sql-execute" => {
+            let request_uuid = legacy_request_string(request, "uuid")?;
+            let sql_request = decode_client_message::<chat2db_web::legacy::LegacySqlExecuteRequest>(
+                request.get("message"),
+            )?;
+            let accepted = chat2db_web::legacy::start_sql_execution(application, &sql_request)
+                .await
+                .map_err(|error| legacy_failure_message(&error))?;
+            let execution_id = accepted.operation_id.clone();
+            let task_application = application.clone();
+            let task_window = window.clone();
+            let task_execution_id = execution_id.clone();
+            tauri::async_runtime::spawn(async move {
+                forward_legacy_sql_execution(
+                    task_application,
+                    task_window,
+                    request_uuid,
+                    task_execution_id,
+                    sql_request,
+                )
+                .await;
+            });
+            Ok(Some(client_command_response(&serde_json::json!({
+                "executionId": execution_id,
+            }))))
+        }
+        "sql-cancel" => {
+            let message = decode_client_message::<serde_json::Value>(request.get("message"))?;
+            let execution_id = message
+                .get("executionId")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "sql-cancel requires a non-empty executionId".to_owned())?;
+            let cancelled = application.cancel_operation(execution_id).await.disposition
+                == CancelDisposition::Accepted;
+            Ok(Some(client_command_response(&serde_json::json!(cancelled))))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn decode_client_message<T: serde::de::DeserializeOwned>(
+    message: Option<&serde_json::Value>,
+) -> Result<T, String> {
+    match message {
+        Some(serde_json::Value::String(message)) => serde_json::from_str(message),
+        Some(message) => serde_json::from_value(message.clone()),
+        None => serde_json::from_value(serde_json::Value::Null),
+    }
+    .map_err(|_| "Community client-command message is invalid".to_owned())
+}
+
+fn client_command_response(data: &serde_json::Value) -> String {
+    serde_json::json!({ "data": data }).to_string()
+}
+
+fn legacy_failure_message(error: &chat2db_web::legacy::LegacyFailure) -> String {
+    format!("{}: {}", error.code, error.message)
+}
+
+#[allow(clippy::too_many_lines)]
+async fn forward_legacy_sql_execution(
+    application: Application,
+    window: WebviewWindow,
+    request_uuid: String,
+    execution_id: String,
+    request: chat2db_web::legacy::LegacySqlExecuteRequest,
+) {
+    let started_at = Instant::now();
+    let mut sequence = 0_u64;
+    if emit_legacy_sql_event(
+        &window,
+        &request_uuid,
+        &execution_id,
+        &mut sequence,
+        "started",
+        None,
+        None,
+        &serde_json::json!({ "executionId": execution_id }),
+    )
+    .is_err()
+    {
+        application.cancel_operation(&execution_id).await;
+        return;
+    }
+    if emit_legacy_sql_event(
+        &window,
+        &request_uuid,
+        &execution_id,
+        &mut sequence,
+        "statementStarted",
+        Some(1),
+        None,
+        &serde_json::json!({
+            "sql": request.sql,
+            "originalSql": request.sql,
+            "sequence": 1,
+        }),
+    )
+    .is_err()
+    {
+        application.cancel_operation(&execution_id).await;
+        return;
+    }
+
+    let mut subscription = match application.subscribe_operation(&execution_id, None).await {
+        Ok(subscription) => subscription,
+        Err(error) => {
+            emit_legacy_terminal_error(
+                &window,
+                &request_uuid,
+                &execution_id,
+                &mut sequence,
+                &error.api_error(),
+            );
+            return;
+        }
+    };
+    loop {
+        let event = match subscription.next_event().await {
+            Ok(Some(event)) => event.event,
+            Ok(None) => {
+                emit_legacy_terminal_error(
+                    &window,
+                    &request_uuid,
+                    &execution_id,
+                    &mut sequence,
+                    &ApiError::new(
+                        "sql_execution_incomplete",
+                        "The SQL execution ended without a result",
+                    ),
+                );
+                return;
+            }
+            Err(error) => {
+                emit_legacy_terminal_error(
+                    &window,
+                    &request_uuid,
+                    &execution_id,
+                    &mut sequence,
+                    &error.api_error(),
+                );
+                return;
+            }
+        };
+        match event {
+            OperationEvent::Started | OperationEvent::Progress { .. } => {}
+            OperationEvent::Completed { result } => {
+                let duration = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let result = match chat2db_web::legacy::read_sql_result(
+                    &application,
+                    &request,
+                    &result,
+                    duration,
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(error) => {
+                        emit_legacy_terminal_error(
+                            &window,
+                            &request_uuid,
+                            &execution_id,
+                            &mut sequence,
+                            &ApiError::new(error.code, error.message),
+                        );
+                        return;
+                    }
+                };
+                if emit_legacy_sql_result_events(
+                    &window,
+                    &request_uuid,
+                    &execution_id,
+                    &mut sequence,
+                    result,
+                )
+                .is_err()
+                {
+                    return;
+                }
+                let _ = emit_legacy_sql_event(
+                    &window,
+                    &request_uuid,
+                    &execution_id,
+                    &mut sequence,
+                    "statementFinished",
+                    Some(1),
+                    None,
+                    &serde_json::json!({ "sql": request.sql, "duration": duration }),
+                );
+                let _ = emit_legacy_sql_event(
+                    &window,
+                    &request_uuid,
+                    &execution_id,
+                    &mut sequence,
+                    "finished",
+                    None,
+                    None,
+                    &serde_json::json!({ "executionId": execution_id }),
+                );
+                return;
+            }
+            OperationEvent::Failed { error } => {
+                emit_legacy_terminal_error(
+                    &window,
+                    &request_uuid,
+                    &execution_id,
+                    &mut sequence,
+                    &error,
+                );
+                return;
+            }
+            OperationEvent::Cancelled { reason } => {
+                let _ = emit_legacy_sql_event(
+                    &window,
+                    &request_uuid,
+                    &execution_id,
+                    &mut sequence,
+                    "cancelled",
+                    None,
+                    None,
+                    &serde_json::json!({
+                        "executionId": execution_id,
+                        "message": reason.unwrap_or_else(|| "The SQL execution was cancelled".to_owned()),
+                    }),
+                );
+                return;
+            }
+        }
+    }
+}
+
+fn emit_legacy_sql_result_events(
+    window: &WebviewWindow,
+    request_uuid: &str,
+    execution_id: &str,
+    sequence: &mut u64,
+    result: chat2db_web::legacy::LegacyManageResult,
+) -> Result<(), tauri::Error> {
+    let mut started = serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(started) = started.as_object_mut() {
+        started.insert("dataList".to_owned(), serde_json::json!([]));
+    }
+    emit_legacy_sql_event(
+        window,
+        request_uuid,
+        execution_id,
+        sequence,
+        "resultStarted",
+        Some(1),
+        Some(1),
+        &started,
+    )?;
+    let rows = serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!({}));
+    emit_legacy_sql_event(
+        window,
+        request_uuid,
+        execution_id,
+        sequence,
+        "rows",
+        Some(1),
+        Some(1),
+        &rows,
+    )?;
+    emit_legacy_sql_event(
+        window,
+        request_uuid,
+        execution_id,
+        sequence,
+        "resultFinished",
+        Some(1),
+        Some(1),
+        &serde_json::to_value(result).unwrap_or_else(|_| serde_json::json!({})),
+    )
+}
+
+fn emit_legacy_terminal_error(
+    window: &WebviewWindow,
+    request_uuid: &str,
+    execution_id: &str,
+    sequence: &mut u64,
+    error: &ApiError,
+) {
+    let _ = emit_legacy_sql_event(
+        window,
+        request_uuid,
+        execution_id,
+        sequence,
+        "failed",
+        Some(1),
+        None,
+        &serde_json::json!({
+            "executionId": execution_id,
+            "message": error.message,
+            "errorCode": error.code,
+        }),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_legacy_sql_event(
+    window: &WebviewWindow,
+    request_uuid: &str,
+    execution_id: &str,
+    sequence: &mut u64,
+    event_type: &str,
+    statement_sequence: Option<u32>,
+    result_sequence: Option<u32>,
+    message: &serde_json::Value,
+) -> Result<(), tauri::Error> {
+    *sequence = sequence.saturating_add(1);
+    let result_key = statement_sequence.map(|statement_sequence| {
+        format!(
+            "{execution_id}:{statement_sequence}:{}",
+            result_sequence.unwrap_or(0)
+        )
+    });
+    window.emit(
+        COMMUNITY_JAVA_MESSAGE_EVENT,
+        legacy_sql_push_message(
+            request_uuid,
+            execution_id,
+            *sequence,
+            event_type,
+            statement_sequence,
+            result_sequence,
+            result_key.as_deref(),
+            message,
+        ),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn legacy_sql_push_message(
+    request_uuid: &str,
+    execution_id: &str,
+    event_sequence: u64,
+    event_type: &str,
+    statement_sequence: Option<u32>,
+    result_sequence: Option<u32>,
+    result_key: Option<&str>,
+    message: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "uuid": request_uuid,
+        "actionType": "sql_execution_event",
+        "message": {
+            "executionId": execution_id,
+            "eventSequence": event_sequence,
+            "occurredAtEpochMs": unix_epoch_millis(),
+            "eventType": event_type,
+            "statementSequence": statement_sequence,
+            "resultSequence": result_sequence,
+            "resultKey": result_key,
+            "message": message,
+        },
+    })
+}
+
+fn unix_epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 async fn legacy_request_for(application: &Application, request: &str) -> Result<String, String> {
@@ -1497,8 +1890,9 @@ mod tests {
         BUNDLED_COMMUNITY_CLASSPATH, BUNDLED_DRIVER_PACKS, BUNDLED_JAVA_BIN,
         BUNDLED_JAVA_ENGINE_JAR, BundledRuntimeResources, DesktopError, RuntimeResourceOverrides,
         SubscriptionRegistry, agent_stream_message, build_community_dml_for,
-        build_community_namespace_sql_for, complete_community_sql_for, format_community_sql_for,
-        legacy_request_for, operation_stream_message, parse_after_sequence,
+        build_community_namespace_sql_for, client_command_response, complete_community_sql_for,
+        decode_client_message, format_community_sql_for, legacy_request_for,
+        legacy_sql_push_message, operation_stream_message, parse_after_sequence,
         resolve_runtime_resource_paths, start_community_table_preview_for,
         validate_community_sql_for, validate_java_engine_jar, validate_optional_os_env,
     };
@@ -1533,6 +1927,44 @@ mod tests {
         fs::create_dir_all(&resources.driver_pack_dir).expect("bundled driver packs");
 
         (directory, executable, resources)
+    }
+
+    #[test]
+    fn community_client_command_payloads_decode_and_return_direct_data() {
+        let message = serde_json::json!(
+            r#"{"dataSourceId":"datasource-1","sql":"SELECT 1","pageNo":1,"pageSize":20}"#
+        );
+        let request =
+            decode_client_message::<chat2db_web::legacy::LegacySqlExecuteRequest>(Some(&message))
+                .expect("string client-command payload must decode");
+        assert_eq!(request.sql, "SELECT 1");
+
+        let response: serde_json::Value = serde_json::from_str(&client_command_response(
+            &serde_json::json!({ "executionId": "operation-1" }),
+        ))
+        .expect("client-command response must serialize");
+        assert_eq!(response["data"]["executionId"], "operation-1");
+    }
+
+    #[test]
+    fn community_sql_push_message_matches_the_existing_event_bus_contract() {
+        let message = legacy_sql_push_message(
+            "request-1",
+            "operation-1",
+            3,
+            "resultFinished",
+            Some(1),
+            Some(1),
+            Some("operation-1:1:1"),
+            &serde_json::json!({ "success": true }),
+        );
+        assert_eq!(message["uuid"], "request-1");
+        assert_eq!(message["actionType"], "sql_execution_event");
+        assert_eq!(message["message"]["executionId"], "operation-1");
+        assert_eq!(message["message"]["eventSequence"], 3);
+        assert_eq!(message["message"]["eventType"], "resultFinished");
+        assert_eq!(message["message"]["resultKey"], "operation-1:1:1");
+        assert_eq!(message["message"]["message"]["success"], true);
     }
 
     #[tokio::test]
