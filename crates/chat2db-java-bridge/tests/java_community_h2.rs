@@ -23,7 +23,7 @@ use chat2db_java_bridge::{
 };
 use tempfile::TempDir;
 
-const COMMUNITY_COMMIT: &str = "f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7";
+const COMMUNITY_COMMIT: &str = "f275e08d774f839612374e991d09c5e6ea2d8b57";
 const H2_DRIVER_CLASS: &str = "org.h2.Driver";
 const COMMUNITY_CLASSPATH_LOCK: &str =
     include_str!("../../../third_party/community-h2-classpath.lock");

@@ -33,7 +33,7 @@ not committed.
 
 The retained Community SPI and its implementations come from the Community
 5.3.0 submodule fixed at commit
-`f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7`. The Protobuf messages are
+`f275e08d774f839612374e991d09c5e6ea2d8b57`. The Protobuf messages are
 compatibility-layer-owned DTOs, not serialized Community Java types; Community
 plugin, JDBC, parser, and exception objects remain inside Java. The catalog's
 `source_commit` is provenance that Rust checks against the configured commit.

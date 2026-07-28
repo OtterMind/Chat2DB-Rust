@@ -22,7 +22,7 @@ use futures_util::FutureExt as _;
 use tempfile::TempDir;
 use uuid::Uuid;
 
-const COMMUNITY_COMMIT: &str = "f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7";
+const COMMUNITY_COMMIT: &str = "f275e08d774f839612374e991d09c5e6ea2d8b57";
 const MYSQL_DATABASE_TYPE: &str = "MYSQL";
 const MYSQL_DRIVER_CLASS: &str = "com.mysql.cj.jdbc.Driver";
 const MYSQL_DRIVER_VERSION: &str = "8.0.30";

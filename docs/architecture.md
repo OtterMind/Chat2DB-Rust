@@ -125,14 +125,15 @@ The JDBC baseline implements:
 Stage 7B additionally implements:
 
 - a Git submodule fixed at Community commit
-  `f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7`;
+  `f275e08d774f839612374e991d09c5e6ea2d8b57`;
 - a reproducible H2 compatibility classpath, established with 148 JARs and
   extended in Stage 7J to 149 JARs for the retained Community domain-core
   completion implementation, whose filenames, byte lengths, and SHA-256
   digests are bound to that commit by the checked-in
   `third_party/community-h2-classpath.lock`;
 - deterministic build-time removal of dependency-manifest `Class-Path` entries,
-  with affected JARs rebuilt as sorted, commit-timestamped `STORED` archives;
+  with affected JARs rebuilt as sorted, ZIP-precision commit-timestamped `STORED`
+  archives;
 - a separately supplied Community classpath loaded by a `URLClassLoader` whose
   parent is only the Java platform classloader;
 - `ServiceLoader<IPlugin>` discovery projected into stable Protobuf DTOs;

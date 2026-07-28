@@ -184,7 +184,7 @@ const completeSqlRequest = {
 } satisfies CompleteCommunitySqlRequest;
 
 const catalog = {
-  sourceCommit: 'f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7',
+  sourceCommit: 'f275e08d774f839612374e991d09c5e6ea2d8b57',
   plugins: [{
     databaseType: 'H2',
     name: 'H2',

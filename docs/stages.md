@@ -80,10 +80,11 @@ and generated frontend contracts. Downloading, signing, installation, update,
 rollback, and hot reload remain incomplete.
 
 Stage 7B fixes the Community source at commit
-`f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7`, builds its H2 compatibility
+`f275e08d774f839612374e991d09c5e6ea2d8b57`, builds its H2 compatibility
 classpath reproducibly, and initially locks 148 JAR filenames, lengths, and
 SHA-256 digests. Before lock verification, the fixed build strips dependency-manifest
-`Class-Path` entries deterministically and proves two clean builds have
+`Class-Path` entries deterministically, rounds the commit timestamp down to ZIP's
+two-second precision, and proves two clean builds have
 identical artifact bytes. Rust snapshots and re-verifies those JARs for one
 supervised Java generation. Java isolates them behind a platform-parent
 `URLClassLoader`, rejects manifest `Class-Path` escapes, discovers real `IPlugin`

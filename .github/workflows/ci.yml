@@ -111,7 +111,7 @@ jobs:
         working-directory: java
         env:
           CHAT2DB_COMMUNITY_CLASSPATH_DIR: "${{ github.workspace }}/target/community-h2-classpath"
-          CHAT2DB_COMMUNITY_SOURCE_COMMIT: "f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7"
+          CHAT2DB_COMMUNITY_SOURCE_COMMIT: "f275e08d774f839612374e991d09c5e6ea2d8b57"
         run: >-
           ./mvnw -B -pl compat-runtime
           -Dtest='CommunityPluginRegistryTest#realCommunityH2BuildsAndExecutesBoundedDml,CommunityPluginRegistryTest#realCommunityMysqlRejectsBackslashCrossColumnInjection,CommunityPluginRegistryTest#realCommunityMysqlNormalizesBooleanAliasesAndBits,CommunityPluginRegistryTest#realCommunityH2BuildsNamespaceSqlWithoutOpeningJdbc,CommunityPluginRegistryTest#realCommunityMysqlBuildsDatabaseNamespaceSql,CommunityPluginRegistryTest#realCommunityNamespaceMapsUnsupportedAndRejectsOversizedInput,JdbcProtocolLoopTest#communityDmlDispatchDoesNotRequireAJdbcSession,JdbcProtocolLoopTest#communityNamespaceDispatchDoesNotRequireAJdbcSession'
