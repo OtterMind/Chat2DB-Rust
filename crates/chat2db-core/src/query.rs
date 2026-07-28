@@ -3,9 +3,8 @@ use std::time::Duration;
 use chat2db_contract::{ApiError, QueryAccepted, QueryLimits, StartQueryRequest};
 use chat2db_engine_protocol::wire;
 use chat2db_java_bridge::{
-    BridgeError, CancelDisposition as BridgeCancelDisposition, ConnectionProperty, EngineClient,
-    JdbcParameter, QueryEvent, QueryOptions, QueryRequest, QueryStream, SessionConfig,
-    UpdateRequest,
+    BridgeError, CancelDisposition as BridgeCancelDisposition, ConnectionProperty, JdbcParameter,
+    QueryEvent, QueryOptions, QueryRequest, QueryStream, SessionConfig, UpdateRequest,
 };
 use chat2db_storage::{ResultWriter, Storage, StorageError};
 use tokio::sync::{oneshot, watch};
@@ -17,6 +16,7 @@ use crate::{
         ResolvedDatasourceConnection, SessionReadOnly, open_datasource_session,
         resolve_datasource_connection,
     },
+    engine_manager::EngineLease,
     operation::CancellationRequest,
 };
 
@@ -102,7 +102,7 @@ impl Application {
         prepared: PreparedQuery,
     ) -> Result<QueryAccepted, AppError> {
         let storage = self.require_storage()?;
-        let engine = self.require_engine()?;
+        let engine = self.require_engine().await?;
         let accepting_work = self.inner.accepting_work.lock().await;
         if !*accepting_work {
             return Err(AppError::unavailable(
@@ -163,7 +163,7 @@ impl Application {
         cancellation: watch::Receiver<CancellationRequest>,
         query: PreparedQuery,
         storage: Storage,
-        engine: EngineClient,
+        engine: EngineLease,
     ) {
         let outcome = self
             .execute_query_task(&operation_id, cancellation, query, storage, engine)
@@ -191,7 +191,7 @@ impl Application {
         mut cancellation: watch::Receiver<CancellationRequest>,
         query: PreparedQuery,
         storage: Storage,
-        engine: EngineClient,
+        engine: EngineLease,
     ) -> Result<chat2db_contract::ResultMetadata, QueryTaskError> {
         let resolved = resolve_datasource_connection(&storage, &query.datasource_id).await?;
 
@@ -377,6 +377,7 @@ impl Application {
             .map_err(DatabaseWriteError::not_started)?;
         let engine = self
             .require_engine()
+            .await
             .map_err(DatabaseWriteError::not_started)?;
         let ResolvedDatasourceConnection {
             driver_id,

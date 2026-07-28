@@ -5,6 +5,7 @@ mod community;
 mod convert;
 mod datasource_session;
 mod driver_pack;
+mod engine_manager;
 mod error;
 mod operation;
 mod query;
@@ -37,9 +38,14 @@ use tokio::{sync::Mutex, task::JoinHandle};
 use agent::AgentRunHub;
 pub use agent::AgentRunSubscription;
 pub use community::load_fixed_community_classpath;
+pub use engine_manager::EngineLease;
 pub use error::{AppError, AppErrorKind};
 pub use operation::OperationSubscription;
 
+use engine_manager::{
+    DEFAULT_ENGINE_IDLE_TIMEOUT, EngineManagerOwner, EngineManagerStatus, EngineProvider,
+    EngineStopReason,
+};
 use operation::OperationHub;
 
 const TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -54,7 +60,7 @@ pub(crate) struct ApplicationInner {
     started_at: Instant,
     runtime_status: RuntimeStatus,
     storage: Option<Storage>,
-    engine: Option<EngineClient>,
+    engine: EngineProvider,
     drivers: Vec<JdbcDriver>,
     managed_driver_ids: Option<HashSet<String>>,
     agent_runs: AgentRunHub,
@@ -68,6 +74,7 @@ pub(crate) struct ApplicationInner {
 pub struct RuntimeHost {
     application: Application,
     supervisor: Option<EngineSupervisor>,
+    engine_manager: Option<EngineManagerOwner>,
 }
 
 /// Inputs required to open durable storage and start one Java engine generation.
@@ -76,6 +83,7 @@ pub struct RuntimeConfig {
     driver_pack_dir: Option<PathBuf>,
     vault_master_key_base64: Option<String>,
     engine: EngineConfig,
+    engine_idle_timeout: Duration,
 }
 
 impl RuntimeConfig {
@@ -86,6 +94,7 @@ impl RuntimeConfig {
             driver_pack_dir: None,
             vault_master_key_base64: None,
             engine,
+            engine_idle_timeout: DEFAULT_ENGINE_IDLE_TIMEOUT,
         }
     }
 
@@ -107,6 +116,13 @@ impl RuntimeConfig {
         self.vault_master_key_base64 = Some(master_key.into());
         self
     }
+
+    /// Overrides how long an unused managed Java generation remains resident.
+    #[must_use]
+    pub const fn with_engine_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.engine_idle_timeout = timeout;
+        self
+    }
 }
 
 impl std::fmt::Debug for RuntimeConfig {
@@ -120,6 +136,7 @@ impl std::fmt::Debug for RuntimeConfig {
                 &self.vault_master_key_base64.as_ref().map(|_| "[REDACTED]"),
             )
             .field("engine", &self.engine)
+            .field("engine_idle_timeout", &self.engine_idle_timeout)
             .finish()
     }
 }
@@ -130,7 +147,7 @@ impl std::fmt::Debug for Application {
             .debug_struct("Application")
             .field("runtime_status", &self.inner.runtime_status)
             .field("storage_configured", &self.inner.storage.is_some())
-            .field("engine_configured", &self.inner.engine.is_some())
+            .field("engine_configured", &self.inner.engine.is_configured())
             .finish_non_exhaustive()
     }
 }
@@ -141,6 +158,7 @@ impl std::fmt::Debug for RuntimeHost {
             .debug_struct("RuntimeHost")
             .field("application", &self.application)
             .field("supervisor_owned", &self.supervisor.is_some())
+            .field("engine_manager_owned", &self.engine_manager.is_some())
             .finish()
     }
 }
@@ -155,36 +173,46 @@ impl Application {
     /// Creates a product service root with optional components disabled.
     #[must_use]
     pub fn new() -> Self {
-        Self::compose(RuntimeStatus::Ready, None, None, None)
+        Self::compose(RuntimeStatus::Ready, None, EngineProvider::Disabled, None)
     }
 
     /// Creates a service root with an explicit readiness state.
     #[must_use]
     pub fn with_runtime_status(runtime_status: RuntimeStatus) -> Self {
-        Self::compose(runtime_status, None, None, None)
+        Self::compose(runtime_status, None, EngineProvider::Disabled, None)
     }
 
     /// Creates a ready service root around fully opened local storage.
     #[must_use]
     pub fn with_storage(storage: Storage) -> Self {
-        Self::compose(RuntimeStatus::Ready, Some(storage), None, None)
+        Self::compose(
+            RuntimeStatus::Ready,
+            Some(storage),
+            EngineProvider::Disabled,
+            None,
+        )
     }
 
     /// Creates the complete product service root around storage and one engine generation.
     #[must_use]
     pub fn with_services(storage: Storage, engine: EngineClient) -> Self {
-        Self::compose(RuntimeStatus::Ready, Some(storage), Some(engine), None)
+        Self::compose(
+            RuntimeStatus::Ready,
+            Some(storage),
+            EngineProvider::Static(engine),
+            None,
+        )
     }
 
-    fn with_services_and_drivers(
+    fn with_managed_services(
         storage: Storage,
-        engine: EngineClient,
+        engine: engine_manager::EngineManagerHandle,
         drivers: Vec<JdbcDriver>,
     ) -> Self {
         Self::compose(
             RuntimeStatus::Ready,
             Some(storage),
-            Some(engine),
+            EngineProvider::Managed(engine),
             Some(drivers),
         )
     }
@@ -192,7 +220,7 @@ impl Application {
     fn compose(
         runtime_status: RuntimeStatus,
         storage: Option<Storage>,
-        engine: Option<EngineClient>,
+        engine: EngineProvider,
         drivers: Option<Vec<JdbcDriver>>,
     ) -> Self {
         let managed_driver_ids = drivers.as_ref().map(|drivers| {
@@ -225,12 +253,6 @@ impl Application {
         self.inner.storage.as_ref()
     }
 
-    /// Returns the current compatibility-engine client when configured.
-    #[must_use]
-    pub fn engine_client(&self) -> Option<EngineClient> {
-        self.inner.engine.clone()
-    }
-
     pub(crate) fn require_storage(&self) -> Result<Storage, AppError> {
         self.inner.storage.clone().ok_or_else(|| {
             AppError::unavailable(
@@ -240,40 +262,23 @@ impl Application {
         })
     }
 
-    pub(crate) fn require_engine(&self) -> Result<EngineClient, AppError> {
-        self.inner.engine.clone().ok_or_else(|| {
-            AppError::unavailable(
-                "database_engine_unavailable",
-                "The database compatibility engine is not configured",
-            )
-        })
+    /// Acquires a generation-scoped lease, starting Java on first use.
+    ///
+    /// # Errors
+    ///
+    /// Returns an availability or startup error when the engine cannot be acquired.
+    pub async fn acquire_engine(&self) -> Result<EngineLease, AppError> {
+        self.inner.engine.acquire().await
+    }
+
+    pub(crate) async fn require_engine(&self) -> Result<EngineLease, AppError> {
+        self.acquire_engine().await
     }
 
     /// Returns health from the shared product boundary.
     #[must_use]
     pub fn health(&self) -> HealthResponse {
-        let engine_component = self.inner.engine.as_ref().map_or_else(
-            || ComponentHealth {
-                id: "database-engine".to_owned(),
-                label: "Database engine".to_owned(),
-                state: ComponentState::Disabled,
-                detail: "Not configured by this delivery adapter".to_owned(),
-            },
-            |engine| match engine.state() {
-                EngineState::Ready { .. } => ComponentHealth {
-                    id: "database-engine".to_owned(),
-                    label: "Database engine".to_owned(),
-                    state: ComponentState::Ready,
-                    detail: "Ready".to_owned(),
-                },
-                state => ComponentHealth {
-                    id: "database-engine".to_owned(),
-                    label: "Database engine".to_owned(),
-                    state: ComponentState::Unavailable,
-                    detail: format!("Compatibility engine is {}", state.label()),
-                },
-            },
-        );
+        let engine_component = engine_health(&self.inner.engine);
         let status = if self.inner.runtime_status == RuntimeStatus::Unavailable {
             RuntimeStatus::Unavailable
         } else if engine_component.state == ComponentState::Unavailable {
@@ -281,7 +286,7 @@ impl Application {
         } else {
             self.inner.runtime_status
         };
-        let community_component = community_health(self.inner.engine.as_ref());
+        let community_component = community_health(&self.inner.engine);
         HealthResponse {
             product: ProductInfo::community(env!("CARGO_PKG_VERSION")),
             status,
@@ -300,14 +305,17 @@ impl Application {
                         id: "jdbc-drivers".to_owned(),
                         label: "JDBC drivers".to_owned(),
                         state: ComponentState::Disabled,
-                        detail: "No managed driver packs loaded".to_owned(),
+                        detail: "No managed driver packs discovered".to_owned(),
                     }
                 } else {
                     ComponentHealth {
                         id: "jdbc-drivers".to_owned(),
                         label: "JDBC drivers".to_owned(),
                         state: ComponentState::Ready,
-                        detail: format!("{} managed driver packs loaded", self.inner.drivers.len()),
+                        detail: format!(
+                            "{} managed driver packs available",
+                            self.inner.drivers.len()
+                        ),
                     }
                 },
                 self.inner.storage.as_ref().map_or_else(
@@ -361,7 +369,7 @@ impl Application {
             ));
         }
         self.require_managed_driver(driver_id)?;
-        let engine = self.require_engine()?;
+        let engine = self.require_engine().await?;
         let session = datasource_session::open_datasource_session(
             &engine,
             datasource_session::ResolvedDatasourceConnection {
@@ -626,21 +634,28 @@ impl Application {
 }
 
 impl RuntimeHost {
-    /// Opens the production vault and storage before spawning the Java engine.
+    /// Opens production storage and discovers drivers without starting Java.
     ///
     /// An explicit base64 master key selects the headless encrypted-file path.
     /// Without one, supported desktop platforms require their OS keyring.
     ///
     /// # Errors
     ///
-    /// Returns an error if the data directory, vault, storage, or engine cannot open.
+    /// Returns an error if the data directory, vault, storage, or driver catalog cannot open.
     pub async fn open(config: RuntimeConfig) -> Result<Self, AppError> {
         let RuntimeConfig {
             data_dir,
             driver_pack_dir,
             vault_master_key_base64,
             engine,
+            engine_idle_timeout,
         } = config;
+        if engine_idle_timeout.is_zero() {
+            return Err(AppError::invalid(
+                "invalid_engine_idle_timeout",
+                "The engine idle timeout must be greater than zero",
+            ));
+        }
         let storage = tokio::task::spawn_blocking(move || {
             let data_dir = data_dir.map_or_else(Storage::default_data_dir, Ok)?;
             let vault: Arc<dyn SecretVault> = match vault_master_key_base64 {
@@ -669,7 +684,15 @@ impl RuntimeHost {
         .map_err(|_| AppError::internal())?
         .map_err(driver_pack::DriverPackError::into_app_error)?;
         let engine = engine.with_driver_snapshot_parent(driver_runtime_directory);
-        Self::spawn_with_driver_packs(storage, engine, prepared_packs).await
+        let manager =
+            EngineManagerOwner::with_idle_timeout(engine, prepared_packs, engine_idle_timeout);
+        let application =
+            Application::with_managed_services(storage, manager.handle(), manager.inventory());
+        Ok(Self {
+            application,
+            supervisor: None,
+            engine_manager: Some(manager),
+        })
     }
 
     /// Spawns and owns a validated Java engine generation.
@@ -691,33 +714,6 @@ impl RuntimeHost {
         Ok(Self::from_supervisor(storage, supervisor))
     }
 
-    async fn spawn_with_driver_packs(
-        storage: Storage,
-        config: EngineConfig,
-        packs: driver_pack::PreparedDriverPacks,
-    ) -> Result<Self, AppError> {
-        let supervisor = EngineSupervisor::spawn(config)
-            .await
-            .map_err(AppError::from)?;
-        let drivers = match driver_pack::preload(&supervisor, packs).await {
-            Ok(drivers) => drivers,
-            Err(error) => {
-                tracing::error!(%error, "managed JDBC driver preload failed");
-                let application_error = error.into_app_error();
-                if let Err(shutdown_error) = supervisor.shutdown().await {
-                    tracing::error!(%shutdown_error, "Java cleanup failed after driver preload error");
-                }
-                return Err(application_error);
-            }
-        };
-        let application =
-            Application::with_services_and_drivers(storage, supervisor.client(), drivers);
-        Ok(Self {
-            application,
-            supervisor: Some(supervisor),
-        })
-    }
-
     /// Composes a host around an already-started supervisor.
     #[must_use]
     pub fn from_supervisor(storage: Storage, supervisor: EngineSupervisor) -> Self {
@@ -725,6 +721,7 @@ impl RuntimeHost {
         Self {
             application,
             supervisor: Some(supervisor),
+            engine_manager: None,
         }
     }
 
@@ -733,9 +730,13 @@ impl RuntimeHost {
         self.application.clone()
     }
 
-    #[must_use]
-    pub fn engine_client(&self) -> Option<EngineClient> {
-        self.application.engine_client()
+    /// Acquires a generation-scoped lease, starting managed Java on demand.
+    ///
+    /// # Errors
+    ///
+    /// Returns an availability or startup error when the engine cannot be acquired.
+    pub async fn acquire_engine(&self) -> Result<EngineLease, AppError> {
+        self.application.acquire_engine().await
     }
 
     /// Cancels active operations, shuts down the Java process, and joins tasks.
@@ -746,74 +747,143 @@ impl RuntimeHost {
     pub async fn shutdown(&mut self) -> Result<(), AppError> {
         self.application.begin_shutdown().await;
         self.application.join_tasks().await;
-        match self.supervisor.take() {
-            Some(supervisor) => supervisor
+        if let Some(supervisor) = self.supervisor.take() {
+            supervisor
                 .shutdown()
                 .await
                 .map(|_| ())
-                .map_err(AppError::from),
-            None => Ok(()),
+                .map_err(AppError::from)?;
         }
+        if let Some(mut manager) = self.engine_manager.take() {
+            manager.shutdown().await?;
+        }
+        Ok(())
     }
 }
 
-fn community_health(engine: Option<&EngineClient>) -> ComponentHealth {
-    engine.map_or_else(
-        || ComponentHealth {
+fn engine_health(engine: &EngineProvider) -> ComponentHealth {
+    let (state, detail) = match engine.status() {
+        None => (
+            ComponentState::Disabled,
+            "Not configured by this delivery adapter".to_owned(),
+        ),
+        Some(EngineManagerStatus::Idle) => (
+            ComponentState::Ready,
+            "Available on demand; Java is not running".to_owned(),
+        ),
+        Some(EngineManagerStatus::Starting) => {
+            (ComponentState::Ready, "Starting on demand".to_owned())
+        }
+        Some(EngineManagerStatus::Ready(EngineState::Ready { .. })) => {
+            (ComponentState::Ready, "Ready".to_owned())
+        }
+        Some(EngineManagerStatus::Stopping {
+            reason: EngineStopReason::Idle,
+            ..
+        }) => (
+            ComponentState::Ready,
+            "Releasing the idle Java process".to_owned(),
+        ),
+        Some(EngineManagerStatus::Failed(_)) => (
+            ComponentState::Unavailable,
+            "The last Java startup or generation failed; the next request can retry".to_owned(),
+        ),
+        Some(EngineManagerStatus::Ready(state)) => (
+            ComponentState::Unavailable,
+            format!("Compatibility engine is {}", state.label()),
+        ),
+        Some(
+            EngineManagerStatus::Stopping { .. }
+            | EngineManagerStatus::ShuttingDown
+            | EngineManagerStatus::Stopped,
+        ) => (
+            ComponentState::Unavailable,
+            "Compatibility engine is shutting down".to_owned(),
+        ),
+    };
+    ComponentHealth {
+        id: "database-engine".to_owned(),
+        label: "Database engine".to_owned(),
+        state,
+        detail,
+    }
+}
+
+fn community_health(engine: &EngineProvider) -> ComponentHealth {
+    if !engine.community_compatibility_configured() {
+        return ComponentHealth {
             id: "community-compatibility".to_owned(),
             label: "Community compatibility".to_owned(),
             state: ComponentState::Disabled,
             detail: "Fixed Community classpath not configured".to_owned(),
-        },
-        |engine| match engine.state() {
-            EngineState::Ready { .. } if !engine.community_compatibility_configured() => {
-                ComponentHealth {
-                    id: "community-compatibility".to_owned(),
-                    label: "Community compatibility".to_owned(),
-                    state: ComponentState::Disabled,
-                    detail: "Fixed Community classpath not configured".to_owned(),
-                }
-            }
-            EngineState::Ready { identity, .. }
-                if [
-                    COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
-                    COMMUNITY_SCHEMA_METADATA_CAPABILITY,
-                    COMMUNITY_OBJECT_METADATA_CAPABILITY,
-                    COMMUNITY_RELATION_METADATA_CAPABILITY,
-                    COMMUNITY_DQL_BUILDER_CAPABILITY,
-                    COMMUNITY_SQL_BUILDER_CAPABILITY,
-                    COMMUNITY_SQL_PARSER_CAPABILITY,
-                ]
-                .iter()
-                .all(|required| {
-                    identity
-                        .capabilities
-                        .iter()
-                        .any(|capability| capability == required)
-                }) =>
-            {
-                ComponentHealth {
-                    id: "community-compatibility".to_owned(),
-                    label: "Community compatibility".to_owned(),
-                    state: ComponentState::Ready,
-                    detail: "Fixed Community plugin, metadata, builder, and parser services ready"
-                        .to_owned(),
-                }
-            }
-            EngineState::Ready { .. } => ComponentHealth {
-                id: "community-compatibility".to_owned(),
-                label: "Community compatibility".to_owned(),
-                state: ComponentState::Unavailable,
-                detail: "Required Community capabilities are unavailable".to_owned(),
-            },
-            state => ComponentHealth {
-                id: "community-compatibility".to_owned(),
-                label: "Community compatibility".to_owned(),
-                state: ComponentState::Unavailable,
-                detail: format!("Compatibility engine is {}", state.label()),
-            },
-        },
-    )
+        };
+    }
+    let (state, detail) = match engine.status() {
+        Some(EngineManagerStatus::Idle) => (
+            ComponentState::Ready,
+            "Available on demand; Java is not running".to_owned(),
+        ),
+        Some(EngineManagerStatus::Starting) => {
+            (ComponentState::Ready, "Starting on demand".to_owned())
+        }
+        Some(EngineManagerStatus::Ready(EngineState::Ready { identity, .. }))
+            if [
+                COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
+                COMMUNITY_SCHEMA_METADATA_CAPABILITY,
+                COMMUNITY_OBJECT_METADATA_CAPABILITY,
+                COMMUNITY_RELATION_METADATA_CAPABILITY,
+                COMMUNITY_DQL_BUILDER_CAPABILITY,
+                COMMUNITY_SQL_BUILDER_CAPABILITY,
+                COMMUNITY_SQL_PARSER_CAPABILITY,
+            ]
+            .iter()
+            .all(|required| {
+                identity
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == required)
+            }) =>
+        {
+            (
+                ComponentState::Ready,
+                "Fixed Community plugin, metadata, builder, and parser services ready".to_owned(),
+            )
+        }
+        Some(EngineManagerStatus::Stopping {
+            reason: EngineStopReason::Idle,
+            ..
+        }) => (
+            ComponentState::Ready,
+            "Releasing the idle Java process".to_owned(),
+        ),
+        Some(EngineManagerStatus::Ready(EngineState::Ready { .. })) => (
+            ComponentState::Unavailable,
+            "Required Community capabilities are unavailable".to_owned(),
+        ),
+        Some(EngineManagerStatus::Failed(_)) => (
+            ComponentState::Unavailable,
+            "The last Community engine startup failed; the next request can retry".to_owned(),
+        ),
+        Some(EngineManagerStatus::Ready(state)) => (
+            ComponentState::Unavailable,
+            format!("Compatibility engine is {}", state.label()),
+        ),
+        Some(
+            EngineManagerStatus::Stopping { .. }
+            | EngineManagerStatus::ShuttingDown
+            | EngineManagerStatus::Stopped,
+        )
+        | None => (
+            ComponentState::Unavailable,
+            "Compatibility engine is shutting down".to_owned(),
+        ),
+    };
+    ComponentHealth {
+        id: "community-compatibility".to_owned(),
+        label: "Community compatibility".to_owned(),
+        state,
+        detail,
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -980,8 +1050,12 @@ mod tests {
             })
             .await
             .expect("non-managed composition must preserve external driver compatibility");
-        let managed =
-            Application::compose(RuntimeStatus::Ready, Some(storage), None, Some(Vec::new()));
+        let managed = Application::compose(
+            RuntimeStatus::Ready,
+            Some(storage),
+            super::EngineProvider::Disabled,
+            Some(Vec::new()),
+        );
 
         let create_error = managed
             .create_datasource(CreateDatasourceRequest {

@@ -18,6 +18,7 @@ use chat2db_java_bridge::{
     DriverArtifact, DriverClient, DriverSpec, EngineCommand, EngineConfig, EngineSupervisor,
 };
 use chat2db_storage::{EncryptedFileVault, Storage, StorageOptions};
+use futures_util::future::join_all;
 use tempfile::TempDir;
 
 const H2_DRIVER_CLASS: &str = "org.h2.Driver";
@@ -165,36 +166,33 @@ async fn assert_community_disabled(application: &Application) {
 }
 
 #[tokio::test]
-async fn runtime_host_preloads_a_manifested_h2_driver_pack() {
+async fn runtime_host_open_keeps_java_dormant() {
+    let directory = TempDir::new().expect("temporary runtime directory");
+    let missing_java = directory.path().join("missing-java");
+    let engine = EngineConfig::new(EngineCommand::new(&missing_java));
+    let config = RuntimeConfig::new(engine)
+        .with_data_dir(directory.path().join("data"))
+        .with_vault_master_key_base64(STANDARD.encode([0x5a; 32]));
+
+    let mut host = RuntimeHost::open(config)
+        .await
+        .expect("opening storage must not spawn the missing Java executable");
+    assert_engine_available_on_demand(&host.application());
+    assert!(host.application().list_drivers().items.is_empty());
+    host.shutdown()
+        .await
+        .expect("a dormant runtime must shut down cleanly");
+}
+
+#[tokio::test]
+async fn managed_h2_starts_on_demand_and_reloads_after_idle_shutdown() {
     let engine_jar = required_jar("CHAT2DB_JAVA_ENGINE_JAR");
     let h2_jar = required_jar("CHAT2DB_H2_DRIVER_JAR");
     let directory = TempDir::new().expect("temporary runtime directory");
     let driver_pack_root = directory.path().join("driver-packs");
     let pack_directory = driver_pack_root.join("01-h2");
-    fs::create_dir_all(&pack_directory).expect("driver pack directory must be created");
-    let managed_h2_jar = pack_directory.join("h2-2.3.232.jar");
-    fs::copy(h2_jar, &managed_h2_jar).expect("H2 must be copied into the managed pack");
-    let artifact = DriverArtifact::from_path(&managed_h2_jar).expect("managed H2 must hash");
-    let mut sha256 = String::with_capacity(64);
-    for byte in artifact.sha256() {
-        write!(&mut sha256, "{byte:02x}").expect("writing to String cannot fail");
-    }
-    fs::write(
-        pack_directory.join("driver-pack.json"),
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "schemaVersion": 1,
-            "id": "h2",
-            "name": "H2",
-            "version": "2.3.232",
-            "driverClass": H2_DRIVER_CLASS,
-            "artifacts": [{
-                "path": "h2-2.3.232.jar",
-                "sha256": sha256
-            }]
-        }))
-        .expect("driver manifest must serialize"),
-    )
-    .expect("driver manifest must be written");
+    write_driver_pack(&driver_pack_root, "01-h2", "h2", H2_DRIVER_CLASS, &h2_jar);
+    let managed_h2_jar = pack_directory.join("driver.jar");
 
     let engine = EngineConfig::new(EngineCommand::java_jar("java", engine_jar)).with_timeouts(
         Duration::from_secs(10),
@@ -206,16 +204,18 @@ async fn runtime_host_preloads_a_manifested_h2_driver_pack() {
     let config = RuntimeConfig::new(engine)
         .with_data_dir(&data_dir)
         .with_driver_pack_dir(&driver_pack_root)
-        .with_vault_master_key_base64(STANDARD.encode([0x5a; 32]));
+        .with_vault_master_key_base64(STANDARD.encode([0x5a; 32]))
+        .with_engine_idle_timeout(Duration::from_millis(100));
     let mut host = RuntimeHost::open(config)
         .await
-        .expect("runtime host must preload the H2 pack");
+        .expect("runtime host must discover the H2 pack without starting Java");
     let application = host.application();
+    assert_engine_available_on_demand(&application);
     let inventory = application.list_drivers();
     assert_eq!(inventory.items.len(), 1);
     let installed = &inventory.items[0];
     assert_eq!(installed.pack_id, "h2");
-    assert_eq!(installed.version, "2.3.232");
+    assert_eq!(installed.version, "test");
     assert_eq!(installed.driver_class, H2_DRIVER_CLASS);
     assert_eq!(installed.artifact_count, 1);
     assert_eq!(
@@ -239,27 +239,49 @@ async fn runtime_host_preloads_a_manifested_h2_driver_pack() {
         })
         .await
         .expect("managed-driver datasource must be created");
+    let mut first_leases = join_all((0..16).map(|_| application.acquire_engine()))
+        .await
+        .into_iter()
+        .map(|result| result.expect("concurrent first use must share one successful startup"))
+        .collect::<Vec<_>>();
+    let first_lease = first_leases
+        .pop()
+        .expect("at least one first-use lease must exist");
+    let first_generation = first_lease.generation();
+    assert!(
+        first_leases
+            .iter()
+            .all(|lease| lease.generation() == first_generation),
+        "concurrent first use must return one Java generation"
+    );
+    drop(first_leases);
     let accepted = application
-        .start_query(StartQueryRequest {
-            datasource_id: datasource.id,
-            sql: "SELECT X AS id, CAST('row-' || X AS VARCHAR(16)) AS label, \
-                  MOD(X, 2) = 0 AS active, \
-                  CAST(X + 0.25 AS DECIMAL(10, 2)) AS amount \
-                  FROM SYSTEM_RANGE(1, 5) ORDER BY X"
-                .to_owned(),
-            parameters: Vec::new(),
-            limits: QueryLimits {
-                max_rows: "0".to_owned(),
-                max_result_bytes: (1024_u64 * 1024).to_string(),
-                batch_rows: 2,
-                batch_bytes: 1024,
-                result_ttl_seconds: 60,
-            },
-        })
+        .start_query(h2_range_query(datasource.id.clone()))
         .await
         .expect("managed H2 query must be accepted");
     let result_id = wait_for_result(&application, &accepted.operation_id).await;
     assert_result_page(&application, &result_id).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_engine_running(&application);
+    drop(first_lease);
+
+    wait_for_engine_idle(&application).await;
+    let second_lease = host
+        .acquire_engine()
+        .await
+        .expect("database use after idle shutdown must start a new Java generation");
+    assert_ne!(
+        second_lease.generation(),
+        first_generation,
+        "idle restart must not reuse a stale engine generation"
+    );
+    let accepted = application
+        .start_query(h2_range_query(datasource.id))
+        .await
+        .expect("the reloaded H2 driver must execute a second query");
+    let result_id = wait_for_result(&application, &accepted.operation_id).await;
+    assert_result_page(&application, &result_id).await;
+    drop(second_lease);
 
     host.shutdown()
         .await
@@ -285,16 +307,25 @@ async fn partial_managed_driver_preload_cleans_generation_and_releases_storage()
     let driver_runtime_directory = data_dir.join("jdbc-driver-runtime");
     let master_key = STANDARD.encode([0x5a; 32]);
 
-    let error = RuntimeHost::open(managed_runtime_config(
+    let mut host = RuntimeHost::open(managed_runtime_config(
         &engine_jar,
         &data_dir,
         &driver_pack_root,
         &master_key,
     ))
     .await
-    .expect_err("invalid second pack must fail the complete preload");
+    .expect("driver discovery must not start Java");
+    assert_eq!(host.application().list_drivers().items.len(), 2);
+    let error = host
+        .acquire_engine()
+        .await
+        .expect_err("invalid second pack must fail first-use preload");
     assert_eq!(error.api_error().code, "driver.load_failed");
+    host.shutdown()
+        .await
+        .expect("a failed lazy generation must already be reaped");
     assert_directory_empty(&driver_runtime_directory);
+    drop(host);
 
     fs::remove_dir_all(driver_pack_root.join("02-invalid"))
         .expect("invalid pack must be removable after failed preload");
@@ -305,8 +336,13 @@ async fn partial_managed_driver_preload_cleans_generation_and_releases_storage()
         &master_key,
     ))
     .await
-    .expect("storage and Java generation must reopen immediately");
+    .expect("storage and driver discovery must reopen immediately");
     assert_eq!(host.application().list_drivers().items.len(), 1);
+    let lease = host
+        .acquire_engine()
+        .await
+        .expect("the corrected pack must preload on first use");
+    drop(lease);
     host.shutdown()
         .await
         .expect("reopened runtime must shut down cleanly");
@@ -539,6 +575,25 @@ async fn next_operation_event(
         .event
 }
 
+fn h2_range_query(datasource_id: String) -> StartQueryRequest {
+    StartQueryRequest {
+        datasource_id,
+        sql: "SELECT X AS id, CAST('row-' || X AS VARCHAR(16)) AS label, \
+              MOD(X, 2) = 0 AS active, \
+              CAST(X + 0.25 AS DECIMAL(10, 2)) AS amount \
+              FROM SYSTEM_RANGE(1, 5) ORDER BY X"
+            .to_owned(),
+        parameters: Vec::new(),
+        limits: QueryLimits {
+            max_rows: "0".to_owned(),
+            max_result_bytes: (1024_u64 * 1024).to_string(),
+            batch_rows: 2,
+            batch_bytes: 1024,
+            result_ttl_seconds: 60,
+        },
+    }
+}
+
 async fn assert_result_page(application: &Application, result_id: &str) {
     let page = application
         .result_page(
@@ -563,6 +618,49 @@ async fn assert_result_page(application: &Application, result_id: &str) {
             JdbcValue::Decimal { value: amount },
         ] if id == "1" && label == "row-1" && amount == "1.25"
     ));
+}
+
+fn assert_engine_available_on_demand(application: &Application) {
+    let engine = application
+        .health()
+        .components
+        .into_iter()
+        .find(|component| component.id == "database-engine")
+        .expect("database engine health must be present");
+    assert_eq!(engine.state, ComponentState::Ready);
+    assert_eq!(engine.detail, "Available on demand; Java is not running");
+}
+
+fn assert_engine_running(application: &Application) {
+    let engine = application
+        .health()
+        .components
+        .into_iter()
+        .find(|component| component.id == "database-engine")
+        .expect("database engine health must be present");
+    assert_eq!(engine.state, ComponentState::Ready);
+    assert_eq!(engine.detail, "Ready");
+}
+
+async fn wait_for_engine_idle(application: &Application) {
+    tokio::time::timeout(EVENT_TIMEOUT, async {
+        loop {
+            let idle = application
+                .health()
+                .components
+                .into_iter()
+                .find(|component| component.id == "database-engine")
+                .is_some_and(|component| {
+                    component.detail == "Available on demand; Java is not running"
+                });
+            if idle {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("managed Java must become idle before the test deadline");
 }
 
 fn managed_runtime_config(
