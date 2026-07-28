@@ -25,8 +25,9 @@ git submodule update --init --recursive
 
 ## Current state
 
-The repository has completed Stages 1 through 6 and the first thirteen
-independently buildable Stage 7 slices:
+The repository has completed Stages 1 through 6, the first thirteen
+independently buildable Stage 7 slices, and the first end-user Community
+Console compatibility slice:
 
 - canonical Rust API contracts;
 - a transport-neutral Rust application service root;
@@ -57,9 +58,10 @@ independently buildable Stage 7 slices:
   Tauri 2 commands/channels;
 - a checked-in OpenAPI contract with generated TypeScript types and drift
   verification; and
-- the exact pinned original Community Umi/React frontend, served by Axum over
-  historical HTTP routes on Web and bridged from `window.javaQuery` to Tauri
-  IPC on desktop without product UI or style forks;
+- the pinned original Community Umi/React layout and components, served by
+  Axum over historical HTTP routes on Web and bridged from `window.javaQuery`
+  to Tauri IPC on desktop without a replacement UI or style fork; the pinned
+  source carries one CSP-safe callback-cloning compatibility fix;
 - a provider-neutral bounded agent loop with direct OpenAI, Anthropic, and
   Gemini adapters, durable sessions/messages/runs/permissions, and atomic
   context compaction;
@@ -90,6 +92,13 @@ independently buildable Stage 7 slices:
   datasource CRUD/tree, database/schema/table discovery, and synchronous table
   preview over the historical `{success,data,errorCode,errorMessage}` envelope;
   and
+- durable SQLite-backed Community Console create/get/list/update/delete,
+  including SQL text, datasource/database/schema binding, saved status, and
+  open-tab state across process restarts; and
+- Community Console SELECT execution through the existing bounded Core query
+  and retained-result path: Web uses the historical synchronous result shape,
+  while desktop maps operation lifecycle, rows, failure, and cancellation to
+  the original JCEF event bus;
 - a shared Web/Tauri legacy dispatcher: Axum maps the original `/api` routes,
   while desktop preserves the original JCEF correlation envelope through one
   `legacy_request` Tauri command; and
@@ -102,7 +111,12 @@ forced-read-only execution, and retained paging of the selected table's rows.
 Commit `928e62c5d775d0e81d95db7fee186db756834a72` additionally passed the
 complete local repository gate and a live original-frontend legacy HTTP
 vertical covering connection, datasource persistence, database/table listing,
-and three-row table preview.
+and three-row table preview. On 2026-07-28 commits `36ecac6`, `78e92d6`, and
+`c51fdff` passed formatting, strict workspace Clippy, all 509 Rust tests, 49
+frontend tests, and the Community production build. A live MySQL 8.4 run then
+created a Console, returned real table rows, returned a renderable SQL error,
+saved edited SQL, closed it, restarted the Rust host, reopened it, and executed
+the restored SQL successfully.
 
 Stage 6 is complete. Web and desktop own the product runtime and publish its
 owner-only local endpoint; CLI and MCP attach to that host and never contact
@@ -141,6 +155,14 @@ executes it through the existing forced-read-only query and retained-result
 path. The fixed 149-JAR classpath keeps H2 and MySQL; PostgreSQL and other
 dialects do not block the MySQL preview. MySQL writes, Agent, CLI, and MCP
 conformance remain outside this small read-only milestone.
+
+The first Console compatibility slice adds SQLite migration 3 for saved
+Consoles and the historical `/api/operation/saved/*` plus
+`/api/rdb/dml/execute` routes. Web waits on the Core operation and returns the
+existing Community grid result. Desktop starts the same Core query, emits the
+original `sql_execution_event` sequence through Tauri, and supports
+`sql-cancel`. This slice intentionally supports query/SELECT execution only;
+arbitrary DDL, DML, and multi-statement Console scripts are not implemented.
 
 The Stage 5 and Stage 7G through Stage 7M custom React workbench was an
 intermediate implementation and is no longer the product frontend. Commit
