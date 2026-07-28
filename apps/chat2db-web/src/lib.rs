@@ -408,6 +408,198 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn legacy_saved_console_routes_cover_create_list_get_update_and_delete() {
+        let directory = TempDir::new().expect("temp directory");
+        let storage =
+            Storage::open(directory.path(), Arc::new(TestVault)).expect("test storage must open");
+        let application = router(Application::with_storage(storage));
+
+        let created_response = application
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/operation/saved/create",
+                &serde_json::json!({
+                    "name": "inventory[MySQL]",
+                    "dataSourceId": "datasource-opaque-1",
+                    "dataSourceName": "MySQL",
+                    "databaseName": "inventory",
+                    "schemaName": "legacy_schema",
+                    "type": "MYSQL",
+                    "ddl": "SELECT 1",
+                    "status": "DRAFT",
+                    "operationType": "console"
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        let created: serde_json::Value = response_json(created_response).await;
+        assert_eq!(created["success"], true);
+        let console_id = created["data"]
+            .as_i64()
+            .expect("Community Console id must remain numeric");
+
+        let listed_response = application
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/api/operation/saved/list?pageNo=1&pageSize=20&tabOpened=y",
+            ))
+            .await
+            .expect("router must respond");
+        let listed: serde_json::Value = response_json(listed_response).await;
+        assert_eq!(listed["success"], true);
+        assert_eq!(listed["data"]["total"], 1);
+        assert_eq!(listed["data"]["data"][0]["id"], console_id);
+        assert_eq!(listed["data"]["data"][0]["tabOpened"], "y");
+        assert_eq!(
+            listed["data"]["data"][0]["dataSourceId"],
+            "datasource-opaque-1"
+        );
+
+        let get_uri = format!("/api/operation/saved?id={console_id}");
+        let loaded_response = application
+            .clone()
+            .oneshot(dynamic_request(Method::GET, &get_uri))
+            .await
+            .expect("router must respond");
+        let loaded: serde_json::Value = response_json(loaded_response).await;
+        assert_eq!(loaded["data"]["ddl"], "SELECT 1");
+        assert_eq!(loaded["data"]["schemaName"], "legacy_schema");
+        assert_eq!(loaded["data"]["connectable"], true);
+
+        let updated_response = application
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/operation/saved/update",
+                &serde_json::json!({
+                    "id": console_id,
+                    "ddl": "SELECT id, label FROM items ORDER BY id",
+                    "schemaName": null,
+                    "status": "RELEASE",
+                    "tabOpened": "n"
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        let updated: serde_json::Value = response_json(updated_response).await;
+        assert_eq!(updated["success"], true);
+
+        let reopened_response = application
+            .clone()
+            .oneshot(dynamic_request(Method::GET, &get_uri))
+            .await
+            .expect("router must respond");
+        let reopened: serde_json::Value = response_json(reopened_response).await;
+        assert_eq!(
+            reopened["data"]["ddl"],
+            "SELECT id, label FROM items ORDER BY id"
+        );
+        assert_eq!(reopened["data"]["schemaName"], serde_json::Value::Null);
+        assert_eq!(reopened["data"]["status"], "RELEASE");
+        assert_eq!(reopened["data"]["name"], "inventory[MySQL]");
+
+        let saved_response = application
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/api/operation/saved/list?pageNo=1&pageSize=100&status=RELEASE&orderByDesc=true",
+            ))
+            .await
+            .expect("router must respond");
+        let saved: serde_json::Value = response_json(saved_response).await;
+        assert_eq!(saved["data"]["total"], 1);
+        assert_eq!(saved["data"]["data"][0]["id"], console_id);
+
+        let deleted_response = application
+            .clone()
+            .oneshot(dynamic_request(Method::DELETE, &get_uri))
+            .await
+            .expect("router must respond");
+        let deleted: serde_json::Value = response_json(deleted_response).await;
+        assert_eq!(deleted["success"], true);
+
+        let missing_response = application
+            .oneshot(dynamic_request(Method::GET, &get_uri))
+            .await
+            .expect("router must respond");
+        let missing: serde_json::Value = response_json(missing_response).await;
+        assert_eq!(missing["success"], true);
+        assert!(missing["data"].is_null());
+    }
+
+    #[tokio::test]
+    async fn legacy_sql_execute_rejects_empty_sql_and_preserves_core_start_errors() {
+        let empty_response = router(Application::new())
+            .oneshot(json_request(
+                Method::POST,
+                "/api/rdb/dml/execute",
+                &serde_json::json!({
+                    "dataSourceId": "datasource-1",
+                    "databaseType": "MYSQL",
+                    "sql": "",
+                    "pageNo": 1,
+                    "pageSize": 200
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        let empty: serde_json::Value = response_json(empty_response).await;
+        assert_eq!(empty["success"], false);
+        assert_eq!(empty["errorCode"], "invalid_sql_execute_request");
+
+        let directory = TempDir::new().expect("temp directory");
+        let storage =
+            Storage::open(directory.path(), Arc::new(TestVault)).expect("test storage must open");
+        let unavailable_response = router(Application::with_storage(storage))
+            .oneshot(json_request(
+                Method::POST,
+                "/api/rdb/dml/execute",
+                &serde_json::json!({
+                    "dataSourceId": "datasource-1",
+                    "databaseType": "MYSQL",
+                    "sql": "SELECT 1",
+                    "pageNo": 1,
+                    "pageSize": 200
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        let unavailable: serde_json::Value = response_json(unavailable_response).await;
+        assert_eq!(unavailable["success"], false);
+        assert_eq!(unavailable["errorCode"], "database_engine_unavailable");
+    }
+
+    #[test]
+    fn legacy_sql_failure_is_a_renderable_community_result_item() {
+        let request = serde_json::from_value(serde_json::json!({
+            "dataSourceId": "datasource-1",
+            "databaseType": "MYSQL",
+            "databaseName": "inventory",
+            "sql": "SELECT missing_column FROM items",
+            "pageNo": 1,
+            "pageSize": 200
+        }))
+        .expect("legacy SQL request must deserialize");
+        let failure = crate::legacy::LegacyFailure {
+            code: "database.query_failed".to_owned(),
+            message: "Unknown column 'missing_column'".to_owned(),
+        };
+        let result = crate::legacy::sql_failure_result(&request, &failure, 12);
+        let result = serde_json::to_value(result).expect("failure result must serialize");
+
+        assert_eq!(result["success"], false);
+        assert_eq!(result["message"], "Unknown column 'missing_column'");
+        assert_eq!(result["originalSql"], "SELECT missing_column FROM items");
+        assert_eq!(
+            result["extra"]["messages"][0]["errorCode"],
+            "database.query_failed"
+        );
+    }
+
+    #[tokio::test]
     async fn legacy_metadata_and_preview_failures_keep_the_community_envelope() {
         let application = router(Application::new());
         let database_response = application

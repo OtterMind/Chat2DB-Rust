@@ -4,7 +4,10 @@
 //! Axum handlers at the bottom. Desktop IPC can reuse the same request and
 //! response translations without duplicating datasource or JDBC behavior.
 
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::HashSet,
+    time::{Duration, Instant},
+};
 
 use axum::{
     Json, Router,
@@ -15,18 +18,25 @@ use chat2db_contract::{
     ApiError, ColumnNullability, CommunityTable, Datasource, DatasourceConnection,
     DatasourceConnectionProperty, DatasourceSecretChange, JdbcDriver, JdbcValue, JdbcValueType,
     ListCommunityDatabasesRequest, ListCommunitySchemasRequest, ListCommunityTablesRequest,
-    OperationEvent, ResultColumn, ResultMetadata, ResultPageRequest,
-    StartCommunityTablePreviewRequest, UpdateDatasourceRequest,
+    OperationEvent, QueryAccepted, QueryLimits, ResultColumn, ResultMetadata, ResultPageRequest,
+    StartCommunityTablePreviewRequest, StartQueryRequest, UpdateDatasourceRequest,
 };
 use chat2db_core::{AppError, Application};
+use chat2db_storage::{
+    CreateSavedConsole, SavedConsoleListQuery, SavedConsoleRecord, Storage, StorageError,
+    UpdateSavedConsole,
+};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 
 const DEFAULT_PAGE_NO: u32 = 1;
 const DEFAULT_PAGE_SIZE: u32 = 20;
 const DEFAULT_PREVIEW_PAGE_SIZE: u32 = 200;
+const DEFAULT_SQL_PAGE_SIZE: u32 = 200;
 const MAX_PREVIEW_ROWS: u32 = 1_000;
+const MAX_SQL_ROWS: u32 = 10_000;
 const RESULT_PAGE_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const PREVIEW_TIMEOUT: Duration = Duration::from_secs(30);
+const SQL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Community's historical response wrapper.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -310,7 +320,8 @@ pub struct LegacyManageResult {
     pub page_size: u32,
     pub fuzzy_total: String,
     pub has_next_page: bool,
-    pub execute_sql_params: LegacyTablePreviewRequest,
+    pub execute_sql_params: LegacySqlExecuteRequest,
+    pub extra: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -322,6 +333,121 @@ pub struct LegacyPageQuery {
     pub page_size: u32,
     #[serde(default)]
     pub search_key: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacySavedConsoleCreateRequest {
+    #[serde(default)]
+    pub id: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub name: String,
+    #[serde(default)]
+    pub data_source_id: Option<LegacyIdentifier>,
+    #[serde(default)]
+    pub data_source_name: Option<String>,
+    #[serde(default)]
+    pub database_name: Option<String>,
+    #[serde(default)]
+    pub schema_name: Option<String>,
+    #[serde(rename = "type", default)]
+    pub database_type: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub ddl: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub status: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub tab_opened: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub operation_type: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum LegacyPatch<T> {
+    #[default]
+    Unset,
+    Set(Option<T>),
+}
+
+impl<'de, T> Deserialize<'de> for LegacyPatch<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<T>::deserialize(deserializer).map(Self::Set)
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacySavedConsoleUpdateRequest {
+    pub id: i64,
+    #[serde(default)]
+    pub name: LegacyPatch<String>,
+    #[serde(default)]
+    pub data_source_id: LegacyPatch<LegacyIdentifier>,
+    #[serde(default)]
+    pub data_source_name: LegacyPatch<String>,
+    #[serde(default)]
+    pub database_name: LegacyPatch<String>,
+    #[serde(default)]
+    pub schema_name: LegacyPatch<String>,
+    #[serde(rename = "type", default)]
+    pub database_type: LegacyPatch<String>,
+    #[serde(default)]
+    pub ddl: LegacyPatch<String>,
+    #[serde(default)]
+    pub status: LegacyPatch<String>,
+    #[serde(default)]
+    pub tab_opened: LegacyPatch<String>,
+    #[serde(default)]
+    pub operation_type: LegacyPatch<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacySavedConsoleListQuery {
+    #[serde(default = "default_page_no")]
+    pub page_no: u32,
+    #[serde(default = "default_page_size")]
+    pub page_size: u32,
+    #[serde(default)]
+    pub data_source_id: Option<LegacyIdentifier>,
+    #[serde(default)]
+    pub database_name: Option<String>,
+    #[serde(default)]
+    pub schema_name: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub tab_opened: Option<String>,
+    #[serde(default)]
+    pub operation_type: Option<String>,
+    #[serde(default)]
+    pub search_key: Option<String>,
+    #[serde(default)]
+    pub order_by_desc: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacySavedConsoleResponse {
+    pub id: i64,
+    pub name: String,
+    pub data_source_id: Option<String>,
+    pub data_source_name: Option<String>,
+    pub connectable: bool,
+    pub database_name: Option<String>,
+    pub schema_name: Option<String>,
+    #[serde(rename = "type")]
+    pub database_type: Option<String>,
+    pub ddl: String,
+    pub status: String,
+    pub tab_opened: String,
+    pub operation_type: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -387,6 +513,37 @@ pub struct LegacyTablePreviewRequest {
     pub sql: String,
 }
 
+/// Community's synchronous SQL execution payload. Extra frontend fields are
+/// intentionally ignored by Serde so this remains compatible across pinned UI
+/// revisions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacySqlExecuteRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub data_source_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub schema_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_type: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub table_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub sql: String,
+    #[serde(default)]
+    pub single: bool,
+    #[serde(default = "default_page_no")]
+    pub page_no: u32,
+    #[serde(default = "default_sql_page_size")]
+    pub page_size: u32,
+    #[serde(default)]
+    pub console_id: Option<LegacyIdentifier>,
+    #[serde(default)]
+    pub result_set_id: Option<u32>,
+}
+
 /// Transport-neutral request used by the retained desktop command-line bridge.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -422,6 +579,29 @@ fn default_page_size() -> u32 {
 
 fn default_preview_page_size() -> u32 {
     DEFAULT_PREVIEW_PAGE_SIZE
+}
+
+fn default_sql_page_size() -> u32 {
+    DEFAULT_SQL_PAGE_SIZE
+}
+
+impl From<&LegacyTablePreviewRequest> for LegacySqlExecuteRequest {
+    fn from(request: &LegacyTablePreviewRequest) -> Self {
+        Self {
+            data_source_id: request.data_source_id.clone(),
+            data_source_name: String::new(),
+            database_name: request.database_name.clone(),
+            schema_name: request.schema_name.clone(),
+            database_type: request.database_type.clone(),
+            table_name: request.table_name.clone(),
+            sql: request.sql.clone(),
+            single: true,
+            page_no: request.page_no,
+            page_size: request.page_size,
+            console_id: None,
+            result_set_id: None,
+        }
+    }
 }
 
 fn default_environment() -> LegacyEnvironment {
@@ -599,6 +779,111 @@ pub(crate) async fn delete_datasource(
     Ok(())
 }
 
+pub(crate) async fn create_saved_console(
+    application: &Application,
+    request: &LegacySavedConsoleCreateRequest,
+) -> LegacyResult<i64> {
+    let storage = legacy_storage(application)?;
+    let input = CreateSavedConsole {
+        id: request.id,
+        name: request.name.clone(),
+        data_source_id: request
+            .data_source_id
+            .as_ref()
+            .map(LegacyIdentifier::as_string),
+        data_source_name: request.data_source_name.clone(),
+        database_name: request.database_name.clone(),
+        schema_name: request.schema_name.clone(),
+        database_type: request.database_type.clone(),
+        ddl: request.ddl.clone(),
+        status: default_if_blank(&request.status, "DRAFT"),
+        // Community always opens a newly created Console.
+        tab_opened: "y".to_owned(),
+        operation_type: default_if_blank(&request.operation_type, "console"),
+    };
+    legacy_storage_call(move || storage.create_saved_console(input))
+        .await
+        .map(|record| record.id)
+}
+
+pub(crate) async fn get_saved_console(
+    application: &Application,
+    id: i64,
+) -> LegacyResult<Option<LegacySavedConsoleResponse>> {
+    let storage = legacy_storage(application)?;
+    legacy_storage_call(move || storage.get_saved_console(id))
+        .await
+        .map(|record| record.map(saved_console_response))
+}
+
+pub(crate) async fn list_saved_consoles(
+    application: &Application,
+    query: &LegacySavedConsoleListQuery,
+) -> LegacyResult<LegacyPage<LegacySavedConsoleResponse>> {
+    let storage = legacy_storage(application)?;
+    let storage_query = SavedConsoleListQuery {
+        data_source_id: query
+            .data_source_id
+            .as_ref()
+            .map(LegacyIdentifier::as_string),
+        database_name: query.database_name.clone(),
+        schema_name: query.schema_name.clone(),
+        status: query.status.clone(),
+        tab_opened: query.tab_opened.clone(),
+        operation_type: query.operation_type.clone(),
+        search_key: query.search_key.clone(),
+        page_no: query.page_no,
+        page_size: query.page_size,
+        order_by_desc: query.order_by_desc,
+    };
+    legacy_storage_call(move || storage.list_saved_consoles(&storage_query))
+        .await
+        .map(|page| {
+            let total = usize::try_from(page.total).unwrap_or(usize::MAX);
+            let data = page
+                .records
+                .into_iter()
+                .map(saved_console_response)
+                .collect::<Vec<_>>();
+            LegacyPage {
+                has_next_page: u64::from(page.page_no) * u64::from(page.page_size) < page.total,
+                data,
+                page_no: page.page_no,
+                page_size: page.page_size,
+                total,
+            }
+        })
+}
+
+pub(crate) async fn update_saved_console(
+    application: &Application,
+    request: LegacySavedConsoleUpdateRequest,
+) -> LegacyResult<()> {
+    let storage = legacy_storage(application)?;
+    let input = UpdateSavedConsole {
+        name: required_string_patch(request.name),
+        data_source_id: identifier_patch(request.data_source_id),
+        data_source_name: nullable_string_patch(request.data_source_name),
+        database_name: nullable_string_patch(request.database_name),
+        schema_name: nullable_string_patch(request.schema_name),
+        database_type: nullable_string_patch(request.database_type),
+        ddl: required_string_patch(request.ddl),
+        status: required_string_patch(request.status),
+        tab_opened: required_string_patch(request.tab_opened),
+        operation_type: required_string_patch(request.operation_type),
+    };
+    legacy_storage_call(move || storage.update_saved_console(request.id, input))
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn delete_saved_console(application: &Application, id: i64) -> LegacyResult<()> {
+    let storage = legacy_storage(application)?;
+    legacy_storage_call(move || storage.delete_saved_console(id))
+        .await
+        .map(|_| ())
+}
+
 /// Builds the flat namespace tree used when no custom grouping exists.
 pub(crate) async fn namespace_tree(
     application: &Application,
@@ -758,7 +1043,7 @@ pub(crate) async fn preview_table(
 
     let preview_result = tokio::time::timeout(
         PREVIEW_TIMEOUT,
-        wait_for_result(application, &accepted.operation_id),
+        wait_for_sql_execution(application, &accepted.operation_id),
     )
     .await;
     let Ok(preview_result) = preview_result else {
@@ -812,11 +1097,61 @@ pub(crate) async fn preview_table(
         page_size: request.page_size,
         fuzzy_total: page.metadata.row_count,
         has_next_page,
-        execute_sql_params: request.clone(),
+        execute_sql_params: LegacySqlExecuteRequest::from(request),
+        extra: serde_json::json!({}),
     }])
 }
 
-async fn wait_for_result(
+/// Starts one Community Console query through Core and returns the opaque
+/// operation id used by both HTTP and desktop transports.
+///
+/// # Errors
+///
+/// Returns request validation, datasource, storage, or engine failures before
+/// the operation is accepted.
+pub async fn start_sql_execution(
+    application: &Application,
+    request: &LegacySqlExecuteRequest,
+) -> LegacyResult<QueryAccepted> {
+    let (_, row_limit) = sql_page_window(request)?;
+    let datasource_id = request.data_source_id.as_string();
+    if datasource_id.trim().is_empty() {
+        return Err(LegacyFailure::invalid(
+            "invalid_sql_execute_request",
+            "dataSourceId is required",
+        ));
+    }
+    if request.sql.trim().is_empty() {
+        return Err(LegacyFailure::invalid(
+            "invalid_sql_execute_request",
+            "sql is required",
+        ));
+    }
+    application
+        .start_query(StartQueryRequest {
+            datasource_id,
+            sql: request.sql.clone(),
+            parameters: Vec::new(),
+            limits: QueryLimits {
+                max_rows: row_limit.to_string(),
+                max_result_bytes: RESULT_PAGE_MAX_BYTES.to_string(),
+                batch_rows: request.page_size.min(512),
+                batch_bytes: 1024 * 1024,
+                result_ttl_seconds: 60,
+            },
+        })
+        .await
+        .map_err(Into::into)
+}
+
+/// Waits for a Core query terminal event without translating away its error
+/// code or message. Desktop streaming can subscribe independently and use
+/// this as the final retained-result barrier.
+///
+/// # Errors
+///
+/// Returns subscription, database execution, or cancellation failures.
+pub async fn wait_for_sql_execution(
     application: &Application,
     operation_id: &str,
 ) -> LegacyResult<ResultMetadata> {
@@ -827,17 +1162,322 @@ async fn wait_for_result(
             OperationEvent::Failed { error } => return Err(LegacyFailure::from_api(error)),
             OperationEvent::Cancelled { .. } => {
                 return Err(LegacyFailure::invalid(
-                    "table_preview_cancelled",
-                    "The table preview was cancelled",
+                    "sql_execution_cancelled",
+                    "The SQL execution was cancelled",
                 ));
             }
             OperationEvent::Started | OperationEvent::Progress { .. } => {}
         }
     }
     Err(LegacyFailure::invalid(
-        "table_preview_incomplete",
-        "The table preview ended without a result",
+        "sql_execution_incomplete",
+        "The SQL execution ended without a result",
     ))
+}
+
+/// Reads and translates a retained Core result into Community's historical
+/// result-grid shape. This is shared by synchronous HTTP and desktop IPC.
+///
+/// # Errors
+///
+/// Returns invalid paging or retained-result read failures.
+pub async fn read_sql_result(
+    application: &Application,
+    request: &LegacySqlExecuteRequest,
+    metadata: &ResultMetadata,
+    duration: u64,
+) -> LegacyResult<LegacyManageResult> {
+    let (offset, _) = sql_page_window(request)?;
+    let page = application
+        .result_page(
+            &metadata.id,
+            ResultPageRequest {
+                offset: offset.to_string(),
+                max_rows: request.page_size.to_string(),
+                max_bytes: RESULT_PAGE_MAX_BYTES.to_string(),
+            },
+        )
+        .await?;
+    let has_next_page = page.has_more
+        || page.metadata.truncated_by_max_rows
+        || page.metadata.truncated_by_max_result_bytes;
+    let fuzzy_total =
+        if page.metadata.truncated_by_max_rows || page.metadata.truncated_by_max_result_bytes {
+            format!("{}+", page.metadata.row_count)
+        } else {
+            page.metadata.row_count.clone()
+        };
+    let header_list = page.columns.iter().map(result_header).collect();
+    let data_list = page
+        .rows
+        .into_iter()
+        .map(|row| {
+            row.values
+                .into_iter()
+                .zip(page.columns.iter())
+                .map(|(value, column)| result_cell(value, column))
+                .collect()
+        })
+        .collect();
+    Ok(LegacyManageResult {
+        data_list,
+        header_list,
+        description: "Query executed successfully".to_owned(),
+        message: String::new(),
+        sql: request.sql.clone(),
+        original_sql: request.sql.clone(),
+        success: true,
+        duration,
+        update_count: 0,
+        can_edit: false,
+        table_name: request.table_name.clone(),
+        sql_type: legacy_sql_type(&request.sql).to_owned(),
+        refresh_targets: Vec::new(),
+        page_no: request.page_no,
+        page_size: request.page_size,
+        fuzzy_total,
+        has_next_page,
+        execute_sql_params: request.clone(),
+        extra: serde_json::json!({}),
+    })
+}
+
+/// Executes the synchronous Community web contract while retaining Core's
+/// asynchronous operation and result-store lifecycle internally.
+///
+/// # Errors
+///
+/// Returns request validation or failures that occur before Core accepts the
+/// query. Failures after acceptance are returned as Community result items.
+pub async fn execute_sql(
+    application: &Application,
+    request: &LegacySqlExecuteRequest,
+) -> LegacyResult<Vec<LegacyManageResult>> {
+    let started_at = Instant::now();
+    let accepted = start_sql_execution(application, request).await?;
+    let terminal = tokio::time::timeout(
+        SQL_EXECUTION_TIMEOUT,
+        wait_for_sql_execution(application, &accepted.operation_id),
+    )
+    .await;
+    let duration = elapsed_millis(started_at);
+    match terminal {
+        Ok(Ok(metadata)) => read_sql_result(application, request, &metadata, duration)
+            .await
+            .map(|result| vec![result]),
+        Ok(Err(error)) => Ok(vec![sql_failure_result(request, &error, duration)]),
+        Err(_) => {
+            application.cancel_operation(&accepted.operation_id).await;
+            Ok(vec![sql_failure_result(
+                request,
+                &LegacyFailure::invalid(
+                    "sql_execution_timeout",
+                    "The SQL execution did not finish in time",
+                ),
+                duration,
+            )])
+        }
+    }
+}
+
+fn sql_page_window(request: &LegacySqlExecuteRequest) -> LegacyResult<(u32, u32)> {
+    if request.page_no == 0 || request.page_size == 0 {
+        return Err(LegacyFailure::invalid(
+            "invalid_sql_execute_request",
+            "pageNo and pageSize must be positive",
+        ));
+    }
+    let offset = request
+        .page_no
+        .saturating_sub(1)
+        .checked_mul(request.page_size)
+        .ok_or_else(|| {
+            LegacyFailure::invalid(
+                "invalid_sql_execute_request",
+                "requested page is outside the SQL result window",
+            )
+        })?;
+    let row_limit = offset.checked_add(request.page_size).ok_or_else(|| {
+        LegacyFailure::invalid(
+            "invalid_sql_execute_request",
+            "requested page is outside the SQL result window",
+        )
+    })?;
+    if offset >= MAX_SQL_ROWS || row_limit > MAX_SQL_ROWS {
+        return Err(LegacyFailure::invalid(
+            "invalid_sql_execute_request",
+            "SQL results are limited to the first 10000 rows",
+        ));
+    }
+    Ok((offset, row_limit))
+}
+
+/// Builds the Community result-grid error item used for accepted operations
+/// that fail asynchronously. Keeping this public prevents desktop IPC from
+/// inventing a second error projection.
+#[must_use]
+pub fn sql_failure_result(
+    request: &LegacySqlExecuteRequest,
+    error: &LegacyFailure,
+    duration: u64,
+) -> LegacyManageResult {
+    let message = error.message.clone();
+    LegacyManageResult {
+        data_list: Vec::new(),
+        header_list: Vec::new(),
+        description: String::new(),
+        message: message.clone(),
+        sql: request.sql.clone(),
+        original_sql: request.sql.clone(),
+        success: false,
+        duration,
+        update_count: 0,
+        can_edit: false,
+        table_name: request.table_name.clone(),
+        sql_type: legacy_sql_type(&request.sql).to_owned(),
+        refresh_targets: Vec::new(),
+        page_no: request.page_no,
+        page_size: request.page_size,
+        fuzzy_total: "0".to_owned(),
+        has_next_page: false,
+        execute_sql_params: request.clone(),
+        extra: serde_json::json!({
+            "messages": [{
+                "level": "ERROR",
+                "message": message,
+                "source": "database",
+                "errorCode": error.code,
+            }]
+        }),
+    }
+}
+
+fn elapsed_millis(started_at: Instant) -> u64 {
+    u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn legacy_sql_type(sql: &str) -> &'static str {
+    let keyword = sql
+        .trim_start()
+        .split(|character: char| !character.is_ascii_alphabetic())
+        .next()
+        .unwrap_or_default();
+    if keyword.eq_ignore_ascii_case("select")
+        || keyword.eq_ignore_ascii_case("with")
+        || keyword.eq_ignore_ascii_case("show")
+        || keyword.eq_ignore_ascii_case("describe")
+        || keyword.eq_ignore_ascii_case("desc")
+        || keyword.eq_ignore_ascii_case("explain")
+    {
+        "SELECT"
+    } else {
+        "OTHER"
+    }
+}
+
+fn saved_console_response(record: SavedConsoleRecord) -> LegacySavedConsoleResponse {
+    let connectable = record
+        .data_source_id
+        .as_ref()
+        .is_some_and(|id| !id.trim().is_empty());
+    LegacySavedConsoleResponse {
+        id: record.id,
+        name: record.name,
+        data_source_id: record.data_source_id,
+        data_source_name: record.data_source_name,
+        connectable,
+        database_name: record.database_name,
+        schema_name: record.schema_name,
+        database_type: record.database_type,
+        ddl: record.ddl,
+        status: record.status,
+        tab_opened: record.tab_opened,
+        operation_type: record.operation_type,
+    }
+}
+
+fn required_string_patch(patch: LegacyPatch<String>) -> Option<String> {
+    match patch {
+        LegacyPatch::Unset | LegacyPatch::Set(None) => None,
+        LegacyPatch::Set(Some(value)) => Some(value),
+    }
+}
+
+#[allow(clippy::option_option)]
+fn nullable_string_patch(patch: LegacyPatch<String>) -> Option<Option<String>> {
+    match patch {
+        LegacyPatch::Unset => None,
+        LegacyPatch::Set(value) => Some(value),
+    }
+}
+
+#[allow(clippy::option_option)]
+fn identifier_patch(patch: LegacyPatch<LegacyIdentifier>) -> Option<Option<String>> {
+    match patch {
+        LegacyPatch::Unset => None,
+        LegacyPatch::Set(value) => Some(value.map(|id| id.as_string())),
+    }
+}
+
+fn legacy_console_id(id: &LegacyIdentifier) -> LegacyResult<i64> {
+    let parsed = id.as_string().parse::<i64>().map_err(|_| {
+        LegacyFailure::invalid(
+            "invalid_saved_console",
+            "id must be a positive signed 64-bit integer",
+        )
+    })?;
+    if parsed <= 0 {
+        return Err(LegacyFailure::invalid(
+            "invalid_saved_console",
+            "id must be a positive signed 64-bit integer",
+        ));
+    }
+    Ok(parsed)
+}
+
+fn default_if_blank(value: &str, fallback: &str) -> String {
+    if value.trim().is_empty() {
+        fallback.to_owned()
+    } else {
+        value.to_owned()
+    }
+}
+
+fn legacy_storage(application: &Application) -> LegacyResult<Storage> {
+    application.storage().cloned().ok_or_else(|| {
+        LegacyFailure::invalid(
+            "storage_unavailable",
+            "Local product storage is not configured",
+        )
+    })
+}
+
+async fn legacy_storage_call<T, F>(operation: F) -> LegacyResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, StorageError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|_| LegacyFailure {
+            code: "internal_error".to_owned(),
+            message: "The operation could not be completed".to_owned(),
+        })?
+        .map_err(storage_failure)
+}
+
+fn storage_failure(error: StorageError) -> LegacyFailure {
+    match error {
+        StorageError::SavedConsoleNotFound(id) => LegacyFailure {
+            code: "saved_console_not_found".to_owned(),
+            message: format!("Saved Console {id} does not exist"),
+        },
+        StorageError::InvalidSavedConsole(message) => LegacyFailure {
+            code: "invalid_saved_console".to_owned(),
+            message: message.to_owned(),
+        },
+        other => LegacyFailure::from(AppError::from(other)),
+    }
 }
 
 fn datasource_response(
@@ -1173,6 +1813,7 @@ fn paginate<T>(items: Vec<T>, page_no: u32, page_size: u32) -> LegacyPage<T> {
 ///
 /// Tauri IPC can pass its `requestUrl`, `method`, and `message` fields here and
 /// return the resulting JSON value unchanged.
+#[allow(clippy::too_many_lines)]
 pub async fn dispatch(
     application: &Application,
     request: LegacyDispatchRequest,
@@ -1225,6 +1866,38 @@ pub async fn dispatch(
                 Err(error) => Err(error),
             }
         }
+        ("post", "/api/operation/saved/create") => {
+            match decode::<LegacySavedConsoleCreateRequest>(request.message) {
+                Ok(body) => serialized(create_saved_console(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/operation/saved/list") => {
+            match decode::<LegacySavedConsoleListQuery>(request.message) {
+                Ok(query) => serialized(list_saved_consoles(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/operation/saved") => match decode::<LegacyIdQuery>(request.message) {
+            Ok(query) => match legacy_console_id(&query.id) {
+                Ok(id) => serialized(get_saved_console(application, id).await),
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        },
+        ("post" | "put", "/api/operation/saved/update") => {
+            match decode::<LegacySavedConsoleUpdateRequest>(request.message) {
+                Ok(body) => serialized(update_saved_console(application, body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("delete", "/api/operation/saved") => match decode::<LegacyIdQuery>(request.message) {
+            Ok(query) => match legacy_console_id(&query.id) {
+                Ok(id) => serialized(delete_saved_console(application, id).await),
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        },
         ("get", "/api/namespaces/tree_list") => serialized(namespace_tree(application).await),
         ("get", "/api/rdb/database/list") => match decode::<LegacyMetadataQuery>(request.message) {
             Ok(query) => serialized(list_databases(application, &query).await),
@@ -1241,6 +1914,12 @@ pub async fn dispatch(
         ("post" | "put", "/api/rdb/dml/execute_table") => {
             match decode::<LegacyTablePreviewRequest>(request.message) {
                 Ok(body) => serialized(preview_table(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post" | "put", "/api/rdb/dml/execute") => {
+            match decode::<LegacySqlExecuteRequest>(request.message) {
+                Ok(body) => serialized(execute_sql(application, &body).await),
                 Err(error) => Err(error),
             }
         }
@@ -1265,10 +1944,15 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/connection/datasource/create",
     "/api/connection/datasource/pre_connect",
     "/api/connection/datasource/update",
+    "/api/operation/saved/create",
+    "/api/operation/saved/list",
+    "/api/operation/saved",
+    "/api/operation/saved/update",
     "/api/namespaces/tree_list",
     "/api/rdb/database/list",
     "/api/rdb/schema/list",
     "/api/rdb/table/list",
+    "/api/rdb/dml/execute",
     "/api/rdb/dml/execute_table",
 ];
 
@@ -1332,10 +2016,30 @@ pub(crate) fn routes() -> Router<Application> {
             "/api/connection/datasource/update",
             post(update_datasource_handler).put(update_datasource_handler),
         )
+        .route(
+            "/api/operation/saved/create",
+            post(create_saved_console_handler),
+        )
+        .route(
+            "/api/operation/saved/list",
+            get(list_saved_consoles_handler),
+        )
+        .route(
+            "/api/operation/saved",
+            get(get_saved_console_handler).delete(delete_saved_console_handler),
+        )
+        .route(
+            "/api/operation/saved/update",
+            post(update_saved_console_handler).put(update_saved_console_handler),
+        )
         .route("/api/namespaces/tree_list", get(namespace_tree_handler))
         .route("/api/rdb/database/list", get(database_list_handler))
         .route("/api/rdb/schema/list", get(schema_list_handler))
         .route("/api/rdb/table/list", get(table_list_handler))
+        .route(
+            "/api/rdb/dml/execute",
+            post(sql_execute_handler).put(sql_execute_handler),
+        )
         .route(
             "/api/rdb/dml/execute_table",
             post(table_preview_handler).put(table_preview_handler),
@@ -1408,6 +2112,47 @@ async fn delete_datasource_handler(
     envelope(delete_datasource(&application, &query.id).await)
 }
 
+async fn create_saved_console_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacySavedConsoleCreateRequest>,
+) -> Json<LegacyEnvelope<i64>> {
+    envelope(create_saved_console(&application, &request).await)
+}
+
+async fn list_saved_consoles_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacySavedConsoleListQuery>,
+) -> Json<LegacyEnvelope<LegacyPage<LegacySavedConsoleResponse>>> {
+    envelope(list_saved_consoles(&application, &query).await)
+}
+
+async fn get_saved_console_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyIdQuery>,
+) -> Json<LegacyEnvelope<Option<LegacySavedConsoleResponse>>> {
+    envelope(match legacy_console_id(&query.id) {
+        Ok(id) => get_saved_console(&application, id).await,
+        Err(error) => Err(error),
+    })
+}
+
+async fn update_saved_console_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacySavedConsoleUpdateRequest>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(update_saved_console(&application, request).await)
+}
+
+async fn delete_saved_console_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyIdQuery>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(match legacy_console_id(&query.id) {
+        Ok(id) => delete_saved_console(&application, id).await,
+        Err(error) => Err(error),
+    })
+}
+
 async fn namespace_tree_handler(
     State(application): State<Application>,
 ) -> Json<LegacyEnvelope<Vec<LegacyNamespaceNode>>> {
@@ -1440,4 +2185,11 @@ async fn table_preview_handler(
     Json(request): Json<LegacyTablePreviewRequest>,
 ) -> Json<LegacyEnvelope<Vec<LegacyManageResult>>> {
     envelope(preview_table(&application, &request).await)
+}
+
+async fn sql_execute_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacySqlExecuteRequest>,
+) -> Json<LegacyEnvelope<Vec<LegacyManageResult>>> {
+    envelope(execute_sql(&application, &request).await)
 }
