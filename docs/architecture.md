@@ -125,7 +125,7 @@ The JDBC baseline implements:
 Stage 7B additionally implements:
 
 - a Git submodule fixed at Community commit
-  `f275e08d774f839612374e991d09c5e6ea2d8b57`;
+  `37a34be858f2566b6b7fcf6c3f64183c1f560853`;
 - a reproducible H2 compatibility classpath, established with 148 JARs and
   extended in Stage 7J to 149 JARs for the retained Community domain-core
   completion implementation, whose filenames, byte lengths, and SHA-256

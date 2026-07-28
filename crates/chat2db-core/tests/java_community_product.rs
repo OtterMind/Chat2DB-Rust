@@ -29,7 +29,7 @@ use chat2db_java_bridge::{
 use chat2db_storage::{EncryptedFileVault, Storage};
 use tempfile::TempDir;
 
-const COMMUNITY_COMMIT: &str = "f275e08d774f839612374e991d09c5e6ea2d8b57";
+const COMMUNITY_COMMIT: &str = "37a34be858f2566b6b7fcf6c3f64183c1f560853";
 const H2_DRIVER_CLASS: &str = "org.h2.Driver";
 const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 

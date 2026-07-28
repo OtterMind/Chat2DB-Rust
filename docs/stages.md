@@ -80,7 +80,7 @@ and generated frontend contracts. Downloading, signing, installation, update,
 rollback, and hot reload remain incomplete.
 
 Stage 7B fixes the Community source at commit
-`f275e08d774f839612374e991d09c5e6ea2d8b57`, builds its H2 compatibility
+`37a34be858f2566b6b7fcf6c3f64183c1f560853`, builds its H2 compatibility
 classpath reproducibly, and initially locks 148 JAR filenames, lengths, and
 SHA-256 digests. Before lock verification, the fixed build strips dependency-manifest
 `Class-Path` entries deterministically, rounds the commit timestamp down to ZIP's
