@@ -12,7 +12,7 @@ in runtime health until then.
 | 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
 | 5 | Complete | Product transports | Generated OpenAPI/TypeScript contract, Axum JSON/SSE, Tauri 2 commands/channels, shared SQL workbench, product H2 tests |
 | 6 | Complete | Agent, MCP, and CLI | Direct providers, durable bounded tool loop, SQL tools/permissions, compaction, Web/Tauri run transports, owner-only local attachment, read-query CLI, and bounded `rmcp` stdio tools |
-| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs through 7M bounded table preview are implemented; the current product retains the original Community layout with historical HTTP/Tauri compatibility for MySQL browsing, saved Consoles, and bounded SELECT execution |
+| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs through 7M bounded table preview are implemented; the host now starts Java on first use, leases active generations, reaps them after three idle minutes, and reloads packs after restart; the current product retains the original Community layout with historical HTTP/Tauri compatibility for MySQL browsing, saved Consoles, and bounded SELECT execution |
 | 8 | Planned | Packaging and release | License authorization, NOTICE/SBOM, jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
 
 Stage 3 completion means the versioned Rust-Java bridge can load an external
@@ -21,6 +21,14 @@ typed query batches under explicit limits, credits, deadlines, and
 cancellation. Stage 5 composes that bridge into the Web and desktop product
 hosts. Stage 6 adds CLI and MCP adapters that attach to one of those running
 hosts and do not own another product runtime.
+
+The current production host supersedes the original eager Stage 5 bootstrap.
+`RuntimeHost::open` now opens storage and verifies/stages driver packs without
+starting Java. Core single-flights the first Java-backed request, keeps one
+generation alive while any `EngineLease` exists, shuts it down after the
+default three-minute idle window, and reloads the same verified packs into a
+new generation on later use. Host health reports a dormant configured engine as
+ready and available on demand rather than disabled or degraded.
 
 Frontend checkpoints `928e62c` and `cf9ab8a` supersede the repository-owned
 Stage 5/7G replacement workbench. Current builds export the pinned Community
@@ -75,9 +83,10 @@ read-only and accepts no JDBC bind parameters; it does not claim the built-in
 Agent's write tool.
 
 Stage 7A implements strict local JDBC driver-pack discovery, bounded artifact
-hashing, startup preload, and immutable inventory through Core, Axum, Tauri,
-and generated frontend contracts. Downloading, signing, installation, update,
-rollback, and hot reload remain incomplete.
+hashing, immutable inventory through Core, Axum, Tauri, and generated frontend
+contracts, plus repeatable preload into each lazily started Java generation.
+Host-owned staging remains valid across idle restarts. Downloading, signing,
+installation, update, rollback, and hot reload remain incomplete.
 
 Stage 7B fixes the Community source at commit
 `37a34be858f2566b6b7fcf6c3f64183c1f560853`, builds its H2 compatibility

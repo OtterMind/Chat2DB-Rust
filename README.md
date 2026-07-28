@@ -51,8 +51,10 @@ Console compatibility slice:
   paging, a physical-byte quota, expiry, writer cleanup, and crash recovery;
 - an AES-256-GCM encrypted file vault rooted in either an OS-keyring master key
   or an explicit headless master key;
-- one production `RuntimeHost` that opens the vault and storage, supervises the
-  Java engine, and shuts down active work deterministically;
+- one production `RuntimeHost` that opens the vault, storage, and verified
+  driver catalog without starting Java, then single-flights first-use startup,
+  leases each generation to active work, reaps it after three idle minutes,
+  reloads drivers on the next use, and shuts down deterministically;
 - secret-safe datasource CRUD, asynchronous query operations, bounded replay,
   explicit cancellation, and retained-result paging through Axum JSON/SSE and
   Tauri 2 commands/channels;
@@ -77,8 +79,8 @@ Console compatibility slice:
   cancellation, and retained-result paging; and
 - an `rmcp` 2.2 stdio server with five bounded datasource/query tools backed by
   that same running `Application`;
-- strict local JDBC driver-pack discovery, hash verification, startup preload,
-  and immutable Core/Axum/Tauri inventory; and
+- strict local JDBC driver-pack discovery, hash verification, immutable
+  Core/Axum/Tauri inventory, and repeatable per-generation preload; and
 - a fixed Community 5.3.0 compatibility classpath that discovers real
   `IPlugin` implementations and exposes H2 plugin catalog, schema, object,
   view, foreign-key, primary-key, function, procedure, parameter, and trigger

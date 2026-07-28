@@ -58,7 +58,7 @@ Artifact order is significant because it contributes to the engine-derived
 name regular JAR files. Absolute paths, `.` or `..`, Windows prefixes,
 backslashes, colons, and symbolic-link components are rejected.
 
-## Startup Semantics
+## Discovery And First-Use Semantics
 
 Rust performs the following work before exposing the product runtime:
 
@@ -71,18 +71,33 @@ Rust performs the following work before exposing the product runtime:
    file and copies it into a private `host-*` staging directory.
 5. Hash the staged bytes, compare the declared SHA-256, and reject duplicate
    driver identities derived from class plus ordered artifact digests.
-6. Start one Java compatibility-engine generation with its own `engine-*`
-   snapshot root.
-7. Load packs sequentially. Java copies only the Rust-staged JARs into private
+6. Publish immutable inventory directly from the verified specifications. Java
+   is still dormant and no `engine-*` directory exists.
+
+The first Java-backed operation then performs the following work:
+
+7. Single-flight one Java compatibility-engine generation with its own
+   `engine-*` snapshot root. Concurrent first-use callers wait for that same
+   generation.
+8. Load packs sequentially. Java copies only the Rust-staged JARs into private
    per-driver snapshots with independent byte accounting and SHA-256
    verification before classloading them.
-8. Publish the immutable inventory only after every pack loads successfully.
-9. Delete Rust staging after preload. After the child process is fully reaped,
-   Rust deletes the complete Java generation root, including snapshots Java
-   could not remove while Windows file handles were open.
+9. Publish the generation to waiting operations only after handshake and every
+   pack load succeeds. Each operation retains a generation lease through JDBC,
+   parser, formatter, completion, stream, and cleanup work.
+10. After the last lease is released, retain the generation for a default
+    three-minute idle window. An idle timeout shuts down and fully reaps the
+    child, then deletes its generation root. A later request starts a new
+    generation and reloads cloned specifications from the same host staging.
 
-Any discovery or load error aborts startup. A load error shuts down the Java
-generation, so callers never observe a partially loaded inventory.
+Rust retains the `host-*` staging directory for the complete `RuntimeHost`
+lifetime so every generation can reload identical verified bytes. Full host
+shutdown first reaps Java and then deletes that staging directory.
+
+Any discovery error aborts host startup. A load error fails the first Java-backed
+operation and shuts down that generation, so callers never observe a partially
+loaded generation. The next operation may retry a fresh generation; Rust never
+replays a dispatched database write.
 
 ## Limits
 

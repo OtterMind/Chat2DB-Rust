@@ -14,8 +14,15 @@ deadlines, hard limits, and explicit unknown outcomes. The complete
 storage-to-Java-to-retained-result path is cross-language tested against H2
 without embedding H2 in the compatibility-engine JAR.
 
-The Web and Tauri hosts open the production vault, SQLite storage, and Java
-supervisor before exposing a shared `Application`. Axum serves JSON, SSE, and
+The Web and Tauri hosts open the production vault, SQLite storage, and verified
+driver catalog before exposing a shared `Application`; they do not start Java
+during host bootstrap. The Core `EngineManager` starts one Java generation on
+the first database, parser, formatter, or completion request, shares that
+single-flight startup across concurrent callers, and issues generation-scoped
+leases that remain live through stream and session cleanup. After the final
+lease is released, the default three-minute idle deadline shuts down and fully
+reaps Java. A later request starts a new generation and reloads every staged
+driver pack. Axum serves JSON, SSE, and
 the exact pinned original Community Umi/React SPA; Tauri exposes commands and
 per-subscription channels without a localhost product server. Both hosts also publish an owner-only local endpoint
 for the CLI and MCP process. That same `Application` owns query and Agent run
@@ -103,6 +110,8 @@ inside the Java process.
   stderr is diagnostic-only.
 - Read-only metadata/parser work may retry after a Java restart. Transactions,
   DML, and unknown-outcome operations are never replayed automatically.
+- A Java-backed operation must retain its `EngineLease` until every session,
+  stream, transaction, and cleanup action for that operation is terminal.
 
 The implemented lifecycle and JDBC subset is documented in
 [`protocol.md`](protocol.md). Capabilities are advertised only after their
