@@ -630,7 +630,7 @@ async fn verify_product_vertical(config: &MysqlTestConfig, database_name: &str) 
             "CREATE TABLE `{database_name}`.`metadata_items` (\
              `b` BIGINT UNSIGNED NOT NULL, \
              `a` INT UNSIGNED NOT NULL, \
-             `state` ENUM('draft','needs,review','O''Reilly') NOT NULL, \
+             `state` ENUM('','active','not UNSIGNED value','needs,review','O''Reilly') NOT NULL, \
              `permissions` SET('read','write','close)later') NULL, \
              PRIMARY KEY (`b`, `a`)) ENGINE = InnoDB"
         ),
@@ -658,7 +658,14 @@ async fn verify_product_vertical(config: &MysqlTestConfig, database_name: &str) 
             .iter()
             .find(|column| column["name"] == "state")
             .expect("enum column")["value"],
-        "'draft','needs,review','O''Reilly'"
+        "'','active','not UNSIGNED value','needs,review','O''Reilly'"
+    );
+    assert_eq!(
+        metadata_columns
+            .iter()
+            .find(|column| column["name"] == "state")
+            .expect("enum column")["columnType"],
+        "ENUM"
     );
     assert_eq!(
         metadata_columns
@@ -728,11 +735,124 @@ async fn verify_product_vertical(config: &MysqlTestConfig, database_name: &str) 
     );
     assert_eq!(
         column_definition(config, database_name, "metadata_items", "state").await,
-        "enum('draft','needs,review','O''Reilly')"
+        "enum('','active','not UNSIGNED value','needs,review','O''Reilly')"
     );
     assert_eq!(
         column_definition(config, database_name, "metadata_items", "permissions").await,
         "set('read','write','close)later')"
+    );
+
+    execute_ddl(
+        &router,
+        &datasource,
+        database_name,
+        "reorder_guard",
+        &format!(
+            "CREATE TABLE `{database_name}`.`reorder_guard` (\
+             `base` INT NOT NULL, \
+             `generated_value` INT GENERATED ALWAYS AS (`base` + 1) STORED, \
+             `hidden_value` INT INVISIBLE, \
+             `tail` INT NOT NULL) ENGINE = InnoDB"
+        ),
+    )
+    .await;
+    let guard_table = get(
+        &router,
+        &format!(
+            "/api/rdb/table/query?dataSourceId={datasource}&databaseType=MYSQL&databaseName={database_name}&tableName=reorder_guard"
+        ),
+    )
+    .await;
+    let guard_columns = guard_table["columnList"].as_array().expect("guard columns");
+    assert!(
+        column_extra(config, database_name, "reorder_guard", "generated_value")
+            .await
+            .contains("STORED GENERATED")
+    );
+    assert!(
+        column_extra(config, database_name, "reorder_guard", "hidden_value")
+            .await
+            .contains("INVISIBLE")
+    );
+
+    let mut generated_reorder = guard_table.clone();
+    generated_reorder["columnList"] = Value::Array(
+        ["generated_value", "base", "hidden_value", "tail"]
+            .iter()
+            .map(|name| {
+                guard_columns
+                    .iter()
+                    .find(|column| column["name"] == *name)
+                    .unwrap_or_else(|| panic!("missing guard column {name}"))
+                    .clone()
+            })
+            .collect(),
+    );
+    let generated_failure = post_failure(
+        &router,
+        "/api/rdb/table/modify/sql",
+        json!({
+            "dataSourceId": datasource,
+            "databaseType": "MYSQL",
+            "databaseName": database_name,
+            "oldTable": guard_table,
+            "newTable": generated_reorder
+        }),
+    )
+    .await;
+    assert_eq!(generated_failure["errorCode"], "invalid_mysql_ddl");
+    assert!(
+        generated_failure["errorMessage"]
+            .as_str()
+            .expect("generated-column failure message")
+            .contains("generated-column")
+    );
+
+    let mut invisible_reorder = guard_table.clone();
+    invisible_reorder["columnList"] = Value::Array(
+        ["base", "generated_value", "tail", "hidden_value"]
+            .iter()
+            .map(|name| {
+                guard_columns
+                    .iter()
+                    .find(|column| column["name"] == *name)
+                    .unwrap_or_else(|| panic!("missing guard column {name}"))
+                    .clone()
+            })
+            .collect(),
+    );
+    let invisible_failure = post_failure(
+        &router,
+        "/api/rdb/table/modify/sql",
+        json!({
+            "dataSourceId": datasource,
+            "databaseType": "MYSQL",
+            "databaseName": database_name,
+            "oldTable": guard_table,
+            "newTable": invisible_reorder
+        }),
+    )
+    .await;
+    assert_eq!(invisible_failure["errorCode"], "invalid_mysql_ddl");
+    assert!(
+        invisible_failure["errorMessage"]
+            .as_str()
+            .expect("invisible-column failure message")
+            .contains("INVISIBLE")
+    );
+    assert_eq!(
+        column_order(config, database_name, "reorder_guard").await,
+        ["base", "generated_value", "hidden_value", "tail"]
+    );
+    assert!(
+        column_extra(config, database_name, "reorder_guard", "generated_value")
+            .await
+            .contains("STORED GENERATED")
+    );
+    assert!(
+        column_extra(config, database_name, "reorder_guard", "hidden_value")
+            .await
+            .contains("INVISIBLE")
     );
     assert_java_dormant(&application);
 
@@ -751,7 +871,7 @@ async fn verify_product_vertical(config: &MysqlTestConfig, database_name: &str) 
     execute_update(&router, &datasource, database_name, &delete_sql).await;
     assert_eq!(scalar_count(config, database_name, "items").await, 0);
 
-    for table in ["metadata_items", "items_copy", "items"] {
+    for table in ["reorder_guard", "metadata_items", "items_copy", "items"] {
         post(
             &router,
             "/api/rdb/ddl/delete",
@@ -1108,6 +1228,30 @@ async fn column_definition(
         .await
         .expect("column-definition probe must close");
     definition
+}
+
+async fn column_extra(
+    config: &MysqlTestConfig,
+    database_name: &str,
+    table_name: &str,
+    column_name: &str,
+) -> String {
+    let mut conn = Conn::new(config.options())
+        .await
+        .expect("column-extra probe must connect");
+    let extra = conn
+        .exec_first::<String, _, _>(
+            "SELECT COALESCE(EXTRA, '') FROM information_schema.COLUMNS \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?",
+            (database_name, table_name, column_name),
+        )
+        .await
+        .expect("column-extra probe must execute")
+        .expect("column extra must exist");
+    conn.disconnect()
+        .await
+        .expect("column-extra probe must close");
+    extra
 }
 
 async fn primary_key_columns(
