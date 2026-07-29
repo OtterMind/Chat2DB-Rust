@@ -1118,6 +1118,12 @@ pub struct LegacyDriverQuery {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LegacyTableDdlExampleQuery {
+    pub db_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LegacyMetadataQuery {
     pub data_source_id: LegacyIdentifier,
     #[serde(default)]
@@ -1956,6 +1962,36 @@ pub(crate) async fn list_keys(
     query: &LegacyTableDetailQuery,
 ) -> LegacyResult<Vec<LegacyIndex>> {
     list_indexes(application, query).await
+}
+
+/// Returns the native `SHOW CREATE TABLE` result used by Community's export action.
+pub(crate) async fn export_table_ddl(
+    application: &Application,
+    query: &LegacyTableDetailQuery,
+) -> LegacyResult<String> {
+    let datasource_id = query.data_source_id.as_string();
+    resolve_mysql_database_type(application, &datasource_id, &query.database_type).await?;
+    Ok(application
+        .table_ddl(
+            &datasource_id,
+            &query.database_name,
+            &query.schema_name,
+            &query.table_name,
+        )
+        .await?)
+}
+
+/// Preserves Community `MySQL`'s null create/alter example configuration.
+pub(crate) fn mysql_table_ddl_example(
+    query: &LegacyTableDdlExampleQuery,
+) -> LegacyResult<Option<String>> {
+    if normalize_database_type(&query.db_type) != "MYSQL" {
+        return Err(LegacyFailure {
+            code: "unsupported_database_type".to_owned(),
+            message: "This Community compatibility route currently supports MySQL only".to_owned(),
+        });
+    }
+    Ok(None)
 }
 
 /// Lists views in the same page wrapper used by the retained tree.
@@ -5734,6 +5770,22 @@ async fn dispatch_inner(
                 Err(error) => Err(error),
             }
         }
+        ("get", "/api/rdb/ddl/export" | "/api/rdb/table/export") => {
+            match decode::<LegacyTableDetailQuery>(request.message) {
+                Ok(query) => serialized(export_table_ddl(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        (
+            "get",
+            "/api/rdb/ddl/create/example"
+            | "/api/rdb/ddl/update/example"
+            | "/api/rdb/table/create/example"
+            | "/api/rdb/table/update/example",
+        ) => match decode::<LegacyTableDdlExampleQuery>(request.message) {
+            Ok(query) => serialized(mysql_table_ddl_example(&query)),
+            Err(error) => Err(error),
+        },
         ("get", "/api/rdb/table/list") => match decode::<LegacyTableListQuery>(request.message) {
             Ok(query) => serialized(list_tables(application, &query).await),
             Err(error) => Err(error),
@@ -5983,6 +6035,9 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/rdb/table/list",
     "/api/rdb/table/table_meta",
     "/api/rdb/table/query",
+    "/api/rdb/table/export",
+    "/api/rdb/table/create/example",
+    "/api/rdb/table/update/example",
     "/api/rdb/table/modify/sql",
     "/api/rdb/table/truncate",
     "/api/rdb/table/copy",
@@ -5993,6 +6048,9 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/rdb/ddl/column_list",
     "/api/rdb/ddl/index_list",
     "/api/rdb/ddl/key_list",
+    "/api/rdb/ddl/export",
+    "/api/rdb/ddl/create/example",
+    "/api/rdb/ddl/update/example",
     "/api/rdb/ddl/delete",
     "/api/rdb/delete/database/prepare",
     "/api/rdb/delete/database/execute",
@@ -6148,6 +6206,15 @@ pub(crate) fn routes() -> Router<Application> {
         .route("/api/rdb/table/list", get(table_list_handler))
         .route("/api/rdb/table/table_meta", get(table_meta_handler))
         .route("/api/rdb/table/query", get(table_query_handler))
+        .route("/api/rdb/table/export", get(table_ddl_export_handler))
+        .route(
+            "/api/rdb/table/create/example",
+            get(table_ddl_example_handler),
+        )
+        .route(
+            "/api/rdb/table/update/example",
+            get(table_ddl_example_handler),
+        )
         .route("/api/rdb/table/modify/sql", post(table_modify_sql_handler))
         .route("/api/rdb/table/truncate", post(table_truncate_handler))
         .route("/api/rdb/table/copy", post(table_copy_handler))
@@ -6158,6 +6225,15 @@ pub(crate) fn routes() -> Router<Application> {
         .route("/api/rdb/ddl/column_list", get(ddl_column_list_handler))
         .route("/api/rdb/ddl/index_list", get(ddl_index_list_handler))
         .route("/api/rdb/ddl/key_list", get(ddl_key_list_handler))
+        .route("/api/rdb/ddl/export", get(table_ddl_export_handler))
+        .route(
+            "/api/rdb/ddl/create/example",
+            get(table_ddl_example_handler),
+        )
+        .route(
+            "/api/rdb/ddl/update/example",
+            get(table_ddl_example_handler),
+        )
         .route("/api/rdb/ddl/delete", post(table_drop_handler))
         .route(
             "/api/rdb/delete/database/prepare",
@@ -6430,6 +6506,19 @@ async fn table_query_handler(
     Query(query): Query<LegacyTableDetailQuery>,
 ) -> Json<LegacyEnvelope<LegacyEditableTable>> {
     envelope(Box::pin(get_editable_table(&application, &query)).await)
+}
+
+async fn table_ddl_export_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableDetailQuery>,
+) -> Json<LegacyEnvelope<String>> {
+    envelope(export_table_ddl(&application, &query).await)
+}
+
+async fn table_ddl_example_handler(
+    Query(query): Query<LegacyTableDdlExampleQuery>,
+) -> Json<LegacyEnvelope<Option<String>>> {
+    envelope(mysql_table_ddl_example(&query))
 }
 
 async fn table_modify_sql_handler(
@@ -6760,6 +6849,12 @@ mod tests {
     const REQUIRED_EDITABLE_PATHS: &[(&str, &str)] = &[
         ("get", "/api/rdb/table/table_meta"),
         ("get", "/api/rdb/table/query"),
+        ("get", "/api/rdb/table/export"),
+        ("get", "/api/rdb/table/create/example"),
+        ("get", "/api/rdb/table/update/example"),
+        ("get", "/api/rdb/ddl/export"),
+        ("get", "/api/rdb/ddl/create/example"),
+        ("get", "/api/rdb/ddl/update/example"),
         ("post", "/api/rdb/table/modify/sql"),
         ("post", "/api/rdb/ddl/delete"),
         ("post", "/api/rdb/table/truncate"),
@@ -7441,6 +7536,52 @@ mod tests {
                 StatusCode::OK,
                 "missing Axum route: {method} {path}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn mysql_ddl_example_aliases_preserve_community_null_data() {
+        let application = Application::new();
+        let router = routes().with_state(application.clone());
+        for path in [
+            "/api/rdb/ddl/create/example",
+            "/api/rdb/ddl/update/example",
+            "/api/rdb/table/create/example",
+            "/api/rdb/table/update/example",
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::get(format!("{path}?dbType=MYSQL"))
+                        .body(Body::empty())
+                        .expect("request must build"),
+                )
+                .await
+                .expect("router must respond");
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .expect("response body must collect")
+                .to_bytes();
+            let http: serde_json::Value =
+                serde_json::from_slice(&body).expect("response must be JSON");
+            assert_eq!(http["success"], true, "HTTP alias failed: {path}");
+            assert!(http["data"].is_null(), "HTTP alias returned SQL: {path}");
+            assert!(http["errorCode"].is_null());
+            assert!(http["errorMessage"].is_null());
+
+            let desktop = dispatch(
+                &application,
+                LegacyDispatchRequest {
+                    request_url: path.to_owned(),
+                    method: "get".to_owned(),
+                    message: serde_json::json!({"dbType": "MYSQL"}),
+                },
+            )
+            .await;
+            assert_eq!(desktop, http, "desktop alias diverged: {path}");
         }
     }
 
