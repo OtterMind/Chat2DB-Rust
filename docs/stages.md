@@ -319,16 +319,23 @@ execution are not implemented and must not be inferred from the historical
 endpoint name.
 
 The native MySQL follow-up pins upstream `mysql_async 0.37.0` with Rustls and
-routes MySQL connection testing, database/schema/table discovery, table preview,
-and supported Console SELECT before Java lease acquisition. SELECT executes in
-a MySQL read-only transaction and emits the existing typed retained-result wire
-messages directly from Core. Parameters, CTE-first SELECT, locking/server-file
-variants, and multi-statements fail before Java startup. Row and byte truncation
-plus cancellation terminate the active MySQL connection through a separate
-bounded control connection. The explicit `native-mysql-integration` target and
-MySQL CI job use a deliberately missing Java executable and verify connection,
-metadata, two-row preview, typed three-row Console output, one-row truncation,
-active `SELECT SLEEP(30)` cancellation, retained paging, and dormant Java health.
+routes MySQL connection testing; database/schema/table/column/index/key/view/
+function/procedure/trigger metadata; table preview; and supported Console SELECT
+before Java lease acquisition. Original Community HTTP and desktop-dispatch
+routes expose the read-only metadata projections, including top-level DDL list
+totals and `SHOW CREATE` details. The adapter also preserves Community's paged
+table name/comment search, ignored filtering on complete-list endpoints,
+metadata page-size validation, HTTP 200 error envelopes, and the distinction
+between a null and empty-string column default.
+SELECT executes in a MySQL read-only transaction
+and emits the existing typed retained-result wire messages directly from Core.
+Parameters, CTE-first SELECT, locking/server-file variants, and multi-statements
+fail before Java startup. Row and byte truncation plus cancellation terminate the
+active MySQL connection through a separate bounded control connection. The
+explicit `native-mysql-integration` target and MySQL CI job use a deliberately
+missing Java executable and verify connection, first-stage object metadata, two-row
+preview, typed three-row Console output, one-row truncation, active
+`SELECT SLEEP(30)` cancellation, retained paging, and dormant Java health.
 
 Runtime-tested: yes. On 2026-07-29 commits `81301c3`, `4199862`, and `6c74421`
 passed 144 Core unit tests, strict Core all-target Clippy, formatting, Actionlint,
