@@ -288,6 +288,56 @@ pub(crate) async fn list_columns(
     finish_connection(conn, result).await
 }
 
+pub(crate) async fn validate_column_reorder(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    table_name: &str,
+    column_names: &[String],
+) -> Result<(), AppError> {
+    if column_names.is_empty() {
+        return Ok(());
+    }
+    validate_metadata_identifier(database_name, "databaseName")?;
+    validate_metadata_identifier(table_name, "tableName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let query = "SELECT COLUMN_NAME, COLUMN_TYPE, COALESCE(EXTRA, ''), \
+                 COALESCE(GENERATION_EXPRESSION, '') \
+                 FROM information_schema.COLUMNS \
+                 WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?";
+    let result = metadata_query(conn.exec::<(String, String, String, String), _, _>(
+        query,
+        (database_name.to_owned(), table_name.to_owned()),
+    ))
+    .await
+    .and_then(|rows| {
+        for column_name in column_names {
+            let Some((_, column_type, extra, generation_expression)) = rows
+                .iter()
+                .find(|(name, _, _, _)| name.eq_ignore_ascii_case(column_name))
+            else {
+                return Err(AppError::invalid(
+                    "invalid_mysql_ddl",
+                    format!(
+                        "Cannot safely reorder column {column_name}: its live metadata changed"
+                    ),
+                ));
+            };
+            if let Some(reason) =
+                mysql_column_reorder_hazard(column_type, extra, generation_expression)
+            {
+                return Err(AppError::invalid(
+                    "invalid_mysql_ddl",
+                    format!("Cannot safely reorder column {column_name}: {reason}"),
+                ));
+            }
+        }
+        Ok(())
+    });
+    finish_connection(conn, result).await
+}
+
 pub(crate) async fn list_indexes(
     application: &Application,
     datasource_id: &str,
@@ -2606,14 +2656,65 @@ fn community_column(
 }
 
 fn mysql_metadata_column_type(data_type: &str, column_definition: &str) -> String {
-    if column_definition
-        .split_ascii_whitespace()
-        .any(|part| part.eq_ignore_ascii_case("UNSIGNED"))
-    {
-        format!("{data_type} UNSIGNED")
-    } else {
-        data_type.to_owned()
+    let mut projected = data_type.to_owned();
+    for modifier in ["UNSIGNED", "ZEROFILL"] {
+        if mysql_column_has_modifier(column_definition, modifier) {
+            projected.push(' ');
+            projected.push_str(modifier);
+        }
     }
+    projected
+}
+
+fn mysql_column_has_modifier(column_definition: &str, expected: &str) -> bool {
+    mysql_column_modifier_suffix(column_definition)
+        .split_ascii_whitespace()
+        .any(|modifier| modifier.eq_ignore_ascii_case(expected))
+}
+
+fn mysql_column_modifier_suffix(column_definition: &str) -> &str {
+    if let Some(close) = column_definition.rfind(')') {
+        &column_definition[close + 1..]
+    } else if let Some(separator) = column_definition.find(char::is_whitespace) {
+        &column_definition[separator..]
+    } else {
+        ""
+    }
+}
+
+fn mysql_column_reorder_hazard(
+    column_definition: &str,
+    extra: &str,
+    generation_expression: &str,
+) -> Option<&'static str> {
+    let normalized_extra = extra
+        .split_ascii_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_uppercase();
+    if !generation_expression.trim().is_empty()
+        || normalized_extra
+            .split_ascii_whitespace()
+            .any(|part| part == "GENERATED")
+    {
+        return Some("generated-column expressions are not represented by the editor");
+    }
+    if normalized_extra
+        .split_ascii_whitespace()
+        .any(|part| part == "INVISIBLE")
+    {
+        return Some("the INVISIBLE attribute is not represented by the editor");
+    }
+    if mysql_column_has_modifier(column_definition, "ZEROFILL") {
+        return Some("the ZEROFILL attribute is not represented by the editor");
+    }
+    if !matches!(
+        normalized_extra.as_str(),
+        "" | "AUTO_INCREMENT" | "ON UPDATE CURRENT_TIMESTAMP"
+    ) {
+        return Some("one or more MySQL column attributes are not represented by the editor");
+    }
+    None
 }
 
 fn mysql_enum_set_extent(data_type: &str, column_definition: &str) -> String {
@@ -3381,9 +3482,10 @@ mod tests {
         MAX_CONSOLE_RESULT_BYTES, community_column, community_foreign_key,
         community_function_parameter, community_indexes, community_procedure_parameter,
         connection_opts, execute_console_statement, is_mysql_database_type,
-        is_native_read_candidate, normalize_table_type, open_connection_with_opts,
-        qualified_identifier, quote_identifier, reserve_console_result_bytes, split_mysql_script,
-        validate_console_request, validate_read_only_console, validate_read_sql,
+        is_native_read_candidate, mysql_column_reorder_hazard, mysql_metadata_column_type,
+        normalize_table_type, open_connection_with_opts, qualified_identifier, quote_identifier,
+        reserve_console_result_bytes, split_mysql_script, validate_console_request,
+        validate_read_only_console, validate_read_sql,
     };
     use crate::{MysqlConsoleRequest, operation::CancellationRequest};
 
@@ -3907,8 +4009,8 @@ mod tests {
         for (data_type, definition, expected_extent) in [
             (
                 "enum",
-                "enum('draft','needs,review','O''Reilly')",
-                "('draft','needs,review','O''Reilly')",
+                "enum('','draft','not UNSIGNED value','O''Reilly')",
+                "('','draft','not UNSIGNED value','O''Reilly')",
             ),
             (
                 "set",
@@ -3942,6 +4044,50 @@ mod tests {
             assert_eq!(column.column_size, None);
             assert_eq!(column.primary_key_order, 0);
         }
+    }
+
+    #[test]
+    fn mysql_column_metadata_reads_only_real_type_modifiers() {
+        assert_eq!(
+            mysql_metadata_column_type("ENUM", "enum('','active','not UNSIGNED value')"),
+            "ENUM"
+        );
+        assert_eq!(
+            mysql_metadata_column_type("SET", "set('UNSIGNED','read')"),
+            "SET"
+        );
+        assert_eq!(
+            mysql_metadata_column_type("DECIMAL", "decimal(12,2) unsigned"),
+            "DECIMAL UNSIGNED"
+        );
+        assert_eq!(
+            mysql_metadata_column_type("INT", "int unsigned zerofill"),
+            "INT UNSIGNED ZEROFILL"
+        );
+    }
+
+    #[test]
+    fn mysql_column_reorder_rejects_unrepresented_attributes() {
+        assert!(
+            mysql_column_reorder_hazard("int", "STORED GENERATED", "(`base` + 1)")
+                .is_some_and(|reason| reason.contains("generated-column"))
+        );
+        assert!(
+            mysql_column_reorder_hazard("int", "INVISIBLE", "")
+                .is_some_and(|reason| reason.contains("INVISIBLE"))
+        );
+        assert!(
+            mysql_column_reorder_hazard("int unsigned zerofill", "", "")
+                .is_some_and(|reason| reason.contains("ZEROFILL"))
+        );
+        assert_eq!(
+            mysql_column_reorder_hazard("enum('UNSIGNED','active')", "", ""),
+            None
+        );
+        assert_eq!(
+            mysql_column_reorder_hazard("bigint unsigned", "AUTO_INCREMENT", ""),
+            None
+        );
     }
 
     #[test]

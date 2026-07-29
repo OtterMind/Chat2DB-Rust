@@ -2208,6 +2208,17 @@ pub(crate) async fn build_table_modify_sql(
     let datasource_id = request.data_source_id.as_string();
     resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
     let sql = if let Some(old_table) = request.old_table.as_ref() {
+        let reordered_columns = mysql_reordered_column_names(old_table, &request.new_table);
+        if !reordered_columns.is_empty() {
+            application
+                .validate_native_mysql_column_reorder(
+                    &datasource_id,
+                    &first_non_blank(&request.database_name, &old_table.database_name),
+                    &required_name(&old_table.name, "oldTable.name")?,
+                    &reordered_columns,
+                )
+                .await?;
+        }
         build_mysql_alter_table(&mysql_table_alter(
             old_table,
             &request.new_table,
@@ -5248,6 +5259,34 @@ fn mysql_column_moved(
     }
 }
 
+fn mysql_reordered_column_names(
+    old_table: &LegacyEditableTable,
+    new_table: &LegacyEditableTable,
+) -> Vec<String> {
+    let active_columns = new_table
+        .column_list
+        .iter()
+        .filter(|column| !has_edit_status(column.edit_status.as_deref(), "DELETE"))
+        .collect::<Vec<_>>();
+    new_table
+        .column_list
+        .iter()
+        .filter(|column| {
+            !matches!(
+                column
+                    .edit_status
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_uppercase()
+                    .as_str(),
+                "ADD" | "MODIFY" | "DELETE"
+            ) && mysql_column_moved(old_table, &active_columns, column)
+        })
+        .map(|column| legacy_column_original_name(column).to_owned())
+        .collect()
+}
+
 fn legacy_column_original_name(column: &LegacyColumn) -> &str {
     column
         .old_name
@@ -5456,7 +5495,8 @@ fn parse_enum_values(value: &str) -> Vec<String> {
             break;
         };
         let mut parsed = String::new();
-        if matches!(first, '\'' | '"') {
+        let quoted = matches!(first, '\'' | '"');
+        if quoted {
             let quote = first;
             while let Some(character) = chars.next() {
                 if character == '\\' {
@@ -5490,7 +5530,7 @@ fn parse_enum_values(value: &str) -> Vec<String> {
             }
             parsed.truncate(parsed.trim_end().len());
         }
-        if !parsed.is_empty() {
+        if quoted || !parsed.is_empty() {
             values.push(parsed);
         }
     }
@@ -7099,19 +7139,19 @@ mod tests {
         let column = column_response(CommunityTableColumn {
             name: "state".to_owned(),
             column_type: "ENUM".to_owned(),
-            extent: "('draft','needs,review','O''Reilly','close)later')".to_owned(),
+            extent: "('','draft','needs,review','O''Reilly','close)later')".to_owned(),
             ..CommunityTableColumn::default()
         });
 
         assert_eq!(
             column.value,
-            "'draft','needs,review','O''Reilly','close)later'"
+            "'','draft','needs,review','O''Reilly','close)later'"
         );
         let definition = mysql_column_definition(&column)
             .expect("the retained enum definition must normalize for DDL");
         assert_eq!(
             definition.enum_values,
-            vec!["draft", "needs,review", "O'Reilly", "close)later"]
+            vec!["", "draft", "needs,review", "O'Reilly", "close)later"]
         );
     }
 
@@ -7248,6 +7288,11 @@ mod tests {
             old_table.column_list[0].clone(),
             old_table.column_list[1].clone(),
         ];
+
+        assert_eq!(
+            mysql_reordered_column_names(&old_table, &new_table),
+            ["c", "a"]
+        );
 
         let alter = mysql_table_alter(&old_table, &new_table, "inventory", "")
             .expect("a drag-only reorder must normalize");
