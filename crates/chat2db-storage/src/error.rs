@@ -68,6 +68,9 @@ pub enum StorageError {
     /// A saved Console field or page request violates the durable contract.
     #[error("invalid saved Console: {0}")]
     InvalidSavedConsole(&'static str),
+    /// An operation-log field or page request violates the durable contract.
+    #[error("invalid operation log: {0}")]
+    InvalidOperationLog(&'static str),
     /// The requested provider profile does not exist.
     #[error("provider profile not found: {0}")]
     ProviderNotFound(String),

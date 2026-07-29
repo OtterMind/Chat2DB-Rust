@@ -3,15 +3,22 @@
 ## Status
 
 - Community baseline: `OtterMind/Chat2DB` `main@3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c`.
-- Rust baseline: `OtterMind/Chat2DB-Rust` `main@352838b7d20fad568fd68f5d825e65c56104bd29`.
+- Rust baseline: `OtterMind/Chat2DB-Rust` `main@e9789cded5d227ba1f48690264046610eedb0807`.
 - Product target: the original Community React frontend running against the Rust Web or Tauri host.
 - Runtime-tested now: datasource CRUD/test; database, schema, table, column,
   index, foreign-key, primary-key, view, function, procedure, trigger, and
   routine-parameter metadata; all first-stage historical metadata routes;
-  bounded table preview; saved Console CRUD; and one unparameterized read-only MySQL
-  `SELECT` with paging and cancellation. Native metadata keeps Java dormant.
-  Paged table name/comment search, complete-list filtering, page-size validation,
-  HTTP binding-error envelopes, and nullable column defaults match the locked
+  bounded table preview; saved Console CRUD; and native unparameterized MySQL
+  Console execution. Console coverage includes DDL/DML, semicolon scripts,
+  `DELIMITER` procedure scripts, explicit transactions, error-continue policy,
+  preserved-single dispatch, `EXPLAIN`, bounded all-row paging, datasource
+  read-only enforcement, multiple result sets, exact affected-row counts,
+  cancellation, a shared 64 MiB retained-result budget, durable history with
+  cancelled-state projection, and bounded large-cell retrieval/download. Base64
+  and hex large-text chunks use UTF-8 byte offsets as the original frontend
+  expects. Native metadata and Console execution keep Java dormant. Paged table
+  name/comment search, complete-list filtering, page-size validation, HTTP
+  binding-error envelopes, and nullable column defaults match the locked
   Community baseline.
 - Complete parity: not implemented.
 
@@ -48,10 +55,10 @@ route reaches it and a real MySQL product test covers the behavior.
 | Table DDL | `/api/rdb/ddl/*`, `/api/rdb/table/modify/sql`, `/delete`, `/truncate`, `/copy`, create/update examples, DDL export | Partial builder infrastructure only | Match create/alter/drop/truncate/copy preview and execution, including columns, indexes, keys, charset, collation, comments, and MySQL types. |
 | Views | `/api/rdb/view/list`, `/column_list`, `/detail`, `/query`, `/view_meta`, `/modify/sql`, `/delete`, `/drop` | Native list, column list, and `SHOW CREATE VIEW` detail are mapped to the legacy routes | Add data query, metadata, preview, create/alter, and drop flows. |
 | Functions, procedures, and triggers | `/api/rdb/{function,procedure,trigger}/{list,detail}`, `/api/rdb/routine/{preview_invocation,preview_migration,execute_migration}` | Native list/detail and routine-parameter projections are implemented; every original list/detail route is mapped | Add invocation and migration preview/execution flows. |
-| Console SELECT | `/api/rdb/dml/execute`, desktop `sql-execute`/`sql-cancel` | One unparameterized SELECT, paging, limits, cancellation | Add parameters, CTEs, all MySQL read statements, multiple result sets, warnings, affected rows, and Community result shapes. |
-| Console scripts and writes | `/api/rdb/dml/execute`, `/execute_ddl` | Not implemented natively | Match Community statement splitting, script execution policy, DDL/DML, transaction settlement, cancellation, and per-statement results. |
-| Large cell values | `/api/rdb/cell/value`, `/download`, `/download_path` | Not implemented | Preserve bounded previews and explicit full-value download without loading unbounded cells into the WebView. |
-| Saved consoles and SQL history | `/api/operation/saved/*`, `/api/operation/log/{create,list}` and detail | Saved Console CRUD implemented; execution history absent | Persist and filter Community-compatible history and keep restart-safe Console state. |
+| Console SELECT | `/api/rdb/dml/execute`, desktop `sql-execute`/`sql-cancel` | Native unparameterized MySQL reads, CTEs, normal/all-row paging, preserved-single dispatch, `EXPLAIN`, limits, multiple result sets, affected-row counts, datasource read-only enforcement, and cancellation implemented | Add JDBC-style bind parameters and close remaining warning/error/result-shape differences. |
+| Console scripts and writes | `/api/rdb/dml/execute`, `/execute_ddl` | Native unparameterized DDL/DML, semicolon and `DELIMITER` scripts, explicit transactions, error-continue policy, cancellation, and per-statement results implemented | Add bind parameters and complete exact Community conformance for unsupported edge-case scripts. |
+| Large cell values | `/api/rdb/cell/value`, `/download`, `/download_path` | Bounded UTF-8/Base64 previews, owner-scoped expiring tokens, byte-oriented Base64/hex chunk reads, character-oriented text reads, and full-value downloads implemented | Add long-running export/task integration and close remaining content-type/display-mode differences. |
+| Saved consoles and SQL history | `/api/operation/saved/*`, `/api/operation/log/{create,list}` and detail | Restart-safe saved Console CRUD plus durable history create/list/detail, filtering, paging, per-statement recording, and cancelled-state projection implemented | Complete remaining Community audit/history fields and non-Console producers. |
 | SQL parser, formatter, validation, completion | `/api/sql/format`, `/valid_select`, `/api/sql_parser/get_keywords`, `/context/{parser,quick_parser,tip,hover}` | Modern parser/validation/formatter/completion contracts implemented through Java; legacy routes absent | Map every original endpoint to the fixed Community implementation with matching UTF-16 offsets and envelopes. |
 | Import, export, and tasks | `/api/import/{sql_file,other_file}`, `/api/export/{sql_file,other_file}`, `/api/task/*`, `/api/rdb/dml/export`, table class generation | Not implemented | Add bounded streaming import/export, progress, stop, download, cleanup, and failure recovery. |
 | Account administration | `/api/rdb/account/{capability,list,grants,preview,execute}` | Not implemented | Match MySQL users, hosts, authentication, privileges, role/grant previews, execution, and current Community escaping rules. |
@@ -64,8 +71,10 @@ route reaches it and a real MySQL product test covers the behavior.
 1. Complete: native read-only object metadata and every matching original
    metadata route, with Axum/dispatch contracts and a real MySQL 8.4 product
    vertical that proves Java remains dormant.
-2. Full Console statement execution, multi-result handling, writes, transactions,
-   history, cancellation, and large-cell retrieval.
+2. Implemented slice: native unparameterized Console statement execution,
+   multi-result handling, writes, transactions, history, cancellation, and
+   large-cell retrieval. Bind parameters and remaining exact Community edge-case
+   conformance are still required for complete parity.
 3. Table data editing plus database/schema/table/view DDL preview and execution.
 4. Import/export/tasks, datasource lifecycle/SSH/import, account administration,
    routines, structure comparison, pins, and ER metadata.
@@ -86,6 +95,10 @@ the complete repository verification gate, and all GitHub Actions jobs.
 - `third_party/chat2db-community/chat2db-community-server/chat2db-community-web/src/main/java/ai/chat2db/community/web/api/controller/`
 - `third_party/chat2db-community/chat2db-community-server/chat2db-community-plugins/chat2db-community-mysql/src/main/java/ai/chat2db/plugin/mysql/`
 - `crates/chat2db-core/src/native_mysql.rs`
+- `crates/chat2db-core/src/large_value.rs`
+- `crates/chat2db-core/tests/native_mysql_console_docker.rs`
+- `crates/chat2db-storage/src/operation_log.rs`
+- `crates/chat2db-storage/migrations/004_operation_log.sql`
 - `crates/chat2db-core/tests/native_mysql_product.rs`
 - `crates/chat2db-core/src/community.rs`
 - `apps/chat2db-web/src/legacy.rs`

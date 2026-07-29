@@ -531,7 +531,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_sql_execute_rejects_empty_sql_and_preserves_core_start_errors() {
+    async fn legacy_sql_execute_rejects_empty_sql_and_reports_missing_native_datasource() {
         let empty_response = router(Application::new())
             .oneshot(json_request(
                 Method::POST,
@@ -553,7 +553,7 @@ mod tests {
         let directory = TempDir::new().expect("temp directory");
         let storage =
             Storage::open(directory.path(), Arc::new(TestVault)).expect("test storage must open");
-        let unavailable_response = router(Application::with_storage(storage))
+        let unavailable_response = router(Application::with_storage(storage.clone()))
             .oneshot(json_request(
                 Method::POST,
                 "/api/rdb/dml/execute",
@@ -568,8 +568,19 @@ mod tests {
             .await
             .expect("router must respond");
         let unavailable: serde_json::Value = response_json(unavailable_response).await;
-        assert_eq!(unavailable["success"], false);
-        assert_eq!(unavailable["errorCode"], "database_engine_unavailable");
+        assert_eq!(unavailable["success"], true);
+        assert_eq!(unavailable["data"][0]["success"], false);
+        assert_eq!(
+            unavailable["data"][0]["extra"]["messages"][0]["errorCode"],
+            "datasource_not_found"
+        );
+
+        let history = storage
+            .list_operation_logs(&chat2db_storage::OperationLogListQuery::default())
+            .expect("failed native executions must be recorded best-effort");
+        assert_eq!(history.total, 1);
+        assert_eq!(history.records[0].ddl, "SELECT 1");
+        assert_eq!(history.records[0].status, "fail");
     }
 
     #[test]

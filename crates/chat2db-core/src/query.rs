@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use chat2db_contract::{ApiError, QueryAccepted, QueryLimits, StartQueryRequest};
+use chat2db_contract::{
+    ApiError, QueryAccepted, QueryLimits, ResultColumn, ResultRow, StartQueryRequest,
+};
 use chat2db_engine_protocol::wire;
 use chat2db_java_bridge::{
     BridgeError, CancelDisposition as BridgeCancelDisposition, ConnectionProperty, JdbcParameter,
@@ -27,6 +29,118 @@ pub(crate) struct PreparedQuery {
     pub(crate) options: QueryOptions,
     pub(crate) retention: Duration,
     pub(crate) force_read_only: bool,
+}
+
+/// One native `MySQL` Console execution request.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
+#[serde(rename_all = "camelCase")]
+pub struct MysqlConsoleRequest {
+    /// Opaque datasource id resolved by Core.
+    pub datasource_id: String,
+    /// Optional `MySQL` database selected on the Console connection.
+    #[serde(default)]
+    pub database_name: String,
+    /// One statement or a semicolon-delimited `MySQL` script.
+    pub sql: String,
+    /// One-based result page number.
+    pub page_no: u32,
+    /// Number of rows retained for each tabular result set.
+    pub page_size: u32,
+    /// Optional one-based tabular result-set id to retain per statement.
+    #[serde(default)]
+    pub result_set_id: Option<u32>,
+    /// Whether the submitted SQL must be dispatched as one preserved statement.
+    #[serde(default)]
+    pub single: bool,
+    /// Whether the bounded all-rows window is used instead of the requested page.
+    #[serde(default)]
+    pub page_size_all: bool,
+    /// Whether each parsed statement is executed through `EXPLAIN`.
+    #[serde(default)]
+    pub explain: bool,
+    /// Whether execution proceeds to the next statement after a database error.
+    #[serde(default = "default_console_error_continue")]
+    pub error_continue: bool,
+}
+
+/// One statement result emitted by native `MySQL` Console execution.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MysqlConsoleResult {
+    /// One-based statement position in the submitted script.
+    pub statement_sequence: u32,
+    /// One-based tabular result-set position within the statement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_set_id: Option<u32>,
+    /// The exact statement sent to `MySQL`.
+    pub sql: String,
+    /// Whether this individual statement result succeeded.
+    pub success: bool,
+    /// Safe database or execution message.
+    pub message: String,
+    /// Server-reported affected rows for non-tabular results.
+    pub update_count: u64,
+    /// Portable result columns in display order.
+    pub columns: Vec<ResultColumn>,
+    /// The requested page of portable result rows.
+    pub rows: Vec<ResultRow>,
+    /// Exact rows observed in the complete tabular result set.
+    pub row_count: u64,
+    /// Whether rows exist beyond the requested page.
+    pub has_more: bool,
+    /// Wall-clock execution and fetch time in milliseconds.
+    pub duration_ms: u64,
+    /// Safe statement failure, present only when `success` is false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<ApiError>,
+}
+
+/// Cloneable cancellation source for one native `MySQL` Console execution.
+#[derive(Debug, Clone)]
+pub struct MysqlConsoleCancellation {
+    sender: watch::Sender<CancellationRequest>,
+}
+
+impl MysqlConsoleCancellation {
+    /// Creates an active cancellation source.
+    #[must_use]
+    pub fn new() -> Self {
+        let (sender, _receiver) = watch::channel(CancellationRequest::Waiting);
+        Self { sender }
+    }
+
+    /// Requests cancellation once and preserves the first supplied reason.
+    #[must_use]
+    pub fn cancel(&self, reason: Option<String>) -> bool {
+        self.sender.send_if_modified(|state| {
+            if *state != CancellationRequest::Waiting {
+                return false;
+            }
+            *state = CancellationRequest::Requested { reason };
+            true
+        })
+    }
+
+    /// Reports whether cancellation was already requested.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        *self.sender.borrow() != CancellationRequest::Waiting
+    }
+
+    fn subscribe(&self) -> watch::Receiver<CancellationRequest> {
+        self.sender.subscribe()
+    }
+}
+
+impl Default for MysqlConsoleCancellation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+const fn default_console_error_continue() -> bool {
+    true
 }
 
 enum QueryBackend {
@@ -67,6 +181,21 @@ pub(crate) struct RetainedWriter {
 }
 
 impl Application {
+    /// Executes an arbitrary `MySQL` Console script natively on one connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, datasource, connection, cancellation, or unrecoverable
+    /// protocol failures. Recoverable `MySQL` statement errors are represented in
+    /// the returned result list so `error_continue` can be honored.
+    pub async fn execute_mysql_console(
+        &self,
+        request: MysqlConsoleRequest,
+        cancellation: MysqlConsoleCancellation,
+    ) -> Result<Vec<MysqlConsoleResult>, AppError> {
+        crate::native_mysql::execute_console(self, request, cancellation.subscribe()).await
+    }
+
     /// Accepts a query for asynchronous execution and returns its operation id.
     ///
     /// # Errors
@@ -792,9 +921,39 @@ mod tests {
     use chat2db_java_bridge::{BridgeError, RemoteEngineError};
 
     use super::{
-        AppError, QueryTaskError, is_inactive_credit_grant_error, preserve_primary_outcome,
-        validate_credit_grant,
+        AppError, MysqlConsoleCancellation, MysqlConsoleRequest, QueryTaskError,
+        is_inactive_credit_grant_error, preserve_primary_outcome, validate_credit_grant,
     };
+
+    #[test]
+    fn mysql_console_cancellation_preserves_the_first_reason() {
+        let cancellation = MysqlConsoleCancellation::new();
+        let receiver = cancellation.subscribe();
+
+        assert!(cancellation.cancel(Some("first".to_owned())));
+        assert!(!cancellation.cancel(Some("second".to_owned())));
+        assert!(cancellation.is_cancelled());
+        assert!(matches!(
+            &*receiver.borrow(),
+            super::CancellationRequest::Requested { reason }
+                if reason.as_deref() == Some("first")
+        ));
+    }
+
+    #[test]
+    fn mysql_console_json_defaults_to_continuing_after_statement_errors() {
+        let request: MysqlConsoleRequest = serde_json::from_value(serde_json::json!({
+            "datasourceId": "mysql-1",
+            "sql": "SELECT 1",
+            "pageNo": 1,
+            "pageSize": 200
+        }))
+        .expect("console request should deserialize");
+
+        assert!(request.error_continue);
+        assert_eq!(request.result_set_id, None);
+        assert!(request.database_name.is_empty());
+    }
 
     #[test]
     fn query_progress_requires_the_requested_credit_to_be_accepted() {

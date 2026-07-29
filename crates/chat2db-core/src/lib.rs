@@ -7,6 +7,7 @@ mod datasource_session;
 mod driver_pack;
 mod engine_manager;
 mod error;
+mod large_value;
 mod native_mysql;
 mod operation;
 mod query;
@@ -41,7 +42,12 @@ pub use agent::AgentRunSubscription;
 pub use community::load_fixed_community_classpath;
 pub use engine_manager::EngineLease;
 pub use error::{AppError, AppErrorKind};
+pub use large_value::{
+    LargeValueChunk, LargeValueEncoding, LargeValueError, LargeValuePreview, LargeValueStoreStats,
+    LargeValueType,
+};
 pub use operation::OperationSubscription;
+pub use query::{MysqlConsoleCancellation, MysqlConsoleRequest, MysqlConsoleResult};
 
 use engine_manager::{
     DEFAULT_ENGINE_IDLE_TIMEOUT, EngineManagerOwner, EngineManagerStatus, EngineProvider,
@@ -64,6 +70,7 @@ pub(crate) struct ApplicationInner {
     engine: EngineProvider,
     drivers: Vec<JdbcDriver>,
     managed_driver_ids: Option<HashSet<String>>,
+    large_values: large_value::LargeValueStore,
     agent_runs: AgentRunHub,
     operations: OperationHub,
     accepting_work: Mutex<bool>,
@@ -239,6 +246,7 @@ impl Application {
                 engine,
                 drivers,
                 managed_driver_ids,
+                large_values: large_value::LargeValueStore::default(),
                 agent_runs: AgentRunHub::new(),
                 operations: OperationHub::new(),
                 accepting_work: Mutex::new(true),
@@ -252,6 +260,116 @@ impl Application {
     #[must_use]
     pub fn storage(&self) -> Option<&Storage> {
         self.inner.storage.as_ref()
+    }
+
+    /// Creates one unpredictable scope for large values returned by a Console execution.
+    #[must_use]
+    pub fn create_large_value_owner(&self) -> String {
+        large_value::new_owner_id()
+    }
+
+    /// Retains a potentially large UTF-8 cell and returns its bounded preview.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed validation or capacity failure without exposing retained values.
+    pub fn retain_large_text(
+        &self,
+        owner_id: &str,
+        value: String,
+    ) -> Result<LargeValuePreview, AppError> {
+        self.inner
+            .large_values
+            .retain_text(owner_id, value)
+            .map(|preview| large_value::scope_preview(owner_id, preview))
+            .map_err(large_value_app_error)
+    }
+
+    /// Retains a potentially large binary cell and returns its base64 preview.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed validation or capacity failure without exposing retained values.
+    pub fn retain_large_binary(
+        &self,
+        owner_id: &str,
+        value: Vec<u8>,
+    ) -> Result<LargeValuePreview, AppError> {
+        self.inner
+            .large_values
+            .retain_binary(owner_id, value)
+            .map(|preview| large_value::scope_preview(owner_id, preview))
+            .map_err(large_value_app_error)
+    }
+
+    /// Reads one bounded chunk through an opaque owner-scoped token.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed invalid, expired, inaccessible, or range error.
+    pub fn read_large_value_chunk(
+        &self,
+        large_value_id: &str,
+        offset: u64,
+        limit: u32,
+    ) -> Result<LargeValueChunk, AppError> {
+        let (owner_id, token) =
+            large_value::scoped_token(large_value_id).map_err(large_value_app_error)?;
+        self.inner
+            .large_values
+            .read_chunk(owner_id, token, offset, limit)
+            .map_err(large_value_app_error)
+    }
+
+    /// Reads one base64 chunk whose offsets and limit are measured in raw bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed invalid, expired, inaccessible, or range error.
+    pub fn read_large_value_encoded_chunk(
+        &self,
+        large_value_id: &str,
+        offset: u64,
+        limit: u32,
+    ) -> Result<LargeValueChunk, AppError> {
+        let (owner_id, token) =
+            large_value::scoped_token(large_value_id).map_err(large_value_app_error)?;
+        self.inner
+            .large_values
+            .read_encoded_chunk(owner_id, token, offset, limit)
+            .map_err(large_value_app_error)
+    }
+
+    /// Removes one retained value addressed by its opaque token.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed invalid, expired, or inaccessible token error.
+    pub fn remove_large_value(&self, large_value_id: &str) -> Result<(), AppError> {
+        let (owner_id, token) =
+            large_value::scoped_token(large_value_id).map_err(large_value_app_error)?;
+        self.inner
+            .large_values
+            .remove_token(owner_id, token)
+            .map_err(large_value_app_error)
+    }
+
+    /// Removes all retained values associated with one execution owner.
+    #[must_use]
+    pub fn remove_large_value_owner(&self, owner_id: &str) -> usize {
+        self.inner.large_values.remove_owner(owner_id)
+    }
+
+    /// Releases expired retained values.
+    #[must_use]
+    pub fn cleanup_expired_large_values(&self) -> usize {
+        self.inner.large_values.cleanup_expired()
+    }
+
+    /// Returns current retained-value usage after expiry cleanup.
+    #[must_use]
+    pub fn large_value_stats(&self) -> LargeValueStoreStats {
+        self.inner.large_values.stats()
     }
 
     pub(crate) fn require_storage(&self) -> Result<Storage, AppError> {
@@ -655,6 +773,31 @@ impl Application {
                 }
             }
         }
+    }
+}
+
+fn large_value_app_error(error: LargeValueError) -> AppError {
+    match error {
+        LargeValueError::NotFound | LargeValueError::Expired | LargeValueError::OwnerMismatch => {
+            AppError::not_found(
+                "largeCellValue.tokenExpired",
+                "The large cell value is no longer available",
+            )
+        }
+        LargeValueError::CapacityExceeded { .. } => AppError::new(
+            AppErrorKind::ResourceExhausted,
+            chat2db_contract::ApiError::new(
+                "largeCellValue.fullValueUnsupported",
+                "The large cell value exceeds the retained-value limit",
+            ),
+        ),
+        LargeValueError::InvalidOwner
+        | LargeValueError::InvalidToken
+        | LargeValueError::InvalidLimit
+        | LargeValueError::InvalidRange { .. } => AppError::invalid(
+            "invalid_large_cell_value_request",
+            "The large cell value request is invalid",
+        ),
     }
 }
 

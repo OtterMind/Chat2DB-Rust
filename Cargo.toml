@@ -29,6 +29,7 @@ async-trait = "0.1"
 axum = "0.8.9"
 base64 = "0.22.1"
 bytes = "1"
+chrono = "0.4.45"
 clap = { version = "4.5", features = ["derive"] }
 directories = "6.0"
 eventsource-stream = "0.2.3"
