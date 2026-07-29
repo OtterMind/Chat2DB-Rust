@@ -4805,6 +4805,7 @@ fn mysql_table_alter(
     }
 
     let mut indexes = Vec::new();
+    let has_explicit_primary_key_change = has_explicit_primary_key_change(new_table);
     for index in &new_table.index_list {
         let status = index
             .edit_status
@@ -4836,6 +4837,11 @@ fn mysql_table_alter(
             _ => {}
         }
     }
+    if !has_explicit_primary_key_change
+        && let Some(primary_key_change) = inferred_primary_key_change(old_table, new_table)?
+    {
+        indexes.push(primary_key_change);
+    }
     Ok(MysqlTableAlter {
         table,
         rename_to,
@@ -4853,14 +4859,96 @@ fn mysql_table_alter(
     })
 }
 
+fn has_explicit_primary_key_change(table: &LegacyEditableTable) -> bool {
+    table.index_list.iter().any(|index| {
+        mysql_index_kind(index) == MysqlIndexKind::Primary
+            && matches!(
+                index
+                    .edit_status
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_uppercase()
+                    .as_str(),
+                "ADD" | "MODIFY" | "DELETE"
+            )
+    })
+}
+
+fn inferred_primary_key_change(
+    old_table: &LegacyEditableTable,
+    new_table: &LegacyEditableTable,
+) -> LegacyResult<Option<MysqlIndexAlter>> {
+    let old_columns = ordered_primary_key_columns(old_table);
+    let new_columns = ordered_primary_key_columns(new_table);
+    let unchanged = old_columns.len() == new_columns.len()
+        && old_columns
+            .iter()
+            .zip(&new_columns)
+            .all(|(old, new)| old.name.eq_ignore_ascii_case(&new.name));
+    if unchanged {
+        return Ok(None);
+    }
+
+    let new_index = || -> LegacyResult<MysqlIndexDefinition> {
+        Ok(MysqlIndexDefinition {
+            kind: MysqlIndexKind::Primary,
+            name: None,
+            columns: new_columns
+                .iter()
+                .map(|column| {
+                    Ok(MysqlIndexColumn {
+                        name: required_name(&column.name, "columnList.name")?,
+                        prefix_length: None,
+                        order: None,
+                    })
+                })
+                .collect::<LegacyResult<Vec<_>>>()?,
+            method: Some(MysqlIndexMethod::Btree),
+            comment: None,
+        })
+    };
+
+    match (old_columns.is_empty(), new_columns.is_empty()) {
+        (true, false) => Ok(Some(MysqlIndexAlter::Add {
+            index: new_index()?,
+        })),
+        (false, true) => Ok(Some(MysqlIndexAlter::Delete {
+            kind: MysqlIndexKind::Primary,
+            name: None,
+        })),
+        (false, false) => Ok(Some(MysqlIndexAlter::Modify {
+            old_kind: MysqlIndexKind::Primary,
+            old_name: None,
+            index: new_index()?,
+        })),
+        (true, true) => Ok(None),
+    }
+}
+
+fn ordered_primary_key_columns(table: &LegacyEditableTable) -> Vec<&LegacyColumn> {
+    let mut columns = table
+        .column_list
+        .iter()
+        .filter(|column| {
+            column.primary_key == Some(true)
+                && !has_edit_status(column.edit_status.as_deref(), "DELETE")
+        })
+        .collect::<Vec<_>>();
+    columns.sort_by_key(|column| column.primary_key_order);
+    columns
+}
+
 fn mysql_column_definition(column: &LegacyColumn) -> LegacyResult<MysqlColumnDefinition> {
     let type_name = required_name(&column.column_type, "columnList.columnType")?;
+    let (length, scale) =
+        mysql_column_dimensions(&type_name, column.column_size, column.decimal_digits);
     Ok(MysqlColumnDefinition {
         name: required_name(&column.name, "columnList.name")?,
         unsigned: type_name.to_ascii_uppercase().contains("UNSIGNED"),
         type_name,
-        length: positive_u32(column.column_size),
-        scale: positive_or_zero_u32(column.decimal_digits),
+        length,
+        scale,
         nullable: column.nullable.unwrap_or(1) != 0,
         default_value: column.default_value.clone(),
         auto_increment: column.auto_increment.unwrap_or(false),
@@ -4870,6 +4958,27 @@ fn mysql_column_definition(column: &LegacyColumn) -> LegacyResult<MysqlColumnDef
         enum_values: parse_enum_values(&column.value),
         on_update_current_timestamp: column.on_update_current_timestamp.unwrap_or(false),
     })
+}
+
+fn mysql_column_dimensions(
+    type_name: &str,
+    column_size: Option<i32>,
+    decimal_digits: Option<i32>,
+) -> (Option<u32>, Option<u32>) {
+    let base_type = type_name
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    match base_type.as_str() {
+        "CHAR" | "VARCHAR" | "BINARY" | "VARBINARY" | "BIT" => (positive_u32(column_size), None),
+        "DECIMAL" | "NUMERIC" => (
+            positive_u32(column_size),
+            positive_or_zero_u32(decimal_digits),
+        ),
+        "DATETIME" | "TIMESTAMP" | "TIME" => (positive_or_zero_u32(decimal_digits), None),
+        _ => (None, None),
+    }
 }
 
 fn mysql_index_definition(index: &LegacyIndex) -> LegacyResult<MysqlIndexDefinition> {
@@ -6647,6 +6756,81 @@ mod tests {
             .await
             .expect_err("partial large-value previews must never enter DML");
         assert_eq!(error.code, "mysql_partial_large_value_rejected");
+    }
+
+    #[test]
+    fn table_alter_derives_primary_key_changes_from_editor_columns() {
+        let old_table = LegacyEditableTable {
+            name: "items".to_owned(),
+            database_name: "inventory".to_owned(),
+            column_list: vec![
+                LegacyColumn {
+                    name: "id".to_owned(),
+                    column_type: "BIGINT".to_owned(),
+                    primary_key: Some(true),
+                    primary_key_order: 1,
+                    nullable: Some(0),
+                    ..LegacyColumn::default()
+                },
+                LegacyColumn {
+                    name: "code".to_owned(),
+                    column_type: "VARCHAR".to_owned(),
+                    column_size: Some(64),
+                    nullable: Some(0),
+                    ..LegacyColumn::default()
+                },
+            ],
+            index_list: vec![LegacyIndex {
+                name: "PRIMARY".to_owned(),
+                index_type: "Primary".to_owned(),
+                column_list: vec![LegacyIndexColumn {
+                    column_name: "id".to_owned(),
+                    ..LegacyIndexColumn::default()
+                }],
+                ..LegacyIndex::default()
+            }],
+            ..LegacyEditableTable::default()
+        };
+        let mut new_table = old_table.clone();
+        new_table.column_list[0].primary_key = Some(false);
+        new_table.column_list[0].primary_key_order = 0;
+        new_table.column_list[0].edit_status = Some("MODIFY".to_owned());
+        new_table.column_list[1].primary_key = Some(true);
+        new_table.column_list[1].primary_key_order = 1;
+        new_table.column_list[1].edit_status = Some("MODIFY".to_owned());
+
+        let alter = mysql_table_alter(&old_table, &new_table, "inventory", "")
+            .expect("column primary-key edits must normalize");
+        let sql = build_mysql_alter_table(&alter).expect("primary-key ALTER must build");
+
+        assert_eq!(sql.matches("DROP PRIMARY KEY").count(), 1);
+        assert_eq!(
+            sql.matches("ADD PRIMARY KEY (`code`) USING BTREE").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn table_editor_metadata_keeps_only_type_appropriate_dimensions() {
+        let definition = |column_type: &str, column_size, decimal_digits| {
+            mysql_column_definition(&LegacyColumn {
+                name: "value".to_owned(),
+                column_type: column_type.to_owned(),
+                column_size,
+                decimal_digits,
+                ..LegacyColumn::default()
+            })
+            .expect("metadata column must normalize")
+        };
+
+        let varchar = definition("VARCHAR", Some(128), Some(0));
+        assert_eq!((varchar.length, varchar.scale), (Some(128), None));
+        let text = definition("TEXT", Some(65_535), Some(0));
+        assert_eq!((text.length, text.scale), (None, None));
+        let decimal = definition("DECIMAL", Some(12), Some(3));
+        assert_eq!((decimal.length, decimal.scale), (Some(12), Some(3)));
+        let timestamp = definition("TIMESTAMP", Some(26), Some(6));
+        assert_eq!((timestamp.length, timestamp.scale), (Some(6), None));
     }
 
     #[tokio::test]
