@@ -2,10 +2,11 @@
 
 Source-available implementation of the Chat2DB Community hybrid runtime.
 
-Chat2DB Rust owns the product runtime in Rust while retaining the public
-Chat2DB Community database compatibility layer behind a supervised Java
-process. The repository is under active development and is not yet a stable
-end-user release.
+Chat2DB Rust owns the product runtime in Rust, uses a native Rust path for the
+current MySQL browser and SELECT slice, and retains the broader public Chat2DB
+Community database compatibility layer behind a supervised Java process. The
+repository is under active development and is not yet a stable end-user
+release.
 
 ## Clone
 
@@ -25,8 +26,9 @@ git submodule update --init --recursive
 
 ## Current state
 
-The repository has completed Stages 1 through 6 and the first thirteen
-independently buildable Stage 7 slices:
+The repository has completed Stages 1 through 6, the first thirteen
+independently buildable Stage 7 slices, and the first end-user Community
+Console compatibility slice:
 
 - canonical Rust API contracts;
 - a transport-neutral Rust application service root;
@@ -50,16 +52,19 @@ independently buildable Stage 7 slices:
   paging, a physical-byte quota, expiry, writer cleanup, and crash recovery;
 - an AES-256-GCM encrypted file vault rooted in either an OS-keyring master key
   or an explicit headless master key;
-- one production `RuntimeHost` that opens the vault and storage, supervises the
-  Java engine, and shuts down active work deterministically;
+- one production `RuntimeHost` that opens the vault, storage, and verified
+  driver catalog without starting Java, then single-flights first-use startup,
+  leases each generation to active work, reaps it after three idle minutes,
+  reloads drivers on the next use, and shuts down deterministically;
 - secret-safe datasource CRUD, asynchronous query operations, bounded replay,
   explicit cancellation, and retained-result paging through Axum JSON/SSE and
   Tauri 2 commands/channels;
 - a checked-in OpenAPI contract with generated TypeScript types and drift
   verification; and
-- the exact pinned original Community Umi/React frontend, served by Axum over
-  historical HTTP routes on Web and bridged from `window.javaQuery` to Tauri
-  IPC on desktop without product UI or style forks;
+- the pinned original Community Umi/React layout and components, served by
+  Axum over historical HTTP routes on Web and bridged from `window.javaQuery`
+  to Tauri IPC on desktop without a replacement UI or style fork; the pinned
+  source carries one CSP-safe callback-cloning compatibility fix;
 - a provider-neutral bounded agent loop with direct OpenAI, Anthropic, and
   Gemini adapters, durable sessions/messages/runs/permissions, and atomic
   context compaction;
@@ -75,8 +80,8 @@ independently buildable Stage 7 slices:
   cancellation, and retained-result paging; and
 - an `rmcp` 2.2 stdio server with five bounded datasource/query tools backed by
   that same running `Application`;
-- strict local JDBC driver-pack discovery, hash verification, startup preload,
-  and immutable Core/Axum/Tauri inventory; and
+- strict local JDBC driver-pack discovery, hash verification, immutable
+  Core/Axum/Tauri inventory, and repeatable per-generation preload; and
 - a fixed Community 5.3.0 compatibility classpath that discovers real
   `IPlugin` implementations and exposes H2 plugin catalog, schema, object,
   view, foreign-key, primary-key, function, procedure, parameter, and trigger
@@ -86,10 +91,18 @@ independently buildable Stage 7 slices:
 - product-owned Community DTOs and Core services exposed consistently through
   Axum and Tauri, with exact locked-classpath startup and forced-read-only
   metadata sessions; and
-- an original-frontend compatibility layer for MySQL connection testing,
+- an original-frontend compatibility layer for native MySQL connection testing,
   datasource CRUD/tree, database/schema/table discovery, and synchronous table
   preview over the historical `{success,data,errorCode,errorMessage}` envelope;
   and
+- durable SQLite-backed Community Console create/get/list/update/delete,
+  including SQL text, datasource/database/schema binding, saved status, and
+  open-tab state across process restarts; and
+- Community Console SELECT execution through upstream `mysql_async 0.37.0`, a
+  MySQL read-only transaction, and the existing bounded Core retained-result
+  path without starting Java: Web uses the historical synchronous result shape,
+  while desktop maps operation lifecycle, rows, failure, and cancellation to
+  the original JCEF event bus;
 - a shared Web/Tauri legacy dispatcher: Axum maps the original `/api` routes,
   while desktop preserves the original JCEF correlation envelope through one
   `legacy_request` Tauri command; and
@@ -102,7 +115,18 @@ forced-read-only execution, and retained paging of the selected table's rows.
 Commit `928e62c5d775d0e81d95db7fee186db756834a72` additionally passed the
 complete local repository gate and a live original-frontend legacy HTTP
 vertical covering connection, datasource persistence, database/table listing,
-and three-row table preview.
+and three-row table preview. On 2026-07-28 commits `36ecac6`, `78e92d6`, and
+`c51fdff` passed formatting, strict workspace Clippy, all 509 Rust tests, 49
+frontend tests, and the Community production build. A live MySQL 8.4 run then
+created a Console, returned real table rows, returned a renderable SQL error,
+saved edited SQL, closed it, restarted the Rust host, reopened it, and executed
+the restored SQL successfully. On 2026-07-29 commits `81301c3`, `4199862`, and
+`6c74421` passed 144 Core unit tests, strict Core Clippy, and a real MySQL 8.4
+vertical covering native connection, database/schema/table discovery, preview,
+typed Console SELECT, row truncation, active-query cancellation, retained
+paging, and proof after every operation that Java remained dormant.
+The complete repository `make verify` gate and the explicit real-MySQL
+`native-mysql-integration` target also passed after the final compatibility fix.
 
 Stage 6 is complete. Web and desktop own the product runtime and publish its
 owner-only local endpoint; CLI and MCP attach to that host and never contact
@@ -140,7 +164,18 @@ build a row-limited SELECT without opening JDBC, then Rust validates that SQL an
 executes it through the existing forced-read-only query and retained-result
 path. The fixed 149-JAR classpath keeps H2 and MySQL; PostgreSQL and other
 dialects do not block the MySQL preview. MySQL writes, Agent, CLI, and MCP
-conformance remain outside this small read-only milestone.
+conformance remain outside this small read-only milestone. The current MySQL
+connection, database/schema/table, preview, and supported Console SELECT routes
+dispatch to `mysql_async` before Java lease acquisition; Community parser,
+formatter, completion, builders, and advanced metadata remain Java-backed.
+
+The first Console compatibility slice adds SQLite migration 3 for saved
+Consoles and the historical `/api/operation/saved/*` plus
+`/api/rdb/dml/execute` routes. Web waits on the Core operation and returns the
+existing Community grid result. Desktop starts the same Core query, emits the
+original `sql_execution_event` sequence through Tauri, and supports
+`sql-cancel`. This slice intentionally supports query/SELECT execution only;
+arbitrary DDL, DML, and multi-statement Console scripts are not implemented.
 
 The Stage 5 and Stage 7G through Stage 7M custom React workbench was an
 intermediate implementation and is no longer the product frontend. Commit
@@ -218,6 +253,14 @@ product vertical against a local server:
 MYSQL_TEST_USER=root \
 MYSQL_TEST_PASSWORD='<local password>' \
 make community-product-mysql-integration
+```
+
+Run the native MySQL product path alone, without building Java or Connector/J:
+
+```bash
+MYSQL_TEST_USER=root \
+MYSQL_TEST_PASSWORD='<local password>' \
+make native-mysql-integration
 ```
 
 `MYSQL_TEST_HOST` and `MYSQL_TEST_PORT` default to `127.0.0.1:3306`. The test

@@ -6,7 +6,7 @@ build_tool="${repository_root}/scripts/build-community-h2-classpath.sh"
 lock_tool="${repository_root}/scripts/community-classpath-lock.sh"
 sanitizer="${repository_root}/scripts/CommunityClasspathSanitizer.java"
 output_directory="${repository_root}/target/community-h2-classpath"
-expected_commit="f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7"
+expected_commit="37a34be858f2566b6b7fcf6c3f64183c1f560853"
 first_lock="$(mktemp "${TMPDIR:-/tmp}/chat2db-community-first-lock.XXXXXX")"
 second_lock="$(mktemp "${TMPDIR:-/tmp}/chat2db-community-second-lock.XXXXXX")"
 

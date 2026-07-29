@@ -14,8 +14,17 @@ deadlines, hard limits, and explicit unknown outcomes. The complete
 storage-to-Java-to-retained-result path is cross-language tested against H2
 without embedding H2 in the compatibility-engine JAR.
 
-The Web and Tauri hosts open the production vault, SQLite storage, and Java
-supervisor before exposing a shared `Application`. Axum serves JSON, SSE, and
+The Web and Tauri hosts open the production vault, SQLite storage, and verified
+driver catalog before exposing a shared `Application`; they do not start Java
+during host bootstrap. Native MySQL connection, database/schema/table, preview,
+and supported Console SELECT operations do not acquire a Java lease. The Core
+`EngineManager` starts one Java generation on the first JDBC-only database,
+parser, formatter, completion, builder, or advanced metadata request. It shares
+that single-flight startup across concurrent callers and issues generation-scoped
+leases that remain live through stream and session cleanup. After the final
+lease is released, the default three-minute idle deadline shuts down and fully
+reaps Java. A later request starts a new generation and reloads every staged
+driver pack. Axum serves JSON, SSE, and
 the exact pinned original Community Umi/React SPA; Tauri exposes commands and
 per-subscription channels without a localhost product server. Both hosts also publish an owner-only local endpoint
 for the CLI and MCP process. That same `Application` owns query and Agent run
@@ -35,9 +44,9 @@ workbench. The build exports the unmodified Community frontend tree pinned by
 `scripts/community-frontend.lock.json`. Web maps its historical `/api`
 contract through Axum; desktop maps the existing `window.javaQuery` contract
 through one Tauri `legacy_request` command. Both paths call the same Rust
-legacy dispatcher. The implemented product slice covers MySQL connection
-testing, datasource CRUD/tree, database/schema/table discovery, and
-forced-read-only table preview. Signing, distribution, the remaining dialect
+legacy dispatcher. The implemented product slice covers native MySQL connection
+testing, datasource CRUD/tree, database/schema/table discovery, read-only table
+preview, and typed Console SELECT. Signing, distribution, the remaining dialect
 estate, broader historical API coverage, and packaging remain target
 components. CLI and MCP attach to a running host rather than composing a
 second product runtime.
@@ -45,7 +54,11 @@ second product runtime.
 Runtime-tested: yes for the Stage 7M MySQL product vertical. On 2026-07-27 the
 complete stored-datasource path passed against MySQL 8.4, from real Community
 identifier/DQL/page-limit generation through forced-read-only JDBC execution
-and retained-result paging.
+and retained-result paging. On 2026-07-29 the native MySQL path passed against
+MySQL 8.4 with a deliberately missing Java executable, including active-query
+cancellation and dormant-Java assertions after every product operation. The
+complete repository `make verify` gate and an explicit real-MySQL rerun passed
+after preserving the disabled-engine error contract.
 
 ## Ownership
 
@@ -58,7 +71,8 @@ and retained-result paging.
 | Durable state | Rust | SQLite, retained-result files, and a mandatory injected secret-vault contract |
 | AI agent | Rust | Provider adapters, tool loop, limits, compaction, and cancellation |
 | MCP and CLI | Rust | Adapters around the same product services and policy |
-| Database compatibility | Java 17 | Existing SPI/plugins, JDBC, metadata, builders, and execution |
+| Native MySQL product slice | Rust / `mysql_async` | Connection, database/schema/table discovery, preview, supported SELECT, typed streaming, limits, cancellation, and retained results |
+| Compatibility databases and advanced MySQL operations | Java 17 | Existing SPI/plugins, JDBC, advanced metadata, builders, parsing, formatting, completion, writes, and transactions |
 | SQL parsing, formatting, and completion | Java 17 | Existing Java ANTLR grammars, parser behavior, formatter behavior, and completion |
 | Rust-to-Java IPC | Shared Protobuf contract | Length-prefixed frames over private stdin/stdout |
 
@@ -75,6 +89,7 @@ React in system WebView         React in browser
               <- owner-only local attachment <- rmcp stdio server <- MCP client
               -> SQLite and result store
               -> AI agent runtime
+              -> native MySQL connection / metadata / SELECT
               -> Java process supervisor
                  -> Protobuf stdin/stdout
                  -> Java database compatibility engine
@@ -103,6 +118,8 @@ inside the Java process.
   stderr is diagnostic-only.
 - Read-only metadata/parser work may retry after a Java restart. Transactions,
   DML, and unknown-outcome operations are never replayed automatically.
+- A Java-backed operation must retain its `EngineLease` until every session,
+  stream, transaction, and cleanup action for that operation is terminal.
 
 The implemented lifecycle and JDBC subset is documented in
 [`protocol.md`](protocol.md). Capabilities are advertised only after their
@@ -110,9 +127,24 @@ cross-language acceptance gates pass.
 
 ## Database boundary
 
-Java remains the primary database implementation at the first complete release.
-Rust does not reimplement vendor wire protocols and does not introduce parallel
-native-driver behavior before the Java-backed conformance baseline passes.
+Java/JDBC remains the compatibility implementation for other databases and for
+unmigrated advanced MySQL operations. The first closed native route uses
+upstream `mysql_async 0.37.0` for MySQL connection testing,
+database/schema/table discovery, preview, and supported Console SELECT. Core
+selects this backend before requesting an `EngineLease`; unrecognized drivers
+cannot enter it. Parameterized, CTE-first, locking, server-file, and
+multi-statement SELECT is rejected rather than silently starting Java.
+
+The native MySQL baseline implements:
+
+- JDBC-URL and connection-property translation into `mysql_async::Opts`, with
+  explicit Rustls policy, TCP preference, and a 15-second connect deadline;
+- database/schema/table metadata and safely quoted bounded table preview;
+- one read-only prepared SELECT with ordered typed columns and values emitted
+  through the existing retained-result wire contract;
+- row, result-byte, batch, column, SQL, identifier, and scalar limits; and
+- active-query cancellation and truncation through a second bounded connection
+  issuing `KILL CONNECTION`, followed by deterministic result cleanup.
 
 The JDBC baseline implements:
 
@@ -125,14 +157,15 @@ The JDBC baseline implements:
 Stage 7B additionally implements:
 
 - a Git submodule fixed at Community commit
-  `f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7`;
+  `37a34be858f2566b6b7fcf6c3f64183c1f560853`;
 - a reproducible H2 compatibility classpath, established with 148 JARs and
   extended in Stage 7J to 149 JARs for the retained Community domain-core
   completion implementation, whose filenames, byte lengths, and SHA-256
   digests are bound to that commit by the checked-in
   `third_party/community-h2-classpath.lock`;
 - deterministic build-time removal of dependency-manifest `Class-Path` entries,
-  with affected JARs rebuilt as sorted, commit-timestamped `STORED` archives;
+  with affected JARs rebuilt as sorted, ZIP-precision commit-timestamped `STORED`
+  archives;
 - a separately supplied Community classpath loaded by a `URLClassLoader` whose
   parent is only the Java platform classloader;
 - `ServiceLoader<IPlugin>` discovery projected into stable Protobuf DTOs;
@@ -321,14 +354,16 @@ qualified identifier. This generation step accepts no raw SQL, opens no JDBC
 session, and never executes the returned statement.
 
 Core applies the product default of 200 rows and rejects limits outside
-`1..=1000`. It parses the generated SQL through the retained Community parser
-and requires `is_select`, at most one projected SELECT statement, a SELECT
-prefix, and no semicolon before passing the SQL to `start_read_query`. That
-existing path resolves the stored datasource, forces the JDBC session read-only,
-caps the result at the same row limit and 8 MiB, writes batches of at most 1 MiB,
-and retains the result for one hour. The accepted response carries the operation
-id, exact SQL, and effective row limit; normal operation events, cancellation,
-and retained-result paging remain unchanged.
+`1..=1000`. The current MySQL route safely quotes the database and table as two
+identifier segments and builds the bounded SELECT directly in Rust. Other
+drivers retain the Community builder and parser checks for `is_select`, one
+projected statement, a SELECT prefix, and no semicolon. Both routes pass the SQL
+to `start_read_query`, which dispatches MySQL to a native read-only transaction
+and other drivers to a forced-read-only JDBC session. It caps the result at the
+same row limit and 8 MiB, writes batches of at most 1 MiB, and retains the result
+for one hour. The accepted response carries the operation id, exact SQL, and
+effective row limit; normal operation events, cancellation, and retained-result
+paging remain unchanged.
 
 Axum exposes `POST /api/v1/community/table-preview`; Tauri exposes
 `start_community_table_preview`; generated OpenAPI/TypeScript and both frontend
@@ -337,11 +372,13 @@ selected plugin advertises DQL support. Starting a preview inserts the generated
 SQL into the editor and observes the accepted operation in the existing result
 surface. A table/scope change aborts the pending request, and a late accepted
 operation is cancelled instead of replacing newer state. The Core path is
-runtime-tested against MySQL 8.4 with a pinned Connector/J pack. Product writes
+runtime-tested against MySQL 8.4 through both the historical Connector/J gate
+and the native `mysql_async` gate. Product writes
 and Agent, CLI, and MCP MySQL conformance remain outside Stage 7M; PostgreSQL and
 long-tail plugin conformance do not block this MySQL milestone.
 
-Remaining builder operations, general type conversion, non-relational
+Remaining builder operations, complete MySQL type conformance, native bind
+parameters and CTE-first SELECT, non-relational
 operations, script execution, import/export, and per-dialect conformance are not
 implemented yet.
 
@@ -370,7 +407,9 @@ fresh nonce, AES-256-GCM, and reference-bound additional authenticated data.
 Headless hosts can inject an explicit standard-base64 32-byte master key. Both
 paths fail closed before storage opens when their key source is unavailable.
 
-Java streams typed row batches to Rust under bounded row and byte budgets. Rust
+Java/JDBC streams typed row batches to Rust under bounded row and byte budgets;
+the native MySQL producer emits the same wire column, row-batch, and completion
+messages directly in Core. Rust
 persists the schema and batches as four-byte big-endian length-prefixed Protobuf
 frames and indexes full-frame SHA-256 hashes, offsets, ordinals, row ranges,
 completion state, and expiry in SQLite. File data is synced before its index
@@ -447,8 +486,9 @@ The current operation journal retains at most 256 events per operation.
 Subscriptions atomically capture replay plus live delivery, reject cursors
 ahead of the operation or behind the retained window, and stop after one
 terminal event. Query batches are durably appended before progress is emitted
-or the next Java credit is granted. Failures and cancellations abort incomplete
-writers and close the Java session.
+or the next Java credit/native row is consumed. Failures and cancellations abort
+incomplete writers and close the Java session or terminate the native MySQL
+connection through a separate bounded control connection.
 
 The first Stage 7 compatibility slice discovers strict local driver-pack
 manifests, verifies bounded artifacts in Rust, preloads them sequentially into

@@ -1,5 +1,5 @@
 format_version	1
-source_commit	f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7
+source_commit	37a34be858f2566b6b7fcf6c3f64183c1f560853
 artifact_count	149
 artifact	FastInfoset-2.1.1.jar	75d6635e09101ef1545d9a59bb4d9524ec6bf15246540af5435750f271612765	317728
 artifact	HikariCP-5.0.1.jar	26d492397e6775b4296737a8919bf04047afe5827fdd2c08b4557595436b3a2b	161902
@@ -17,12 +17,12 @@ artifact	bson-4.10.1.jar	739a338b2aa0b74d8df9273aac71e37a4e2f3d609658da3d48c9ab5
 artifact	cache-api-1.1.1.jar	9f34e007edfa82a7b2a2e1b969477dcf5099ce7f4f926fb54ce7e27c4a0cd54b	51281
 artifact	calcite-core-1.38.0.jar	b55427c5e98fdc59e4722062d1414b18db3bc08998a00f42959751200ff09624	8315387
 artifact	calcite-linq4j-1.38.0.jar	1c4bb46a6ed58f62923ec20c64401f015ef59813647ddb2ca2fc60d7959a21df	518500
-artifact	chat2db-community-domain-api-5.3.0.jar	cc02f78fd247906f6a403cca6919c91afa76b17cbb737030a1c7582afae7e75c	2100744
-artifact	chat2db-community-domain-core-5.3.0.jar	0e7e3de673e3adf08ebc5c86b766fac58a3ea04f1a99ba58bcb21b8267ce08d3	1003427
-artifact	chat2db-community-h2-5.3.0.jar	6f4e0734af09bde873ec36c30b4e8188f5552c68524a617a0794880da1543d95	30480
-artifact	chat2db-community-mysql-5.3.0.jar	c5aa7b6120d380696a8e68ffc0f72bc83997c6c97c77e8ff2cd7d8f1b8793dac	5696156
-artifact	chat2db-community-spi-5.3.0.jar	901abca2bf862fbb757eaf083823bae4b279f848e2429bbaaff45a551b004cdd	779815
-artifact	chat2db-community-tools-5.3.0.jar	b73c70ce61296f34e4df96e2f8c076a22d04a32576ab6f42a082f9d173f74549	412683
+artifact	chat2db-community-domain-api-5.3.0.jar	5a8e98442095276ac70473a6f6f9a37fe79de29d158a7108951b619b551e2870	2100744
+artifact	chat2db-community-domain-core-5.3.0.jar	85f6ebaee61ae8159cb667eb2a67e956faad4d89d1bad8c19365c3fa338fa8f5	1003427
+artifact	chat2db-community-h2-5.3.0.jar	b8043a40f149b3f32d48da8537856f56dbf6d51d15f01f40c1dc9368da9f9873	30480
+artifact	chat2db-community-mysql-5.3.0.jar	e9f4fbbdcccfbbb12a2a2bbbf90903456477a325ad454fdae1ec6d3da72f3ab8	5696156
+artifact	chat2db-community-spi-5.3.0.jar	30a102ac21bb32a3de8682df5bc146823b5af3297f1bd77e0391f25bc3a25bcd	779815
+artifact	chat2db-community-tools-5.3.0.jar	5f58b14c1e03bcb560b95f131283c6d2e692aeac04b2d9a68c80d871eed08a58	412683
 artifact	checker-qual-3.43.0.jar	3fbc2e98f05854c3df16df9abaa955b91b15b3ecac33623208ed6424640ef0f6	231525
 artifact	classmate-1.7.3.jar	75fbda45456f123fb6e2028a6189442d8d0730b357adce4c0a6d7e789f70669b	68249
 artifact	commons-beanutils-1.9.4.jar	7d938c81789028045c08c065e94be75fc280527620d5bd62b519d5838532368a	246918
@@ -77,7 +77,7 @@ artifact	jakarta.validation-api-3.0.2.jar	291c25e6910cc6a7ebd96d4c6baebf6d7c3767
 artifact	janino-3.1.12.jar	5699878c31e71c9a94cf472f95a2dad52ca7b0449c099276b8bd7e992a43595b	956369
 artifact	javax.activation-api-1.2.0.jar	43fdef0b5b6ceb31b0424b208b930c74ab58fac2ceeb7b3f6fd3aeb8b5ca4393	56674
 artifact	jaxb-api-2.3.1.jar	88b955a0df57880a26a74708bc34f74dcaf8ebf4e78843a28b50eae945732b06	128076
-artifact	jaxb-runtime-2.3.1.jar	29609ce598398496c11542de431d90357cf19e0c6f7132f7158f9ffee19ce887	2461167
+artifact	jaxb-runtime-2.3.1.jar	b82d10a3d67f8a8ab31d17b605de7f88fc0935e251d8261915ca87522fa9b8da	2461167
 artifact	jboss-logging-3.6.3.Final.jar	7c12ee575508f81e22b1db9334b969d0ec54ef0fd1dcba24eeab1a44235fc366	62672
 artifact	jsch-0.2.9.jar	6d0ccb63c6d6003e2c55e46d41dec770276c7b305c0031236c67e1def544bdd6	525631
 artifact	json-path-2.9.0.jar	11a9ee6f88bb31f1450108d1cf6441377dec84aca075eb6bb2343be157575bea	276633

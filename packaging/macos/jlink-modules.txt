@@ -1,0 +1,22 @@
+# Java SE covers the public APIs referenced by the fixed Community classpath.
+java.se
+
+# JDK modules cover JDBC charset, crypto, networking, diagnostics, service
+# loading, and archive providers used directly or reflectively by the retained
+# compatibility engine and its fixed plugin classpath.
+jdk.attach
+jdk.charsets
+jdk.crypto.cryptoki
+jdk.crypto.ec
+jdk.httpserver
+jdk.jdi
+jdk.jfr
+jdk.localedata
+jdk.management
+jdk.management.agent
+jdk.naming.dns
+jdk.naming.rmi
+jdk.net
+jdk.security.auth
+jdk.unsupported
+jdk.zipfs

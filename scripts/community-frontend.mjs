@@ -193,6 +193,9 @@ function test() {
   setupUmi(worktree);
   runYarn(['test:chat-answer-update'], worktree);
   runYarn(['test:tree-title-highlight'], worktree);
+  runYarn(['test:canvas-lifecycle'], worktree);
+  runYarn(['test:result-resource-activity'], worktree);
+  runYarn(['test:workspace-resource-activity'], worktree);
 }
 
 function build() {

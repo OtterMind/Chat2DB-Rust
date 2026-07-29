@@ -111,7 +111,7 @@ jobs:
         working-directory: java
         env:
           CHAT2DB_COMMUNITY_CLASSPATH_DIR: "${{ github.workspace }}/target/community-h2-classpath"
-          CHAT2DB_COMMUNITY_SOURCE_COMMIT: "f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7"
+          CHAT2DB_COMMUNITY_SOURCE_COMMIT: "37a34be858f2566b6b7fcf6c3f64183c1f560853"
         run: >-
           ./mvnw -B -pl compat-runtime
           -Dtest='CommunityPluginRegistryTest#realCommunityH2BuildsAndExecutesBoundedDml,CommunityPluginRegistryTest#realCommunityMysqlRejectsBackslashCrossColumnInjection,CommunityPluginRegistryTest#realCommunityMysqlNormalizesBooleanAliasesAndBits,CommunityPluginRegistryTest#realCommunityH2BuildsNamespaceSqlWithoutOpeningJdbc,CommunityPluginRegistryTest#realCommunityMysqlBuildsDatabaseNamespaceSql,CommunityPluginRegistryTest#realCommunityNamespaceMapsUnsupportedAndRejectsOversizedInput,JdbcProtocolLoopTest#communityDmlDispatchDoesNotRequireAJdbcSession,JdbcProtocolLoopTest#communityNamespaceDispatchDoesNotRequireAJdbcSession'
@@ -186,6 +186,14 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
         with:
           shared-key: mysql-integration
+      - name: Verify native MySQL product vertical without Java
+        env:
+          MYSQL_TEST_HOST: 127.0.0.1
+          MYSQL_TEST_PORT: "3306"
+          MYSQL_TEST_USER: root
+          MYSQL_TEST_PASSWORD: chat2db-ci-root
+          MYSQL_TEST_REQUIRED: "1"
+        run: cargo test -p chat2db-core --test native_mysql_product --locked
       - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.7.1
         with:
           distribution: temurin

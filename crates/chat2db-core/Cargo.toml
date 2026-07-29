@@ -16,6 +16,8 @@ chat2db-contract = { path = "../chat2db-contract" }
 chat2db-engine-protocol = { path = "../chat2db-engine-protocol" }
 chat2db-java-bridge = { path = "../chat2db-java-bridge" }
 chat2db-storage = { path = "../chat2db-storage" }
+mysql_async.workspace = true
+prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rustix.workspace = true
@@ -24,6 +26,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
+url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

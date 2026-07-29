@@ -3,13 +3,14 @@
 use std::{
     collections::HashMap,
     env,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use chat2db_contract::{
@@ -17,8 +18,8 @@ use chat2db_contract::{
     AgentRunSnapshot, AgentSession, AgentSessionList, AgentStreamMessage,
     AgentSubscriptionAccepted, ApiError, BuildCommunityCreateSchemaRequest,
     BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest, CancelAgentRunResponse,
-    CancelOperationResponse, CommunityBuiltSql, CommunityDatabaseList, CommunityForeignKeyList,
-    CommunityFormattedSql, CommunityFunction, CommunityFunctionList,
+    CancelDisposition, CancelOperationResponse, CommunityBuiltSql, CommunityDatabaseList,
+    CommunityForeignKeyList, CommunityFormattedSql, CommunityFunction, CommunityFunctionList,
     CommunityFunctionParameterList, CommunityPluginCatalog, CommunityPrimaryKeyList,
     CommunityProcedure, CommunityProcedureList, CommunityProcedureParameterList,
     CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlCompletion, CommunitySqlValidation,
@@ -31,7 +32,7 @@ use chat2db_contract::{
     ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
     ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
     ListCommunityTablesRequest, ListCommunityTriggersRequest, ListCommunityViewsRequest,
-    OperationEventEnvelope, OperationSnapshot, OperationStreamMessage,
+    OperationEvent, OperationEventEnvelope, OperationSnapshot, OperationStreamMessage,
     OperationSubscriptionAccepted, ParseCommunitySqlRequest, ProviderProfile, ProviderProfileList,
     QueryAccepted, ResultPage, ResultPageRequest, StartAgentRunRequest,
     StartCommunityTablePreviewRequest, StartQueryRequest, UpdateAgentSessionRequest,
@@ -42,7 +43,7 @@ use chat2db_core::{
 };
 use chat2db_java_bridge::{BridgeError, EngineCommand, EngineConfig};
 use chat2db_local::{LocalError, LocalServer};
-use tauri::{State, ipc::Channel};
+use tauri::{Emitter, State, WebviewWindow, ipc::Channel};
 use tokio::sync::{Mutex, oneshot};
 
 const DATA_DIR_ENV: &str = "CHAT2DB_DATA_DIR";
@@ -51,6 +52,63 @@ const COMMUNITY_CLASSPATH_DIR_ENV: &str = "CHAT2DB_COMMUNITY_CLASSPATH_DIR";
 const JAVA_BIN_ENV: &str = "CHAT2DB_JAVA_BIN";
 const JAVA_ENGINE_JAR_ENV: &str = "CHAT2DB_JAVA_ENGINE_JAR";
 const VAULT_MASTER_KEY_ENV: &str = "CHAT2DB_VAULT_MASTER_KEY";
+
+const BUNDLED_JAVA_BIN: &str = "Java binary";
+const BUNDLED_JAVA_ENGINE_JAR: &str = "compatibility-engine JAR";
+const BUNDLED_COMMUNITY_CLASSPATH: &str = "Community classpath";
+const BUNDLED_DRIVER_PACKS: &str = "driver packs";
+const COMMUNITY_JAVA_MESSAGE_EVENT: &str = "chat2db://java-message";
+
+#[derive(Debug, Default)]
+struct RuntimeResourceOverrides {
+    java_bin: Option<OsString>,
+    java_engine_jar: Option<OsString>,
+    community_classpath_dir: Option<OsString>,
+    driver_pack_dir: Option<OsString>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RuntimeResourcePaths {
+    java_bin: OsString,
+    java_engine_jar: PathBuf,
+    community_classpath_dir: Option<PathBuf>,
+    driver_pack_dir: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct BundledRuntimeResources {
+    java_bin: PathBuf,
+    java_engine_jar: PathBuf,
+    community_classpath_dir: PathBuf,
+    driver_pack_dir: PathBuf,
+}
+
+impl BundledRuntimeResources {
+    fn from_executable(executable: &Path) -> Option<Self> {
+        let macos_dir = executable.parent()?;
+        if macos_dir.file_name() != Some(OsStr::new("MacOS")) {
+            return None;
+        }
+        let contents_dir = macos_dir.parent()?;
+        if contents_dir.file_name() != Some(OsStr::new("Contents")) {
+            return None;
+        }
+        let app_dir = contents_dir.parent()?;
+        if app_dir.extension() != Some(OsStr::new("app")) {
+            return None;
+        }
+
+        let resource_root = contents_dir.join("Resources").join("chat2db");
+        Some(Self {
+            java_bin: resource_root.join("java").join("bin").join("java"),
+            java_engine_jar: resource_root
+                .join("engine")
+                .join("chat2db-compat-runtime.jar"),
+            community_classpath_dir: resource_root.join("community-classpath"),
+            driver_pack_dir: resource_root.join("driver-packs"),
+        })
+    }
+}
 
 struct DesktopState {
     application: Application,
@@ -178,6 +236,11 @@ pub enum DesktopError {
         path: PathBuf,
         source: std::io::Error,
     },
+    InvalidBundledResource {
+        resource: &'static str,
+        expected: &'static str,
+        path: PathBuf,
+    },
     InvalidVaultMasterKeyEncoding,
     CommunityClasspath(Box<BridgeError>),
     Local(Box<LocalError>),
@@ -219,6 +282,15 @@ impl std::fmt::Display for DesktopError {
                 "unable to inspect {JAVA_ENGINE_JAR_ENV} at {}: {source}",
                 path.display()
             ),
+            Self::InvalidBundledResource {
+                resource,
+                expected,
+                path,
+            } => write!(
+                formatter,
+                "bundled {resource} is missing or is not a {expected}: {}",
+                path.display()
+            ),
             Self::InvalidVaultMasterKeyEncoding => write!(
                 formatter,
                 "{VAULT_MASTER_KEY_ENV} must be UTF-8 standard base64 for exactly 32 bytes"
@@ -247,6 +319,7 @@ impl std::error::Error for DesktopError {
             Self::MissingJavaEngineJar
             | Self::EmptyEnvironmentVariable(_)
             | Self::InvalidJavaEngineJar(_)
+            | Self::InvalidBundledResource { .. }
             | Self::InvalidVaultMasterKeyEncoding => None,
         }
     }
@@ -339,11 +412,21 @@ pub fn run() -> Result<i32, DesktopError> {
 }
 
 fn runtime_config_from_environment() -> Result<RuntimeConfig, DesktopError> {
-    let engine_jar = required_java_engine_jar()?;
-    let java = optional_nonempty_os_env(JAVA_BIN_ENV)?.unwrap_or_else(|| OsString::from("java"));
-    let mut engine = EngineConfig::new(EngineCommand::java_jar(java, engine_jar));
-    if let Some(community_classpath_dir) = optional_nonempty_os_env(COMMUNITY_CLASSPATH_DIR_ENV)? {
-        let classpath = load_fixed_community_classpath(PathBuf::from(community_classpath_dir))
+    let resource_overrides = RuntimeResourceOverrides {
+        java_engine_jar: optional_nonempty_os_env(JAVA_ENGINE_JAR_ENV)?,
+        java_bin: optional_nonempty_os_env(JAVA_BIN_ENV)?,
+        community_classpath_dir: optional_nonempty_os_env(COMMUNITY_CLASSPATH_DIR_ENV)?,
+        driver_pack_dir: optional_nonempty_os_env(DRIVER_PACK_DIR_ENV)?,
+    };
+    let current_executable = env::current_exe().ok();
+    let resources =
+        resolve_runtime_resource_paths(current_executable.as_deref(), resource_overrides)?;
+    let mut engine = EngineConfig::new(EngineCommand::java_jar(
+        resources.java_bin,
+        resources.java_engine_jar,
+    ));
+    if let Some(community_classpath_dir) = resources.community_classpath_dir {
+        let classpath = load_fixed_community_classpath(community_classpath_dir)
             .map_err(|error| DesktopError::CommunityClasspath(Box::new(error)))?;
         engine = engine.with_community_classpath(classpath);
     }
@@ -352,8 +435,8 @@ fn runtime_config_from_environment() -> Result<RuntimeConfig, DesktopError> {
     if let Some(data_dir) = optional_nonempty_os_env(DATA_DIR_ENV)? {
         config = config.with_data_dir(PathBuf::from(data_dir));
     }
-    if let Some(driver_pack_dir) = optional_nonempty_os_env(DRIVER_PACK_DIR_ENV)? {
-        config = config.with_driver_pack_dir(PathBuf::from(driver_pack_dir));
+    if let Some(driver_pack_dir) = resources.driver_pack_dir {
+        config = config.with_driver_pack_dir(driver_pack_dir);
     }
     match env::var(VAULT_MASTER_KEY_ENV) {
         Ok(master_key) => config = config.with_vault_master_key_base64(master_key),
@@ -365,12 +448,66 @@ fn runtime_config_from_environment() -> Result<RuntimeConfig, DesktopError> {
     Ok(config)
 }
 
-fn required_java_engine_jar() -> Result<PathBuf, DesktopError> {
-    let path = optional_nonempty_os_env(JAVA_ENGINE_JAR_ENV)?
-        .map(PathBuf::from)
-        .ok_or(DesktopError::MissingJavaEngineJar)?;
-    validate_java_engine_jar(&path)?;
-    Ok(path)
+fn resolve_runtime_resource_paths(
+    executable: Option<&Path>,
+    overrides: RuntimeResourceOverrides,
+) -> Result<RuntimeResourcePaths, DesktopError> {
+    let bundled = executable.and_then(BundledRuntimeResources::from_executable);
+
+    let java_bin = match overrides.java_bin {
+        Some(java_bin) => java_bin,
+        None => match bundled.as_ref() {
+            Some(resources) => {
+                validate_bundled_file(BUNDLED_JAVA_BIN, &resources.java_bin)?;
+                resources.java_bin.clone().into_os_string()
+            }
+            None => OsString::from("java"),
+        },
+    };
+    let java_engine_jar = match overrides.java_engine_jar {
+        Some(java_engine_jar) => {
+            let path = PathBuf::from(java_engine_jar);
+            validate_java_engine_jar(&path)?;
+            path
+        }
+        None => match bundled.as_ref() {
+            Some(resources) => {
+                validate_bundled_file(BUNDLED_JAVA_ENGINE_JAR, &resources.java_engine_jar)?;
+                resources.java_engine_jar.clone()
+            }
+            None => return Err(DesktopError::MissingJavaEngineJar),
+        },
+    };
+    let community_classpath_dir = match overrides.community_classpath_dir {
+        Some(directory) => Some(PathBuf::from(directory)),
+        None => match bundled.as_ref() {
+            Some(resources) => {
+                validate_bundled_directory(
+                    BUNDLED_COMMUNITY_CLASSPATH,
+                    &resources.community_classpath_dir,
+                )?;
+                Some(resources.community_classpath_dir.clone())
+            }
+            None => None,
+        },
+    };
+    let driver_pack_dir = match overrides.driver_pack_dir {
+        Some(directory) => Some(PathBuf::from(directory)),
+        None => match bundled.as_ref() {
+            Some(resources) => {
+                validate_bundled_directory(BUNDLED_DRIVER_PACKS, &resources.driver_pack_dir)?;
+                Some(resources.driver_pack_dir.clone())
+            }
+            None => None,
+        },
+    };
+
+    Ok(RuntimeResourcePaths {
+        java_bin,
+        java_engine_jar,
+        community_classpath_dir,
+        driver_pack_dir,
+    })
 }
 
 fn optional_nonempty_os_env(name: &'static str) -> Result<Option<OsString>, DesktopError> {
@@ -401,6 +538,28 @@ fn validate_java_engine_jar(path: &Path) -> Result<(), DesktopError> {
     }
 }
 
+fn validate_bundled_file(resource: &'static str, path: &Path) -> Result<(), DesktopError> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(()),
+        Ok(_) | Err(_) => Err(DesktopError::InvalidBundledResource {
+            resource,
+            expected: "regular file",
+            path: path.to_path_buf(),
+        }),
+    }
+}
+
+fn validate_bundled_directory(resource: &'static str, path: &Path) -> Result<(), DesktopError> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Ok(_) | Err(_) => Err(DesktopError::InvalidBundledResource {
+            resource,
+            expected: "directory",
+            path: path.to_path_buf(),
+        }),
+    }
+}
+
 fn api_error(error: &AppError) -> ApiError {
     error.api_error()
 }
@@ -408,9 +567,400 @@ fn api_error(error: &AppError) -> ApiError {
 #[tauri::command]
 async fn legacy_request(
     state: State<'_, Arc<DesktopState>>,
+    window: WebviewWindow,
     request: String,
 ) -> Result<String, String> {
+    if let Some(response) = legacy_client_command_for(&state.application, &window, &request).await?
+    {
+        return Ok(response);
+    }
     legacy_request_for(&state.application, &request).await
+}
+
+async fn legacy_client_command_for(
+    application: &Application,
+    window: &WebviewWindow,
+    request: &str,
+) -> Result<Option<String>, String> {
+    let value: serde_json::Value = serde_json::from_str(request)
+        .map_err(|_| "Community desktop request must be valid JSON".to_owned())?;
+    let request = value
+        .as_object()
+        .ok_or_else(|| "Community desktop request must be a JSON object".to_owned())?;
+    let method = legacy_request_string(request, "method")?;
+    if method != "client-command" {
+        return Ok(None);
+    }
+    let request_url = legacy_request_string(request, "requestUrl")?;
+    match request_url.as_str() {
+        "handle-java-message-is-ready" => {
+            Ok(Some(client_command_response(&serde_json::json!(true))))
+        }
+        "sql-execute" => {
+            let request_uuid = legacy_request_string(request, "uuid")?;
+            let sql_request = decode_client_message::<chat2db_web::legacy::LegacySqlExecuteRequest>(
+                request.get("message"),
+            )?;
+            let accepted = chat2db_web::legacy::start_sql_execution(application, &sql_request)
+                .await
+                .map_err(|error| legacy_failure_message(&error))?;
+            let execution_id = accepted.operation_id.clone();
+            let task_application = application.clone();
+            let task_window = window.clone();
+            let task_execution_id = execution_id.clone();
+            tauri::async_runtime::spawn(async move {
+                forward_legacy_sql_execution(
+                    task_application,
+                    task_window,
+                    request_uuid,
+                    task_execution_id,
+                    sql_request,
+                )
+                .await;
+            });
+            Ok(Some(client_command_response(&serde_json::json!({
+                "executionId": execution_id,
+            }))))
+        }
+        "sql-cancel" => {
+            let message = decode_client_message::<serde_json::Value>(request.get("message"))?;
+            let execution_id = message
+                .get("executionId")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "sql-cancel requires a non-empty executionId".to_owned())?;
+            let cancelled = application.cancel_operation(execution_id).await.disposition
+                == CancelDisposition::Accepted;
+            Ok(Some(client_command_response(&serde_json::json!(cancelled))))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn decode_client_message<T: serde::de::DeserializeOwned>(
+    message: Option<&serde_json::Value>,
+) -> Result<T, String> {
+    match message {
+        Some(serde_json::Value::String(message)) => serde_json::from_str(message),
+        Some(message) => serde_json::from_value(message.clone()),
+        None => serde_json::from_value(serde_json::Value::Null),
+    }
+    .map_err(|_| "Community client-command message is invalid".to_owned())
+}
+
+fn client_command_response(data: &serde_json::Value) -> String {
+    serde_json::json!({ "data": data }).to_string()
+}
+
+fn legacy_failure_message(error: &chat2db_web::legacy::LegacyFailure) -> String {
+    format!("{}: {}", error.code, error.message)
+}
+
+#[allow(clippy::too_many_lines)]
+async fn forward_legacy_sql_execution(
+    application: Application,
+    window: WebviewWindow,
+    request_uuid: String,
+    execution_id: String,
+    request: chat2db_web::legacy::LegacySqlExecuteRequest,
+) {
+    let started_at = Instant::now();
+    let mut sequence = 0_u64;
+    if emit_legacy_sql_event(
+        &window,
+        &request_uuid,
+        &execution_id,
+        &mut sequence,
+        "started",
+        None,
+        None,
+        &serde_json::json!({ "executionId": execution_id }),
+    )
+    .is_err()
+    {
+        application.cancel_operation(&execution_id).await;
+        return;
+    }
+    if emit_legacy_sql_event(
+        &window,
+        &request_uuid,
+        &execution_id,
+        &mut sequence,
+        "statementStarted",
+        Some(1),
+        None,
+        &serde_json::json!({
+            "sql": request.sql,
+            "originalSql": request.sql,
+            "sequence": 1,
+        }),
+    )
+    .is_err()
+    {
+        application.cancel_operation(&execution_id).await;
+        return;
+    }
+
+    let mut subscription = match application.subscribe_operation(&execution_id, None).await {
+        Ok(subscription) => subscription,
+        Err(error) => {
+            emit_legacy_terminal_error(
+                &window,
+                &request_uuid,
+                &execution_id,
+                &mut sequence,
+                &error.api_error(),
+            );
+            return;
+        }
+    };
+    loop {
+        let event = match subscription.next_event().await {
+            Ok(Some(event)) => event.event,
+            Ok(None) => {
+                emit_legacy_terminal_error(
+                    &window,
+                    &request_uuid,
+                    &execution_id,
+                    &mut sequence,
+                    &ApiError::new(
+                        "sql_execution_incomplete",
+                        "The SQL execution ended without a result",
+                    ),
+                );
+                return;
+            }
+            Err(error) => {
+                emit_legacy_terminal_error(
+                    &window,
+                    &request_uuid,
+                    &execution_id,
+                    &mut sequence,
+                    &error.api_error(),
+                );
+                return;
+            }
+        };
+        match event {
+            OperationEvent::Started | OperationEvent::Progress { .. } => {}
+            OperationEvent::Completed { result } => {
+                let duration = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let result = match chat2db_web::legacy::read_sql_result(
+                    &application,
+                    &request,
+                    &result,
+                    duration,
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(error) => {
+                        emit_legacy_terminal_error(
+                            &window,
+                            &request_uuid,
+                            &execution_id,
+                            &mut sequence,
+                            &ApiError::new(error.code, error.message),
+                        );
+                        return;
+                    }
+                };
+                if emit_legacy_sql_result_events(
+                    &window,
+                    &request_uuid,
+                    &execution_id,
+                    &mut sequence,
+                    result,
+                )
+                .is_err()
+                {
+                    return;
+                }
+                let _ = emit_legacy_sql_event(
+                    &window,
+                    &request_uuid,
+                    &execution_id,
+                    &mut sequence,
+                    "statementFinished",
+                    Some(1),
+                    None,
+                    &serde_json::json!({ "sql": request.sql, "duration": duration }),
+                );
+                let _ = emit_legacy_sql_event(
+                    &window,
+                    &request_uuid,
+                    &execution_id,
+                    &mut sequence,
+                    "finished",
+                    None,
+                    None,
+                    &serde_json::json!({ "executionId": execution_id }),
+                );
+                return;
+            }
+            OperationEvent::Failed { error } => {
+                emit_legacy_terminal_error(
+                    &window,
+                    &request_uuid,
+                    &execution_id,
+                    &mut sequence,
+                    &error,
+                );
+                return;
+            }
+            OperationEvent::Cancelled { reason } => {
+                let _ = emit_legacy_sql_event(
+                    &window,
+                    &request_uuid,
+                    &execution_id,
+                    &mut sequence,
+                    "cancelled",
+                    None,
+                    None,
+                    &serde_json::json!({
+                        "executionId": execution_id,
+                        "message": reason.unwrap_or_else(|| "The SQL execution was cancelled".to_owned()),
+                    }),
+                );
+                return;
+            }
+        }
+    }
+}
+
+fn emit_legacy_sql_result_events(
+    window: &WebviewWindow,
+    request_uuid: &str,
+    execution_id: &str,
+    sequence: &mut u64,
+    result: chat2db_web::legacy::LegacyManageResult,
+) -> Result<(), tauri::Error> {
+    let mut started = serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(started) = started.as_object_mut() {
+        started.insert("dataList".to_owned(), serde_json::json!([]));
+    }
+    emit_legacy_sql_event(
+        window,
+        request_uuid,
+        execution_id,
+        sequence,
+        "resultStarted",
+        Some(1),
+        Some(1),
+        &started,
+    )?;
+    let rows = serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!({}));
+    emit_legacy_sql_event(
+        window,
+        request_uuid,
+        execution_id,
+        sequence,
+        "rows",
+        Some(1),
+        Some(1),
+        &rows,
+    )?;
+    emit_legacy_sql_event(
+        window,
+        request_uuid,
+        execution_id,
+        sequence,
+        "resultFinished",
+        Some(1),
+        Some(1),
+        &serde_json::to_value(result).unwrap_or_else(|_| serde_json::json!({})),
+    )
+}
+
+fn emit_legacy_terminal_error(
+    window: &WebviewWindow,
+    request_uuid: &str,
+    execution_id: &str,
+    sequence: &mut u64,
+    error: &ApiError,
+) {
+    let _ = emit_legacy_sql_event(
+        window,
+        request_uuid,
+        execution_id,
+        sequence,
+        "failed",
+        Some(1),
+        None,
+        &serde_json::json!({
+            "executionId": execution_id,
+            "message": error.message,
+            "errorCode": error.code,
+        }),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_legacy_sql_event(
+    window: &WebviewWindow,
+    request_uuid: &str,
+    execution_id: &str,
+    sequence: &mut u64,
+    event_type: &str,
+    statement_sequence: Option<u32>,
+    result_sequence: Option<u32>,
+    message: &serde_json::Value,
+) -> Result<(), tauri::Error> {
+    *sequence = sequence.saturating_add(1);
+    let result_key = statement_sequence.map(|statement_sequence| {
+        format!(
+            "{execution_id}:{statement_sequence}:{}",
+            result_sequence.unwrap_or(0)
+        )
+    });
+    window.emit(
+        COMMUNITY_JAVA_MESSAGE_EVENT,
+        legacy_sql_push_message(
+            request_uuid,
+            execution_id,
+            *sequence,
+            event_type,
+            statement_sequence,
+            result_sequence,
+            result_key.as_deref(),
+            message,
+        ),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn legacy_sql_push_message(
+    request_uuid: &str,
+    execution_id: &str,
+    event_sequence: u64,
+    event_type: &str,
+    statement_sequence: Option<u32>,
+    result_sequence: Option<u32>,
+    result_key: Option<&str>,
+    message: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "uuid": request_uuid,
+        "actionType": "sql_execution_event",
+        "message": {
+            "executionId": execution_id,
+            "eventSequence": event_sequence,
+            "occurredAtEpochMs": unix_epoch_millis(),
+            "eventType": event_type,
+            "statementSequence": statement_sequence,
+            "resultSequence": result_sequence,
+            "resultKey": result_key,
+            "message": message,
+        },
+    })
+}
+
+fn unix_epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 async fn legacy_request_for(application: &Application, request: &str) -> Result<String, String> {
@@ -1318,7 +1868,12 @@ async fn result_page(
 
 #[cfg(test)]
 mod tests {
-    use std::{ffi::OsString, fs::File, sync::Arc};
+    use std::{
+        ffi::OsString,
+        fs::{self, File},
+        path::PathBuf,
+        sync::Arc,
+    };
 
     use chat2db_contract::{
         AgentEvent, AgentEventEnvelope, AgentStreamMessage, BuildCommunityDmlRequest,
@@ -1332,12 +1887,85 @@ mod tests {
     use tokio::sync::oneshot;
 
     use super::{
-        DesktopError, SubscriptionRegistry, agent_stream_message, build_community_dml_for,
-        build_community_namespace_sql_for, complete_community_sql_for, format_community_sql_for,
-        legacy_request_for, operation_stream_message, parse_after_sequence,
-        start_community_table_preview_for, validate_community_sql_for, validate_java_engine_jar,
-        validate_optional_os_env,
+        BUNDLED_COMMUNITY_CLASSPATH, BUNDLED_DRIVER_PACKS, BUNDLED_JAVA_BIN,
+        BUNDLED_JAVA_ENGINE_JAR, BundledRuntimeResources, DesktopError, RuntimeResourceOverrides,
+        SubscriptionRegistry, agent_stream_message, build_community_dml_for,
+        build_community_namespace_sql_for, client_command_response, complete_community_sql_for,
+        decode_client_message, format_community_sql_for, legacy_request_for,
+        legacy_sql_push_message, operation_stream_message, parse_after_sequence,
+        resolve_runtime_resource_paths, start_community_table_preview_for,
+        validate_community_sql_for, validate_java_engine_jar, validate_optional_os_env,
     };
+
+    fn complete_app_bundle() -> (tempfile::TempDir, PathBuf, BundledRuntimeResources) {
+        let directory = tempfile::tempdir().expect("temporary app bundle");
+        let executable = directory
+            .path()
+            .join("Chat2DB.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("chat2db-desktop");
+        fs::create_dir_all(executable.parent().expect("bundle executable parent"))
+            .expect("bundle executable directory");
+        File::create(&executable).expect("bundle executable");
+
+        let resources = BundledRuntimeResources::from_executable(&executable)
+            .expect("synthetic executable must be recognized as an app bundle");
+        fs::create_dir_all(resources.java_bin.parent().expect("Java binary parent"))
+            .expect("bundled Java directory");
+        File::create(&resources.java_bin).expect("bundled Java binary");
+        fs::create_dir_all(
+            resources
+                .java_engine_jar
+                .parent()
+                .expect("engine JAR parent"),
+        )
+        .expect("bundled engine directory");
+        File::create(&resources.java_engine_jar).expect("bundled engine JAR");
+        fs::create_dir_all(&resources.community_classpath_dir)
+            .expect("bundled Community classpath");
+        fs::create_dir_all(&resources.driver_pack_dir).expect("bundled driver packs");
+
+        (directory, executable, resources)
+    }
+
+    #[test]
+    fn community_client_command_payloads_decode_and_return_direct_data() {
+        let message = serde_json::json!(
+            r#"{"dataSourceId":"datasource-1","sql":"SELECT 1","pageNo":1,"pageSize":20}"#
+        );
+        let request =
+            decode_client_message::<chat2db_web::legacy::LegacySqlExecuteRequest>(Some(&message))
+                .expect("string client-command payload must decode");
+        assert_eq!(request.sql, "SELECT 1");
+
+        let response: serde_json::Value = serde_json::from_str(&client_command_response(
+            &serde_json::json!({ "executionId": "operation-1" }),
+        ))
+        .expect("client-command response must serialize");
+        assert_eq!(response["data"]["executionId"], "operation-1");
+    }
+
+    #[test]
+    fn community_sql_push_message_matches_the_existing_event_bus_contract() {
+        let message = legacy_sql_push_message(
+            "request-1",
+            "operation-1",
+            3,
+            "resultFinished",
+            Some(1),
+            Some(1),
+            Some("operation-1:1:1"),
+            &serde_json::json!({ "success": true }),
+        );
+        assert_eq!(message["uuid"], "request-1");
+        assert_eq!(message["actionType"], "sql_execution_event");
+        assert_eq!(message["message"]["executionId"], "operation-1");
+        assert_eq!(message["message"]["eventSequence"], 3);
+        assert_eq!(message["message"]["eventType"], "resultFinished");
+        assert_eq!(message["message"]["resultKey"], "operation-1:1:1");
+        assert_eq!(message["message"]["message"]["success"], true);
+    }
 
     #[tokio::test]
     async fn legacy_request_preserves_the_community_jcef_response_shape() {
@@ -1550,6 +2178,117 @@ mod tests {
         assert!(matches!(
             validate_java_engine_jar(&directory.path().join("missing-engine.jar")),
             Err(DesktopError::InvalidJavaEngineJar(_))
+        ));
+    }
+
+    #[test]
+    fn macos_app_bundle_supplies_all_default_runtime_resources() {
+        let (_directory, executable, bundled) = complete_app_bundle();
+
+        let resolved =
+            resolve_runtime_resource_paths(Some(&executable), RuntimeResourceOverrides::default())
+                .expect("complete app bundle must resolve");
+
+        assert_eq!(resolved.java_bin, bundled.java_bin.into_os_string());
+        assert_eq!(resolved.java_engine_jar, bundled.java_engine_jar);
+        assert_eq!(
+            resolved.community_classpath_dir,
+            Some(bundled.community_classpath_dir)
+        );
+        assert_eq!(resolved.driver_pack_dir, Some(bundled.driver_pack_dir));
+    }
+
+    #[test]
+    fn environment_paths_override_missing_app_bundle_resources() {
+        let directory = tempfile::tempdir().expect("temporary app bundle");
+        let executable = directory
+            .path()
+            .join("Chat2DB.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("chat2db-desktop");
+        fs::create_dir_all(executable.parent().expect("bundle executable parent"))
+            .expect("bundle executable directory");
+        File::create(&executable).expect("bundle executable");
+
+        let overrides_root = directory.path().join("overrides");
+        let java_bin = overrides_root.join("java");
+        let java_engine_jar = overrides_root.join("engine.jar");
+        let community_classpath_dir = overrides_root.join("community-classpath");
+        let driver_pack_dir = overrides_root.join("driver-packs");
+        fs::create_dir_all(&overrides_root).expect("override root");
+        File::create(&java_bin).expect("override Java binary");
+        File::create(&java_engine_jar).expect("override engine JAR");
+        fs::create_dir_all(&community_classpath_dir).expect("override Community classpath");
+        fs::create_dir_all(&driver_pack_dir).expect("override driver packs");
+
+        let resolved = resolve_runtime_resource_paths(
+            Some(&executable),
+            RuntimeResourceOverrides {
+                java_bin: Some(java_bin.clone().into_os_string()),
+                java_engine_jar: Some(java_engine_jar.clone().into_os_string()),
+                community_classpath_dir: Some(community_classpath_dir.clone().into_os_string()),
+                driver_pack_dir: Some(driver_pack_dir.clone().into_os_string()),
+            },
+        )
+        .expect("environment overrides must not require bundled fallbacks");
+
+        assert_eq!(resolved.java_bin, java_bin.into_os_string());
+        assert_eq!(resolved.java_engine_jar, java_engine_jar);
+        assert_eq!(
+            resolved.community_classpath_dir,
+            Some(community_classpath_dir)
+        );
+        assert_eq!(resolved.driver_pack_dir, Some(driver_pack_dir));
+    }
+
+    #[test]
+    fn app_bundle_reports_each_missing_runtime_resource() {
+        for missing_resource in [
+            BUNDLED_JAVA_BIN,
+            BUNDLED_JAVA_ENGINE_JAR,
+            BUNDLED_COMMUNITY_CLASSPATH,
+            BUNDLED_DRIVER_PACKS,
+        ] {
+            let (_directory, executable, bundled) = complete_app_bundle();
+            let (missing_path, is_directory) = match missing_resource {
+                BUNDLED_JAVA_BIN => (bundled.java_bin, false),
+                BUNDLED_JAVA_ENGINE_JAR => (bundled.java_engine_jar, false),
+                BUNDLED_COMMUNITY_CLASSPATH => (bundled.community_classpath_dir, true),
+                BUNDLED_DRIVER_PACKS => (bundled.driver_pack_dir, true),
+                _ => unreachable!("all bundled resources are covered"),
+            };
+            if is_directory {
+                fs::remove_dir_all(&missing_path).expect("remove bundled directory");
+            } else {
+                fs::remove_file(&missing_path).expect("remove bundled file");
+            }
+
+            let error = resolve_runtime_resource_paths(
+                Some(&executable),
+                RuntimeResourceOverrides::default(),
+            )
+            .expect_err("missing bundled resource must fail closed");
+            assert!(matches!(
+                error,
+                DesktopError::InvalidBundledResource { resource, path, .. }
+                    if resource == missing_resource && path == missing_path
+            ));
+        }
+    }
+
+    #[test]
+    fn development_executable_still_requires_java_engine_environment() {
+        let directory = tempfile::tempdir().expect("temporary development layout");
+        let executable = directory
+            .path()
+            .join("target")
+            .join("debug")
+            .join("chat2db-desktop");
+
+        assert!(matches!(
+            resolve_runtime_resource_paths(Some(&executable), RuntimeResourceOverrides::default()),
+            Err(DesktopError::MissingJavaEngineJar)
         ));
     }
 

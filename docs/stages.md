@@ -12,7 +12,7 @@ in runtime health until then.
 | 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
 | 5 | Complete | Product transports | Generated OpenAPI/TypeScript contract, Axum JSON/SSE, Tauri 2 commands/channels, shared SQL workbench, product H2 tests |
 | 6 | Complete | Agent, MCP, and CLI | Direct providers, durable bounded tool loop, SQL tools/permissions, compaction, Web/Tauri run transports, owner-only local attachment, read-query CLI, and bounded `rmcp` stdio tools |
-| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs through 7M bounded table preview are implemented; the current product reuses the exact original Community frontend with historical HTTP/Tauri compatibility for the first MySQL browse-and-preview slice |
+| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs through 7M bounded table preview are implemented; native `mysql_async` now owns the MySQL browser and supported SELECT path while Java starts on demand for unmigrated compatibility work; the current product retains the original Community layout with historical HTTP/Tauri compatibility for MySQL browsing, saved Consoles, and bounded SELECT execution |
 | 8 | Planned | Packaging and release | License authorization, NOTICE/SBOM, jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
 
 Stage 3 completion means the versioned Rust-Java bridge can load an external
@@ -22,9 +22,19 @@ cancellation. Stage 5 composes that bridge into the Web and desktop product
 hosts. Stage 6 adds CLI and MCP adapters that attach to one of those running
 hosts and do not own another product runtime.
 
-Frontend checkpoint `928e62c` supersedes the repository-owned Stage 5/7G
-replacement workbench. Current builds export the exact pinned Community Umi
-frontend without local page or style patches. Web uses historical `/api`
+The current production host supersedes the original eager Stage 5 bootstrap.
+`RuntimeHost::open` now opens storage and verifies/stages driver packs without
+starting Java. Core single-flights the first Java-backed request, keeps one
+generation alive while any `EngineLease` exists, shuts it down after the
+default three-minute idle window, and reloads the same verified packs into a
+new generation on later use. Host health reports a dormant configured engine as
+ready and available on demand rather than disabled or degraded.
+
+Frontend checkpoints `928e62c` and `cf9ab8a` supersede the repository-owned
+Stage 5/7G replacement workbench. Current builds export the pinned Community
+Umi frontend without local page or style patches; the pinned source includes a
+CSP-safe utility fix that preserves callback references without `new Function`.
+Web uses historical `/api`
 compatibility routes; desktop preserves `window.javaQuery` through one Tauri
 command; both converge on the same Rust dispatcher. Earlier stage descriptions
 below remain implementation history for backend capabilities and the removed
@@ -73,15 +83,17 @@ read-only and accepts no JDBC bind parameters; it does not claim the built-in
 Agent's write tool.
 
 Stage 7A implements strict local JDBC driver-pack discovery, bounded artifact
-hashing, startup preload, and immutable inventory through Core, Axum, Tauri,
-and generated frontend contracts. Downloading, signing, installation, update,
-rollback, and hot reload remain incomplete.
+hashing, immutable inventory through Core, Axum, Tauri, and generated frontend
+contracts, plus repeatable preload into each lazily started Java generation.
+Host-owned staging remains valid across idle restarts. Downloading, signing,
+installation, update, rollback, and hot reload remain incomplete.
 
 Stage 7B fixes the Community source at commit
-`f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7`, builds its H2 compatibility
+`37a34be858f2566b6b7fcf6c3f64183c1f560853`, builds its H2 compatibility
 classpath reproducibly, and initially locks 148 JAR filenames, lengths, and
 SHA-256 digests. Before lock verification, the fixed build strips dependency-manifest
-`Class-Path` entries deterministically and proves two clean builds have
+`Class-Path` entries deterministically, rounds the commit timestamp down to ZIP's
+two-second precision, and proves two clean builds have
 identical artifact bytes. Rust snapshots and re-verifies those JARs for one
 supervised Java generation. Java isolates them behind a platform-parent
 `URLClassLoader`, rejects manifest `Class-Path` escapes, discovers real `IPlugin`
@@ -283,9 +295,52 @@ the installed driver from runtime inventory. Product writes and Agent, CLI, and
 MCP MySQL conformance are explicitly deferred from this small preview;
 PostgreSQL and long-tail plugin conformance do not block it.
 
-Stage 7 remains incomplete. General type conversion, script execution, data
-import/export, non-relational behavior, remaining builder operations and plugin
-inventory, driver distribution, and per-dialect conformance are not
+The first Community Console compatibility slice adds process-durable saved
+Console records in SQLite migration 3 and implements the original
+`/api/operation/saved/create`, `/list`, get, update, and delete contracts. SQL
+text, datasource/database/schema binding, saved status, and `tabOpened` survive
+a full Rust host restart. Web maps `/api/rdb/dml/execute` to the bounded Core
+query operation and returns the historical grid result. Desktop maps
+`sql-execute` and `sql-cancel` to the same Core operation, then emits ordered
+`started`, statement, result, row, terminal, failure, and cancellation events
+through the existing Community JCEF event bus.
+
+Runtime-tested: yes. On 2026-07-28 a real MySQL 8.4 run listed the `app`
+database and its 16 tables, created and updated a saved Console, returned three
+and then five real rows, projected an invalid-column error as a renderable
+failure result, closed the Console, restarted the Rust host, reopened the same
+numeric Console id, and executed the persisted SQL. Workspace formatting,
+strict Clippy, all 509 Rust tests, 49 frontend tests, the Tauri bridge contract,
+and the Community production build passed. Browser click-through was not
+performed because the browser runtime exposed no browser instance.
+
+This slice is query-only. Arbitrary DDL, DML, and multi-statement Console
+execution are not implemented and must not be inferred from the historical
+endpoint name.
+
+The native MySQL follow-up pins upstream `mysql_async 0.37.0` with Rustls and
+routes MySQL connection testing, database/schema/table discovery, table preview,
+and supported Console SELECT before Java lease acquisition. SELECT executes in
+a MySQL read-only transaction and emits the existing typed retained-result wire
+messages directly from Core. Parameters, CTE-first SELECT, locking/server-file
+variants, and multi-statements fail before Java startup. Row and byte truncation
+plus cancellation terminate the active MySQL connection through a separate
+bounded control connection. The explicit `native-mysql-integration` target and
+MySQL CI job use a deliberately missing Java executable and verify connection,
+metadata, two-row preview, typed three-row Console output, one-row truncation,
+active `SELECT SLEEP(30)` cancellation, retained paging, and dormant Java health.
+
+Runtime-tested: yes. On 2026-07-29 commits `81301c3`, `4199862`, and `6c74421`
+passed 144 Core unit tests, strict Core all-target Clippy, formatting, Actionlint,
+the complete repository `make verify` gate, and a real MySQL 8.4 native product
+vertical rerun after the final compatibility fix. The broad Community
+compatibility operations and other database types remain on the lazy Java/JDBC
+path.
+
+Stage 7 remains incomplete. Complete MySQL type conformance, native bind
+parameters and CTE-first SELECT, script execution, data import/export,
+non-relational behavior, remaining builder operations and plugin inventory,
+driver distribution, and per-dialect conformance are not
 implemented.
 
 Before Stage 8 may produce any Object-form distribution containing Community

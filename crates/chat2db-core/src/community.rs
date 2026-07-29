@@ -62,7 +62,7 @@ use chat2db_java_bridge::{
     CommunityTableIndex as BridgeCommunityTableIndex,
     CommunityTableIndexColumn as BridgeCommunityTableIndexColumn,
     CommunityTrigger as BridgeCommunityTrigger,
-    CompleteCommunitySqlRequest as BridgeCompleteCommunitySqlRequest, EngineClient, Session,
+    CompleteCommunitySqlRequest as BridgeCompleteCommunitySqlRequest, Session,
 };
 use chat2db_storage::Storage;
 
@@ -90,6 +90,8 @@ pub fn load_fixed_community_classpath(
 use crate::{
     AppError, Application,
     datasource_session::{SessionReadOnly, open_datasource_session, resolve_datasource_connection},
+    engine_manager::EngineLease,
+    native_mysql,
 };
 
 impl Application {
@@ -100,7 +102,7 @@ impl Application {
     /// Returns an engine availability, capability, protocol, or Community
     /// discovery error.
     pub async fn list_community_plugins(&self) -> Result<CommunityPluginCatalog, AppError> {
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let client = engine.community_client().map_err(AppError::from)?;
         client
             .list_plugins()
@@ -118,8 +120,11 @@ impl Application {
         &self,
         request: ListCommunitySchemasRequest,
     ) -> Result<CommunitySchemaList, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::list_schemas(self, &request.datasource_id).await;
+        }
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let ListCommunitySchemasRequest {
             datasource_id,
             database_type,
@@ -153,8 +158,11 @@ impl Application {
         &self,
         request: ListCommunityDatabasesRequest,
     ) -> Result<CommunityDatabaseList, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::list_databases(self, &request.datasource_id).await;
+        }
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let ListCommunityDatabasesRequest {
             datasource_id,
             database_type,
@@ -187,8 +195,17 @@ impl Application {
         &self,
         request: ListCommunityTablesRequest,
     ) -> Result<CommunityTableList, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::list_tables(
+                self,
+                &request.datasource_id,
+                &request.database_name,
+                &request.table_name_pattern,
+            )
+            .await;
+        }
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let ListCommunityTablesRequest {
             datasource_id,
             database_type,
@@ -232,7 +249,7 @@ impl Application {
         request: ListCommunityColumnsRequest,
     ) -> Result<CommunityTableColumnList, AppError> {
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let ListCommunityColumnsRequest {
             datasource_id,
             database_type,
@@ -276,7 +293,7 @@ impl Application {
         request: ListCommunityIndexesRequest,
     ) -> Result<CommunityTableIndexList, AppError> {
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let ListCommunityIndexesRequest {
             datasource_id,
             database_type,
@@ -320,7 +337,7 @@ impl Application {
         request: ListCommunityViewsRequest,
     ) -> Result<CommunityViewList, AppError> {
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let ListCommunityViewsRequest {
             datasource_id,
             database_type,
@@ -364,7 +381,7 @@ impl Application {
         request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityForeignKeyList, AppError> {
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let ListCommunityTableKeysRequest {
             datasource_id,
             database_type,
@@ -408,7 +425,7 @@ impl Application {
         request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityForeignKeyList, AppError> {
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let ListCommunityTableKeysRequest {
             datasource_id,
             database_type,
@@ -452,7 +469,7 @@ impl Application {
         request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityPrimaryKeyList, AppError> {
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let ListCommunityTableKeysRequest {
             datasource_id,
             database_type,
@@ -496,7 +513,7 @@ impl Application {
         request: ListCommunityFunctionsRequest,
     ) -> Result<CommunityFunctionList, AppError> {
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let ListCommunityFunctionsRequest {
             datasource_id,
             database_type,
@@ -532,7 +549,7 @@ impl Application {
         request: GetCommunityFunctionRequest,
     ) -> Result<CommunityFunction, AppError> {
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let GetCommunityFunctionRequest {
             datasource_id,
             database_type,
@@ -574,7 +591,7 @@ impl Application {
         request: GetCommunityFunctionRequest,
     ) -> Result<CommunityFunctionParameterList, AppError> {
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let GetCommunityFunctionRequest {
             datasource_id,
             database_type,
@@ -621,7 +638,7 @@ impl Application {
         request: ListCommunityProceduresRequest,
     ) -> Result<CommunityProcedureList, AppError> {
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let ListCommunityProceduresRequest {
             datasource_id,
             database_type,
@@ -657,7 +674,7 @@ impl Application {
         request: GetCommunityProcedureRequest,
     ) -> Result<CommunityProcedure, AppError> {
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let GetCommunityProcedureRequest {
             datasource_id,
             database_type,
@@ -699,7 +716,7 @@ impl Application {
         request: GetCommunityProcedureRequest,
     ) -> Result<CommunityProcedureParameterList, AppError> {
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let GetCommunityProcedureRequest {
             datasource_id,
             database_type,
@@ -746,7 +763,7 @@ impl Application {
         request: ListCommunityTriggersRequest,
     ) -> Result<CommunityTriggerList, AppError> {
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let ListCommunityTriggersRequest {
             datasource_id,
             database_type,
@@ -782,7 +799,7 @@ impl Application {
         request: GetCommunityTriggerRequest,
     ) -> Result<CommunityTrigger, AppError> {
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let GetCommunityTriggerRequest {
             datasource_id,
             database_type,
@@ -824,7 +841,7 @@ impl Application {
         &self,
         request: BuildCommunityCreateSchemaRequest,
     ) -> Result<CommunityBuiltSql, AppError> {
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let client = engine.community_client().map_err(AppError::from)?;
         client
             .build_create_schema(request.database_type, bridge_schema(request.schema))
@@ -843,7 +860,7 @@ impl Application {
         &self,
         request: BuildCommunityNamespaceSqlRequest,
     ) -> Result<CommunityBuiltSql, AppError> {
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let client = engine.community_client().map_err(AppError::from)?;
         client
             .build_namespace_sql(bridge_namespace_request(request))
@@ -862,7 +879,7 @@ impl Application {
         &self,
         request: BuildCommunityDmlRequest,
     ) -> Result<CommunityBuiltSql, AppError> {
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let client = engine.community_client().map_err(AppError::from)?;
         client
             .build_dml(bridge_dml_request(request)?)
@@ -888,8 +905,11 @@ impl Application {
                 "datasourceId cannot be empty",
             ));
         }
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::start_table_preview(self, request, row_limit).await;
+        }
 
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let client = engine.community_client().map_err(AppError::from)?;
         let built = client
             .build_table_preview_sql(BridgeBuildCommunityTablePreviewSqlRequest {
@@ -939,7 +959,7 @@ impl Application {
         &self,
         request: ParseCommunitySqlRequest,
     ) -> Result<CommunitySqlAnalysis, AppError> {
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let client = engine.community_client().map_err(AppError::from)?;
         client
             .parse_sql(request.database_type, request.sql)
@@ -958,7 +978,7 @@ impl Application {
         &self,
         request: ValidateCommunitySqlRequest,
     ) -> Result<CommunitySqlValidation, AppError> {
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let client = engine.community_client().map_err(AppError::from)?;
         client
             .validate_sql(request.database_type, request.sql)
@@ -977,7 +997,7 @@ impl Application {
         &self,
         request: FormatCommunitySqlRequest,
     ) -> Result<CommunityFormattedSql, AppError> {
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let client = engine.community_client().map_err(AppError::from)?;
         client
             .format_sql(request.database_type, request.sql)
@@ -997,7 +1017,7 @@ impl Application {
         request: CompleteCommunitySqlRequest,
     ) -> Result<CommunitySqlCompletion, AppError> {
         let storage = self.require_storage()?;
-        let engine = self.require_community_engine()?;
+        let engine = self.require_community_engine().await?;
         let CompleteCommunitySqlRequest {
             datasource_id,
             database_type,
@@ -1043,14 +1063,17 @@ impl Application {
         .await
     }
 
-    fn require_community_engine(&self) -> Result<chat2db_java_bridge::EngineClient, AppError> {
-        let engine = self.require_engine()?;
-        if !engine.community_compatibility_configured() {
+    async fn require_community_engine(&self) -> Result<EngineLease, AppError> {
+        if !self.inner.engine.is_configured() {
+            return self.require_engine().await;
+        }
+        if !self.inner.engine.community_compatibility_configured() {
             return Err(AppError::unavailable(
                 "community_compatibility_disabled",
                 "The fixed Community compatibility classpath is not configured",
             ));
         }
+        let engine = self.require_engine().await?;
         Ok(engine)
     }
 }
@@ -1075,7 +1098,7 @@ where
 
 async fn run_community_metadata_session<T, F, Fut>(
     storage: Storage,
-    engine: EngineClient,
+    engine: EngineLease,
     datasource_id: String,
     cleanup_phase: &'static str,
     operation: F,
@@ -1088,18 +1111,20 @@ where
     run_cancellation_safe_with_cleanup(
         async move {
             let resolved = resolve_datasource_connection(&storage, &datasource_id).await?;
-            open_datasource_session(&engine, resolved, SessionReadOnly::Forced).await
+            let session =
+                open_datasource_session(&engine, resolved, SessionReadOnly::Forced).await?;
+            Ok((session, engine))
         },
         cleanup_phase,
-        operation,
-        |session| async move { session.close().await.map_err(AppError::from) },
+        move |(session, _engine)| operation(session),
+        |(session, _engine)| async move { session.close().await.map_err(AppError::from) },
     )
     .await
 }
 
 async fn run_community_named_metadata_session<T, F, Fut>(
     storage: Storage,
-    engine: EngineClient,
+    engine: EngineLease,
     datasource_id: String,
     cleanup_phase: &'static str,
     operation: F,
@@ -1115,11 +1140,11 @@ where
             let datasource_name = resolved.datasource_name.clone();
             let session =
                 open_datasource_session(&engine, resolved, SessionReadOnly::Forced).await?;
-            Ok((session, datasource_name))
+            Ok((session, datasource_name, engine))
         },
         cleanup_phase,
-        move |(session, datasource_name)| operation(session, datasource_name),
-        |(session, _)| async move { session.close().await.map_err(AppError::from) },
+        move |(session, datasource_name, _engine)| operation(session, datasource_name),
+        |(session, _, _engine)| async move { session.close().await.map_err(AppError::from) },
     )
     .await
 }

@@ -205,6 +205,12 @@ impl EngineConfig {
         self
     }
 
+    /// Returns whether this generation will load the fixed Community classpath.
+    #[must_use]
+    pub const fn community_compatibility_configured(&self) -> bool {
+        self.community_classpath.is_some()
+    }
+
     #[cfg(feature = "test-fixture")]
     #[doc(hidden)]
     #[must_use]

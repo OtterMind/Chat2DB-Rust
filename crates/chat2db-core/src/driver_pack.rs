@@ -41,7 +41,32 @@ pub(crate) struct PreparedDriverPack {
 #[derive(Debug)]
 pub(crate) struct PreparedDriverPacks {
     packs: Vec<PreparedDriverPack>,
-    staging: Option<tempfile::TempDir>,
+    _staging: Option<tempfile::TempDir>,
+}
+
+impl PreparedDriverPacks {
+    #[must_use]
+    pub(crate) fn inventory(&self) -> Vec<JdbcDriver> {
+        self.packs
+            .iter()
+            .map(PreparedDriverPack::inventory_entry)
+            .collect()
+    }
+}
+
+impl PreparedDriverPack {
+    fn inventory_entry(&self) -> JdbcDriver {
+        JdbcDriver {
+            pack_id: self.id.clone(),
+            name: self.name.clone(),
+            version: self.version.clone(),
+            driver_id: self.specification.driver_id(),
+            driver_class: self.specification.driver_class.clone(),
+            artifact_count: u32::try_from(self.specification.artifacts.len())
+                .expect("validated driver packs have a bounded artifact count"),
+            artifact_bytes: self.artifact_bytes.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -151,13 +176,13 @@ pub(crate) fn discover(
     let Some((canonical_root, pack_directories)) = scan_pack_directories(root)? else {
         return Ok(PreparedDriverPacks {
             packs: Vec::new(),
-            staging: None,
+            _staging: None,
         });
     };
     if pack_directories.is_empty() {
         return Ok(PreparedDriverPacks {
             packs: Vec::new(),
-            staging: None,
+            _staging: None,
         });
     }
     let staging = tempfile::Builder::new()
@@ -192,7 +217,7 @@ pub(crate) fn discover(
     }
     Ok(PreparedDriverPacks {
         packs,
-        staging: Some(staging),
+        _staging: Some(staging),
     })
 }
 
@@ -453,14 +478,11 @@ fn open_regular_file_no_follow(path: &Path) -> io::Result<File> {
 
 pub(crate) async fn preload(
     supervisor: &EngineSupervisor,
-    prepared: PreparedDriverPacks,
+    prepared: &PreparedDriverPacks,
 ) -> Result<Vec<JdbcDriver>, DriverPackError> {
-    let PreparedDriverPacks {
-        packs,
-        staging: _staging,
-    } = prepared;
-    if packs.is_empty() {
-        return Ok(Vec::new());
+    let mut inventory = prepared.inventory();
+    if inventory.is_empty() {
+        return Ok(inventory);
     }
     let client = supervisor
         .client()
@@ -469,24 +491,17 @@ pub(crate) async fn preload(
             pack_id: "[startup]".to_owned(),
             source,
         })?;
-    let mut inventory = Vec::with_capacity(packs.len());
-    for pack in packs {
+    for (pack, driver) in prepared.packs.iter().zip(&mut inventory) {
         let loaded = client
-            .load_driver(pack.specification)
+            .load_driver(pack.specification.clone())
             .await
             .map_err(|source| DriverPackError::Load {
                 pack_id: pack.id.clone(),
                 source,
             })?;
-        inventory.push(JdbcDriver {
-            pack_id: pack.id,
-            name: pack.name,
-            version: pack.version,
-            driver_id: loaded.driver_id,
-            driver_class: loaded.driver_class,
-            artifact_count: loaded.artifact_count,
-            artifact_bytes: pack.artifact_bytes.to_string(),
-        });
+        driver.driver_id = loaded.driver_id;
+        driver.driver_class = loaded.driver_class;
+        driver.artifact_count = loaded.artifact_count;
     }
     Ok(inventory)
 }
@@ -738,7 +753,7 @@ mod tests {
         let directory = TempDir::new().expect("temporary directory");
         let prepared =
             discover_test(&directory.path().join("missing")).expect("missing root is optional");
-        assert!(prepared.packs.is_empty());
+        assert!(prepared.inventory().is_empty());
     }
 
     #[test]
@@ -747,7 +762,7 @@ mod tests {
         write_pack(directory.path(), "01-h2", "h2", "drivers/h2.jar");
 
         let prepared = discover_test(directory.path()).expect("valid pack must be discovered");
-        let packs = prepared.packs;
+        let packs = &prepared.packs;
 
         assert_eq!(packs.len(), 1);
         assert_eq!(packs[0].id, "h2");
@@ -756,6 +771,35 @@ mod tests {
         assert_eq!(packs[0].specification.driver_class, "org.h2.Driver");
         assert_eq!(packs[0].specification.artifacts.len(), 1);
         assert_eq!(packs[0].artifact_bytes, 8);
+    }
+
+    #[test]
+    fn catalog_inventory_is_repeatable_and_owns_staged_artifacts() {
+        let directory = TempDir::new().expect("temporary directory");
+        write_pack(directory.path(), "01-h2", "h2", "drivers/h2.jar");
+
+        let prepared = discover_test(directory.path()).expect("valid pack must be discovered");
+        let staged_artifact = prepared.packs[0].specification.artifacts[0]
+            .canonical_path()
+            .to_path_buf();
+        let expected_driver_id = prepared.packs[0].specification.driver_id();
+
+        let first = prepared.inventory();
+        let second = prepared.inventory();
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].pack_id, "h2");
+        assert_eq!(first[0].name, "H2");
+        assert_eq!(first[0].version, "2.3.232");
+        assert_eq!(first[0].driver_id, expected_driver_id);
+        assert_eq!(first[0].driver_class, "org.h2.Driver");
+        assert_eq!(first[0].artifact_count, 1);
+        assert_eq!(first[0].artifact_bytes, "8");
+        assert!(staged_artifact.is_file());
+
+        drop(prepared);
+        assert!(!staged_artifact.exists());
     }
 
     #[test]

@@ -2,8 +2,9 @@
 	community-h2-classpath community-h2-reproducibility community-java-h2-integration \
 	community-h2-integration \
 	community-product-h2-integration product-h2-integration mysql-driver-pack \
-	community-product-mysql-integration \
-	frontend-deps frontend-source frontend desktop generate-contracts check-contracts
+	native-mysql-integration community-product-mysql-integration \
+	frontend-deps frontend-source frontend desktop generate-contracts check-contracts \
+	macos-runtime macos-package-java macos-package macos-package-verify
 
 JAVA_ENGINE_JAR := $(CURDIR)/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar
 H2_DRIVER_JAR := $(CURDIR)/java/compat-runtime/target/test-drivers/h2-2.3.232.jar
@@ -43,7 +44,7 @@ community-h2-reproducibility:
 community-java-h2-integration: java community-h2-classpath
 	cd java && \
 	CHAT2DB_COMMUNITY_CLASSPATH_DIR="$(COMMUNITY_CLASSPATH_DIR)" \
-	CHAT2DB_COMMUNITY_SOURCE_COMMIT="f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7" \
+	CHAT2DB_COMMUNITY_SOURCE_COMMIT="37a34be858f2566b6b7fcf6c3f64183c1f560853" \
 	./mvnw -B -pl compat-runtime \
 	-Dtest='CommunityPluginRegistryTest#realCommunityH2BuildsAndExecutesBoundedDml,CommunityPluginRegistryTest#realCommunityMysqlRejectsBackslashCrossColumnInjection,CommunityPluginRegistryTest#realCommunityMysqlNormalizesBooleanAliasesAndBits,CommunityPluginRegistryTest#realCommunityH2BuildsNamespaceSqlWithoutOpeningJdbc,CommunityPluginRegistryTest#realCommunityMysqlBuildsDatabaseNamespaceSql,CommunityPluginRegistryTest#realCommunityMysqlBuildsBoundedTablePreviewSqlWithoutOpeningJdbc,CommunityPluginRegistryTest#realCommunityNamespaceMapsUnsupportedAndRejectsOversizedInput,JdbcProtocolLoopTest#communityDmlDispatchDoesNotRequireAJdbcSession,JdbcProtocolLoopTest#communityNamespaceDispatchDoesNotRequireAJdbcSession' \
 	test
@@ -59,6 +60,16 @@ product-h2-integration: java
 
 mysql-driver-pack:
 	./scripts/prepare-mysql-driver-pack.sh "$(MYSQL_DRIVER_PACK_DIR)"
+
+native-mysql-integration:
+	@test -n "$(MYSQL_TEST_USER)" || (echo "MYSQL_TEST_USER is required" >&2; exit 1)
+	@test -n "$(MYSQL_TEST_PASSWORD)" || (echo "MYSQL_TEST_PASSWORD is required" >&2; exit 1)
+	@MYSQL_TEST_HOST="$(MYSQL_TEST_HOST)" \
+	MYSQL_TEST_PORT="$(MYSQL_TEST_PORT)" \
+	MYSQL_TEST_USER="$(MYSQL_TEST_USER)" \
+	MYSQL_TEST_PASSWORD="$(MYSQL_TEST_PASSWORD)" \
+	MYSQL_TEST_REQUIRED="1" \
+	cargo test -p chat2db-core --test native_mysql_product --locked
 
 community-product-mysql-integration: java community-h2-classpath mysql-driver-pack
 	@test -n "$(MYSQL_TEST_USER)" || (echo "MYSQL_TEST_USER is required" >&2; exit 1)
@@ -92,3 +103,15 @@ frontend: frontend-source check-contracts
 desktop: frontend
 	cargo test -p chat2db-desktop --locked
 	cargo check -p chat2db-desktop --all-targets --features custom-protocol --locked
+
+macos-runtime:
+	./scripts/build-macos-runtime.sh
+
+macos-package-java: community-h2-classpath
+	$(MAKE) java
+
+macos-package: macos-package-java mysql-driver-pack frontend macos-runtime
+	./scripts/build-macos-package.sh
+
+macos-package-verify:
+	./scripts/verify-macos-package.sh

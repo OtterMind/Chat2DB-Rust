@@ -5,6 +5,7 @@ mod datasource;
 mod error;
 mod provider;
 mod result_store;
+mod saved_console;
 mod secret;
 mod vault;
 
@@ -42,6 +43,10 @@ pub use result_store::{
     MAX_RESULT_PAGE_BYTES, MAX_RESULT_PAGE_ROWS, MIN_RESULT_PAGE_BYTES, PageRequest, PurgeReport,
     RecoveryReport, ResultMetadata, ResultPage, ResultWriter,
 };
+pub use saved_console::{
+    CreateSavedConsole, SavedConsoleListQuery, SavedConsolePage, SavedConsoleRecord,
+    UpdateSavedConsole,
+};
 pub use secret::{SecretRef, SecretValue, SecretVault, SecretVaultError};
 pub use vault::EncryptedFileVault;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -50,7 +55,7 @@ pub use vault::OsSecretVault;
 const DATABASE_FILE: &str = "chat2db.sqlite3";
 const LOCK_FILE: &str = ".chat2db.lock";
 const RESULTS_DIRECTORY: &str = "results";
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 #[cfg(test)]
 #[derive(Clone, Copy)]
@@ -371,6 +376,13 @@ fn migrate(connection: &Connection) -> Result<(), StorageError> {
     }
     if version == 1 {
         apply_migration(connection, include_str!("../migrations/002_agent.sql"))?;
+        version = 2;
+    }
+    if version == 2 {
+        apply_migration(
+            connection,
+            include_str!("../migrations/003_saved_console.sql"),
+        )?;
     }
     Ok(())
 }
@@ -513,7 +525,7 @@ mod tests {
         let synchronous: i64 = connection
             .pragma_query_value(None, "synchronous", |row| row.get(0))
             .expect("synchronous reads");
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         assert_eq!(foreign_keys, 1);
         assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
         assert_eq!(synchronous, 2);
@@ -532,22 +544,22 @@ mod tests {
         let database = directory.path().join(DATABASE_FILE);
         Connection::open(&database)
             .expect("database opens")
-            .execute_batch("PRAGMA user_version = 3")
+            .execute_batch("PRAGMA user_version = 4")
             .expect("test version updates");
 
         let error = Storage::open(directory.path(), vault()).expect_err("newer schema must fail");
         assert!(matches!(
             error,
             StorageError::UnsupportedSchema {
-                found: 3,
-                supported: 2
+                found: 4,
+                supported: 3
             }
         ));
         let version: i64 = Connection::open(database)
             .expect("database opens")
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version reads");
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
     }
 
     #[test]
@@ -581,7 +593,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("provider table count reads");
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         assert_eq!(provider_table, 1);
         assert!(
             storage
@@ -589,6 +601,100 @@ mod tests {
                 .expect("datasource reads")
                 .is_some()
         );
+    }
+
+    #[test]
+    fn version_two_upgrades_atomically_and_preserves_existing_state() {
+        let directory = TempDir::new().expect("temp dir");
+        let database = directory.path().join(DATABASE_FILE);
+        let connection = Connection::open(&database).expect("database opens");
+        connection
+            .execute_batch(include_str!("../migrations/001_initial.sql"))
+            .expect("version one schema creates");
+        connection
+            .execute_batch(include_str!("../migrations/002_agent.sql"))
+            .expect("version two schema creates");
+        connection
+            .execute(
+                "INSERT INTO datasources (
+                    id, name, driver_id, revision, created_at_ms, updated_at_ms
+                 ) VALUES ('existing-v2', 'Existing', 'driver', 1, 1, 1)",
+                [],
+            )
+            .expect("version two state inserts");
+        drop(connection);
+
+        let storage = Storage::open(directory.path(), vault()).expect("version two upgrades");
+        let connection = storage.connection().expect("connection opens");
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("schema version reads");
+        let saved_console_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'saved_consoles'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("saved Console table count reads");
+        assert_eq!(version, 3);
+        assert_eq!(saved_console_table, 1);
+        assert!(
+            storage
+                .get_datasource("existing-v2")
+                .expect("datasource reads")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn failed_version_three_upgrade_rolls_back_saved_console_schema() {
+        let directory = TempDir::new().expect("temp dir");
+        let database = directory.path().join(DATABASE_FILE);
+        let connection = Connection::open(&database).expect("database opens");
+        connection
+            .execute_batch(include_str!("../migrations/001_initial.sql"))
+            .expect("version one schema creates");
+        connection
+            .execute_batch(include_str!("../migrations/002_agent.sql"))
+            .expect("version two schema creates");
+        connection
+            .execute_batch(
+                "CREATE TABLE migration_sentinel (value INTEGER);
+                 CREATE INDEX saved_consoles_status_idx
+                     ON migration_sentinel (value);",
+            )
+            .expect("conflicting index creates");
+        drop(connection);
+
+        Storage::open(directory.path(), vault()).expect_err("version three upgrade must fail");
+        let connection = Connection::open(database).expect("database reopens");
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("schema version reads");
+        let saved_console_tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'saved_consoles'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("saved Console table count reads");
+        let prior_indexes: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name IN (
+                     'saved_consoles_created_idx',
+                     'saved_consoles_updated_idx',
+                     'saved_consoles_open_scope_idx'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("partial saved Console index count reads");
+        assert_eq!(version, 2);
+        assert_eq!(saved_console_tables, 0);
+        assert_eq!(prior_indexes, 0);
     }
 
     #[test]

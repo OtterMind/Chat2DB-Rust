@@ -13,7 +13,9 @@ use chat2db_contract::{
     StartCommunityTablePreviewRequest, StartQueryRequest, UpdateDatasourceRequest,
     ValidateCommunitySqlRequest,
 };
-use chat2db_core::{Application, RuntimeConfig, RuntimeHost, load_fixed_community_classpath};
+use chat2db_core::{
+    Application, EngineLease, RuntimeConfig, RuntimeHost, load_fixed_community_classpath,
+};
 use chat2db_java_bridge::{
     BridgeError, ConnectionProperty, DriverClient, EngineCommand, EngineConfig, Session,
     SessionConfig, UpdateRequest,
@@ -22,7 +24,7 @@ use futures_util::FutureExt as _;
 use tempfile::TempDir;
 use uuid::Uuid;
 
-const COMMUNITY_COMMIT: &str = "f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7";
+const COMMUNITY_COMMIT: &str = "37a34be858f2566b6b7fcf6c3f64183c1f560853";
 const MYSQL_DATABASE_TYPE: &str = "MYSQL";
 const MYSQL_DRIVER_CLASS: &str = "com.mysql.cj.jdbc.Driver";
 const MYSQL_DRIVER_VERSION: &str = "8.0.30";
@@ -48,6 +50,7 @@ struct MysqlProductHarness {
     _directory: TempDir,
     host: RuntimeHost,
     application: Application,
+    _engine_lease: EngineLease,
     driver: DriverClient,
     driver_id: String,
 }
@@ -200,9 +203,11 @@ impl MysqlProductHarness {
             .await
             .expect("managed MySQL product runtime must start");
         let application = host.application();
-        let driver = host
-            .engine_client()
-            .expect("running host must expose the Java engine")
+        let engine_lease = host
+            .acquire_engine()
+            .await
+            .expect("first database use must start the Java engine");
+        let driver = engine_lease
             .driver_client()
             .expect("running engine must expose JDBC");
 
@@ -223,6 +228,7 @@ impl MysqlProductHarness {
             _directory: directory,
             host,
             application,
+            _engine_lease: engine_lease,
             driver,
             driver_id,
         }

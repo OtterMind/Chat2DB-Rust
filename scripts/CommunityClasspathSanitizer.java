@@ -131,7 +131,7 @@ public final class CommunityClasspathSanitizer {
         if (year < 1980 || year > 2107) {
             throw new IllegalArgumentException("archive timestamp is outside the ZIP date range");
         }
-        return seconds;
+        return seconds - Math.floorMod(seconds, 2L);
     }
 
     private static void sanitize(Path directory, long timestamp) throws IOException {
@@ -667,7 +667,14 @@ public final class CommunityClasspathSanitizer {
     }
 
     private static void selfTest() throws IOException {
-        LocalDateTime archiveTime = LocalDateTime.of(2000, 1, 2, 3, 4, 6);
+        LocalDateTime expectedArchiveTime = LocalDateTime.of(2000, 1, 2, 3, 4, 6);
+        long oddTimestamp = expectedArchiveTime.plusSeconds(1).toEpochSecond(ZoneOffset.UTC);
+        LocalDateTime archiveTime = LocalDateTime.ofInstant(
+                Instant.ofEpochSecond(parseTimestamp(Long.toString(oddTimestamp))), ZoneOffset.UTC);
+        if (!archiveTime.equals(expectedArchiveTime)) {
+            throw new IOException(
+                    "odd ZIP timestamps must be rounded down to two-second precision");
+        }
         Path directory = Files.createTempDirectory("chat2db-community-sanitizer-test-");
         try {
             Path first = directory.resolve("first.jar");

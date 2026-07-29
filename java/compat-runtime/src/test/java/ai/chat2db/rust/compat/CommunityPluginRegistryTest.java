@@ -942,7 +942,7 @@ class CommunityPluginRegistryTest {
                             CommunitySqlCompletionBridge.class);
             constructor.setAccessible(true);
             return constructor.newInstance(
-                    "f63cbf4a8334b45d9b1fbb268116e4dfc1fad1d7",
+                    "37a34be858f2566b6b7fcf6c3f64183c1f560853",
                     loader,
                     plugins,
                     CommunitySqlCompletionBridge.open(loader));

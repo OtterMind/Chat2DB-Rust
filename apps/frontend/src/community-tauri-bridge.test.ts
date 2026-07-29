@@ -17,9 +17,12 @@ describe('Community Tauri bridge', () => {
 
   it('forwards the existing javaQuery contract through one Tauri command', async () => {
     const invoke = vi.fn().mockResolvedValue('{"ok":true}');
+    const replace = vi.fn();
     const onSuccess = vi.fn();
     const onFailure = vi.fn();
-    const window: Record<string, unknown> = {};
+    const window: Record<string, unknown> = {
+      location: { hash: '', replace },
+    };
     const globalObject = {
       __TAURI__: { core: { invoke } },
       window,
@@ -33,7 +36,24 @@ describe('Community Tauri bridge', () => {
     expect(invoke).toHaveBeenCalledWith('legacy_request', {
       request: '{"uuid":"request-1"}',
     });
+    expect(replace).toHaveBeenCalledWith('#/workspace');
     expect(onSuccess).toHaveBeenCalledWith('{"ok":true}');
     expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  it('preserves an explicit desktop route', () => {
+    const replace = vi.fn();
+    const window: Record<string, unknown> = {
+      location: { hash: '#/stream', replace },
+    };
+
+    runInNewContext(bridgeSource, {
+      globalThis: {
+        __TAURI__: { core: { invoke: vi.fn() } },
+        window,
+      },
+    });
+
+    expect(replace).not.toHaveBeenCalled();
   });
 });
