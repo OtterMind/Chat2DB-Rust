@@ -2,7 +2,7 @@
 	community-h2-classpath community-h2-reproducibility community-java-h2-integration \
 	community-h2-integration \
 	community-product-h2-integration product-h2-integration mysql-driver-pack \
-	community-product-mysql-integration \
+	native-mysql-integration community-product-mysql-integration \
 	frontend-deps frontend-source frontend desktop generate-contracts check-contracts \
 	macos-runtime macos-package-java macos-package macos-package-verify
 
@@ -60,6 +60,16 @@ product-h2-integration: java
 
 mysql-driver-pack:
 	./scripts/prepare-mysql-driver-pack.sh "$(MYSQL_DRIVER_PACK_DIR)"
+
+native-mysql-integration:
+	@test -n "$(MYSQL_TEST_USER)" || (echo "MYSQL_TEST_USER is required" >&2; exit 1)
+	@test -n "$(MYSQL_TEST_PASSWORD)" || (echo "MYSQL_TEST_PASSWORD is required" >&2; exit 1)
+	@MYSQL_TEST_HOST="$(MYSQL_TEST_HOST)" \
+	MYSQL_TEST_PORT="$(MYSQL_TEST_PORT)" \
+	MYSQL_TEST_USER="$(MYSQL_TEST_USER)" \
+	MYSQL_TEST_PASSWORD="$(MYSQL_TEST_PASSWORD)" \
+	MYSQL_TEST_REQUIRED="1" \
+	cargo test -p chat2db-core --test native_mysql_product --locked
 
 community-product-mysql-integration: java community-h2-classpath mysql-driver-pack
 	@test -n "$(MYSQL_TEST_USER)" || (echo "MYSQL_TEST_USER is required" >&2; exit 1)
