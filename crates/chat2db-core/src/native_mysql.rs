@@ -1592,7 +1592,7 @@ enum ScriptState {
     BlockComment,
 }
 
-fn split_mysql_script(script: &str) -> Result<Vec<String>, AppError> {
+pub(crate) fn split_mysql_script(script: &str) -> Result<Vec<String>, AppError> {
     let bytes = script.as_bytes();
     let mut delimiter = b";".to_vec();
     let mut statements = Vec::new();
