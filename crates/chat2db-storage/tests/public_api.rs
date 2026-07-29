@@ -1,9 +1,9 @@
 use chat2db_storage::{
     AgentCompaction, AgentMessageRole, AgentRunStatus, AgentRunUpdate, AppendAgentMessage,
-    CompactAgentRun, CreateAgentSession, CreateProviderProfile, CreateSavedConsole,
-    MAX_AGENT_MESSAGE_BYTES, MAX_RESULT_PAGE_BYTES, MAX_RESULT_PAGE_ROWS, MIN_RESULT_PAGE_BYTES,
-    PageRequest, ProviderKind, PurgeReport, SavedConsoleListQuery, ToolPermissionDecision,
-    UpdateAgentSession, UpdateSavedConsole,
+    CompactAgentRun, CreateAgentSession, CreateOperationLog, CreateProviderProfile,
+    CreateSavedConsole, MAX_AGENT_MESSAGE_BYTES, MAX_RESULT_PAGE_BYTES, MAX_RESULT_PAGE_ROWS,
+    MIN_RESULT_PAGE_BYTES, OperationLogListQuery, PageRequest, ProviderKind, PurgeReport,
+    SavedConsoleListQuery, ToolPermissionDecision, UpdateAgentSession, UpdateSavedConsole,
 };
 
 #[test]
@@ -51,6 +51,39 @@ fn saved_console_contracts_are_nameable_outside_the_crate() {
     assert_eq!(query.page_size, 100);
     assert_eq!(update.schema_name, Some(None));
     assert_eq!(update.ddl.as_deref(), Some("SELECT 1"));
+}
+
+#[test]
+fn operation_log_contracts_are_nameable_outside_the_crate() {
+    let create = CreateOperationLog {
+        name: None,
+        data_source_id: Some("opaque-datasource-id".to_owned()),
+        data_source_name: Some("Local MySQL".to_owned()),
+        connectable: Some(true),
+        database_name: Some("chat2db".to_owned()),
+        database_type: Some("MYSQL".to_owned()),
+        ddl: "SELECT 1".to_owned(),
+        status: "SUCCESS".to_owned(),
+        operation_rows: None,
+        use_time: Some(4),
+        extend_info: Some(r#"{"source":"console"}"#.to_owned()),
+        schema_name: None,
+        organization_id: None,
+        user_name: None,
+        more: false,
+        operation_type: "SQL_EXECUTE".to_owned(),
+    };
+    let query = OperationLogListQuery {
+        data_source_id: Some("opaque-datasource-id".to_owned()),
+        operation_type: Some("SQL_EXECUTE".to_owned()),
+        page_size: 100,
+        ..OperationLogListQuery::default()
+    };
+
+    assert_eq!(create.connectable, Some(true));
+    assert_eq!(create.use_time, Some(4));
+    assert_eq!(query.page_no, 1);
+    assert_eq!(query.page_size, 100);
 }
 
 #[test]

@@ -276,6 +276,9 @@ impl From<StorageError> for AppError {
             StorageError::InvalidSavedConsole(message) => {
                 Self::invalid("invalid_saved_console", message)
             }
+            StorageError::InvalidOperationLog(message) => {
+                Self::invalid("invalid_operation_log", message)
+            }
             StorageError::ProviderNotFound(id) => Self::not_found(
                 "provider_not_found",
                 format!("Provider profile {id} does not exist"),

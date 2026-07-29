@@ -1,3 +1,4 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chat2db_contract::{
     ApiError, CommunityDatabase, CommunityDatabaseList, CommunityForeignKey,
     CommunityForeignKeyList, CommunityFunction, CommunityFunctionList, CommunityFunctionParameter,
@@ -6,8 +7,9 @@ use chat2db_contract::{
     CommunityProcedureParameterList, CommunitySchemaList, CommunityTable, CommunityTableColumn,
     CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
     CommunityTableIndexList, CommunityTableList, CommunityTablePreviewAccepted, CommunityTrigger,
-    CommunityTriggerList, CommunityViewList, DatasourceConnection, QueryLimits, ResultMetadata,
-    StartCommunityTablePreviewRequest, StartQueryRequest,
+    CommunityTriggerList, CommunityViewList, DatasourceConnection, JdbcValue, JdbcValueType,
+    QueryLimits, ResultColumn, ResultMetadata, ResultRow, StartCommunityTablePreviewRequest,
+    StartQueryRequest,
 };
 use chat2db_engine_protocol::wire;
 use chat2db_java_bridge::QueryOptions;
@@ -18,7 +20,11 @@ use mysql_async::{
     prelude::{FromValue, Queryable},
 };
 use prost::Message;
-use std::{future::Future, time::Duration};
+use std::{
+    future::Future,
+    mem::size_of,
+    time::{Duration, Instant},
+};
 use tokio::sync::watch;
 use url::Url;
 
@@ -26,7 +32,9 @@ use crate::{
     AppError, AppErrorKind, Application,
     datasource_session::{ResolvedDatasourceConnection, resolve_datasource_connection},
     operation::CancellationRequest,
-    query::{PreparedQuery, QueryTaskError, RetainedWriter},
+    query::{
+        MysqlConsoleRequest, MysqlConsoleResult, PreparedQuery, QueryTaskError, RetainedWriter,
+    },
 };
 
 const MYSQL_SCHEME: &str = "mysql://";
@@ -44,7 +52,11 @@ const MAX_BATCH_BYTES: u32 = wire::JdbcProtocolLimit::MaxBatchBytes as u32;
 const MAX_COLUMNS: usize = wire::JdbcProtocolLimit::MaxColumns as usize;
 const MAX_SQL_BYTES: usize = wire::JdbcProtocolLimit::MaxSqlBytes as usize;
 const MAX_SCALAR_BYTES: usize = wire::JdbcProtocolLimit::MaxScalarBytes as usize;
+const MAX_CONSOLE_VALUE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_CONSOLE_RESULT_BYTES: u64 = DEFAULT_RESULT_BYTES;
+const MAX_CONSOLE_STATEMENTS: usize = 1_000;
 const MAX_IDENTIFIER_BYTES: usize = 256;
+const MAX_CONSOLE_PAGE_SIZE: u32 = 10_000;
 type TableRow = (
     String,
     String,
@@ -936,6 +948,865 @@ pub(crate) async fn start_table_preview(
     })
 }
 
+struct ConsoleStatementExecution {
+    results: Vec<MysqlConsoleResult>,
+    failure: Option<AppError>,
+}
+
+enum ConsoleExecutionError {
+    Cancelled(Option<String>),
+    Fatal(AppError),
+}
+
+pub(crate) async fn execute_console(
+    application: &Application,
+    request: MysqlConsoleRequest,
+    mut cancellation: watch::Receiver<CancellationRequest>,
+) -> Result<Vec<MysqlConsoleResult>, AppError> {
+    let (page_offset, page_end) = validate_console_request(&request)?;
+    let mut statements = if request.single {
+        vec![request.sql.trim().to_owned()]
+    } else {
+        split_mysql_script(&request.sql)?
+    };
+    if statements.is_empty() {
+        return Err(AppError::invalid(
+            "invalid_mysql_console_request",
+            "sql must contain at least one MySQL statement",
+        ));
+    }
+    if request.explain {
+        for statement in &mut statements {
+            *statement = format!("EXPLAIN {statement}");
+        }
+    }
+
+    let initial_cancellation = { cancellation.borrow().clone() };
+    if let CancellationRequest::Requested { reason } = initial_cancellation {
+        return Err(mysql_console_cancelled(reason));
+    }
+    let resolved = resolve_native_connection(application, &request.datasource_id).await?;
+    if resolved.connection.read_only {
+        validate_read_only_console(&statements)?;
+    }
+    let options = connection_opts(&resolved.connection)?;
+    let mut conn = match open_query_connection(options.clone(), &mut cancellation).await {
+        Ok(conn) => conn,
+        Err(QueryTaskError::Cancelled(reason)) => return Err(mysql_console_cancelled(reason)),
+        Err(QueryTaskError::Failed(error)) => return Err(error),
+    };
+    let connection_id = conn.id();
+
+    if !request.database_name.trim().is_empty() {
+        let database_name = quote_console_identifier(&request.database_name, "databaseName")?;
+        if let Err(error) = execute_console_control(
+            &mut conn,
+            options.clone(),
+            connection_id,
+            &format!("USE {database_name}"),
+            &mut cancellation,
+        )
+        .await
+        {
+            return finish_console_error(conn, options, connection_id, error).await;
+        }
+    }
+
+    let mut results = Vec::new();
+    let mut retained_result_bytes = 0_u64;
+    for (index, statement) in statements.into_iter().enumerate() {
+        let statement_sequence = u32::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_add(1))
+            .ok_or_else(AppError::internal)?;
+        let started = Instant::now();
+        let execution = execute_console_statement(
+            &mut conn,
+            options.clone(),
+            connection_id,
+            &statement,
+            statement_sequence,
+            page_offset,
+            page_end,
+            request.result_set_id,
+            &mut retained_result_bytes,
+            &mut cancellation,
+        )
+        .await;
+        match execution {
+            Ok(mut execution) => {
+                results.append(&mut execution.results);
+                if let Some(error) = execution.failure {
+                    results.push(console_failure_result(
+                        statement_sequence,
+                        statement,
+                        &error,
+                        elapsed_millis(started),
+                    ));
+                    if !request.error_continue {
+                        break;
+                    }
+                }
+            }
+            Err(error) => {
+                return finish_console_error(conn, options, connection_id, error).await;
+            }
+        }
+    }
+
+    disconnect_connection(conn).await?;
+    Ok(results)
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn execute_console_statement(
+    conn: &mut Conn,
+    options: Opts,
+    connection_id: u32,
+    statement: &str,
+    statement_sequence: u32,
+    page_offset: u64,
+    page_end: u64,
+    selected_result_set_id: Option<u32>,
+    retained_result_bytes: &mut u64,
+    cancellation: &mut watch::Receiver<CancellationRequest>,
+) -> Result<ConsoleStatementExecution, ConsoleExecutionError> {
+    let statement_started = Instant::now();
+    let query = conn.query_iter(statement);
+    tokio::pin!(query);
+    let mut cancellation_open = true;
+    let mut query_result = loop {
+        tokio::select! {
+            biased;
+            changed = cancellation.changed(), if cancellation_open => {
+                if changed.is_err() {
+                    cancellation_open = false;
+                    continue;
+                }
+                let request = { cancellation.borrow().clone() };
+                if let CancellationRequest::Requested { reason } = request {
+                    cancel_console_connection(options, connection_id).await
+                        .map_err(ConsoleExecutionError::Fatal)?;
+                    return Err(ConsoleExecutionError::Cancelled(reason));
+                }
+            }
+            result = &mut query => {
+                match result {
+                    Ok(result) => break result,
+                    Err(error) if matches!(&error, MysqlError::Server(_)) => {
+                        return Ok(ConsoleStatementExecution {
+                            results: Vec::new(),
+                            failure: Some(mysql_query_error(error)),
+                        });
+                    }
+                    Err(error) => {
+                        return Err(ConsoleExecutionError::Fatal(mysql_query_error(error)));
+                    }
+                }
+            }
+        }
+    };
+
+    let mut results = Vec::new();
+    let mut result_set_id = 0_u32;
+    while let Some(columns) = query_result.columns() {
+        let result_started = Instant::now();
+        let columns = columns.to_vec();
+        let tabular = !columns.is_empty();
+        let current_result_set_id = if tabular {
+            result_set_id = result_set_id
+                .checked_add(1)
+                .ok_or_else(|| ConsoleExecutionError::Fatal(AppError::internal()))?;
+            Some(result_set_id)
+        } else {
+            None
+        };
+        let retain = current_result_set_id
+            .is_none_or(|id| selected_result_set_id.is_none_or(|selected| selected == id));
+        let update_count = query_result.affected_rows();
+        let info = query_result.info().into_owned();
+        let converted_columns = if tabular && retain {
+            if columns.len() > MAX_COLUMNS {
+                return Err(ConsoleExecutionError::Fatal(resource_error(
+                    "mysql_result_too_wide",
+                    format!("MySQL returned more than {MAX_COLUMNS} columns"),
+                )));
+            }
+            columns
+                .iter()
+                .enumerate()
+                .map(|(index, column)| console_column(index, column))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(ConsoleExecutionError::Fatal)?
+        } else {
+            Vec::new()
+        };
+        let mut rows = Vec::new();
+        let mut row_count = 0_u64;
+        loop {
+            let next = tokio::select! {
+                biased;
+                changed = cancellation.changed(), if cancellation_open => {
+                    if changed.is_err() {
+                        cancellation_open = false;
+                        continue;
+                    }
+                    let request = { cancellation.borrow().clone() };
+                    if let CancellationRequest::Requested { reason } = request {
+                        cancel_console_connection(options.clone(), connection_id).await
+                            .map_err(ConsoleExecutionError::Fatal)?;
+                        return Err(ConsoleExecutionError::Cancelled(reason));
+                    }
+                    continue;
+                }
+                row = query_result.next() => row,
+            };
+            let row = match next {
+                Ok(Some(row)) => row,
+                Ok(None) => break,
+                Err(error) if matches!(&error, MysqlError::Server(_)) => {
+                    return Ok(ConsoleStatementExecution {
+                        results,
+                        failure: Some(mysql_query_error(error)),
+                    });
+                }
+                Err(error) => {
+                    return Err(ConsoleExecutionError::Fatal(mysql_query_error(error)));
+                }
+            };
+            if retain && (page_offset..page_end).contains(&row_count) {
+                let row = console_row(row, &columns).map_err(ConsoleExecutionError::Fatal)?;
+                reserve_console_result_bytes(retained_result_bytes, &row)
+                    .map_err(ConsoleExecutionError::Fatal)?;
+                rows.push(row);
+            }
+            row_count = row_count
+                .checked_add(1)
+                .ok_or_else(|| ConsoleExecutionError::Fatal(AppError::internal()))?;
+        }
+
+        if retain {
+            results.push(MysqlConsoleResult {
+                statement_sequence,
+                result_set_id: current_result_set_id,
+                sql: statement.to_owned(),
+                success: true,
+                message: if info.is_empty() {
+                    "Statement executed successfully".to_owned()
+                } else {
+                    info
+                },
+                update_count: if tabular { 0 } else { update_count },
+                columns: converted_columns,
+                rows,
+                row_count,
+                has_more: row_count > page_end,
+                duration_ms: elapsed_millis(result_started),
+                error: None,
+            });
+        }
+    }
+
+    if results.is_empty() && selected_result_set_id.is_none() {
+        results.push(MysqlConsoleResult {
+            statement_sequence,
+            result_set_id: None,
+            sql: statement.to_owned(),
+            success: true,
+            message: "Statement executed successfully".to_owned(),
+            update_count: query_result.affected_rows(),
+            columns: Vec::new(),
+            rows: Vec::new(),
+            row_count: 0,
+            has_more: false,
+            duration_ms: elapsed_millis(statement_started),
+            error: None,
+        });
+    }
+    Ok(ConsoleStatementExecution {
+        results,
+        failure: None,
+    })
+}
+
+async fn execute_console_control(
+    conn: &mut Conn,
+    options: Opts,
+    connection_id: u32,
+    sql: &str,
+    cancellation: &mut watch::Receiver<CancellationRequest>,
+) -> Result<(), ConsoleExecutionError> {
+    let query = conn.query_drop(sql);
+    tokio::pin!(query);
+    let mut cancellation_open = true;
+    loop {
+        tokio::select! {
+            biased;
+            changed = cancellation.changed(), if cancellation_open => {
+                if changed.is_err() {
+                    cancellation_open = false;
+                    continue;
+                }
+                let request = { cancellation.borrow().clone() };
+                if let CancellationRequest::Requested { reason } = request {
+                    cancel_console_connection(options, connection_id).await
+                        .map_err(ConsoleExecutionError::Fatal)?;
+                    return Err(ConsoleExecutionError::Cancelled(reason));
+                }
+            }
+            result = &mut query => {
+                return result
+                    .map_err(mysql_query_error)
+                    .map_err(ConsoleExecutionError::Fatal);
+            }
+        }
+    }
+}
+
+async fn finish_console_error<T>(
+    conn: Conn,
+    options: Opts,
+    connection_id: u32,
+    error: ConsoleExecutionError,
+) -> Result<T, AppError> {
+    drop(conn);
+    match error {
+        ConsoleExecutionError::Cancelled(reason) => Err(mysql_console_cancelled(reason)),
+        ConsoleExecutionError::Fatal(error) => {
+            terminate_connection_quietly(options, connection_id).await;
+            Err(error)
+        }
+    }
+}
+
+fn console_failure_result(
+    statement_sequence: u32,
+    sql: String,
+    error: &AppError,
+    duration_ms: u64,
+) -> MysqlConsoleResult {
+    let api_error = error.api_error();
+    MysqlConsoleResult {
+        statement_sequence,
+        result_set_id: None,
+        sql,
+        success: false,
+        message: api_error.message.clone(),
+        update_count: 0,
+        columns: Vec::new(),
+        rows: Vec::new(),
+        row_count: 0,
+        has_more: false,
+        duration_ms,
+        error: Some(api_error),
+    }
+}
+
+fn validate_console_request(request: &MysqlConsoleRequest) -> Result<(u64, u64), AppError> {
+    if request.datasource_id.trim().is_empty() {
+        return Err(AppError::invalid(
+            "invalid_mysql_console_request",
+            "dataSourceId cannot be empty",
+        ));
+    }
+    if request.sql.trim().is_empty() {
+        return Err(AppError::invalid(
+            "invalid_mysql_console_request",
+            "sql cannot be empty",
+        ));
+    }
+    if request.sql.len() > MAX_SQL_BYTES {
+        return Err(resource_error(
+            "mysql_console_script_too_large",
+            format!("MySQL Console scripts are limited to {MAX_SQL_BYTES} bytes"),
+        ));
+    }
+    if !request.database_name.trim().is_empty() {
+        quote_console_identifier(&request.database_name, "databaseName")?;
+    }
+    if request.page_no == 0 || request.page_size == 0 || request.page_size > MAX_CONSOLE_PAGE_SIZE {
+        return Err(AppError::invalid(
+            "invalid_mysql_console_request",
+            format!(
+                "pageNo must be positive and pageSize must be between 1 and {MAX_CONSOLE_PAGE_SIZE}"
+            ),
+        ));
+    }
+    if request.result_set_id == Some(0) {
+        return Err(AppError::invalid(
+            "invalid_mysql_console_request",
+            "resultSetId must be a positive one-based integer",
+        ));
+    }
+    let (page_offset, page_end) = if request.page_size_all {
+        (0, u64::from(MAX_CONSOLE_PAGE_SIZE))
+    } else {
+        let page_offset = u64::from(request.page_no - 1) * u64::from(request.page_size);
+        let page_end = page_offset
+            .checked_add(u64::from(request.page_size))
+            .ok_or_else(AppError::internal)?;
+        (page_offset, page_end)
+    };
+    Ok((page_offset, page_end))
+}
+
+fn validate_read_only_console(statements: &[String]) -> Result<(), AppError> {
+    for statement in statements {
+        let tokens = sql_tokens(statement)?;
+        let words = tokens
+            .iter()
+            .filter_map(|token| match token {
+                SqlToken::Word(word) => Some(word.as_str()),
+                SqlToken::Semicolon => None,
+            })
+            .collect::<Vec<_>>();
+        let allowed = match words.as_slice() {
+            ["SELECT", ..] => validate_read_sql(statement).is_ok(),
+            [
+                "SHOW" | "DESCRIBE" | "DESC" | "EXPLAIN" | "USE" | "COMMIT" | "ROLLBACK",
+                ..,
+            ]
+            | ["START", "TRANSACTION", "READ", "ONLY", ..] => true,
+            _ => false,
+        };
+        if !allowed {
+            return Err(AppError::new(
+                AppErrorKind::Conflict,
+                ApiError::new(
+                    "datasource_read_only",
+                    "The datasource connection is configured as read-only",
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn mysql_console_cancelled(reason: Option<String>) -> AppError {
+    AppError::new(
+        AppErrorKind::Conflict,
+        ApiError::new(
+            "mysql_console_cancelled",
+            reason.unwrap_or_else(|| "The MySQL Console execution was cancelled".to_owned()),
+        ),
+    )
+}
+
+fn elapsed_millis(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn console_column(index: usize, column: &Column) -> Result<ResultColumn, AppError> {
+    let column = mysql_column(index, column)?;
+    let value_type = match wire::JdbcValueType::try_from(column.value_type) {
+        Ok(wire::JdbcValueType::Boolean) => JdbcValueType::Boolean,
+        Ok(wire::JdbcValueType::SignedInteger) => JdbcValueType::SignedInteger,
+        Ok(wire::JdbcValueType::UnsignedInteger) => JdbcValueType::UnsignedInteger,
+        Ok(wire::JdbcValueType::Float32) => JdbcValueType::Float32,
+        Ok(wire::JdbcValueType::Float64) => JdbcValueType::Float64,
+        Ok(wire::JdbcValueType::Decimal) => JdbcValueType::Decimal,
+        Ok(wire::JdbcValueType::Text) => JdbcValueType::Text,
+        Ok(wire::JdbcValueType::Binary) => JdbcValueType::Binary,
+        Ok(wire::JdbcValueType::Date) => JdbcValueType::Date,
+        Ok(wire::JdbcValueType::Time) => JdbcValueType::Time,
+        Ok(wire::JdbcValueType::Timestamp) => JdbcValueType::Timestamp,
+        Ok(wire::JdbcValueType::TimestampWithTimeZone) => JdbcValueType::TimestampWithTimeZone,
+        Ok(wire::JdbcValueType::Json) => JdbcValueType::Json,
+        Ok(wire::JdbcValueType::Uuid) => JdbcValueType::Uuid,
+        Ok(wire::JdbcValueType::Opaque) => JdbcValueType::Opaque,
+        Ok(wire::JdbcValueType::Unspecified) | Err(_) => return Err(AppError::internal()),
+    };
+    let nullability = match wire::ColumnNullability::try_from(column.nullability) {
+        Ok(wire::ColumnNullability::Unknown) => chat2db_contract::ColumnNullability::Unknown,
+        Ok(wire::ColumnNullability::NoNulls) => chat2db_contract::ColumnNullability::NoNulls,
+        Ok(wire::ColumnNullability::Nullable) => chat2db_contract::ColumnNullability::Nullable,
+        Err(_) => return Err(AppError::internal()),
+    };
+    Ok(ResultColumn {
+        ordinal: column.ordinal,
+        label: column.label,
+        name: column.name,
+        jdbc_type: column.jdbc_type,
+        jdbc_type_name: column.jdbc_type_name,
+        value_type,
+        nullability,
+        precision: column.precision,
+        scale: column.scale,
+        display_size: column.display_size,
+        signed: column.signed,
+        catalog_name: column.catalog_name,
+        schema_name: column.schema_name,
+        table_name: column.table_name,
+    })
+}
+
+fn console_row(row: Row, columns: &[Column]) -> Result<ResultRow, AppError> {
+    if row.len() != columns.len() {
+        return Err(AppError::internal());
+    }
+    Ok(ResultRow {
+        values: row
+            .unwrap()
+            .into_iter()
+            .zip(columns)
+            .map(|(value, column)| console_mysql_value(value, column))
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn reserve_console_result_bytes(total: &mut u64, row: &ResultRow) -> Result<(), AppError> {
+    let row_bytes = console_row_retained_bytes(row);
+    let next = total.saturating_add(row_bytes);
+    if next > MAX_CONSOLE_RESULT_BYTES {
+        return Err(resource_error(
+            "mysql_console_result_too_large",
+            format!(
+                "MySQL Console results are limited to {MAX_CONSOLE_RESULT_BYTES} retained bytes"
+            ),
+        ));
+    }
+    *total = next;
+    Ok(())
+}
+
+fn console_row_retained_bytes(row: &ResultRow) -> u64 {
+    let mut bytes = u64::try_from(size_of::<ResultRow>()).unwrap_or(u64::MAX);
+    bytes = bytes.saturating_add(
+        u64::try_from(row.values.capacity())
+            .unwrap_or(u64::MAX)
+            .saturating_mul(u64::try_from(size_of::<JdbcValue>()).unwrap_or(u64::MAX)),
+    );
+    for value in &row.values {
+        let value_bytes = match value {
+            JdbcValue::Null | JdbcValue::Boolean { .. } => 0,
+            JdbcValue::SignedInteger { value }
+            | JdbcValue::UnsignedInteger { value }
+            | JdbcValue::Float32 { value }
+            | JdbcValue::Float64 { value }
+            | JdbcValue::Decimal { value }
+            | JdbcValue::Text { value }
+            | JdbcValue::Binary { value }
+            | JdbcValue::Date { value }
+            | JdbcValue::Time { value }
+            | JdbcValue::Timestamp { value }
+            | JdbcValue::TimestampWithTimeZone { value }
+            | JdbcValue::Json { value }
+            | JdbcValue::Uuid { value } => value.capacity(),
+            JdbcValue::Opaque {
+                type_name,
+                display_value,
+            } => type_name
+                .capacity()
+                .saturating_add(display_value.capacity()),
+        };
+        bytes = bytes.saturating_add(u64::try_from(value_bytes).unwrap_or(u64::MAX));
+    }
+    bytes
+}
+
+fn console_mysql_value(value: Value, column: &Column) -> Result<JdbcValue, AppError> {
+    if matches!(value, Value::NULL) {
+        return Ok(JdbcValue::Null);
+    }
+    match mysql_value_type(column) {
+        wire::JdbcValueType::Text => Ok(JdbcValue::Text {
+            value: mysql_text_with_limit(value, MAX_CONSOLE_VALUE_BYTES)?,
+        }),
+        wire::JdbcValueType::Binary => Ok(JdbcValue::Binary {
+            value: BASE64_STANDARD.encode(mysql_binary_with_limit(value, MAX_CONSOLE_VALUE_BYTES)?),
+        }),
+        wire::JdbcValueType::Json => Ok(JdbcValue::Json {
+            value: mysql_text_with_limit(value, MAX_CONSOLE_VALUE_BYTES)?,
+        }),
+        _ => console_value(mysql_value(value, column)?),
+    }
+}
+
+fn console_value(value: wire::JdbcValue) -> Result<JdbcValue, AppError> {
+    use wire::jdbc_value::Value as WireValue;
+
+    Ok(match value.value.ok_or_else(AppError::internal)? {
+        WireValue::NullValue(_) => JdbcValue::Null,
+        WireValue::BooleanValue(value) => JdbcValue::Boolean { value },
+        WireValue::SignedIntegerValue(value) => JdbcValue::SignedInteger {
+            value: value.to_string(),
+        },
+        WireValue::UnsignedIntegerValue(value) => JdbcValue::UnsignedInteger {
+            value: value.to_string(),
+        },
+        WireValue::Float32Value(value) => JdbcValue::Float32 {
+            value: console_float32(value),
+        },
+        WireValue::Float64Value(value) => JdbcValue::Float64 {
+            value: console_float64(value),
+        },
+        WireValue::DecimalValue(value) => JdbcValue::Decimal { value },
+        WireValue::TextValue(value) => JdbcValue::Text { value },
+        WireValue::BinaryValue(value) => JdbcValue::Binary {
+            value: BASE64_STANDARD.encode(value),
+        },
+        WireValue::DateValue(value) => JdbcValue::Date { value },
+        WireValue::TimeValue(value) => JdbcValue::Time { value },
+        WireValue::TimestampValue(value) => JdbcValue::Timestamp { value },
+        WireValue::TimestampWithTimeZoneValue(value) => JdbcValue::TimestampWithTimeZone { value },
+        WireValue::JsonValue(value) => JdbcValue::Json { value },
+        WireValue::UuidValue(value) => JdbcValue::Uuid { value },
+        WireValue::OpaqueValue(value) => JdbcValue::Opaque {
+            type_name: value.type_name,
+            display_value: value.display_value,
+        },
+    })
+}
+
+fn console_float32(value: f32) -> String {
+    if value.is_nan() {
+        "NaN".to_owned()
+    } else if value == f32::INFINITY {
+        "Infinity".to_owned()
+    } else if value == f32::NEG_INFINITY {
+        "-Infinity".to_owned()
+    } else {
+        value.to_string()
+    }
+}
+
+fn console_float64(value: f64) -> String {
+    if value.is_nan() {
+        "NaN".to_owned()
+    } else if value == f64::INFINITY {
+        "Infinity".to_owned()
+    } else if value == f64::NEG_INFINITY {
+        "-Infinity".to_owned()
+    } else {
+        value.to_string()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScriptState {
+    Normal,
+    SingleQuote,
+    DoubleQuote,
+    Backtick,
+    LineComment,
+    BlockComment,
+}
+
+fn split_mysql_script(script: &str) -> Result<Vec<String>, AppError> {
+    let bytes = script.as_bytes();
+    let mut delimiter = b";".to_vec();
+    let mut statements = Vec::new();
+    let mut state = ScriptState::Normal;
+    let mut statement_start = 0_usize;
+    let mut index = 0_usize;
+    let mut at_line_start = true;
+
+    while index < bytes.len() {
+        if state == ScriptState::Normal
+            && at_line_start
+            && bytes[statement_start..index]
+                .iter()
+                .all(u8::is_ascii_whitespace)
+            && let Some((new_delimiter, next_line)) = delimiter_directive(script, index)?
+        {
+            delimiter = new_delimiter.into_bytes();
+            statement_start = next_line;
+            index = next_line;
+            at_line_start = true;
+            continue;
+        }
+
+        match state {
+            ScriptState::Normal => {
+                if bytes[index..].starts_with(&delimiter) {
+                    push_mysql_statement(&mut statements, &script[statement_start..index])?;
+                    index += delimiter.len();
+                    statement_start = index;
+                    at_line_start = false;
+                    continue;
+                }
+                match bytes[index] {
+                    b'\'' => state = ScriptState::SingleQuote,
+                    b'"' => state = ScriptState::DoubleQuote,
+                    b'`' => state = ScriptState::Backtick,
+                    b'#' => state = ScriptState::LineComment,
+                    b'-' if is_mysql_dash_comment(bytes, index) => {
+                        state = ScriptState::LineComment;
+                        index += 1;
+                    }
+                    b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                        state = ScriptState::BlockComment;
+                        index += 1;
+                    }
+                    b'\n' => at_line_start = true,
+                    byte if byte.is_ascii_whitespace() && at_line_start => {}
+                    _ => at_line_start = false,
+                }
+            }
+            ScriptState::SingleQuote | ScriptState::DoubleQuote | ScriptState::Backtick => {
+                let quote = match state {
+                    ScriptState::SingleQuote => b'\'',
+                    ScriptState::DoubleQuote => b'"',
+                    ScriptState::Backtick => b'`',
+                    _ => unreachable!("quoted state is matched above"),
+                };
+                if bytes[index] == b'\\' && state != ScriptState::Backtick {
+                    index = index.saturating_add(1);
+                } else if bytes[index] == quote {
+                    if bytes.get(index + 1) == Some(&quote) {
+                        index += 1;
+                    } else {
+                        state = ScriptState::Normal;
+                    }
+                }
+            }
+            ScriptState::LineComment => {
+                if bytes[index] == b'\n' {
+                    state = ScriptState::Normal;
+                    at_line_start = true;
+                }
+            }
+            ScriptState::BlockComment => {
+                if bytes[index] == b'\n' {
+                    at_line_start = true;
+                } else if bytes[index] == b'*' && bytes.get(index + 1) == Some(&b'/') {
+                    state = ScriptState::Normal;
+                    index += 1;
+                }
+            }
+        }
+        index += 1;
+    }
+
+    match state {
+        ScriptState::Normal | ScriptState::LineComment => {}
+        ScriptState::SingleQuote => {
+            return Err(invalid_console_script("unterminated string literal"));
+        }
+        ScriptState::DoubleQuote => {
+            return Err(invalid_console_script("unterminated quoted string literal"));
+        }
+        ScriptState::Backtick => {
+            return Err(invalid_console_script("unterminated quoted identifier"));
+        }
+        ScriptState::BlockComment => {
+            return Err(invalid_console_script("unterminated block comment"));
+        }
+    }
+    push_mysql_statement(&mut statements, &script[statement_start..])?;
+    Ok(statements)
+}
+
+fn delimiter_directive(
+    script: &str,
+    line_start: usize,
+) -> Result<Option<(String, usize)>, AppError> {
+    const KEYWORD: &str = "delimiter";
+
+    let line_end = script.as_bytes()[line_start..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map_or(script.len(), |offset| line_start + offset);
+    let line = script[line_start..line_end].trim();
+    let Some(prefix) = line.get(..KEYWORD.len()) else {
+        return Ok(None);
+    };
+    if !prefix.eq_ignore_ascii_case(KEYWORD)
+        || line
+            .as_bytes()
+            .get(KEYWORD.len())
+            .is_some_and(|byte| !byte.is_ascii_whitespace())
+    {
+        return Ok(None);
+    }
+    let delimiter = line[KEYWORD.len()..].trim();
+    if delimiter.is_empty()
+        || delimiter.len() > 16
+        || delimiter.bytes().any(|byte| byte.is_ascii_whitespace())
+    {
+        return Err(invalid_console_script(
+            "DELIMITER must name one non-whitespace token of at most 16 bytes",
+        ));
+    }
+    let next_line = if line_end < script.len() {
+        line_end + 1
+    } else {
+        line_end
+    };
+    Ok(Some((delimiter.to_owned(), next_line)))
+}
+
+fn is_mysql_dash_comment(bytes: &[u8], index: usize) -> bool {
+    bytes.get(index + 1) == Some(&b'-')
+        && bytes
+            .get(index + 2)
+            .is_none_or(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+}
+
+fn push_mysql_statement(statements: &mut Vec<String>, statement: &str) -> Result<(), AppError> {
+    let statement = statement.trim();
+    if !statement.is_empty() {
+        if statements.len() >= MAX_CONSOLE_STATEMENTS {
+            return Err(resource_error(
+                "mysql_console_too_many_statements",
+                format!("MySQL Console scripts are limited to {MAX_CONSOLE_STATEMENTS} statements"),
+            ));
+        }
+        statements.push(statement.to_owned());
+    }
+    Ok(())
+}
+
+fn invalid_console_script(detail: &str) -> AppError {
+    AppError::invalid(
+        "invalid_mysql_console_script",
+        format!("The MySQL Console script contains an {detail}"),
+    )
+}
+
+fn quote_console_identifier(value: &str, field: &str) -> Result<String, AppError> {
+    if value.trim().is_empty() || value.len() > MAX_IDENTIFIER_BYTES || value.contains('\0') {
+        return Err(AppError::invalid(
+            "invalid_mysql_console_request",
+            format!("{field} is invalid"),
+        ));
+    }
+    Ok(format!("`{}`", value.replace('`', "``")))
+}
+
+async fn cancel_console_connection(options: Opts, connection_id: u32) -> Result<(), AppError> {
+    let mut control = open_connection_with_opts(options).await?;
+    let query_cancel =
+        kill_console_target(&mut control, format!("KILL QUERY {connection_id}")).await;
+    let connection_cancel =
+        kill_console_target(&mut control, format!("KILL CONNECTION {connection_id}")).await;
+    disconnect_quietly(control).await;
+    match (query_cancel, connection_cancel) {
+        (_, Ok(())) => Ok(()),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(query_error), Err(connection_error)) => {
+            tracing::warn!(error = %query_error, "native MySQL query cancellation failed before connection termination");
+            Err(connection_error)
+        }
+    }
+}
+
+async fn kill_console_target(conn: &mut Conn, sql: String) -> Result<(), AppError> {
+    let result = tokio::time::timeout(CONTROL_TIMEOUT, conn.query_drop(sql))
+        .await
+        .map_err(|_| {
+            AppError::unavailable(
+                "mysql_termination_timeout",
+                "The MySQL Console connection could not be terminated in time",
+            )
+        })?;
+    match result {
+        Ok(()) => Ok(()),
+        Err(MysqlError::Server(server)) if server.code == 1094 => Ok(()),
+        Err(error) => Err(mysql_query_error(error)),
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn execute_query_task(
     application: &Application,
@@ -1544,8 +2415,12 @@ fn mysql_f64(value: Value) -> Result<f64, AppError> {
 }
 
 fn mysql_text(value: Value) -> Result<String, AppError> {
+    mysql_text_with_limit(value, MAX_SCALAR_BYTES)
+}
+
+fn mysql_text_with_limit(value: Value, max_bytes: usize) -> Result<String, AppError> {
     match value {
-        Value::Bytes(value) => mysql_utf8(value),
+        Value::Bytes(value) => mysql_utf8_with_limit(value, max_bytes),
         Value::Int(value) => Ok(value.to_string()),
         Value::UInt(value) => Ok(value.to_string()),
         Value::Float(value) => Ok(value.to_string()),
@@ -1561,21 +2436,29 @@ fn mysql_text(value: Value) -> Result<String, AppError> {
 }
 
 fn mysql_binary(value: Value) -> Result<Vec<u8>, AppError> {
+    mysql_binary_with_limit(value, MAX_SCALAR_BYTES)
+}
+
+fn mysql_binary_with_limit(value: Value, max_bytes: usize) -> Result<Vec<u8>, AppError> {
     match value {
-        Value::Bytes(value) if value.len() <= MAX_SCALAR_BYTES => Ok(value),
+        Value::Bytes(value) if value.len() <= max_bytes => Ok(value),
         Value::Bytes(_) => Err(resource_error(
             "mysql_scalar_too_large",
-            format!("A MySQL value exceeds {MAX_SCALAR_BYTES} bytes"),
+            format!("A MySQL value exceeds {max_bytes} bytes"),
         )),
-        other => Ok(mysql_text(other)?.into_bytes()),
+        other => Ok(mysql_text_with_limit(other, max_bytes)?.into_bytes()),
     }
 }
 
 fn mysql_utf8(value: Vec<u8>) -> Result<String, AppError> {
-    if value.len() > MAX_SCALAR_BYTES {
+    mysql_utf8_with_limit(value, MAX_SCALAR_BYTES)
+}
+
+fn mysql_utf8_with_limit(value: Vec<u8>, max_bytes: usize) -> Result<String, AppError> {
+    if value.len() > max_bytes {
         return Err(resource_error(
             "mysql_scalar_too_large",
-            format!("A MySQL value exceeds {MAX_SCALAR_BYTES} bytes"),
+            format!("A MySQL value exceeds {max_bytes} bytes"),
         ));
     }
     String::from_utf8(value).map_err(|_| result_decode_error())
@@ -2447,14 +3330,336 @@ fn mysql_query_error(error: MysqlError) -> AppError {
 
 #[cfg(test)]
 mod tests {
-    use chat2db_contract::{DatasourceConnection, DatasourceConnectionProperty};
+    use chat2db_contract::{
+        DatasourceConnection, DatasourceConnectionProperty, JdbcValue, ResultRow,
+    };
+    use mysql_async::{Conn, Opts};
+    use tokio::sync::watch;
 
     use super::{
-        community_column, community_foreign_key, community_function_parameter, community_indexes,
-        community_procedure_parameter, connection_opts, is_mysql_database_type,
-        is_native_read_candidate, normalize_table_type, qualified_identifier, quote_identifier,
-        validate_read_sql,
+        ConsoleExecutionError, ConsoleStatementExecution, MAX_CONSOLE_PAGE_SIZE,
+        MAX_CONSOLE_RESULT_BYTES, community_column, community_foreign_key,
+        community_function_parameter, community_indexes, community_procedure_parameter,
+        connection_opts, execute_console_statement, is_mysql_database_type,
+        is_native_read_candidate, normalize_table_type, open_connection_with_opts,
+        qualified_identifier, quote_identifier, reserve_console_result_bytes, split_mysql_script,
+        validate_console_request, validate_read_only_console, validate_read_sql,
     };
+    use crate::{MysqlConsoleRequest, operation::CancellationRequest};
+
+    #[test]
+    fn mysql_console_splitter_respects_literals_identifiers_and_comments() {
+        let statements = split_mysql_script(
+            "SELECT ';' AS value; SELECT `odd;name` FROM items; -- keep ; here\nSELECT 3",
+        )
+        .expect("valid script should split");
+
+        assert_eq!(statements.len(), 3);
+        assert_eq!(statements[0], "SELECT ';' AS value");
+        assert_eq!(statements[1], "SELECT `odd;name` FROM items");
+        assert!(statements[2].ends_with("SELECT 3"));
+    }
+
+    #[test]
+    fn mysql_console_splitter_supports_delimiter_routine_scripts() {
+        let statements = split_mysql_script(
+            "DELIMITER $$\nCREATE PROCEDURE load_items()\nBEGIN\n  SELECT ';' AS semi;\n  SELECT '$$' AS marker;\nEND$$\nDELIMITER ;\nCALL load_items();",
+        )
+        .expect("routine script should split on client delimiters");
+
+        assert_eq!(statements.len(), 2);
+        assert!(statements[0].starts_with("CREATE PROCEDURE load_items()"));
+        assert!(statements[0].ends_with("END"));
+        assert_eq!(statements[1], "CALL load_items()");
+    }
+
+    #[test]
+    fn mysql_console_splitter_does_not_treat_arithmetic_dashes_as_comments() {
+        let statements = split_mysql_script("SELECT 4--2; SELECT 3")
+            .expect("arithmetic dashes should remain SQL");
+
+        assert_eq!(statements, ["SELECT 4--2", "SELECT 3"]);
+    }
+
+    #[test]
+    fn mysql_console_splitter_rejects_unterminated_lexemes_and_bad_delimiters() {
+        for script in [
+            "SELECT 'unterminated",
+            "SELECT `unterminated",
+            "SELECT 1 /* unterminated",
+            "DELIMITER\nSELECT 1",
+            "DELIMITER too long delimiter\nSELECT 1",
+        ] {
+            let error = split_mysql_script(script).expect_err("script must be rejected");
+            assert!(
+                matches!(
+                    error.api_error().code.as_str(),
+                    "invalid_mysql_console_script"
+                ),
+                "unexpected error for {script}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn mysql_console_splitter_rejects_excessive_statement_counts() {
+        let script = std::iter::repeat_n("SELECT 1", 1_001)
+            .collect::<Vec<_>>()
+            .join(";");
+        let error = split_mysql_script(&script).expect_err("statement flood must be rejected");
+
+        assert_eq!(error.api_error().code, "mysql_console_too_many_statements");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    #[ignore = "requires MYSQL_TEST_HOST, MYSQL_TEST_PORT, MYSQL_TEST_USER, and MYSQL_TEST_PASSWORD"]
+    async fn live_mysql_console_kernel_preserves_session_results_and_cancellation() {
+        let host = std::env::var("MYSQL_TEST_HOST").expect("MYSQL_TEST_HOST is required");
+        let port = std::env::var("MYSQL_TEST_PORT")
+            .expect("MYSQL_TEST_PORT is required")
+            .parse::<u16>()
+            .expect("MYSQL_TEST_PORT must be a TCP port");
+        let user = std::env::var("MYSQL_TEST_USER").expect("MYSQL_TEST_USER is required");
+        let password =
+            std::env::var("MYSQL_TEST_PASSWORD").expect("MYSQL_TEST_PASSWORD is required");
+        let options = connection_opts(&DatasourceConnection {
+            jdbc_url: format!("mysql://{host}:{port}?sslMode=DISABLED"),
+            properties: vec![
+                DatasourceConnectionProperty {
+                    key: "user".to_owned(),
+                    value: user,
+                    sensitive: false,
+                },
+                DatasourceConnectionProperty {
+                    key: "password".to_owned(),
+                    value: password,
+                    sensitive: true,
+                },
+            ],
+            read_only: false,
+        })
+        .expect("live MySQL options should build");
+        let mut conn = open_connection_with_opts(options.clone())
+            .await
+            .expect("live MySQL should connect");
+        let connection_id = conn.id();
+        let (_sender, mut cancellation) = watch::channel(CancellationRequest::Waiting);
+
+        live_console_statement(
+            &mut conn,
+            &options,
+            connection_id,
+            "USE mysql",
+            1,
+            None,
+            &mut cancellation,
+        )
+        .await;
+        live_console_statement(
+            &mut conn,
+            &options,
+            connection_id,
+            "CREATE TEMPORARY TABLE chat2db_console_kernel (id INT PRIMARY KEY)",
+            2,
+            None,
+            &mut cancellation,
+        )
+        .await;
+        live_console_statement(
+            &mut conn,
+            &options,
+            connection_id,
+            "START TRANSACTION",
+            3,
+            None,
+            &mut cancellation,
+        )
+        .await;
+        let insert = live_console_statement(
+            &mut conn,
+            &options,
+            connection_id,
+            "INSERT INTO chat2db_console_kernel VALUES (1)",
+            4,
+            None,
+            &mut cancellation,
+        )
+        .await;
+        assert!(
+            !insert.results.is_empty(),
+            "insert returned no results: {:?}",
+            insert.failure
+        );
+        assert_eq!(insert.results[0].update_count, 1);
+
+        let inside_transaction = live_console_statement(
+            &mut conn,
+            &options,
+            connection_id,
+            "SELECT COUNT(*) AS item_count FROM chat2db_console_kernel",
+            5,
+            None,
+            &mut cancellation,
+        )
+        .await;
+        assert_console_integer(&inside_transaction, "1");
+        live_console_statement(
+            &mut conn,
+            &options,
+            connection_id,
+            "ROLLBACK",
+            6,
+            None,
+            &mut cancellation,
+        )
+        .await;
+        let after_rollback = live_console_statement(
+            &mut conn,
+            &options,
+            connection_id,
+            "SELECT COUNT(*) AS item_count FROM chat2db_console_kernel",
+            7,
+            None,
+            &mut cancellation,
+        )
+        .await;
+        assert_console_integer(&after_rollback, "0");
+
+        let selected_result = live_console_statement(
+            &mut conn,
+            &options,
+            connection_id,
+            "SELECT 11 AS value; SELECT 22 AS value",
+            8,
+            Some(2),
+            &mut cancellation,
+        )
+        .await;
+        assert_eq!(selected_result.results.len(), 1);
+        assert_eq!(selected_result.results[0].result_set_id, Some(2));
+        assert_console_integer(&selected_result, "22");
+
+        let failed = live_console_statement(
+            &mut conn,
+            &options,
+            connection_id,
+            "SELECT missing_column FROM chat2db_console_kernel",
+            9,
+            None,
+            &mut cancellation,
+        )
+        .await;
+        assert_eq!(
+            failed
+                .failure
+                .expect("invalid statement should be represented as a recoverable failure")
+                .api_error()
+                .code,
+            "mysql_query_failed"
+        );
+        let after_failure = live_console_statement(
+            &mut conn,
+            &options,
+            connection_id,
+            "SELECT 33 AS value",
+            10,
+            None,
+            &mut cancellation,
+        )
+        .await;
+        assert_console_integer(&after_failure, "33");
+
+        let (cancel, mut cancellation) = watch::channel(CancellationRequest::Waiting);
+        let mut retained_result_bytes = 0;
+        let cancel_task = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let _ = cancel.send(CancellationRequest::Requested {
+                reason: Some("live cancellation".to_owned()),
+            });
+        });
+        let cancelled = execute_console_statement(
+            &mut conn,
+            options.clone(),
+            connection_id,
+            "SELECT SLEEP(30)",
+            11,
+            0,
+            1,
+            None,
+            &mut retained_result_bytes,
+            &mut cancellation,
+        )
+        .await;
+        assert!(matches!(
+            cancelled,
+            Err(ConsoleExecutionError::Cancelled(reason))
+                if reason.as_deref() == Some("live cancellation")
+        ));
+        cancel_task.await.expect("cancellation task should join");
+        drop(conn);
+    }
+
+    async fn live_console_statement(
+        conn: &mut Conn,
+        options: &Opts,
+        connection_id: u32,
+        sql: &str,
+        statement_sequence: u32,
+        result_set_id: Option<u32>,
+        cancellation: &mut watch::Receiver<CancellationRequest>,
+    ) -> ConsoleStatementExecution {
+        let mut retained_result_bytes = 0;
+        match execute_console_statement(
+            conn,
+            options.clone(),
+            connection_id,
+            sql,
+            statement_sequence,
+            0,
+            100,
+            result_set_id,
+            &mut retained_result_bytes,
+            cancellation,
+        )
+        .await
+        {
+            Ok(execution) => execution,
+            Err(ConsoleExecutionError::Cancelled(_)) => {
+                panic!("live statement was unexpectedly cancelled")
+            }
+            Err(ConsoleExecutionError::Fatal(error)) => {
+                panic!("live statement failed fatally: {error}")
+            }
+        }
+    }
+
+    #[test]
+    fn mysql_console_result_budget_is_global_and_closed() {
+        let row = ResultRow {
+            values: vec![JdbcValue::Text {
+                value: "bounded".to_owned(),
+            }],
+        };
+        let mut retained = 0;
+        reserve_console_result_bytes(&mut retained, &row).expect("a small Console row must fit");
+        assert!(retained > 0);
+
+        retained = MAX_CONSOLE_RESULT_BYTES;
+        let error = reserve_console_result_bytes(&mut retained, &row)
+            .expect_err("the global Console result budget must be enforced");
+        assert_eq!(error.api_error().code, "mysql_console_result_too_large");
+        assert_eq!(retained, MAX_CONSOLE_RESULT_BYTES);
+    }
+
+    fn assert_console_integer(execution: &ConsoleStatementExecution, expected: &str) {
+        let value = &execution.results[0].rows[0].values[0];
+        match value {
+            chat2db_contract::JdbcValue::SignedInteger { value }
+            | chat2db_contract::JdbcValue::UnsignedInteger { value } => assert_eq!(value, expected),
+            other => panic!("expected an integer Console value, got {other:?}"),
+        }
+    }
 
     #[test]
     fn jdbc_url_and_properties_build_native_options_without_exposing_jdbc() {
@@ -2565,6 +3770,59 @@ mod tests {
         ] {
             assert!(validate_read_sql(sql).is_err(), "{sql} must be rejected");
         }
+    }
+
+    #[test]
+    fn console_read_only_policy_allows_inspection_and_rejects_writes() {
+        for sql in [
+            "SELECT 1",
+            "SHOW TABLES",
+            "DESCRIBE items",
+            "EXPLAIN SELECT * FROM items",
+            "USE inventory",
+            "START TRANSACTION READ ONLY",
+            "COMMIT",
+            "ROLLBACK",
+        ] {
+            validate_read_only_console(&[sql.to_owned()])
+                .unwrap_or_else(|error| panic!("{sql} should be read-only: {error}"));
+        }
+        for sql in [
+            "UPDATE items SET label = 'changed'",
+            "DELETE FROM items",
+            "CALL mutating_procedure()",
+            "SELECT * FROM items FOR UPDATE",
+            "WITH cte AS (SELECT 1) SELECT * FROM cte",
+        ] {
+            let error = validate_read_only_console(&[sql.to_owned()])
+                .expect_err("writes and ambiguous statements must fail closed");
+            assert_eq!(error.api_error().code, "datasource_read_only");
+        }
+    }
+
+    #[test]
+    fn console_page_size_all_uses_the_bounded_complete_window() {
+        let mut request = MysqlConsoleRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_name: "inventory".to_owned(),
+            sql: "SELECT 1".to_owned(),
+            page_no: 2,
+            page_size: 10,
+            result_set_id: None,
+            single: false,
+            page_size_all: false,
+            explain: false,
+            error_continue: true,
+        };
+        assert_eq!(
+            validate_console_request(&request).expect("paged request must validate"),
+            (10, 20)
+        );
+        request.page_size_all = true;
+        assert_eq!(
+            validate_console_request(&request).expect("all-rows request must validate"),
+            (0, u64::from(MAX_CONSOLE_PAGE_SIZE))
+        );
     }
 
     #[test]

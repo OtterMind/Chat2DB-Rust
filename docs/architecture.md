@@ -16,8 +16,8 @@ without embedding H2 in the compatibility-engine JAR.
 
 The Web and Tauri hosts open the production vault, SQLite storage, and verified
 driver catalog before exposing a shared `Application`; they do not start Java
-during host bootstrap. Native MySQL connection, database/schema/table, preview,
-and supported Console SELECT operations do not acquire a Java lease. The Core
+during host bootstrap. Native MySQL connection, object metadata, preview, and
+Console reads/writes/scripts do not acquire a Java lease. The Core
 `EngineManager` starts one Java generation on the first JDBC-only database,
 parser, formatter, completion, builder, or advanced metadata request. It shares
 that single-flight startup across concurrent callers and issues generation-scoped
@@ -45,8 +45,9 @@ workbench. The build exports the unmodified Community frontend tree pinned by
 contract through Axum; desktop maps the existing `window.javaQuery` contract
 through one Tauri `legacy_request` command. Both paths call the same Rust
 legacy dispatcher. The implemented product slice covers native MySQL connection
-testing, datasource CRUD/tree, database/schema/table discovery, read-only table
-preview, and typed Console SELECT. Signing, distribution, the remaining dialect
+testing, datasource CRUD/tree, relational object metadata, read-only table
+preview, and bounded unparameterized Console reads, writes, scripts,
+transactions, cancellation, history, and large values. Signing, distribution, the remaining dialect
 estate, broader historical API coverage, and packaging remain target
 components. CLI and MCP attach to a running host rather than composing a
 second product runtime.
@@ -71,8 +72,8 @@ after preserving the disabled-engine error contract.
 | Durable state | Rust | SQLite, retained-result files, and a mandatory injected secret-vault contract |
 | AI agent | Rust | Provider adapters, tool loop, limits, compaction, and cancellation |
 | MCP and CLI | Rust | Adapters around the same product services and policy |
-| Native MySQL product slice | Rust / `mysql_async` | Connection, first-stage read-only object metadata and Community-compatible legacy routes/envelopes, nullable defaults, preview, supported SELECT, typed streaming, limits, cancellation, and retained results |
-| Compatibility databases and advanced MySQL operations | Java 17 | Existing SPI/plugins, JDBC, SQL builders, parsing, formatting, completion, writes, transactions, and non-MySQL metadata |
+| Native MySQL product slice | Rust / `mysql_async` | Connection, object metadata, Community-compatible routes/envelopes, preview, unparameterized Console reads/writes/scripts, transactions, paging, limits, cancellation, large values, and durable history |
+| Compatibility databases and remaining MySQL operations | Java 17 | Existing SPI/plugins, JDBC bind parameters, SQL builders, parsing, formatting, completion, unmapped MySQL features, and non-MySQL metadata |
 | SQL parsing, formatting, and completion | Java 17 | Existing Java ANTLR grammars, parser behavior, formatter behavior, and completion |
 | Rust-to-Java IPC | Shared Protobuf contract | Length-prefixed frames over private stdin/stdout |
 
@@ -89,7 +90,7 @@ React in system WebView         React in browser
               <- owner-only local attachment <- rmcp stdio server <- MCP client
               -> SQLite and result store
               -> AI agent runtime
-              -> native MySQL connection / metadata / SELECT
+              -> native MySQL connection / metadata / Console
               -> Java process supervisor
                  -> Protobuf stdin/stdout
                  -> Java database compatibility engine
@@ -128,23 +129,27 @@ cross-language acceptance gates pass.
 ## Database boundary
 
 Java/JDBC remains the compatibility implementation for other databases and for
-unmigrated advanced MySQL operations. The first closed native route uses
-upstream `mysql_async 0.37.0` for MySQL connection testing,
-database/schema/table discovery, preview, and supported Console SELECT. Core
-selects this backend before requesting an `EngineLease`; unrecognized drivers
-cannot enter it. Parameterized, CTE-first, locking, server-file, and
-multi-statement SELECT is rejected rather than silently starting Java.
+unmigrated MySQL operations. The native route uses upstream
+`mysql_async 0.37.0` for MySQL connection testing, object metadata, preview,
+and unparameterized Console execution. Core selects this backend before
+requesting an `EngineLease`; unrecognized drivers cannot enter it. Console
+bind parameters remain unsupported rather than silently starting Java.
 
 The native MySQL baseline implements:
 
 - JDBC-URL and connection-property translation into `mysql_async::Opts`, with
   explicit Rustls policy, TCP preference, and a 15-second connect deadline;
-- database/schema/table metadata and safely quoted bounded table preview;
-- one read-only prepared SELECT with ordered typed columns and values emitted
-  through the existing retained-result wire contract;
-- row, result-byte, batch, column, SQL, identifier, and scalar limits; and
-- active-query cancellation and truncation through a second bounded connection
-  issuing `KILL CONNECTION`, followed by deterministic result cleanup.
+- native database/schema/table/column/index/key/view/routine/trigger metadata
+  and safely quoted bounded table preview;
+- semicolon and `DELIMITER` script splitting, preserved-single dispatch,
+  multiple result sets, DDL/DML, explicit transactions, error continuation,
+  `EXPLAIN`, normal/all-row paging, and datasource read-only enforcement;
+- typed values up to 32 MiB, a shared 64 MiB retained-result budget, 64 KiB
+  previews, owner-scoped expiring tokens, bounded chunks, and desktop downloads;
+- active-query cancellation through a second bounded connection issuing
+  `KILL CONNECTION`, followed by deterministic cleanup; and
+- SQLite-backed saved Consoles and per-statement execution history exposed by
+  the original Web and desktop contracts.
 
 The JDBC baseline implements:
 

@@ -39,7 +39,8 @@ use chat2db_contract::{
     UpdateDatasourceRequest, UpdateProviderProfileRequest, ValidateCommunitySqlRequest,
 };
 use chat2db_core::{
-    AppError, Application, RuntimeConfig, RuntimeHost, load_fixed_community_classpath,
+    AppError, Application, MysqlConsoleCancellation, RuntimeConfig, RuntimeHost,
+    load_fixed_community_classpath,
 };
 use chat2db_java_bridge::{BridgeError, EngineCommand, EngineConfig};
 use chat2db_local::{LocalError, LocalServer};
@@ -114,8 +115,51 @@ struct DesktopState {
     application: Application,
     local_server: Mutex<Option<LocalServer>>,
     runtime_host: Mutex<Option<RuntimeHost>>,
+    legacy_sql_cancellations: LegacySqlCancellationRegistry,
     subscriptions: SubscriptionRegistry,
+    next_legacy_execution_id: AtomicU64,
     next_subscription_id: AtomicU64,
+}
+
+#[derive(Default)]
+struct LegacySqlCancellationRegistry {
+    cancellations: Mutex<HashMap<String, MysqlConsoleCancellation>>,
+}
+
+impl LegacySqlCancellationRegistry {
+    async fn insert(&self, execution_id: String, cancellation: MysqlConsoleCancellation) {
+        self.cancellations
+            .lock()
+            .await
+            .insert(execution_id, cancellation);
+    }
+
+    async fn remove(&self, execution_id: &str) {
+        self.cancellations.lock().await.remove(execution_id);
+    }
+
+    async fn cancel(&self, execution_id: &str, reason: Option<String>) -> bool {
+        let cancellation = self.cancellations.lock().await.get(execution_id).cloned();
+        cancellation.is_some_and(|cancellation| cancellation.cancel(reason))
+    }
+
+    async fn cancel_all(&self) {
+        let cancellations = self
+            .cancellations
+            .lock()
+            .await
+            .drain()
+            .map(|(_, cancellation)| cancellation)
+            .collect::<Vec<_>>();
+        for cancellation in cancellations {
+            let _ = cancellation.cancel(Some("The desktop runtime is shutting down".to_owned()));
+        }
+    }
+
+    #[cfg(test)]
+    async fn active_count(&self) -> usize {
+        self.cancellations.lock().await.len()
+    }
 }
 
 #[derive(Default)]
@@ -199,12 +243,15 @@ impl DesktopState {
             application,
             local_server: Mutex::new(Some(local_server)),
             runtime_host: Mutex::new(Some(runtime_host)),
+            legacy_sql_cancellations: LegacySqlCancellationRegistry::default(),
             subscriptions: SubscriptionRegistry::default(),
+            next_legacy_execution_id: AtomicU64::new(1),
             next_subscription_id: AtomicU64::new(1),
         })
     }
 
     async fn shutdown(&self) -> Result<(), DesktopError> {
+        self.legacy_sql_cancellations.cancel_all().await;
         self.subscriptions.release_all().await;
         let local_server = self.local_server.lock().await.take();
         let local_result = match local_server {
@@ -570,15 +617,15 @@ async fn legacy_request(
     window: WebviewWindow,
     request: String,
 ) -> Result<String, String> {
-    if let Some(response) = legacy_client_command_for(&state.application, &window, &request).await?
-    {
+    if let Some(response) = legacy_client_command_for(state.inner(), &window, &request).await? {
         return Ok(response);
     }
     legacy_request_for(&state.application, &request).await
 }
 
+#[allow(clippy::too_many_lines)]
 async fn legacy_client_command_for(
-    application: &Application,
+    state: &Arc<DesktopState>,
     window: &WebviewWindow,
     request: &str,
 ) -> Result<Option<String>, String> {
@@ -601,11 +648,51 @@ async fn legacy_client_command_for(
             let sql_request = decode_client_message::<chat2db_web::legacy::LegacySqlExecuteRequest>(
                 request.get("message"),
             )?;
-            let accepted = chat2db_web::legacy::start_sql_execution(application, &sql_request)
+            if chat2db_web::legacy::uses_native_mysql_console(&state.application, &sql_request)
                 .await
-                .map_err(|error| legacy_failure_message(&error))?;
+                .map_err(|error| legacy_failure_message(&error))?
+            {
+                let execution_id = state
+                    .next_legacy_execution_id
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                        current.checked_add(1)
+                    })
+                    .map(|id| format!("mysql-console-{id}"))
+                    .map_err(|_| "No MySQL Console execution ids remain".to_owned())?;
+                let cancellation = MysqlConsoleCancellation::new();
+                state
+                    .legacy_sql_cancellations
+                    .insert(execution_id.clone(), cancellation.clone())
+                    .await;
+                let task_state = Arc::clone(state);
+                let task_window = window.clone();
+                let task_execution_id = execution_id.clone();
+                tauri::async_runtime::spawn(async move {
+                    forward_native_mysql_sql_execution(
+                        Arc::clone(&task_state),
+                        task_window,
+                        request_uuid,
+                        task_execution_id.clone(),
+                        sql_request,
+                        cancellation,
+                    )
+                    .await;
+                    task_state
+                        .legacy_sql_cancellations
+                        .remove(&task_execution_id)
+                        .await;
+                });
+                return Ok(Some(client_command_response(&serde_json::json!({
+                    "executionId": execution_id,
+                }))));
+            }
+
+            let accepted =
+                chat2db_web::legacy::start_sql_execution(&state.application, &sql_request)
+                    .await
+                    .map_err(|error| legacy_failure_message(&error))?;
             let execution_id = accepted.operation_id.clone();
-            let task_application = application.clone();
+            let task_application = state.application.clone();
             let task_window = window.clone();
             let task_execution_id = execution_id.clone();
             tauri::async_runtime::spawn(async move {
@@ -629,8 +716,23 @@ async fn legacy_client_command_for(
                 .and_then(serde_json::Value::as_str)
                 .filter(|value| !value.trim().is_empty())
                 .ok_or_else(|| "sql-cancel requires a non-empty executionId".to_owned())?;
-            let cancelled = application.cancel_operation(execution_id).await.disposition
-                == CancelDisposition::Accepted;
+            let cancelled = if state
+                .legacy_sql_cancellations
+                .cancel(
+                    execution_id,
+                    Some("The SQL execution was cancelled".to_owned()),
+                )
+                .await
+            {
+                true
+            } else {
+                state
+                    .application
+                    .cancel_operation(execution_id)
+                    .await
+                    .disposition
+                    == CancelDisposition::Accepted
+            };
             Ok(Some(client_command_response(&serde_json::json!(cancelled))))
         }
         _ => Ok(None),
@@ -654,6 +756,184 @@ fn client_command_response(data: &serde_json::Value) -> String {
 
 fn legacy_failure_message(error: &chat2db_web::legacy::LegacyFailure) -> String {
     format!("{}: {}", error.code, error.message)
+}
+
+#[allow(clippy::too_many_lines)]
+async fn forward_native_mysql_sql_execution(
+    state: Arc<DesktopState>,
+    window: WebviewWindow,
+    request_uuid: String,
+    execution_id: String,
+    request: chat2db_web::legacy::LegacySqlExecuteRequest,
+    cancellation: MysqlConsoleCancellation,
+) {
+    let started_at = Instant::now();
+    let mut sequence = 0_u64;
+    if emit_legacy_sql_event(
+        &window,
+        &request_uuid,
+        &execution_id,
+        &mut sequence,
+        "started",
+        None,
+        None,
+        &serde_json::json!({ "executionId": execution_id }),
+    )
+    .is_err()
+    {
+        let _ = cancellation.cancel(Some("The SQL event receiver closed".to_owned()));
+        return;
+    }
+
+    let results = chat2db_web::legacy::execute_mysql_sql(
+        &state.application,
+        &request,
+        cancellation.clone(),
+        &execution_id,
+        "SQL_EDITOR_JCEF",
+    )
+    .await;
+    if cancellation.is_cancelled() {
+        let _ = emit_legacy_sql_event(
+            &window,
+            &request_uuid,
+            &execution_id,
+            &mut sequence,
+            "cancelled",
+            None,
+            None,
+            &serde_json::json!({
+                "executionId": execution_id,
+                "message": "The SQL execution was cancelled",
+            }),
+        );
+        return;
+    }
+    let results = match results {
+        Ok(results) if !results.is_empty() => results,
+        Ok(_) => {
+            emit_legacy_terminal_error(
+                &window,
+                &request_uuid,
+                &execution_id,
+                &mut sequence,
+                &ApiError::new(
+                    "sql_execution_incomplete",
+                    "The SQL execution ended without a result",
+                ),
+            );
+            return;
+        }
+        Err(error) => {
+            emit_legacy_terminal_error(
+                &window,
+                &request_uuid,
+                &execution_id,
+                &mut sequence,
+                &ApiError::new(error.code, error.message),
+            );
+            return;
+        }
+    };
+
+    let mut active_statement = None;
+    let mut active_sql = String::new();
+    let mut active_duration = 0_u64;
+    let mut fallback_statement_sequence = 0_u32;
+    let mut fallback_result_sequence = 0_u32;
+    for result in results {
+        let statement_sequence = result.statement_sequence.unwrap_or_else(|| {
+            fallback_statement_sequence = fallback_statement_sequence.saturating_add(1);
+            fallback_statement_sequence
+        });
+        if active_statement != Some(statement_sequence) {
+            if let Some(previous_statement) = active_statement {
+                let _ = emit_legacy_sql_event(
+                    &window,
+                    &request_uuid,
+                    &execution_id,
+                    &mut sequence,
+                    "statementFinished",
+                    Some(previous_statement),
+                    None,
+                    &serde_json::json!({
+                        "sql": active_sql,
+                        "duration": active_duration,
+                    }),
+                );
+            }
+            active_statement = Some(statement_sequence);
+            active_sql.clone_from(&result.sql);
+            active_duration = 0;
+            fallback_result_sequence = 0;
+            if emit_legacy_sql_event(
+                &window,
+                &request_uuid,
+                &execution_id,
+                &mut sequence,
+                "statementStarted",
+                Some(statement_sequence),
+                None,
+                &serde_json::json!({
+                    "sql": result.sql,
+                    "originalSql": result.original_sql,
+                    "sequence": statement_sequence,
+                }),
+            )
+            .is_err()
+            {
+                let _ = cancellation.cancel(Some("The SQL event receiver closed".to_owned()));
+                return;
+            }
+        }
+        fallback_result_sequence = fallback_result_sequence.saturating_add(1);
+        let result_sequence = result.result_set_id.unwrap_or(fallback_result_sequence);
+        active_duration = active_duration.saturating_add(result.duration);
+        if emit_legacy_sql_result_events(
+            &window,
+            &request_uuid,
+            &execution_id,
+            &mut sequence,
+            statement_sequence,
+            result_sequence,
+            result,
+        )
+        .is_err()
+        {
+            let _ = cancellation.cancel(Some("The SQL event receiver closed".to_owned()));
+            return;
+        }
+    }
+
+    if let Some(statement_sequence) = active_statement {
+        let _ = emit_legacy_sql_event(
+            &window,
+            &request_uuid,
+            &execution_id,
+            &mut sequence,
+            "statementFinished",
+            Some(statement_sequence),
+            None,
+            &serde_json::json!({
+                "sql": active_sql,
+                "duration": active_duration,
+            }),
+        );
+    }
+    let duration = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let _ = emit_legacy_sql_event(
+        &window,
+        &request_uuid,
+        &execution_id,
+        &mut sequence,
+        "finished",
+        None,
+        None,
+        &serde_json::json!({
+            "executionId": execution_id,
+            "duration": duration,
+        }),
+    );
 }
 
 #[allow(clippy::too_many_lines)]
@@ -770,6 +1050,8 @@ async fn forward_legacy_sql_execution(
                     &request_uuid,
                     &execution_id,
                     &mut sequence,
+                    1,
+                    1,
                     result,
                 )
                 .is_err()
@@ -833,31 +1115,43 @@ fn emit_legacy_sql_result_events(
     request_uuid: &str,
     execution_id: &str,
     sequence: &mut u64,
+    statement_sequence: u32,
+    result_sequence: u32,
     result: chat2db_web::legacy::LegacyManageResult,
 ) -> Result<(), tauri::Error> {
-    let mut started = serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!({}));
-    if let Some(started) = started.as_object_mut() {
-        started.insert("dataList".to_owned(), serde_json::json!([]));
+    let tabular = result.result_set_id.is_some() || !result.header_list.is_empty();
+    let mut rows = serde_json::to_value(result).unwrap_or_else(|_| serde_json::json!({}));
+    if !tabular {
+        return emit_legacy_sql_event(
+            window,
+            request_uuid,
+            execution_id,
+            sequence,
+            "updateCount",
+            Some(statement_sequence),
+            Some(result_sequence),
+            &rows,
+        );
     }
+    let rowless = legacy_sql_rowless_payload(&mut rows);
     emit_legacy_sql_event(
         window,
         request_uuid,
         execution_id,
         sequence,
         "resultStarted",
-        Some(1),
-        Some(1),
-        &started,
+        Some(statement_sequence),
+        Some(result_sequence),
+        &rowless,
     )?;
-    let rows = serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!({}));
     emit_legacy_sql_event(
         window,
         request_uuid,
         execution_id,
         sequence,
         "rows",
-        Some(1),
-        Some(1),
+        Some(statement_sequence),
+        Some(result_sequence),
         &rows,
     )?;
     emit_legacy_sql_event(
@@ -866,10 +1160,22 @@ fn emit_legacy_sql_result_events(
         execution_id,
         sequence,
         "resultFinished",
-        Some(1),
-        Some(1),
-        &serde_json::to_value(result).unwrap_or_else(|_| serde_json::json!({})),
+        Some(statement_sequence),
+        Some(result_sequence),
+        &rowless,
     )
+}
+
+fn legacy_sql_rowless_payload(rows: &mut serde_json::Value) -> serde_json::Value {
+    let Some(rows_object) = rows.as_object_mut() else {
+        return serde_json::json!({});
+    };
+    let data_list = rows_object
+        .insert("dataList".to_owned(), serde_json::json!([]))
+        .unwrap_or_else(|| serde_json::json!([]));
+    let rowless = serde_json::Value::Object(rows_object.clone());
+    rows_object.insert("dataList".to_owned(), data_list);
+    rowless
 }
 
 fn emit_legacy_terminal_error(
@@ -1883,16 +2189,17 @@ mod tests {
         OperationEvent, OperationEventEnvelope, OperationStreamMessage,
         StartCommunityTablePreviewRequest, ValidateCommunitySqlRequest,
     };
-    use chat2db_core::{AppError, Application};
+    use chat2db_core::{AppError, Application, MysqlConsoleCancellation};
     use tokio::sync::oneshot;
 
     use super::{
         BUNDLED_COMMUNITY_CLASSPATH, BUNDLED_DRIVER_PACKS, BUNDLED_JAVA_BIN,
-        BUNDLED_JAVA_ENGINE_JAR, BundledRuntimeResources, DesktopError, RuntimeResourceOverrides,
-        SubscriptionRegistry, agent_stream_message, build_community_dml_for,
-        build_community_namespace_sql_for, client_command_response, complete_community_sql_for,
-        decode_client_message, format_community_sql_for, legacy_request_for,
-        legacy_sql_push_message, operation_stream_message, parse_after_sequence,
+        BUNDLED_JAVA_ENGINE_JAR, BundledRuntimeResources, DesktopError,
+        LegacySqlCancellationRegistry, RuntimeResourceOverrides, SubscriptionRegistry,
+        agent_stream_message, build_community_dml_for, build_community_namespace_sql_for,
+        client_command_response, complete_community_sql_for, decode_client_message,
+        format_community_sql_for, legacy_request_for, legacy_sql_push_message,
+        legacy_sql_rowless_payload, operation_stream_message, parse_after_sequence,
         resolve_runtime_resource_paths, start_community_table_preview_for,
         validate_community_sql_for, validate_java_engine_jar, validate_optional_os_env,
     };
@@ -1965,6 +2272,48 @@ mod tests {
         assert_eq!(message["message"]["eventType"], "resultFinished");
         assert_eq!(message["message"]["resultKey"], "operation-1:1:1");
         assert_eq!(message["message"]["message"]["success"], true);
+    }
+
+    #[test]
+    fn community_sql_result_rows_are_only_present_in_the_rows_event() {
+        let mut rows = serde_json::json!({
+            "success": true,
+            "headerList": [{ "name": "id" }],
+            "dataList": [[{ "value": "1" }], [{ "value": "2" }]],
+            "resultSetId": 1,
+        });
+
+        let rowless = legacy_sql_rowless_payload(&mut rows);
+
+        assert_eq!(rows["dataList"].as_array().map(Vec::len), Some(2));
+        assert_eq!(rowless["dataList"], serde_json::json!([]));
+        assert_eq!(rowless["headerList"], rows["headerList"]);
+        assert_eq!(rowless["resultSetId"], 1);
+    }
+
+    #[tokio::test]
+    async fn native_mysql_cancellation_registry_owns_execution_lifecycle() {
+        let registry = LegacySqlCancellationRegistry::default();
+        let cancellation = MysqlConsoleCancellation::new();
+        registry
+            .insert("mysql-console-1".to_owned(), cancellation.clone())
+            .await;
+
+        assert_eq!(registry.active_count().await, 1);
+        assert!(
+            registry
+                .cancel("mysql-console-1", Some("cancelled by test".to_owned()))
+                .await
+        );
+        assert!(cancellation.is_cancelled());
+        assert!(
+            !registry
+                .cancel("mysql-console-1", Some("second cancellation".to_owned()))
+                .await
+        );
+
+        registry.remove("mysql-console-1").await;
+        assert_eq!(registry.active_count().await, 0);
     }
 
     #[tokio::test]

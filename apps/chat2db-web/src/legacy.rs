@@ -5,18 +5,22 @@
 //! response translations without duplicating datasource or JDBC behavior.
 
 use std::{
-    collections::HashSet,
-    time::{Duration, Instant},
+    collections::{BTreeMap, HashSet},
+    fs,
+    path::PathBuf,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
     Json, Router,
+    body::Body,
     extract::{Query, State},
-    http::StatusCode,
+    http::{StatusCode, header},
     middleware,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chat2db_contract::{
     ApiError, ColumnNullability, CommunityFunction, CommunityProcedure, CommunityTable,
     CommunityTableColumn, CommunityTableIndex, CommunityTableIndexColumn, CommunityTrigger,
@@ -29,11 +33,15 @@ use chat2db_contract::{
     QueryLimits, ResultColumn, ResultMetadata, ResultPageRequest,
     StartCommunityTablePreviewRequest, StartQueryRequest, UpdateDatasourceRequest,
 };
-use chat2db_core::{AppError, Application};
-use chat2db_storage::{
-    CreateSavedConsole, SavedConsoleListQuery, SavedConsoleRecord, Storage, StorageError,
-    UpdateSavedConsole,
+use chat2db_core::{
+    AppError, Application, LargeValueChunk, LargeValueEncoding, LargeValuePreview, LargeValueType,
+    MysqlConsoleCancellation, MysqlConsoleRequest, MysqlConsoleResult,
 };
+use chat2db_storage::{
+    CreateOperationLog, CreateSavedConsole, OperationLogListQuery, OperationLogRecord,
+    SavedConsoleListQuery, SavedConsoleRecord, Storage, StorageError, UpdateSavedConsole,
+};
+use chrono::{Local, TimeZone as _};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 
 const DEFAULT_PAGE_NO: u32 = 1;
@@ -43,9 +51,12 @@ const DEFAULT_SQL_PAGE_SIZE: u32 = 200;
 const MAX_METADATA_PAGE_SIZE: u32 = 100_000;
 const MAX_PREVIEW_ROWS: u32 = 1_000;
 const MAX_SQL_ROWS: u32 = 10_000;
+const LARGE_VALUE_CHUNK_SIZE: u32 = 256 * 1024;
+const LARGE_VALUE_FALLBACK_PREVIEW_BYTES: usize = 64 * 1024;
 const RESULT_PAGE_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const PREVIEW_TIMEOUT: Duration = Duration::from_secs(30);
 const SQL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(60);
+const SQL_CANCELLATION_GRACE: Duration = Duration::from_secs(10);
 
 /// Community's historical response wrapper.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -432,10 +443,16 @@ pub struct LegacyResultHeader {
     pub column_name: String,
     pub column_type: String,
     pub table_name: Option<String>,
+    pub database_name: Option<String>,
+    pub schema_name: Option<String>,
     pub primary_key: bool,
+    pub comment: Option<String>,
+    pub default_value: Option<String>,
+    pub auto_increment: Option<i32>,
     pub nullable: bool,
     pub column_size: Option<u32>,
     pub decimal_digits: Option<i32>,
+    pub editor_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -443,10 +460,68 @@ pub struct LegacyResultHeader {
 pub struct LegacyResultCell {
     pub value: Option<String>,
     pub large_value: bool,
+    pub large_value_id: Option<String>,
     pub value_type: String,
     pub sql_type: i32,
     pub column_type: String,
+    pub size_bytes: Option<u64>,
+    pub size_chars: Option<u64>,
+    pub loaded_bytes: Option<u64>,
+    pub loaded_chars: Option<u64>,
     pub truncated: bool,
+    pub unsupported_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyLargeCellValueRequest {
+    pub large_value_id: String,
+    #[serde(default)]
+    pub offset: u64,
+    #[serde(default = "default_large_value_chunk_size")]
+    pub limit: u32,
+    #[serde(default = "default_large_value_format")]
+    pub format: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyLargeCellDownloadRequest {
+    pub large_value_id: String,
+    #[serde(default = "default_large_value_download_format")]
+    pub format: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyLargeCellChunk {
+    pub value: String,
+    pub offset: u64,
+    pub next_offset: u64,
+    pub eof: bool,
+    pub size_bytes: u64,
+    pub size_chars: Option<u64>,
+    pub encoding: String,
+    pub content_type: String,
+    pub display_mode: LargeValueType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyExecutionMetrics {
+    pub started_at_epoch_ms: u64,
+    pub finished_at_epoch_ms: u64,
+    pub total_duration_ms: u64,
+    pub execute_duration_ms: u64,
+    pub fetch_duration_ms: u64,
+    pub fetched_row_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyExecutionContext {
+    pub database_name: Option<String>,
+    pub schema_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -471,6 +546,11 @@ pub struct LegacyManageResult {
     pub has_next_page: bool,
     pub execute_sql_params: LegacySqlExecuteRequest,
     pub extra: serde_json::Value,
+    pub comment: Option<String>,
+    pub result_set_id: Option<u32>,
+    pub statement_sequence: Option<u32>,
+    pub execution_metrics: Option<LegacyExecutionMetrics>,
+    pub execution_context: Option<LegacyExecutionContext>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -597,6 +677,88 @@ pub struct LegacySavedConsoleResponse {
     pub status: String,
     pub tab_opened: String,
     pub operation_type: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyOperationLogCreateRequest {
+    #[serde(default)]
+    pub id: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub name: String,
+    #[serde(default)]
+    pub data_source_id: Option<LegacyIdentifier>,
+    #[serde(default)]
+    pub data_source_name: Option<String>,
+    #[serde(default)]
+    pub connectable: Option<bool>,
+    #[serde(default)]
+    pub database_name: Option<String>,
+    #[serde(rename = "type", default)]
+    pub database_type: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub ddl: String,
+    #[serde(default)]
+    pub more: bool,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub operation_rows: Option<u64>,
+    #[serde(default)]
+    pub use_time: Option<u64>,
+    #[serde(default)]
+    pub extend_info: Option<String>,
+    #[serde(default)]
+    pub schema_name: Option<String>,
+    #[serde(default)]
+    pub organization_id: Option<i64>,
+    #[serde(default)]
+    pub user_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyOperationLogListQuery {
+    #[serde(default = "default_page_no")]
+    pub page_no: u32,
+    #[serde(default = "default_page_size")]
+    pub page_size: u32,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub search_key: String,
+    #[serde(default)]
+    pub data_source_id: Option<LegacyIdentifier>,
+    #[serde(default)]
+    pub database_name: Option<String>,
+    #[serde(default)]
+    pub schema_name: Option<String>,
+    #[serde(default)]
+    pub organization_id: Option<i64>,
+    #[serde(default)]
+    pub operation_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyOperationLogResponse {
+    pub id: i64,
+    pub gmt_create: String,
+    pub gmt_modified: String,
+    pub name: String,
+    pub data_source_id: Option<String>,
+    pub data_source_name: Option<String>,
+    pub connectable: Option<bool>,
+    pub database_name: Option<String>,
+    #[serde(rename = "type")]
+    pub database_type: Option<String>,
+    pub ddl: String,
+    pub more: bool,
+    pub status: Option<String>,
+    pub operation_rows: Option<u64>,
+    pub use_time: Option<u64>,
+    pub extend_info: Option<String>,
+    pub schema_name: Option<String>,
+    pub organization_id: Option<i64>,
+    pub user_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -744,9 +906,17 @@ pub struct LegacySqlExecuteRequest {
     #[serde(default = "default_sql_page_size")]
     pub page_size: u32,
     #[serde(default)]
+    pub page_size_all: bool,
+    #[serde(default)]
     pub console_id: Option<LegacyIdentifier>,
     #[serde(default)]
+    pub apply_id: Option<LegacyIdentifier>,
+    #[serde(default)]
     pub result_set_id: Option<u32>,
+    #[serde(default)]
+    pub error_continue: Option<bool>,
+    #[serde(default)]
+    pub explain: bool,
 }
 
 /// Transport-neutral request used by the retained desktop command-line bridge.
@@ -790,6 +960,18 @@ fn default_sql_page_size() -> u32 {
     DEFAULT_SQL_PAGE_SIZE
 }
 
+const fn default_large_value_chunk_size() -> u32 {
+    LARGE_VALUE_CHUNK_SIZE
+}
+
+fn default_large_value_format() -> String {
+    "base64".to_owned()
+}
+
+fn default_large_value_download_format() -> String {
+    "raw".to_owned()
+}
+
 impl From<&LegacyTablePreviewRequest> for LegacySqlExecuteRequest {
     fn from(request: &LegacyTablePreviewRequest) -> Self {
         Self {
@@ -803,8 +985,12 @@ impl From<&LegacyTablePreviewRequest> for LegacySqlExecuteRequest {
             single: true,
             page_no: request.page_no,
             page_size: request.page_size,
+            page_size_all: false,
             console_id: None,
+            apply_id: None,
             result_set_id: None,
+            error_continue: None,
+            explain: false,
         }
     }
 }
@@ -1087,6 +1273,123 @@ pub(crate) async fn delete_saved_console(application: &Application, id: i64) -> 
     legacy_storage_call(move || storage.delete_saved_console(id))
         .await
         .map(|_| ())
+}
+
+pub(crate) async fn create_operation_log(
+    application: &Application,
+    request: &LegacyOperationLogCreateRequest,
+) -> LegacyResult<i64> {
+    if request.ddl.trim().is_empty() {
+        return Err(LegacyFailure::invalid(
+            "invalid_operation_log",
+            "ddl is required",
+        ));
+    }
+    let operation_rows = request
+        .operation_rows
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| {
+            LegacyFailure::invalid(
+                "invalid_operation_log",
+                "operationRows is outside the supported range",
+            )
+        })?;
+    let use_time = request
+        .use_time
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| {
+            LegacyFailure::invalid(
+                "invalid_operation_log",
+                "useTime is outside the supported range",
+            )
+        })?;
+    let data_source_id = request
+        .data_source_id
+        .as_ref()
+        .map(LegacyIdentifier::as_string);
+    let storage = legacy_storage(application)?;
+    let input = CreateOperationLog {
+        name: non_blank(&request.name),
+        connectable: request
+            .connectable
+            .or_else(|| data_source_id.as_ref().map(|id| !id.trim().is_empty())),
+        data_source_id,
+        data_source_name: request.data_source_name.clone(),
+        database_name: request.database_name.clone(),
+        database_type: request.database_type.clone(),
+        ddl: request.ddl.clone(),
+        status: request
+            .status
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("SUCCESS")
+            .to_owned(),
+        operation_rows,
+        use_time,
+        extend_info: request.extend_info.clone(),
+        schema_name: request.schema_name.clone(),
+        organization_id: request.organization_id,
+        user_name: request.user_name.clone(),
+        more: request.more,
+        operation_type: "SQL_EXECUTE".to_owned(),
+    };
+    legacy_storage_call(move || storage.create_operation_log(input))
+        .await
+        .map(|record| record.id)
+}
+
+pub(crate) async fn get_operation_log(
+    application: &Application,
+    id: i64,
+) -> LegacyResult<LegacyOperationLogResponse> {
+    let storage = legacy_storage(application)?;
+    let record = legacy_storage_call(move || storage.get_operation_log(id))
+        .await?
+        .ok_or_else(|| {
+            LegacyFailure::invalid(
+                "operation_log_not_found",
+                "The operation log does not exist",
+            )
+        })?;
+    Ok(operation_log_response(record, false))
+}
+
+pub(crate) async fn list_operation_logs(
+    application: &Application,
+    query: &LegacyOperationLogListQuery,
+) -> LegacyResult<LegacyPage<LegacyOperationLogResponse>> {
+    let storage = legacy_storage(application)?;
+    let storage_query = OperationLogListQuery {
+        data_source_id: query
+            .data_source_id
+            .as_ref()
+            .map(LegacyIdentifier::as_string),
+        database_name: query.database_name.clone(),
+        schema_name: query.schema_name.clone(),
+        operation_type: query.operation_type.clone(),
+        search_key: non_blank(&query.search_key),
+        page_no: query.page_no,
+        page_size: query.page_size,
+    };
+    legacy_storage_call(move || storage.list_operation_logs(&storage_query))
+        .await
+        .map(|page| {
+            let total = usize::try_from(page.total).unwrap_or(usize::MAX);
+            LegacyPage {
+                data: page
+                    .records
+                    .into_iter()
+                    .map(|record| operation_log_response(record, true))
+                    .collect(),
+                page_no: page.page_no,
+                page_size: page.page_size,
+                total,
+                has_next_page: u64::from(page.page_no) * u64::from(page.page_size) < page.total,
+            }
+        })
 }
 
 /// Builds the flat namespace tree used when no custom grouping exists.
@@ -1530,6 +1833,7 @@ pub(crate) async fn preview_table(
         || page.metadata.truncated_by_max_rows
         || page.metadata.truncated_by_max_result_bytes;
     let headers: Vec<LegacyResultHeader> = page.columns.iter().map(result_header).collect();
+    let large_value_owner = application.create_large_value_owner();
     let data_list = page
         .rows
         .into_iter()
@@ -1537,7 +1841,7 @@ pub(crate) async fn preview_table(
             row.values
                 .into_iter()
                 .zip(page.columns.iter())
-                .map(|(value, column)| result_cell(value, column))
+                .map(|(value, column)| result_cell(application, &large_value_owner, value, column))
                 .collect()
         })
         .collect();
@@ -1561,6 +1865,15 @@ pub(crate) async fn preview_table(
         has_next_page,
         execute_sql_params: LegacySqlExecuteRequest::from(request),
         extra: serde_json::json!({}),
+        comment: None,
+        result_set_id: None,
+        statement_sequence: Some(1),
+        execution_metrics: None,
+        execution_context: Some(LegacyExecutionContext {
+            database_name: (!request.database_name.is_empty())
+                .then(|| request.database_name.clone()),
+            schema_name: (!request.schema_name.is_empty()).then(|| request.schema_name.clone()),
+        }),
     }])
 }
 
@@ -1575,20 +1888,7 @@ pub async fn start_sql_execution(
     application: &Application,
     request: &LegacySqlExecuteRequest,
 ) -> LegacyResult<QueryAccepted> {
-    let (_, row_limit) = sql_page_window(request)?;
-    let datasource_id = request.data_source_id.as_string();
-    if datasource_id.trim().is_empty() {
-        return Err(LegacyFailure::invalid(
-            "invalid_sql_execute_request",
-            "dataSourceId is required",
-        ));
-    }
-    if request.sql.trim().is_empty() {
-        return Err(LegacyFailure::invalid(
-            "invalid_sql_execute_request",
-            "sql is required",
-        ));
-    }
+    let (datasource_id, row_limit) = validate_sql_execute_request(request)?;
     application
         .start_query(StartQueryRequest {
             datasource_id,
@@ -1670,6 +1970,7 @@ pub async fn read_sql_result(
             page.metadata.row_count.clone()
         };
     let header_list = page.columns.iter().map(result_header).collect();
+    let large_value_owner = application.create_large_value_owner();
     let data_list = page
         .rows
         .into_iter()
@@ -1677,7 +1978,7 @@ pub async fn read_sql_result(
             row.values
                 .into_iter()
                 .zip(page.columns.iter())
-                .map(|(value, column)| result_cell(value, column))
+                .map(|(value, column)| result_cell(application, &large_value_owner, value, column))
                 .collect()
         })
         .collect();
@@ -1701,6 +2002,15 @@ pub async fn read_sql_result(
         has_next_page,
         execute_sql_params: request.clone(),
         extra: serde_json::json!({}),
+        comment: None,
+        result_set_id: request.result_set_id,
+        statement_sequence: Some(1),
+        execution_metrics: None,
+        execution_context: Some(LegacyExecutionContext {
+            database_name: (!request.database_name.is_empty())
+                .then(|| request.database_name.clone()),
+            schema_name: (!request.schema_name.is_empty()).then(|| request.schema_name.clone()),
+        }),
     })
 }
 
@@ -1715,6 +2025,18 @@ pub async fn execute_sql(
     application: &Application,
     request: &LegacySqlExecuteRequest,
 ) -> LegacyResult<Vec<LegacyManageResult>> {
+    let _ = validate_sql_execute_request(request)?;
+    if uses_native_mysql_console(application, request).await? {
+        let execution_id = application.create_large_value_owner();
+        return execute_mysql_sql(
+            application,
+            request,
+            MysqlConsoleCancellation::new(),
+            &execution_id,
+            "SQL_EDITOR_HTTP",
+        )
+        .await;
+    }
     let started_at = Instant::now();
     let accepted = start_sql_execution(application, request).await?;
     let terminal = tokio::time::timeout(
@@ -1740,6 +2062,550 @@ pub async fn execute_sql(
             )])
         }
     }
+}
+
+/// Executes the Community single-result DDL contract.
+///
+/// # Errors
+///
+/// Returns request, datasource, execution, or missing-result failures.
+pub async fn execute_ddl(
+    application: &Application,
+    request: &LegacySqlExecuteRequest,
+) -> LegacyResult<LegacyManageResult> {
+    execute_sql(application, request)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            LegacyFailure::invalid(
+                "sql_execution_incomplete",
+                "The SQL execution ended without a result",
+            )
+        })
+}
+
+/// Executes the native `MySQL` Console contract with a caller-owned cancellation
+/// source. Desktop keeps this source by execution id while HTTP uses it for the
+/// synchronous timeout boundary.
+///
+/// # Errors
+///
+/// Returns validation or datasource failures that occur before execution.
+pub async fn execute_mysql_sql(
+    application: &Application,
+    request: &LegacySqlExecuteRequest,
+    cancellation: MysqlConsoleCancellation,
+    execution_id: &str,
+    history_source: &str,
+) -> LegacyResult<Vec<LegacyManageResult>> {
+    let (datasource_id, _) = validate_sql_execute_request(request)?;
+
+    let execution = application.execute_mysql_console(
+        MysqlConsoleRequest {
+            datasource_id,
+            database_name: request.database_name.clone(),
+            sql: request.sql.clone(),
+            page_no: request.page_no,
+            page_size: request.page_size,
+            result_set_id: request.result_set_id,
+            single: request.single,
+            page_size_all: request.page_size_all,
+            explain: request.explain,
+            error_continue: request.error_continue.unwrap_or(true),
+        },
+        cancellation.clone(),
+    );
+    let large_value_owner = application.create_large_value_owner();
+    tokio::pin!(execution);
+    let timed_out = tokio::select! {
+        result = &mut execution => Some(result),
+        () = tokio::time::sleep(SQL_EXECUTION_TIMEOUT) => None,
+    };
+    let results = match timed_out {
+        Some(Ok(results)) => results
+            .into_iter()
+            .map(|result| mysql_console_result(application, &large_value_owner, request, result))
+            .collect(),
+        Some(Err(error)) => {
+            let error = LegacyFailure::from(error);
+            vec![sql_failure_result(request, &error, 0)]
+        }
+        None => {
+            let _ = cancellation.cancel(Some("The SQL execution timed out".to_owned()));
+            if tokio::time::timeout(SQL_CANCELLATION_GRACE, &mut execution)
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    "MySQL Console execution did not finish during the timeout cleanup window"
+                );
+            }
+            vec![sql_failure_result(
+                request,
+                &LegacyFailure::invalid(
+                    "sql_execution_timeout",
+                    "The SQL execution did not finish in time",
+                ),
+                u64::try_from(SQL_EXECUTION_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
+            )]
+        }
+    };
+    record_mysql_console_history_best_effort(
+        application,
+        request,
+        &results,
+        execution_id,
+        history_source,
+    )
+    .await;
+    Ok(results)
+}
+
+async fn record_mysql_console_history_best_effort(
+    application: &Application,
+    request: &LegacySqlExecuteRequest,
+    results: &[LegacyManageResult],
+    execution_id: &str,
+    history_source: &str,
+) {
+    let Some(storage) = application.storage().cloned() else {
+        return;
+    };
+    let mut statements = BTreeMap::<u32, Vec<&LegacyManageResult>>::new();
+    for (index, result) in results.iter().enumerate() {
+        let fallback = u32::try_from(index).unwrap_or(u32::MAX).saturating_add(1);
+        statements
+            .entry(result.statement_sequence.unwrap_or(fallback))
+            .or_default()
+            .push(result);
+    }
+    for statement_results in statements.into_values() {
+        let Some(first) = statement_results.first().copied() else {
+            continue;
+        };
+        let operation_rows = statement_results
+            .iter()
+            .map(|result| result.update_count)
+            .fold(0_u64, u64::saturating_add);
+        let use_time = statement_results
+            .iter()
+            .map(|result| result.duration)
+            .fold(0_u64, u64::saturating_add);
+        let message = statement_results
+            .iter()
+            .find(|result| !result.success && !result.message.trim().is_empty())
+            .map_or("", |result| result.message.as_str());
+        let extend_info = serde_json::to_string(&serde_json::json!({
+            "source": history_source,
+            "sqlType": first.sql_type,
+            "executionId": execution_id,
+            "statementSequence": first.statement_sequence.unwrap_or(1),
+            "message": message,
+        }))
+        .ok();
+        let input = CreateOperationLog {
+            name: None,
+            data_source_id: Some(request.data_source_id.as_string()),
+            data_source_name: non_blank(&request.data_source_name),
+            connectable: Some(true),
+            database_name: non_blank(&request.database_name),
+            database_type: Some(default_if_blank(&request.database_type, "MYSQL")),
+            ddl: first.original_sql.clone(),
+            status: mysql_console_history_status(statement_results.as_slice()).to_owned(),
+            operation_rows: i64::try_from(operation_rows).ok(),
+            use_time: i64::try_from(use_time).ok(),
+            extend_info,
+            schema_name: non_blank(&request.schema_name),
+            organization_id: None,
+            user_name: None,
+            more: first.original_sql.chars().count() > 200,
+            operation_type: "SQL_EXECUTE".to_owned(),
+        };
+        let result = tokio::task::spawn_blocking({
+            let storage = storage.clone();
+            move || storage.create_operation_log(input)
+        })
+        .await;
+        match result {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "MySQL Console history write failed"),
+            Err(error) => tracing::warn!(%error, "MySQL Console history task failed"),
+        }
+    }
+}
+
+fn mysql_console_history_status(results: &[&LegacyManageResult]) -> &'static str {
+    if results.iter().any(|result| {
+        result
+            .extra
+            .get("messages")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|message| message.get("errorCode"))
+            .filter_map(serde_json::Value::as_str)
+            .any(|code| matches!(code, "mysql_console_cancelled" | "sql_execution_cancelled"))
+    }) {
+        "cancelled"
+    } else if results.iter().all(|result| result.success) {
+        "success"
+    } else {
+        "fail"
+    }
+}
+
+/// Reads one bounded retained large-cell chunk in the requested display format.
+///
+/// # Errors
+///
+/// Returns validation, expired-token, range, decoding, or unsupported-format failures.
+pub fn read_large_cell_value(
+    application: &Application,
+    request: &LegacyLargeCellValueRequest,
+) -> LegacyResult<LegacyLargeCellChunk> {
+    if request.large_value_id.trim().is_empty() {
+        return Err(LegacyFailure::invalid(
+            "invalid_large_cell_value_request",
+            "largeValueId is required",
+        ));
+    }
+    let encoded = matches!(
+        request.format.trim().to_ascii_lowercase().as_str(),
+        "base64" | "hex"
+    );
+    let chunk = if encoded {
+        application.read_large_value_encoded_chunk(
+            &request.large_value_id,
+            request.offset,
+            request.limit,
+        )
+    } else {
+        application.read_large_value_chunk(&request.large_value_id, request.offset, request.limit)
+    }
+    .map_err(LegacyFailure::from)?;
+    format_large_value_chunk(chunk, &request.format)
+}
+
+/// Writes one complete retained large-cell value to a unique temporary download path.
+///
+/// # Errors
+///
+/// Returns validation, expired-token, decoding, task, directory, or file-write failures.
+pub async fn download_large_cell_value_to_path(
+    application: &Application,
+    request: &LegacyLargeCellDownloadRequest,
+) -> LegacyResult<String> {
+    let application = application.clone();
+    let request = request.clone();
+    tokio::task::spawn_blocking(move || {
+        let download = prepare_large_cell_download(&application, &request)?;
+        let directory = std::env::temp_dir().join("chat2db").join("downloads");
+        fs::create_dir_all(&directory).map_err(|_| LegacyFailure {
+            code: "large_cell_download_failed".to_owned(),
+            message: "The large cell download directory could not be created".to_owned(),
+        })?;
+        let path = unique_large_cell_download_path(
+            &directory,
+            &request.large_value_id,
+            download.extension,
+        );
+        fs::write(&path, download.bytes).map_err(|_| LegacyFailure {
+            code: "large_cell_download_failed".to_owned(),
+            message: "The large cell value could not be written to disk".to_owned(),
+        })?;
+        Ok(path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|_| LegacyFailure {
+        code: "large_cell_download_failed".to_owned(),
+        message: "The large cell download task did not finish".to_owned(),
+    })?
+}
+
+struct PreparedLargeCellDownload {
+    bytes: Vec<u8>,
+    content_type: &'static str,
+    extension: &'static str,
+}
+
+fn prepare_large_cell_download(
+    application: &Application,
+    request: &LegacyLargeCellDownloadRequest,
+) -> LegacyResult<PreparedLargeCellDownload> {
+    if request.large_value_id.trim().is_empty() {
+        return Err(LegacyFailure::invalid(
+            "invalid_large_cell_value_request",
+            "largeValueId is required",
+        ));
+    }
+    let (raw, value_type) = read_complete_large_value(application, &request.large_value_id)?;
+    match request.format.trim().to_ascii_lowercase().as_str() {
+        "" | "raw" => Ok(PreparedLargeCellDownload {
+            bytes: raw,
+            content_type: if value_type == LargeValueType::Text {
+                "text/plain; charset=utf-8"
+            } else {
+                "application/octet-stream"
+            },
+            extension: if value_type == LargeValueType::Text {
+                "txt"
+            } else {
+                "bin"
+            },
+        }),
+        "text" => Ok(PreparedLargeCellDownload {
+            bytes: String::from_utf8_lossy(&raw).into_owned().into_bytes(),
+            content_type: "text/plain; charset=utf-8",
+            extension: "txt",
+        }),
+        "hex" => Ok(PreparedLargeCellDownload {
+            bytes: encode_hex(&raw).into_bytes(),
+            content_type: "text/plain; charset=utf-8",
+            extension: "hex",
+        }),
+        _ => Err(LegacyFailure::invalid(
+            "invalid_large_cell_value_request",
+            "format must be raw, text, or hex",
+        )),
+    }
+}
+
+fn read_complete_large_value(
+    application: &Application,
+    large_value_id: &str,
+) -> LegacyResult<(Vec<u8>, LargeValueType)> {
+    let mut offset = 0_u64;
+    let mut output = Vec::new();
+    let mut value_type = None;
+    loop {
+        let chunk = application
+            .read_large_value_chunk(large_value_id, offset, LARGE_VALUE_CHUNK_SIZE)
+            .map_err(LegacyFailure::from)?;
+        value_type.get_or_insert(chunk.display_mode);
+        output.extend(decode_large_value_chunk(&chunk)?);
+        if chunk.eof {
+            return Ok((output, value_type.unwrap_or(LargeValueType::Binary)));
+        }
+        if chunk.next_offset <= offset {
+            return Err(LegacyFailure {
+                code: "large_cell_download_failed".to_owned(),
+                message: "The large cell value did not advance while downloading".to_owned(),
+            });
+        }
+        offset = chunk.next_offset;
+    }
+}
+
+fn format_large_value_chunk(
+    chunk: LargeValueChunk,
+    format: &str,
+) -> LegacyResult<LegacyLargeCellChunk> {
+    let normalized = format.trim().to_ascii_lowercase();
+    let (value, encoding) = match normalized.as_str() {
+        "" | "auto" => (
+            chunk.value.clone(),
+            match chunk.encoding {
+                LargeValueEncoding::Utf8 => "utf-8",
+                LargeValueEncoding::Base64 => "base64",
+            },
+        ),
+        "base64" => (
+            BASE64_STANDARD.encode(decode_large_value_chunk(&chunk)?),
+            "base64",
+        ),
+        "text" => (
+            String::from_utf8_lossy(&decode_large_value_chunk(&chunk)?).into_owned(),
+            "utf-8",
+        ),
+        "hex" => (encode_hex(&decode_large_value_chunk(&chunk)?), "hex"),
+        _ => {
+            return Err(LegacyFailure::invalid(
+                "invalid_large_cell_value_request",
+                "format must be text, hex, base64, or auto",
+            ));
+        }
+    };
+    Ok(LegacyLargeCellChunk {
+        value,
+        offset: chunk.offset,
+        next_offset: chunk.next_offset,
+        eof: chunk.eof,
+        size_bytes: chunk.size_bytes,
+        size_chars: chunk.size_chars,
+        encoding: encoding.to_owned(),
+        content_type: chunk.content_type,
+        display_mode: chunk.display_mode,
+    })
+}
+
+fn decode_large_value_chunk(chunk: &LargeValueChunk) -> LegacyResult<Vec<u8>> {
+    match chunk.encoding {
+        LargeValueEncoding::Utf8 => Ok(chunk.value.as_bytes().to_vec()),
+        LargeValueEncoding::Base64 => {
+            BASE64_STANDARD
+                .decode(chunk.value.as_bytes())
+                .map_err(|_| LegacyFailure {
+                    code: "large_cell_value_invalid".to_owned(),
+                    message: "The retained binary value could not be decoded".to_owned(),
+                })
+        }
+    }
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
+fn unique_large_cell_download_path(
+    directory: &std::path::Path,
+    large_value_id: &str,
+    extension: &str,
+) -> PathBuf {
+    let token_fragment = large_value_id
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(12)
+        .collect::<String>();
+    directory.join(format!(
+        "chat2db-cell-{}-{token_fragment}.{extension}",
+        unix_epoch_millis()
+    ))
+}
+
+/// Reports whether the request resolves to the native `MySQL` driver.
+///
+/// # Errors
+///
+/// Returns a datasource lookup failure when the requested datasource is absent.
+pub async fn uses_native_mysql_console(
+    application: &Application,
+    request: &LegacySqlExecuteRequest,
+) -> LegacyResult<bool> {
+    if request.database_type.eq_ignore_ascii_case("mysql") {
+        return Ok(true);
+    }
+    let datasource = application
+        .get_datasource(&request.data_source_id.as_string())
+        .await?;
+    Ok(datasource.driver_id.eq_ignore_ascii_case("mysql")
+        || datasource.driver_id.to_ascii_lowercase().contains("mysql"))
+}
+
+fn mysql_console_result(
+    application: &Application,
+    large_value_owner: &str,
+    request: &LegacySqlExecuteRequest,
+    result: MysqlConsoleResult,
+) -> LegacyManageResult {
+    let MysqlConsoleResult {
+        statement_sequence,
+        result_set_id,
+        sql,
+        success,
+        message,
+        update_count,
+        columns,
+        rows,
+        row_count,
+        has_more,
+        duration_ms,
+        error,
+    } = result;
+    let header_list = columns.iter().map(result_header).collect();
+    let data_list = rows
+        .into_iter()
+        .map(|row| {
+            row.values
+                .into_iter()
+                .zip(columns.iter())
+                .map(|(value, column)| result_cell(application, large_value_owner, value, column))
+                .collect()
+        })
+        .collect();
+    let sql_type = legacy_sql_type(&sql).to_owned();
+    let extra = error.map_or_else(
+        || serde_json::json!({}),
+        |error| {
+            serde_json::json!({
+                "messages": [{
+                    "level": "ERROR",
+                    "message": error.message,
+                    "source": "database",
+                    "errorCode": error.code,
+                    "resultSetId": result_set_id,
+                }]
+            })
+        },
+    );
+    let finished_at_epoch_ms = unix_epoch_millis();
+    LegacyManageResult {
+        data_list,
+        header_list,
+        description: if success {
+            "Query executed successfully".to_owned()
+        } else {
+            String::new()
+        },
+        message,
+        sql: sql.clone(),
+        original_sql: sql,
+        success,
+        duration: duration_ms,
+        update_count,
+        can_edit: false,
+        table_name: request.table_name.clone(),
+        refresh_targets: refresh_targets(request, &sql_type, success),
+        sql_type,
+        page_no: request.page_no,
+        page_size: request.page_size,
+        fuzzy_total: row_count.to_string(),
+        has_next_page: has_more,
+        execute_sql_params: request.clone(),
+        extra,
+        comment: None,
+        result_set_id,
+        statement_sequence: Some(statement_sequence),
+        execution_metrics: Some(LegacyExecutionMetrics {
+            started_at_epoch_ms: finished_at_epoch_ms.saturating_sub(duration_ms),
+            finished_at_epoch_ms,
+            total_duration_ms: duration_ms,
+            execute_duration_ms: duration_ms,
+            fetch_duration_ms: 0,
+            fetched_row_count: row_count,
+        }),
+        execution_context: Some(LegacyExecutionContext {
+            database_name: non_blank(&request.database_name),
+            schema_name: non_blank(&request.schema_name),
+        }),
+    }
+}
+
+fn refresh_targets(
+    request: &LegacySqlExecuteRequest,
+    sql_type: &str,
+    success: bool,
+) -> Vec<serde_json::Value> {
+    if !success
+        || !matches!(
+            sql_type,
+            "INSERT" | "UPDATE" | "DELETE" | "CREATE" | "ALTER" | "DROP" | "TRUNCATE"
+        )
+    {
+        return Vec::new();
+    }
+    vec![serde_json::json!({
+        "dataSourceId": request.data_source_id.as_string(),
+        "databaseName": request.database_name,
+        "schemaName": request.schema_name,
+        "tableName": request.table_name,
+    })]
 }
 
 fn sql_page_window(request: &LegacySqlExecuteRequest) -> LegacyResult<(u32, u32)> {
@@ -1772,6 +2638,24 @@ fn sql_page_window(request: &LegacySqlExecuteRequest) -> LegacyResult<(u32, u32)
         ));
     }
     Ok((offset, row_limit))
+}
+
+fn validate_sql_execute_request(request: &LegacySqlExecuteRequest) -> LegacyResult<(String, u32)> {
+    let (_, row_limit) = sql_page_window(request)?;
+    let datasource_id = request.data_source_id.as_string();
+    if datasource_id.trim().is_empty() {
+        return Err(LegacyFailure::invalid(
+            "invalid_sql_execute_request",
+            "dataSourceId is required",
+        ));
+    }
+    if request.sql.trim().is_empty() {
+        return Err(LegacyFailure::invalid(
+            "invalid_sql_execute_request",
+            "sql is required",
+        ));
+    }
+    Ok((datasource_id, row_limit))
 }
 
 /// Builds the Community result-grid error item used for accepted operations
@@ -1811,11 +2695,28 @@ pub fn sql_failure_result(
                 "errorCode": error.code,
             }]
         }),
+        comment: None,
+        result_set_id: request.result_set_id,
+        statement_sequence: Some(1),
+        execution_metrics: None,
+        execution_context: Some(LegacyExecutionContext {
+            database_name: (!request.database_name.is_empty())
+                .then(|| request.database_name.clone()),
+            schema_name: (!request.schema_name.is_empty()).then(|| request.schema_name.clone()),
+        }),
     }
 }
 
 fn elapsed_millis(started_at: Instant) -> u64 {
     u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn unix_epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 fn legacy_sql_type(sql: &str) -> &'static str {
@@ -1824,17 +2725,86 @@ fn legacy_sql_type(sql: &str) -> &'static str {
         .split(|character: char| !character.is_ascii_alphabetic())
         .next()
         .unwrap_or_default();
-    if keyword.eq_ignore_ascii_case("select")
-        || keyword.eq_ignore_ascii_case("with")
-        || keyword.eq_ignore_ascii_case("show")
-        || keyword.eq_ignore_ascii_case("describe")
-        || keyword.eq_ignore_ascii_case("desc")
-        || keyword.eq_ignore_ascii_case("explain")
+    if ["select", "with", "show", "describe", "desc", "explain"]
+        .iter()
+        .any(|candidate| keyword.eq_ignore_ascii_case(candidate))
     {
-        "SELECT"
-    } else {
-        "OTHER"
+        return "SELECT";
     }
+    [
+        ("insert", "INSERT"),
+        ("replace", "REPLACE_INTO"),
+        ("update", "UPDATE"),
+        ("delete", "DELETE"),
+        ("create", "CREATE"),
+        ("alter", "ALTER"),
+        ("drop", "DROP"),
+        ("truncate", "TRUNCATE"),
+        ("call", "CALL"),
+        ("use", "USE_DATABASE"),
+        ("set", "SET"),
+        ("start", "START_TRANSACTION"),
+        ("begin", "BEGIN_WORK"),
+        ("commit", "COMMIT"),
+        ("rollback", "ROLLBACK"),
+    ]
+    .into_iter()
+    .find_map(|(candidate, sql_type)| keyword.eq_ignore_ascii_case(candidate).then_some(sql_type))
+    .unwrap_or("OTHER")
+}
+
+fn operation_log_response(record: OperationLogRecord, preview: bool) -> LegacyOperationLogResponse {
+    let (ddl, more) = if preview {
+        operation_log_preview(&record.ddl, record.more)
+    } else {
+        (record.ddl, record.more)
+    };
+    LegacyOperationLogResponse {
+        id: record.id,
+        gmt_create: format_operation_log_time(record.created_at_ms),
+        gmt_modified: format_operation_log_time(record.updated_at_ms),
+        name: record.name.unwrap_or_default(),
+        data_source_id: record.data_source_id,
+        data_source_name: record.data_source_name,
+        connectable: record.connectable,
+        database_name: record.database_name,
+        database_type: record.database_type,
+        ddl,
+        more,
+        status: Some(record.status),
+        operation_rows: record
+            .operation_rows
+            .and_then(|value| value.try_into().ok()),
+        use_time: record.use_time.and_then(|value| value.try_into().ok()),
+        extend_info: record.extend_info,
+        schema_name: record.schema_name,
+        organization_id: record.organization_id,
+        user_name: record.user_name,
+    }
+}
+
+fn operation_log_preview(ddl: &str, persisted_more: bool) -> (String, bool) {
+    const PREVIEW_CHARS: usize = 200;
+    let mut characters = ddl.chars();
+    let mut preview = characters.by_ref().take(PREVIEW_CHARS).collect::<String>();
+    let truncated = characters.next().is_some();
+    if truncated {
+        preview.push_str("...");
+    }
+    (preview, persisted_more || truncated)
+}
+
+fn format_operation_log_time(timestamp_ms: i64) -> String {
+    Local
+        .timestamp_millis_opt(timestamp_ms)
+        .single()
+        .map(|timestamp| timestamp.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_default()
+}
+
+fn non_blank(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
 fn saved_console_response(record: SavedConsoleRecord) -> LegacySavedConsoleResponse {
@@ -1936,6 +2906,10 @@ fn storage_failure(error: StorageError) -> LegacyFailure {
         },
         StorageError::InvalidSavedConsole(message) => LegacyFailure {
             code: "invalid_saved_console".to_owned(),
+            message: message.to_owned(),
+        },
+        StorageError::InvalidOperationLog(message) => LegacyFailure {
+            code: "invalid_operation_log".to_owned(),
             message: message.to_owned(),
         },
         other => LegacyFailure::from(AppError::from(other)),
@@ -2134,40 +3108,178 @@ fn result_header(column: &ResultColumn) -> LegacyResultHeader {
         column_name: column.name.clone(),
         column_type: column.jdbc_type_name.clone(),
         table_name: column.table_name.clone(),
+        database_name: column.catalog_name.clone(),
+        schema_name: column.schema_name.clone(),
         primary_key: false,
+        comment: None,
+        default_value: None,
+        auto_increment: None,
         nullable: column.nullability != ColumnNullability::NoNulls,
         column_size: column.precision.or(column.display_size),
         decimal_digits: column.scale,
+        editor_type: None,
     }
 }
 
-fn result_cell(value: JdbcValue, column: &ResultColumn) -> LegacyResultCell {
-    let (value, value_type) = match value {
-        JdbcValue::Null => (None, "UNKNOWN"),
-        JdbcValue::Boolean { value } => (Some(value.to_string()), "UNKNOWN"),
+fn result_cell(
+    application: &Application,
+    large_value_owner: &str,
+    value: JdbcValue,
+    column: &ResultColumn,
+) -> LegacyResultCell {
+    match value {
+        JdbcValue::Text { value } => {
+            retained_text_cell(application, large_value_owner, value, "TEXT", column)
+        }
+        JdbcValue::Json { value } => {
+            retained_text_cell(application, large_value_owner, value, "JSON", column)
+        }
+        JdbcValue::Binary { value } => match BASE64_STANDARD.decode(value.as_bytes()) {
+            Ok(value) => retained_binary_cell(application, large_value_owner, value, column),
+            Err(_) => unsupported_cell(
+                Some(value),
+                "BINARY",
+                column,
+                None,
+                None,
+                "The binary cell payload could not be decoded".to_owned(),
+            ),
+        },
+        value => scalar_result_cell(value, column),
+    }
+}
+
+fn retained_text_cell(
+    application: &Application,
+    owner_id: &str,
+    value: String,
+    value_type: &str,
+    column: &ResultColumn,
+) -> LegacyResultCell {
+    let size_bytes = value.len() as u64;
+    let size_chars = value.chars().count() as u64;
+    let fallback = bounded_utf8_preview(&value, LARGE_VALUE_FALLBACK_PREVIEW_BYTES);
+    match application.retain_large_text(owner_id, value) {
+        Ok(preview) => retained_preview_cell(preview, value_type, column),
+        Err(error) => unsupported_cell(
+            Some(fallback),
+            value_type,
+            column,
+            Some(size_bytes),
+            Some(size_chars),
+            error.api_error().message,
+        ),
+    }
+}
+
+fn retained_binary_cell(
+    application: &Application,
+    owner_id: &str,
+    value: Vec<u8>,
+    column: &ResultColumn,
+) -> LegacyResultCell {
+    let size_bytes = value.len() as u64;
+    let fallback =
+        BASE64_STANDARD.encode(&value[..value.len().min(LARGE_VALUE_FALLBACK_PREVIEW_BYTES)]);
+    match application.retain_large_binary(owner_id, value) {
+        Ok(preview) => retained_preview_cell(preview, "BINARY", column),
+        Err(error) => unsupported_cell(
+            Some(fallback),
+            "BINARY",
+            column,
+            Some(size_bytes),
+            None,
+            error.api_error().message,
+        ),
+    }
+}
+
+fn retained_preview_cell(
+    preview: LargeValuePreview,
+    value_type: &str,
+    column: &ResultColumn,
+) -> LegacyResultCell {
+    LegacyResultCell {
+        value: Some(preview.value),
+        large_value: preview.large_value,
+        large_value_id: preview.large_value_id,
+        value_type: value_type.to_owned(),
+        sql_type: column.jdbc_type,
+        column_type: column.jdbc_type_name.clone(),
+        size_bytes: Some(preview.size_bytes),
+        size_chars: preview.size_chars,
+        loaded_bytes: Some(preview.loaded_bytes),
+        loaded_chars: preview.loaded_chars,
+        truncated: preview.truncated,
+        unsupported_reason: None,
+    }
+}
+
+fn unsupported_cell(
+    value: Option<String>,
+    value_type: &str,
+    column: &ResultColumn,
+    size_bytes: Option<u64>,
+    size_chars: Option<u64>,
+    reason: String,
+) -> LegacyResultCell {
+    LegacyResultCell {
+        loaded_bytes: value.as_ref().map(|value| value.len() as u64),
+        loaded_chars: value.as_ref().map(|value| value.chars().count() as u64),
+        value,
+        large_value: true,
+        large_value_id: None,
+        value_type: value_type.to_owned(),
+        sql_type: column.jdbc_type,
+        column_type: column.jdbc_type_name.clone(),
+        size_bytes,
+        size_chars,
+        truncated: true,
+        unsupported_reason: Some(reason),
+    }
+}
+
+fn scalar_result_cell(value: JdbcValue, column: &ResultColumn) -> LegacyResultCell {
+    let value = match value {
+        JdbcValue::Null => None,
+        JdbcValue::Boolean { value } => Some(value.to_string()),
         JdbcValue::SignedInteger { value }
         | JdbcValue::UnsignedInteger { value }
         | JdbcValue::Float32 { value }
         | JdbcValue::Float64 { value }
         | JdbcValue::Decimal { value }
-        | JdbcValue::Text { value }
         | JdbcValue::Date { value }
         | JdbcValue::Time { value }
         | JdbcValue::Timestamp { value }
         | JdbcValue::TimestampWithTimeZone { value }
-        | JdbcValue::Uuid { value } => (Some(value), "UNKNOWN"),
-        JdbcValue::Binary { value } => (Some(value), "BINARY"),
-        JdbcValue::Json { value } => (Some(value), "JSON"),
-        JdbcValue::Opaque { display_value, .. } => (Some(display_value), "UNKNOWN"),
+        | JdbcValue::Uuid { value } => Some(value),
+        JdbcValue::Opaque { display_value, .. } => Some(display_value),
+        JdbcValue::Text { .. } | JdbcValue::Binary { .. } | JdbcValue::Json { .. } => {
+            unreachable!("large values are handled before scalar conversion")
+        }
     };
     LegacyResultCell {
         value,
         large_value: false,
-        value_type: value_type.to_owned(),
+        large_value_id: None,
+        value_type: "UNKNOWN".to_owned(),
         sql_type: column.jdbc_type,
         column_type: column.jdbc_type_name.clone(),
+        size_bytes: None,
+        size_chars: None,
+        loaded_bytes: None,
+        loaded_chars: None,
         truncated: false,
+        unsupported_reason: None,
     }
+}
+
+fn bounded_utf8_preview(value: &str, max_bytes: usize) -> String {
+    let mut end = value.len().min(max_bytes);
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
 }
 
 const fn legacy_data_type(value_type: JdbcValueType) -> &'static str {
@@ -2504,6 +3616,25 @@ pub async fn dispatch(
             },
             Err(error) => Err(error),
         },
+        ("post", "/api/operation/log/create") => {
+            match decode::<LegacyOperationLogCreateRequest>(request.message) {
+                Ok(body) => serialized(create_operation_log(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/operation/log/list") => {
+            match decode::<LegacyOperationLogListQuery>(request.message) {
+                Ok(query) => serialized(list_operation_logs(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/operation/log") => match decode::<LegacyIdQuery>(request.message) {
+            Ok(query) => match legacy_console_id(&query.id) {
+                Ok(id) => serialized(get_operation_log(application, id).await),
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        },
         ("get", "/api/namespaces/tree_list") => serialized(namespace_tree(application).await),
         ("get", "/api/rdb/database/list") => match decode::<LegacyMetadataQuery>(request.message) {
             Ok(query) => serialized(list_databases(application, &query).await),
@@ -2598,6 +3729,24 @@ pub async fn dispatch(
                 Err(error) => Err(error),
             }
         }
+        ("post" | "put", "/api/rdb/dml/execute_ddl") => {
+            match decode::<LegacySqlExecuteRequest>(request.message) {
+                Ok(body) => serialized(execute_ddl(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/cell/value") => {
+            match decode::<LegacyLargeCellValueRequest>(request.message) {
+                Ok(body) => serialized(read_large_cell_value(application, &body)),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/cell/download_path") => {
+            match decode::<LegacyLargeCellDownloadRequest>(request.message) {
+                Ok(body) => serialized(download_large_cell_value_to_path(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
         (_, known_path) if LEGACY_PATHS.contains(&known_path) => Err(LegacyFailure::invalid(
             "method_not_allowed",
             "The request method is not supported for this route",
@@ -2627,6 +3776,9 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/operation/saved/list",
     "/api/operation/saved",
     "/api/operation/saved/update",
+    "/api/operation/log/create",
+    "/api/operation/log/list",
+    "/api/operation/log",
     "/api/namespaces/tree_list",
     "/api/rdb/database/list",
     "/api/rdb/schema/list",
@@ -2648,7 +3800,11 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/rdb/trigger/list",
     "/api/rdb/trigger/detail",
     "/api/rdb/dml/execute",
+    "/api/rdb/dml/execute_ddl",
     "/api/rdb/dml/execute_table",
+    "/api/rdb/cell/value",
+    "/api/rdb/cell/download",
+    "/api/rdb/cell/download_path",
 ];
 
 const LEGACY_COUNTED_PATHS: &[&str] = &[
@@ -2754,6 +3910,12 @@ pub(crate) fn routes() -> Router<Application> {
             "/api/operation/saved/update",
             post(update_saved_console_handler).put(update_saved_console_handler),
         )
+        .route(
+            "/api/operation/log/create",
+            post(create_operation_log_handler),
+        )
+        .route("/api/operation/log/list", get(list_operation_logs_handler))
+        .route("/api/operation/log", get(get_operation_log_handler))
         .route("/api/namespaces/tree_list", get(namespace_tree_handler))
         .route("/api/rdb/database/list", get(database_list_handler))
         .route("/api/rdb/schema/list", get(schema_list_handler))
@@ -2779,8 +3941,18 @@ pub(crate) fn routes() -> Router<Application> {
             post(sql_execute_handler).put(sql_execute_handler),
         )
         .route(
+            "/api/rdb/dml/execute_ddl",
+            post(sql_execute_ddl_handler).put(sql_execute_ddl_handler),
+        )
+        .route(
             "/api/rdb/dml/execute_table",
             post(table_preview_handler).put(table_preview_handler),
+        )
+        .route("/api/rdb/cell/value", post(large_cell_value_handler))
+        .route("/api/rdb/cell/download", post(large_cell_download_handler))
+        .route(
+            "/api/rdb/cell/download_path",
+            post(large_cell_download_path_handler),
         )
         .layer(middleware::map_response(legacy_bad_request_envelope))
 }
@@ -2909,6 +4081,30 @@ async fn delete_saved_console_handler(
 ) -> Json<LegacyEnvelope<()>> {
     envelope(match legacy_console_id(&query.id) {
         Ok(id) => delete_saved_console(&application, id).await,
+        Err(error) => Err(error),
+    })
+}
+
+async fn create_operation_log_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyOperationLogCreateRequest>,
+) -> Json<LegacyEnvelope<i64>> {
+    envelope(create_operation_log(&application, &request).await)
+}
+
+async fn list_operation_logs_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyOperationLogListQuery>,
+) -> Json<LegacyEnvelope<LegacyPage<LegacyOperationLogResponse>>> {
+    envelope(list_operation_logs(&application, &query).await)
+}
+
+async fn get_operation_log_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyIdQuery>,
+) -> Json<LegacyEnvelope<LegacyOperationLogResponse>> {
+    envelope(match legacy_console_id(&query.id) {
+        Ok(id) => get_operation_log(&application, id).await,
         Err(error) => Err(error),
     })
 }
@@ -3066,6 +4262,56 @@ async fn sql_execute_handler(
     envelope(execute_sql(&application, &request).await)
 }
 
+async fn sql_execute_ddl_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacySqlExecuteRequest>,
+) -> Json<LegacyEnvelope<LegacyManageResult>> {
+    envelope(execute_ddl(&application, &request).await)
+}
+
+async fn large_cell_value_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyLargeCellValueRequest>,
+) -> Json<LegacyEnvelope<LegacyLargeCellChunk>> {
+    envelope(read_large_cell_value(&application, &request))
+}
+
+async fn large_cell_download_path_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyLargeCellDownloadRequest>,
+) -> Json<LegacyEnvelope<String>> {
+    envelope(download_large_cell_value_to_path(&application, &request).await)
+}
+
+async fn large_cell_download_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyLargeCellDownloadRequest>,
+) -> Response {
+    let task =
+        tokio::task::spawn_blocking(move || prepare_large_cell_download(&application, &request))
+            .await;
+    let download = match task {
+        Ok(Ok(download)) => download,
+        Ok(Err(error)) => return Json(LegacyEnvelope::<()>::failure(error)).into_response(),
+        Err(_) => {
+            return Json(LegacyEnvelope::<()>::failure(LegacyFailure {
+                code: "large_cell_download_failed".to_owned(),
+                message: "The large cell download task did not finish".to_owned(),
+            }))
+            .into_response();
+        }
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, download.content_type)
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=chat2db-cell.{}", download.extension),
+        )
+        .body(Body::from(download.bytes))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
 #[cfg(test)]
 mod tests {
     use axum::{
@@ -3150,6 +4396,107 @@ mod tests {
             _ => "&tableName=items",
         };
         format!("{path}?dataSourceId=1&databaseName=inventory&schemaName={object_name}")
+    }
+
+    #[tokio::test]
+    async fn retained_large_text_round_trips_through_chunk_and_download_contracts() {
+        let application = Application::new();
+        let owner = application.create_large_value_owner();
+        let value = "数据🙂".repeat(24_000);
+        let preview = application
+            .retain_large_text(&owner, value.clone())
+            .expect("large text must be retained");
+        assert!(preview.truncated);
+        let large_value_id = preview
+            .large_value_id
+            .expect("truncated text must receive a scoped token");
+
+        let chunk = read_large_cell_value(
+            &application,
+            &LegacyLargeCellValueRequest {
+                large_value_id: large_value_id.clone(),
+                offset: 0,
+                limit: 128,
+                format: "base64".to_owned(),
+            },
+        )
+        .expect("large text chunk must load");
+        let decoded = BASE64_STANDARD
+            .decode(chunk.value)
+            .expect("chunk must use frontend-compatible base64");
+        assert_eq!(decoded, value.as_bytes()[..128]);
+        assert_eq!(chunk.offset, 0);
+        assert_eq!(chunk.next_offset, 128);
+        assert_eq!(chunk.encoding, "base64");
+        assert_eq!(chunk.display_mode, LargeValueType::Text);
+
+        let next = read_large_cell_value(
+            &application,
+            &LegacyLargeCellValueRequest {
+                large_value_id: large_value_id.clone(),
+                offset: chunk.next_offset,
+                limit: 128,
+                format: "base64".to_owned(),
+            },
+        )
+        .expect("second large text chunk must load");
+        let next_decoded = BASE64_STANDARD
+            .decode(next.value)
+            .expect("second chunk must use frontend-compatible base64");
+        assert_eq!(next_decoded, value.as_bytes()[128..256]);
+        assert_eq!(next.offset, 128);
+        assert_eq!(next.next_offset, 256);
+
+        let path = download_large_cell_value_to_path(
+            &application,
+            &LegacyLargeCellDownloadRequest {
+                large_value_id,
+                format: "text".to_owned(),
+            },
+        )
+        .await
+        .expect("large text must download to a local temporary file");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("download must be readable"),
+            value
+        );
+        std::fs::remove_file(path).expect("temporary test download must be removed");
+    }
+
+    #[test]
+    fn mysql_console_history_distinguishes_cancellation_from_failure() {
+        let request = serde_json::from_value(serde_json::json!({
+            "dataSourceId": "datasource-1",
+            "databaseType": "MYSQL",
+            "sql": "SELECT SLEEP(30)",
+            "pageNo": 1,
+            "pageSize": 200
+        }))
+        .expect("legacy SQL request must deserialize");
+        let cancelled = sql_failure_result(
+            &request,
+            &LegacyFailure {
+                code: "mysql_console_cancelled".to_owned(),
+                message: "The SQL execution was cancelled".to_owned(),
+            },
+            12,
+        );
+        assert_eq!(mysql_console_history_status(&[&cancelled]), "cancelled");
+
+        let failed = sql_failure_result(
+            &request,
+            &LegacyFailure {
+                code: "database.query_failed".to_owned(),
+                message: "Query failed".to_owned(),
+            },
+            12,
+        );
+        assert_eq!(mysql_console_history_status(&[&failed]), "fail");
+
+        let mut succeeded = failed;
+        succeeded.success = true;
+        succeeded.extra = serde_json::json!({});
+        assert_eq!(mysql_console_history_status(&[&succeeded]), "success");
     }
 
     #[test]

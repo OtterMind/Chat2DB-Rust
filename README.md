@@ -3,7 +3,7 @@
 Source-available implementation of the Chat2DB Community hybrid runtime.
 
 Chat2DB Rust owns the product runtime in Rust, uses a native Rust path for the
-current MySQL browser and SELECT slice, and retains the broader public Chat2DB
+current MySQL browser and Console data plane, and retains the broader public Chat2DB
 Community database compatibility layer behind a supervised Java process. The
 repository is under active development and is not yet a stable end-user
 release.
@@ -27,7 +27,7 @@ git submodule update --init --recursive
 ## Current state
 
 The repository has completed Stages 1 through 6, the first thirteen
-independently buildable Stage 7 slices, and the first end-user Community
+independently buildable Stage 7 slices, and a native end-user Community
 Console compatibility slice:
 
 - canonical Rust API contracts;
@@ -99,11 +99,14 @@ Console compatibility slice:
 - durable SQLite-backed Community Console create/get/list/update/delete,
   including SQL text, datasource/database/schema binding, saved status, and
   open-tab state across process restarts; and
-- Community Console SELECT execution through upstream `mysql_async 0.37.0`, a
-  MySQL read-only transaction, and the existing bounded Core retained-result
-  path without starting Java: Web uses the historical synchronous result shape,
-  while desktop maps operation lifecycle, rows, failure, and cancellation to
-  the original JCEF event bus;
+- Community Console execution through upstream `mysql_async 0.37.0` without
+  starting Java: unparameterized reads, DDL/DML, semicolon and `DELIMITER`
+  scripts, multiple result sets, explicit transactions, error-continue policy,
+  preserved-single dispatch, `EXPLAIN`, normal/all-row paging, datasource
+  read-only enforcement, cancellation, a shared 64 MiB result budget, bounded
+  large-cell tokens/downloads, and durable per-statement history; Web uses the
+  historical synchronous result shape while desktop emits the original JCEF
+  statement/result/row/update-count lifecycle;
 - a shared Web/Tauri legacy dispatcher: Axum maps the original `/api` routes,
   while desktop preserves the original JCEF correlation envelope through one
   `legacy_request` Tauri command; and
@@ -135,7 +138,10 @@ The legacy boundary matches paged table searches against names or comments,
 ignores `searchKey` on Community's complete-list endpoints, validates metadata
 `pageSize` in `1..=100000`, returns binding failures in the HTTP 200 JSON
 envelope, and preserves `defaultValue: null` separately from an empty-string
-default.
+default. The native Console integration additionally passes against MySQL 8.4
+for DDL/DML, `DELIMITER` procedures, multi-results, transactions, error
+continuation, cancellation, a 6 MiB `LONGTEXT`, `single`, `EXPLAIN`,
+`pageSizeAll`, and datasource read-only protection while Java remains dormant.
 
 Stage 6 is complete. Web and desktop own the product runtime and publish its
 owner-only local endpoint; CLI and MCP attach to that host and never contact
@@ -172,19 +178,19 @@ Tauri, and the shared frontend. Stage 7M adds `community.dql-builder.v1` at tag
 build a row-limited SELECT without opening JDBC, then Rust validates that SQL and
 executes it through the existing forced-read-only query and retained-result
 path. The fixed 149-JAR classpath keeps H2 and MySQL; PostgreSQL and other
-dialects do not block the MySQL preview. MySQL writes, Agent, CLI, and MCP
-conformance remain outside this read-only milestone. The current MySQL
-connection, object metadata, preview, and supported Console SELECT routes
-dispatch to `mysql_async` before Java lease acquisition; Community parser,
-formatter, completion, and builders remain Java-backed.
+dialects do not block the MySQL preview. Agent, CLI, and MCP MySQL conformance
+remain outside this milestone. The current MySQL connection, object metadata,
+preview, and Console data plane dispatch to `mysql_async` before Java lease
+acquisition; Community parser, formatter, completion, and builders remain
+Java-backed.
 
-The first Console compatibility slice adds SQLite migration 3 for saved
-Consoles and the historical `/api/operation/saved/*` plus
-`/api/rdb/dml/execute` routes. Web waits on the Core operation and returns the
-existing Community grid result. Desktop starts the same Core query, emits the
-original `sql_execution_event` sequence through Tauri, and supports
-`sql-cancel`. This slice intentionally supports query/SELECT execution only;
-arbitrary DDL, DML, and multi-statement Console scripts are not implemented.
+The Console compatibility path uses SQLite migrations 3 and 4 for saved
+Consoles and durable execution history. Historical `/api/operation/saved/*`,
+`/api/operation/log/*`, `/api/rdb/dml/execute`, `/execute_ddl`, and large-cell
+routes share the same native Core execution. Desktop `sql-execute` and
+`sql-cancel` keep active cancellation handles and emit row payloads exactly once
+through Tauri. Native bind parameters and remaining edge-case Community result
+shapes are not implemented.
 
 The Stage 5 and Stage 7G through Stage 7M custom React workbench was an
 intermediate implementation and is no longer the product frontend. Commit

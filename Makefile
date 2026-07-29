@@ -70,6 +70,11 @@ native-mysql-integration:
 	MYSQL_TEST_PASSWORD="$(MYSQL_TEST_PASSWORD)" \
 	MYSQL_TEST_REQUIRED="1" \
 	cargo test -p chat2db-core --test native_mysql_product --locked
+	@MYSQL_TEST_HOST="$(MYSQL_TEST_HOST)" \
+	MYSQL_TEST_PORT="$(MYSQL_TEST_PORT)" \
+	MYSQL_TEST_USER="$(MYSQL_TEST_USER)" \
+	MYSQL_TEST_PASSWORD="$(MYSQL_TEST_PASSWORD)" \
+	cargo test -p chat2db-core --test native_mysql_console_docker --locked -- --ignored
 
 community-product-mysql-integration: java community-h2-classpath mysql-driver-pack
 	@test -n "$(MYSQL_TEST_USER)" || (echo "MYSQL_TEST_USER is required" >&2; exit 1)
