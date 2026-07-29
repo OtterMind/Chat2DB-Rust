@@ -226,10 +226,75 @@ async fn verify_product_vertical(config: &MysqlTestConfig, database_name: &str) 
         .as_array_mut()
         .expect("table columns")
         .push(json!({
+            "oldName": null,
             "name": "note",
+            "tableName": null,
             "columnType": "TEXT",
+            "dataType": null,
+            "defaultValue": null,
+            "autoIncrement": null,
             "nullable": 1,
             "comment": "nullable note",
+            "primaryKey": null,
+            "primaryKeyName": null,
+            "primaryKeyOrder": null,
+            "schemaName": null,
+            "databaseName": null,
+            "typeName": null,
+            "columnSize": null,
+            "bufferLength": null,
+            "decimalDigits": null,
+            "numPrecRadix": null,
+            "nullableInt": null,
+            "sqlDataType": null,
+            "sqlDatetimeSub": null,
+            "charOctetLength": null,
+            "ordinalPosition": null,
+            "generatedColumn": null,
+            "extent": null,
+            "charSetName": null,
+            "collationName": null,
+            "value": null,
+            "unit": null,
+            "defaultConstraintName": null,
+            "editStatus": "ADD"
+        }));
+    new_table["indexList"]
+        .as_array_mut()
+        .expect("table indexes")
+        .push(json!({
+            "oldName": null,
+            "name": "idx_label",
+            "tableName": null,
+            "type": "Normal",
+            "unique": null,
+            "comment": null,
+            "schemaName": null,
+            "databaseName": null,
+            "concurrently": null,
+            "method": null,
+            "foreignSchemaName": null,
+            "foreignTableName": null,
+            "foreignColumnNamelist": null,
+            "columnList": [{
+                "indexName": null,
+                "tableName": null,
+                "type": null,
+                "comment": null,
+                "columnName": "label",
+                "ordinalPosition": null,
+                "collation": null,
+                "schemaName": null,
+                "databaseName": null,
+                "nonUnique": null,
+                "indexQualifier": null,
+                "ascOrDesc": null,
+                "cardinality": null,
+                "pages": null,
+                "filterCondition": null,
+                "subPart": null,
+                "editStatus": null
+            }],
             "editStatus": "ADD"
         }));
     let alter_sql = post(
@@ -253,6 +318,7 @@ async fn verify_product_vertical(config: &MysqlTestConfig, database_name: &str) 
     )
     .await;
     assert!(column_exists(config, database_name, "items", "note").await);
+    assert!(index_exists(config, database_name, "items", "idx_label").await);
 
     let old_table = get(
         &router,
@@ -294,6 +360,28 @@ async fn verify_product_vertical(config: &MysqlTestConfig, database_name: &str) 
     assert_eq!(
         primary_key_columns(config, database_name, "items").await,
         ["id", "label"]
+    );
+    let primary_key_metadata = get(
+        &router,
+        &format!(
+            "/api/rdb/table/query?dataSourceId={datasource}&databaseType=MYSQL&databaseName={database_name}&tableName=items"
+        ),
+    )
+    .await;
+    assert_eq!(
+        primary_key_metadata["columnList"]
+            .as_array()
+            .expect("table columns")
+            .iter()
+            .filter(|column| column["primaryKey"] == true)
+            .map(|column| (
+                column["name"].as_str().expect("primary-key name"),
+                column["primaryKeyOrder"]
+                    .as_i64()
+                    .expect("primary-key order")
+            ))
+            .collect::<Vec<_>>(),
+        [("id", 1), ("label", 2)]
     );
     assert_java_dormant(&application);
 
@@ -385,7 +473,7 @@ async fn verify_product_vertical(config: &MysqlTestConfig, database_name: &str) 
             "headerList": headers,
             "sourceType": "RESULT_SET",
             "operations": [{
-                "type": "WHERE",
+                "type": "IN_VALUES",
                 "dataList": cell_values(&updated_preview["dataList"][0]),
                 "selectCols": [2],
                 "selectedCell": updated_preview["dataList"][0][2]
@@ -417,6 +505,44 @@ async fn verify_product_vertical(config: &MysqlTestConfig, database_name: &str) 
     )
     .await;
     assert_eq!(scalar_count(config, database_name, "items_copy").await, 0);
+
+    let view_meta = get(
+        &router,
+        &format!(
+            "/api/rdb/view/view_meta?dataSourceId={datasource}&databaseType=MYSQL&databaseName={database_name}"
+        ),
+    )
+    .await;
+    assert_eq!(
+        view_meta["configurations"]
+            .as_array()
+            .expect("view configurations")
+            .iter()
+            .map(|configuration| configuration["name"].as_str().expect("configuration name"))
+            .collect::<Vec<_>>(),
+        [
+            "algorithm",
+            "checkOption",
+            "security",
+            "viewName",
+            "definer",
+            "useOrReplace"
+        ]
+    );
+    assert_eq!(view_meta["sql"], "select * from table_name");
+    assert_eq!(
+        view_meta["previewSql"],
+        format!("create view `{database_name}`.`undefined` AS \nselect * from table_name;")
+    );
+    let root_view_meta = get(
+        &router,
+        &format!("/api/rdb/view/view_meta?dataSourceId={root}&databaseType=MYSQL&databaseName="),
+    )
+    .await;
+    assert_eq!(
+        root_view_meta["previewSql"],
+        "create view `undefined` AS \nselect * from table_name;"
+    );
 
     let view_sql = post(
         &router,
@@ -495,6 +621,121 @@ async fn verify_product_vertical(config: &MysqlTestConfig, database_name: &str) 
     assert!(!object_exists(config, database_name, "item_labels").await);
     assert_java_dormant(&application);
 
+    execute_ddl(
+        &router,
+        &datasource,
+        database_name,
+        "metadata_items",
+        &format!(
+            "CREATE TABLE `{database_name}`.`metadata_items` (\
+             `b` BIGINT UNSIGNED NOT NULL, \
+             `a` INT UNSIGNED NOT NULL, \
+             `state` ENUM('draft','needs,review','O''Reilly') NOT NULL, \
+             `permissions` SET('read','write','close)later') NULL, \
+             PRIMARY KEY (`b`, `a`)) ENGINE = InnoDB"
+        ),
+    )
+    .await;
+    let metadata_table = get(
+        &router,
+        &format!(
+            "/api/rdb/table/query?dataSourceId={datasource}&databaseType=MYSQL&databaseName={database_name}&tableName=metadata_items"
+        ),
+    )
+    .await;
+    let metadata_columns = metadata_table["columnList"]
+        .as_array()
+        .expect("metadata columns");
+    assert_eq!(
+        metadata_columns
+            .iter()
+            .find(|column| column["name"] == "b")
+            .expect("unsigned column")["columnType"],
+        "BIGINT UNSIGNED"
+    );
+    assert_eq!(
+        metadata_columns
+            .iter()
+            .find(|column| column["name"] == "state")
+            .expect("enum column")["value"],
+        "'draft','needs,review','O''Reilly'"
+    );
+    assert_eq!(
+        metadata_columns
+            .iter()
+            .find(|column| column["name"] == "permissions")
+            .expect("set column")["value"],
+        "'read','write','close)later'"
+    );
+    assert_eq!(
+        metadata_columns
+            .iter()
+            .filter(|column| column["primaryKey"] == true)
+            .map(|column| (
+                column["name"].as_str().expect("primary-key name"),
+                column["primaryKeyOrder"]
+                    .as_i64()
+                    .expect("primary-key order")
+            ))
+            .collect::<Vec<_>>(),
+        [("b", 1), ("a", 2)]
+    );
+
+    let mut reordered_table = metadata_table.clone();
+    reordered_table["columnList"] = Value::Array(
+        ["permissions", "state", "b", "a"]
+            .iter()
+            .map(|name| {
+                metadata_columns
+                    .iter()
+                    .find(|column| column["name"] == *name)
+                    .unwrap_or_else(|| panic!("missing metadata column {name}"))
+                    .clone()
+            })
+            .collect(),
+    );
+    let reorder_sql = post(
+        &router,
+        "/api/rdb/table/modify/sql",
+        json!({
+            "dataSourceId": datasource,
+            "databaseType": "MYSQL",
+            "databaseName": database_name,
+            "oldTable": metadata_table,
+            "newTable": reordered_table
+        }),
+    )
+    .await;
+    execute_ddl(
+        &router,
+        &datasource,
+        database_name,
+        "metadata_items",
+        reorder_sql[0]["sql"].as_str().expect("column reorder SQL"),
+    )
+    .await;
+    assert_eq!(
+        column_order(config, database_name, "metadata_items").await,
+        ["permissions", "state", "b", "a"]
+    );
+    assert_eq!(
+        primary_key_columns(config, database_name, "metadata_items").await,
+        ["b", "a"]
+    );
+    assert_eq!(
+        column_definition(config, database_name, "metadata_items", "b").await,
+        "bigint unsigned"
+    );
+    assert_eq!(
+        column_definition(config, database_name, "metadata_items", "state").await,
+        "enum('draft','needs,review','O''Reilly')"
+    );
+    assert_eq!(
+        column_definition(config, database_name, "metadata_items", "permissions").await,
+        "set('read','write','close)later')"
+    );
+    assert_java_dormant(&application);
+
     let delete_sql = grid_sql(
         &router,
         "/api/rdb/dml/get_update_sql",
@@ -510,7 +751,7 @@ async fn verify_product_vertical(config: &MysqlTestConfig, database_name: &str) 
     execute_update(&router, &datasource, database_name, &delete_sql).await;
     assert_eq!(scalar_count(config, database_name, "items").await, 0);
 
-    for table in ["items_copy", "items"] {
+    for table in ["metadata_items", "items_copy", "items"] {
         post(
             &router,
             "/api/rdb/ddl/delete",
@@ -799,6 +1040,74 @@ async fn column_exists(
         .unwrap_or_default();
     conn.disconnect().await.expect("column probe must close");
     count > 0
+}
+
+async fn index_exists(
+    config: &MysqlTestConfig,
+    database_name: &str,
+    table_name: &str,
+    index_name: &str,
+) -> bool {
+    let mut conn = Conn::new(config.options())
+        .await
+        .expect("index probe must connect");
+    let count = conn
+        .exec_first::<u64, _, _>(
+            "SELECT COUNT(*) FROM information_schema.STATISTICS \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = ?",
+            (database_name, table_name, index_name),
+        )
+        .await
+        .expect("index probe must execute")
+        .unwrap_or_default();
+    conn.disconnect().await.expect("index probe must close");
+    count > 0
+}
+
+async fn column_order(
+    config: &MysqlTestConfig,
+    database_name: &str,
+    table_name: &str,
+) -> Vec<String> {
+    let mut conn = Conn::new(config.options())
+        .await
+        .expect("column-order probe must connect");
+    let columns = conn
+        .exec::<String, _, _>(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+            (database_name, table_name),
+        )
+        .await
+        .expect("column-order probe must execute");
+    conn.disconnect()
+        .await
+        .expect("column-order probe must close");
+    columns
+}
+
+async fn column_definition(
+    config: &MysqlTestConfig,
+    database_name: &str,
+    table_name: &str,
+    column_name: &str,
+) -> String {
+    let mut conn = Conn::new(config.options())
+        .await
+        .expect("column-definition probe must connect");
+    let definition = conn
+        .exec_first::<String, _, _>(
+            "SELECT COLUMN_TYPE FROM information_schema.COLUMNS \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?",
+            (database_name, table_name, column_name),
+        )
+        .await
+        .expect("column-definition probe must execute")
+        .expect("column definition must exist");
+    conn.disconnect()
+        .await
+        .expect("column-definition probe must close");
+    definition
 }
 
 async fn primary_key_columns(
