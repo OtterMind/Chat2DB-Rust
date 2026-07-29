@@ -785,6 +785,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "http-body-util",
+ "mysql_async",
  "serde",
  "serde_json",
  "subtle",
@@ -796,6 +797,7 @@ dependencies = [
  "tracing-subscriber",
  "utoipa",
  "utoipa-axum",
+ "uuid",
 ]
 
 [[package]]

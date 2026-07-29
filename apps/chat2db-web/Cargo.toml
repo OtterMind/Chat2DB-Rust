@@ -31,10 +31,12 @@ utoipa-axum.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
+mysql_async.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile = "3"
 tower.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

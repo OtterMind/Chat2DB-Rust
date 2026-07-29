@@ -8,6 +8,7 @@ mod driver_pack;
 mod engine_manager;
 mod error;
 mod large_value;
+pub mod mysql_ddl;
 mod native_mysql;
 mod operation;
 mod query;
