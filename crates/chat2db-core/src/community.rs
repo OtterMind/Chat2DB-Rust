@@ -905,6 +905,9 @@ impl Application {
                 "datasourceId cannot be empty",
             ));
         }
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::start_table_preview(self, request, row_limit).await;
+        }
 
         let engine = self.require_community_engine().await?;
         let client = engine.community_client().map_err(AppError::from)?;

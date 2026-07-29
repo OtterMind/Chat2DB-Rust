@@ -644,6 +644,7 @@ dependencies = [
  "chat2db-storage",
  "futures-util",
  "mysql_async",
+ "prost",
  "rustix",
  "serde",
  "serde_json",

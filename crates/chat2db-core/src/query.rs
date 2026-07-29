@@ -20,13 +20,23 @@ use crate::{
     operation::CancellationRequest,
 };
 
-struct PreparedQuery {
-    datasource_id: String,
-    sql: String,
-    parameters: Vec<JdbcParameter>,
-    options: QueryOptions,
-    retention: Duration,
-    force_read_only: bool,
+pub(crate) struct PreparedQuery {
+    pub(crate) datasource_id: String,
+    pub(crate) sql: String,
+    pub(crate) parameters: Vec<JdbcParameter>,
+    pub(crate) options: QueryOptions,
+    pub(crate) retention: Duration,
+    pub(crate) force_read_only: bool,
+}
+
+enum QueryBackend {
+    Java {
+        engine: EngineLease,
+        resolved: ResolvedDatasourceConnection,
+    },
+    NativeMysql {
+        resolved: ResolvedDatasourceConnection,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +51,7 @@ pub(crate) struct DatabaseWriteError {
     pub(crate) outcome: DatabaseWriteOutcome,
 }
 
-enum QueryTaskError {
+pub(crate) enum QueryTaskError {
     Failed(AppError),
     Cancelled(Option<String>),
 }
@@ -52,7 +62,7 @@ impl From<AppError> for QueryTaskError {
     }
 }
 
-struct RetainedWriter {
+pub(crate) struct RetainedWriter {
     inner: Option<ResultWriter>,
 }
 
@@ -102,7 +112,18 @@ impl Application {
         prepared: PreparedQuery,
     ) -> Result<QueryAccepted, AppError> {
         let storage = self.require_storage()?;
-        let engine = self.require_engine().await?;
+        let resolved = resolve_datasource_connection(&storage, &prepared.datasource_id).await?;
+        let backend = if self.is_native_mysql_driver(&resolved.driver_id)
+            && crate::native_mysql::is_native_read_candidate(&prepared.sql)?
+        {
+            crate::native_mysql::validate_query(&prepared)?;
+            QueryBackend::NativeMysql { resolved }
+        } else {
+            QueryBackend::Java {
+                engine: self.require_engine().await?,
+                resolved,
+            }
+        };
         let accepting_work = self.inner.accepting_work.lock().await;
         if !*accepting_work {
             return Err(AppError::unavailable(
@@ -126,7 +147,7 @@ impl Application {
                     operation.cancellation,
                     prepared,
                     storage,
-                    engine,
+                    backend,
                 )
                 .await;
             application
@@ -163,11 +184,32 @@ impl Application {
         cancellation: watch::Receiver<CancellationRequest>,
         query: PreparedQuery,
         storage: Storage,
-        engine: EngineLease,
+        backend: QueryBackend,
     ) {
-        let outcome = self
-            .execute_query_task(&operation_id, cancellation, query, storage, engine)
-            .await;
+        let outcome = match backend {
+            QueryBackend::Java { engine, resolved } => {
+                self.execute_query_task(
+                    &operation_id,
+                    cancellation,
+                    query,
+                    storage,
+                    engine,
+                    resolved,
+                )
+                .await
+            }
+            QueryBackend::NativeMysql { resolved } => {
+                crate::native_mysql::execute_query_task(
+                    self,
+                    &operation_id,
+                    cancellation,
+                    query,
+                    storage,
+                    resolved,
+                )
+                .await
+            }
+        };
         match outcome {
             Ok(result) => {
                 let _ = self.inner.operations.completed(&operation_id, result).await;
@@ -192,9 +234,8 @@ impl Application {
         query: PreparedQuery,
         storage: Storage,
         engine: EngineLease,
+        resolved: ResolvedDatasourceConnection,
     ) -> Result<chat2db_contract::ResultMetadata, QueryTaskError> {
-        let resolved = resolve_datasource_connection(&storage, &query.datasource_id).await?;
-
         if let CancellationRequest::Requested { reason } = cancellation.borrow().clone() {
             return Err(QueryTaskError::Cancelled(reason));
         }
@@ -515,7 +556,7 @@ impl TryFrom<StartQueryRequest> for PreparedQuery {
 }
 
 impl RetainedWriter {
-    async fn begin(
+    pub(crate) async fn begin(
         storage: Storage,
         schema: wire::QueryStarted,
         retention: Duration,
@@ -526,7 +567,7 @@ impl RetainedWriter {
         })
     }
 
-    async fn append(&mut self, batch: wire::RowBatch) -> Result<u64, AppError> {
+    pub(crate) async fn append(&mut self, batch: wire::RowBatch) -> Result<u64, AppError> {
         let mut writer = self.inner.take().ok_or_else(AppError::internal)?;
         let (returned, result) = tokio::task::spawn_blocking(move || {
             let result = writer.append_batch(&batch);
@@ -543,7 +584,7 @@ impl RetainedWriter {
             .persisted_bytes())
     }
 
-    async fn finish(
+    pub(crate) async fn finish(
         &mut self,
         completed: wire::QueryCompleted,
     ) -> Result<chat2db_contract::ResultMetadata, AppError> {
@@ -552,7 +593,7 @@ impl RetainedWriter {
         Ok(convert::result_metadata(metadata))
     }
 
-    async fn abort(&mut self) -> Result<(), AppError> {
+    pub(crate) async fn abort(&mut self) -> Result<(), AppError> {
         if let Some(writer) = self.inner.take() {
             tokio::task::spawn_blocking(move || writer.abort())
                 .await

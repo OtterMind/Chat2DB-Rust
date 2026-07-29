@@ -478,6 +478,9 @@ impl Application {
     }
 
     fn require_managed_driver(&self, driver_id: &str) -> Result<(), AppError> {
+        if self.is_native_mysql_driver(driver_id) {
+            return Ok(());
+        }
         match &self.inner.managed_driver_ids {
             Some(driver_ids) if !driver_ids.contains(driver_id) => Err(driver_not_installed()),
             _ => Ok(()),
@@ -485,22 +488,21 @@ impl Application {
     }
 
     pub(crate) fn is_native_mysql_driver(&self, driver_id: &str) -> bool {
-        let identity = self
-            .inner
+        if driver_id.eq_ignore_ascii_case("mysql") {
+            return true;
+        }
+        self.inner
             .drivers
             .iter()
             .find(|driver| driver.driver_id == driver_id)
-            .map_or_else(
-                || driver_id.to_ascii_lowercase(),
-                |driver| {
-                    format!(
-                        "{} {} {} {}",
-                        driver.pack_id, driver.name, driver.driver_id, driver.driver_class
-                    )
-                    .to_ascii_lowercase()
-                },
-            );
-        identity.contains("mysql")
+            .is_some_and(|driver| {
+                format!(
+                    "{} {} {} {}",
+                    driver.pack_id, driver.name, driver.driver_id, driver.driver_class
+                )
+                .to_ascii_lowercase()
+                .contains("mysql")
+            })
     }
 
     async fn require_managed_driver_for_update(

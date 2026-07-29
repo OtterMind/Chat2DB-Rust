@@ -17,6 +17,7 @@ chat2db-engine-protocol = { path = "../chat2db-engine-protocol" }
 chat2db-java-bridge = { path = "../chat2db-java-bridge" }
 chat2db-storage = { path = "../chat2db-storage" }
 mysql_async.workspace = true
+prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rustix.workspace = true
