@@ -17,7 +17,7 @@ use chat2db_storage::Storage;
 use mysql_async::{
     Column, Conn, Error as MysqlError, Opts, OptsBuilder, Row, SslOpts, Value,
     consts::{ColumnFlags, ColumnType},
-    prelude::{FromValue, Queryable},
+    prelude::{FromRow, FromValue, Queryable},
 };
 use prost::Message;
 use std::{
@@ -70,20 +70,23 @@ type TableRow = (
     Option<String>,
     Option<String>,
 );
-type ColumnRow = (
-    String,
-    String,
-    Option<String>,
-    String,
-    String,
-    String,
-    String,
-    i32,
-    Option<i32>,
-    String,
-    Option<String>,
-    Option<String>,
-);
+#[derive(FromRow)]
+#[mysql(crate_name = "mysql_async")]
+struct ColumnRow {
+    name: String,
+    data_type: String,
+    default_value: Option<String>,
+    extra: String,
+    comment: String,
+    column_key: String,
+    is_nullable: String,
+    ordinal_position: i32,
+    numeric_scale: Option<i32>,
+    column_definition: String,
+    charset: Option<String>,
+    collation: Option<String>,
+    primary_key_order: i32,
+}
 type IndexRow = (
     String,
     String,
@@ -259,12 +262,19 @@ pub(crate) async fn list_columns(
     validate_metadata_identifier(table_name, "tableName")?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
     let mut conn = open_connection(&resolved.connection).await?;
-    let query = "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_DEFAULT, COALESCE(EXTRA, ''), \
-                 COALESCE(COLUMN_COMMENT, ''), COALESCE(COLUMN_KEY, ''), IS_NULLABLE, \
-                 ORDINAL_POSITION, NUMERIC_SCALE, COLUMN_TYPE, CHARACTER_SET_NAME, \
-                 COLLATION_NAME \
-                 FROM information_schema.COLUMNS \
-                 WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
+    let query = "SELECT c.COLUMN_NAME AS name, c.DATA_TYPE AS data_type, \
+                 c.COLUMN_DEFAULT AS default_value, COALESCE(c.EXTRA, '') AS extra, \
+                 COALESCE(c.COLUMN_COMMENT, '') AS comment, \
+                 COALESCE(c.COLUMN_KEY, '') AS column_key, c.IS_NULLABLE AS is_nullable, \
+                 c.ORDINAL_POSITION AS ordinal_position, c.NUMERIC_SCALE AS numeric_scale, \
+                 c.COLUMN_TYPE AS column_definition, c.CHARACTER_SET_NAME AS charset, \
+                 c.COLLATION_NAME AS collation, \
+                 CAST(COALESCE(pk.SEQ_IN_INDEX, 0) AS SIGNED) AS primary_key_order \
+                 FROM information_schema.COLUMNS AS c \
+                 LEFT JOIN information_schema.STATISTICS AS pk \
+                   ON pk.TABLE_SCHEMA = c.TABLE_SCHEMA AND pk.TABLE_NAME = c.TABLE_NAME \
+                  AND pk.COLUMN_NAME = c.COLUMN_NAME AND pk.INDEX_NAME = 'PRIMARY' \
+                 WHERE c.TABLE_SCHEMA = ? AND c.TABLE_NAME = ? ORDER BY c.ORDINAL_POSITION";
     let result = metadata_query(
         conn.exec::<ColumnRow, _, _>(query, (database_name.to_owned(), table_name.to_owned())),
     )
@@ -274,6 +284,56 @@ pub(crate) async fn list_columns(
             .into_iter()
             .map(|row| community_column(database_name, schema_name, table_name, row))
             .collect(),
+    });
+    finish_connection(conn, result).await
+}
+
+pub(crate) async fn validate_column_reorder(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    table_name: &str,
+    column_names: &[String],
+) -> Result<(), AppError> {
+    if column_names.is_empty() {
+        return Ok(());
+    }
+    validate_metadata_identifier(database_name, "databaseName")?;
+    validate_metadata_identifier(table_name, "tableName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let query = "SELECT COLUMN_NAME, COLUMN_TYPE, COALESCE(EXTRA, ''), \
+                 COALESCE(GENERATION_EXPRESSION, '') \
+                 FROM information_schema.COLUMNS \
+                 WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?";
+    let result = metadata_query(conn.exec::<(String, String, String, String), _, _>(
+        query,
+        (database_name.to_owned(), table_name.to_owned()),
+    ))
+    .await
+    .and_then(|rows| {
+        for column_name in column_names {
+            let Some((_, column_type, extra, generation_expression)) = rows
+                .iter()
+                .find(|(name, _, _, _)| name.eq_ignore_ascii_case(column_name))
+            else {
+                return Err(AppError::invalid(
+                    "invalid_mysql_ddl",
+                    format!(
+                        "Cannot safely reorder column {column_name}: its live metadata changed"
+                    ),
+                ));
+            };
+            if let Some(reason) =
+                mysql_column_reorder_hazard(column_type, extra, generation_expression)
+            {
+                return Err(AppError::invalid(
+                    "invalid_mysql_ddl",
+                    format!("Cannot safely reorder column {column_name}: {reason}"),
+                ));
+            }
+        }
+        Ok(())
     });
     finish_connection(conn, result).await
 }
@@ -2553,7 +2613,7 @@ fn community_column(
     database_name: &str,
     schema_name: &str,
     table_name: &str,
-    (
+    ColumnRow {
         name,
         data_type,
         default_value,
@@ -2566,7 +2626,8 @@ fn community_column(
         column_definition,
         charset,
         collation,
-    ): ColumnRow,
+        primary_key_order,
+    }: ColumnRow,
 ) -> CommunityTableColumn {
     let data_type = data_type.to_ascii_uppercase();
     let (column_size, decimal_digits) =
@@ -2576,20 +2637,100 @@ fn community_column(
         schema_name: schema_name.to_owned(),
         table_name: table_name.to_owned(),
         name,
-        column_type: data_type,
+        column_type: mysql_metadata_column_type(&data_type, &column_definition),
         default_value,
         auto_increment: Some(extra.contains("auto_increment")),
         comment,
         primary_key: Some(column_key.eq_ignore_ascii_case("PRI")),
+        primary_key_order,
         column_size,
         decimal_digits,
         ordinal_position: Some(ordinal_position),
         nullable: Some(i32::from(is_nullable.eq_ignore_ascii_case("YES"))),
+        extent: mysql_enum_set_extent(&data_type, &column_definition),
         charset: charset.unwrap_or_default(),
         collation: collation.unwrap_or_default(),
         on_update_current_timestamp: Some(extra.contains("on update CURRENT_TIMESTAMP")),
         ..CommunityTableColumn::default()
     }
+}
+
+fn mysql_metadata_column_type(data_type: &str, column_definition: &str) -> String {
+    let mut projected = data_type.to_owned();
+    for modifier in ["UNSIGNED", "ZEROFILL"] {
+        if mysql_column_has_modifier(column_definition, modifier) {
+            projected.push(' ');
+            projected.push_str(modifier);
+        }
+    }
+    projected
+}
+
+fn mysql_column_has_modifier(column_definition: &str, expected: &str) -> bool {
+    mysql_column_modifier_suffix(column_definition)
+        .split_ascii_whitespace()
+        .any(|modifier| modifier.eq_ignore_ascii_case(expected))
+}
+
+fn mysql_column_modifier_suffix(column_definition: &str) -> &str {
+    if let Some(close) = column_definition.rfind(')') {
+        &column_definition[close + 1..]
+    } else if let Some(separator) = column_definition.find(char::is_whitespace) {
+        &column_definition[separator..]
+    } else {
+        ""
+    }
+}
+
+fn mysql_column_reorder_hazard(
+    column_definition: &str,
+    extra: &str,
+    generation_expression: &str,
+) -> Option<&'static str> {
+    let normalized_extra = extra
+        .split_ascii_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_uppercase();
+    if !generation_expression.trim().is_empty()
+        || normalized_extra
+            .split_ascii_whitespace()
+            .any(|part| part == "GENERATED")
+    {
+        return Some("generated-column expressions are not represented by the editor");
+    }
+    if normalized_extra
+        .split_ascii_whitespace()
+        .any(|part| part == "INVISIBLE")
+    {
+        return Some("the INVISIBLE attribute is not represented by the editor");
+    }
+    if mysql_column_has_modifier(column_definition, "ZEROFILL") {
+        return Some("the ZEROFILL attribute is not represented by the editor");
+    }
+    if !matches!(
+        normalized_extra.as_str(),
+        "" | "AUTO_INCREMENT" | "ON UPDATE CURRENT_TIMESTAMP"
+    ) {
+        return Some("one or more MySQL column attributes are not represented by the editor");
+    }
+    None
+}
+
+fn mysql_enum_set_extent(data_type: &str, column_definition: &str) -> String {
+    if !matches!(data_type, "ENUM" | "SET") {
+        return String::new();
+    }
+    let Some(open) = column_definition.find('(') else {
+        return String::new();
+    };
+    let Some(close) = column_definition.rfind(')') else {
+        return String::new();
+    };
+    if close <= open {
+        return String::new();
+    }
+    column_definition[open..=close].to_owned()
 }
 
 fn mysql_column_size(
@@ -3337,13 +3478,14 @@ mod tests {
     use tokio::sync::watch;
 
     use super::{
-        ConsoleExecutionError, ConsoleStatementExecution, MAX_CONSOLE_PAGE_SIZE,
+        ColumnRow, ConsoleExecutionError, ConsoleStatementExecution, MAX_CONSOLE_PAGE_SIZE,
         MAX_CONSOLE_RESULT_BYTES, community_column, community_foreign_key,
         community_function_parameter, community_indexes, community_procedure_parameter,
         connection_opts, execute_console_statement, is_mysql_database_type,
-        is_native_read_candidate, normalize_table_type, open_connection_with_opts,
-        qualified_identifier, quote_identifier, reserve_console_result_bytes, split_mysql_script,
-        validate_console_request, validate_read_only_console, validate_read_sql,
+        is_native_read_candidate, mysql_column_reorder_hazard, mysql_metadata_column_type,
+        normalize_table_type, open_connection_with_opts, qualified_identifier, quote_identifier,
+        reserve_console_result_bytes, split_mysql_script, validate_console_request,
+        validate_read_only_console, validate_read_sql,
     };
     use crate::{MysqlConsoleRequest, operation::CancellationRequest};
 
@@ -3831,33 +3973,121 @@ mod tests {
             "inventory",
             "",
             "items",
-            (
-                "amount".to_owned(),
-                "decimal".to_owned(),
-                Some("0.00".to_owned()),
-                "DEFAULT_GENERATED on update CURRENT_TIMESTAMP".to_owned(),
-                "Money".to_owned(),
-                "PRI".to_owned(),
-                "NO".to_owned(),
-                2,
-                Some(2),
-                "decimal(12,2) unsigned".to_owned(),
-                None,
-                None,
-            ),
+            ColumnRow {
+                name: "amount".to_owned(),
+                data_type: "decimal".to_owned(),
+                default_value: Some("0.00".to_owned()),
+                extra: "DEFAULT_GENERATED on update CURRENT_TIMESTAMP".to_owned(),
+                comment: "Money".to_owned(),
+                column_key: "PRI".to_owned(),
+                is_nullable: "NO".to_owned(),
+                ordinal_position: 2,
+                numeric_scale: Some(2),
+                column_definition: "decimal(12,2) unsigned".to_owned(),
+                charset: None,
+                collation: None,
+                primary_key_order: 2,
+            },
         );
 
         assert_eq!(column.database_name, "inventory");
         assert_eq!(column.table_name, "items");
-        assert_eq!(column.column_type, "DECIMAL");
+        assert_eq!(column.column_type, "DECIMAL UNSIGNED");
         assert_eq!(column.default_value.as_deref(), Some("0.00"));
         assert_eq!(column.column_size, Some(12));
         assert_eq!(column.decimal_digits, Some(2));
         assert_eq!(column.ordinal_position, Some(2));
         assert_eq!(column.nullable, Some(0));
         assert_eq!(column.primary_key, Some(true));
+        assert_eq!(column.primary_key_order, 2);
         assert_eq!(column.auto_increment, Some(false));
         assert_eq!(column.on_update_current_timestamp, Some(true));
+    }
+
+    #[test]
+    fn mysql_column_metadata_preserves_enum_and_set_definitions() {
+        for (data_type, definition, expected_extent) in [
+            (
+                "enum",
+                "enum('','draft','not UNSIGNED value','O''Reilly')",
+                "('','draft','not UNSIGNED value','O''Reilly')",
+            ),
+            (
+                "set",
+                "set('read','write','close)later')",
+                "('read','write','close)later')",
+            ),
+        ] {
+            let column = community_column(
+                "inventory",
+                "",
+                "items",
+                ColumnRow {
+                    name: "permissions".to_owned(),
+                    data_type: data_type.to_owned(),
+                    default_value: None,
+                    extra: String::new(),
+                    comment: String::new(),
+                    column_key: String::new(),
+                    is_nullable: "YES".to_owned(),
+                    ordinal_position: 3,
+                    numeric_scale: None,
+                    column_definition: definition.to_owned(),
+                    charset: Some("utf8mb4".to_owned()),
+                    collation: Some("utf8mb4_0900_ai_ci".to_owned()),
+                    primary_key_order: 0,
+                },
+            );
+
+            assert_eq!(column.column_type, data_type.to_ascii_uppercase());
+            assert_eq!(column.extent, expected_extent);
+            assert_eq!(column.column_size, None);
+            assert_eq!(column.primary_key_order, 0);
+        }
+    }
+
+    #[test]
+    fn mysql_column_metadata_reads_only_real_type_modifiers() {
+        assert_eq!(
+            mysql_metadata_column_type("ENUM", "enum('','active','not UNSIGNED value')"),
+            "ENUM"
+        );
+        assert_eq!(
+            mysql_metadata_column_type("SET", "set('UNSIGNED','read')"),
+            "SET"
+        );
+        assert_eq!(
+            mysql_metadata_column_type("DECIMAL", "decimal(12,2) unsigned"),
+            "DECIMAL UNSIGNED"
+        );
+        assert_eq!(
+            mysql_metadata_column_type("INT", "int unsigned zerofill"),
+            "INT UNSIGNED ZEROFILL"
+        );
+    }
+
+    #[test]
+    fn mysql_column_reorder_rejects_unrepresented_attributes() {
+        assert!(
+            mysql_column_reorder_hazard("int", "STORED GENERATED", "(`base` + 1)")
+                .is_some_and(|reason| reason.contains("generated-column"))
+        );
+        assert!(
+            mysql_column_reorder_hazard("int", "INVISIBLE", "")
+                .is_some_and(|reason| reason.contains("INVISIBLE"))
+        );
+        assert!(
+            mysql_column_reorder_hazard("int unsigned zerofill", "", "")
+                .is_some_and(|reason| reason.contains("ZEROFILL"))
+        );
+        assert_eq!(
+            mysql_column_reorder_hazard("enum('UNSIGNED','active')", "", ""),
+            None
+        );
+        assert_eq!(
+            mysql_column_reorder_hazard("bigint unsigned", "AUTO_INCREMENT", ""),
+            None
+        );
     }
 
     #[test]

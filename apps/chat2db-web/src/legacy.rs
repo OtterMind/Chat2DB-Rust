@@ -359,17 +359,25 @@ pub struct LegacySimpleTable {
 #[serde(default, rename_all = "camelCase")]
 pub struct LegacyColumn {
     pub old_name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub table_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub column_type: String,
     pub data_type: Option<i32>,
     pub default_value: Option<String>,
     pub auto_increment: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub comment: String,
     pub primary_key: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub primary_key_name: String,
+    #[serde(default, deserialize_with = "deserialize_i32_or_default")]
     pub primary_key_order: i32,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub schema_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub database_name: String,
     pub type_name: Option<String>,
     pub column_size: Option<i32>,
@@ -383,12 +391,18 @@ pub struct LegacyColumn {
     pub ordinal_position: Option<i32>,
     pub nullable: Option<i32>,
     pub generated_column: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub extent: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub char_set_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub collation_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub value: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub unit: String,
     pub sparse: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub default_constraint_name: String,
     pub seed: Option<i32>,
     pub increment: Option<i32>,
@@ -399,21 +413,35 @@ pub struct LegacyColumn {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LegacyIndexColumn {
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub index_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub table_name: String,
-    #[serde(rename = "type")]
+    #[serde(
+        rename = "type",
+        default,
+        deserialize_with = "deserialize_string_or_default"
+    )]
     pub index_type: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub comment: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub column_name: String,
     pub ordinal_position: Option<i32>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub collation: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub schema_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub database_name: String,
     pub non_unique: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub index_qualifier: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub asc_or_desc: String,
     pub cardinality: Option<i64>,
     pub pages: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub filter_condition: String,
     pub sub_part: Option<i64>,
     pub edit_status: Option<String>,
@@ -424,20 +452,34 @@ pub struct LegacyIndexColumn {
 pub struct LegacyIndex {
     pub columns: Option<String>,
     pub old_name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub table_name: String,
-    #[serde(rename = "type")]
+    #[serde(
+        rename = "type",
+        default,
+        deserialize_with = "deserialize_string_or_default"
+    )]
     pub index_type: String,
     pub unique: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub comment: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub schema_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub database_name: String,
+    #[serde(default, deserialize_with = "deserialize_vec_or_default")]
     pub column_list: Vec<LegacyIndexColumn>,
     pub edit_status: Option<String>,
     pub concurrently: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub method: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub foreign_schema_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub foreign_table_name: String,
+    #[serde(default, deserialize_with = "deserialize_vec_or_default")]
     pub foreign_column_namelist: Vec<String>,
 }
 
@@ -445,27 +487,47 @@ pub struct LegacyIndex {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LegacyEditableTable {
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub comment: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub schema_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub database_name: String,
-    #[serde(rename = "type")]
+    #[serde(
+        rename = "type",
+        default,
+        deserialize_with = "deserialize_string_or_default"
+    )]
     pub table_type: String,
+    #[serde(default, deserialize_with = "deserialize_vec_or_default")]
     pub column_list: Vec<LegacyColumn>,
+    #[serde(default, deserialize_with = "deserialize_vec_or_default")]
     pub index_list: Vec<LegacyIndex>,
+    #[serde(default, deserialize_with = "deserialize_vec_or_default")]
     pub foreign_key_list: Vec<serde_json::Value>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub db_type: String,
     pub pinned: bool,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub ddl: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub engine: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub charset: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub collate: String,
     pub increment_value: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub partition: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub tablespace: String,
     pub rows: Option<String>,
     pub data_length: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub create_time: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub update_time: String,
 }
 
@@ -1214,6 +1276,13 @@ where
     D: Deserializer<'de>,
 {
     Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn deserialize_i32_or_default<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<i32>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 fn deserialize_vec_or_default<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
@@ -2139,6 +2208,17 @@ pub(crate) async fn build_table_modify_sql(
     let datasource_id = request.data_source_id.as_string();
     resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
     let sql = if let Some(old_table) = request.old_table.as_ref() {
+        let reordered_columns = mysql_reordered_column_names(old_table, &request.new_table);
+        if !reordered_columns.is_empty() {
+            application
+                .validate_native_mysql_column_reorder(
+                    &datasource_id,
+                    &first_non_blank(&request.database_name, &old_table.database_name),
+                    &required_name(&old_table.name, "oldTable.name")?,
+                    &reordered_columns,
+                )
+                .await?;
+        }
         build_mysql_alter_table(&mysql_table_alter(
             old_table,
             &request.new_table,
@@ -2375,20 +2455,98 @@ pub(crate) async fn view_editor_meta(
     application: &Application,
     request: &LegacyViewOperationRequest,
 ) -> LegacyResult<LegacyViewMetaResponse> {
-    let view_name = first_non_blank(&request.view_name, &request.table_name);
-    let query = LegacyTableDetailQuery {
-        data_source_id: request.data_source_id.clone(),
-        database_name: request.database_name.clone(),
-        schema_name: request.schema_name.clone(),
-        database_type: request.database_type.clone(),
-        table_name: view_name,
+    let datasource_id = request.data_source_id.as_string();
+    resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
+    let sql = "select * from table_name".to_owned();
+    let preview_name = if request.database_name.trim().is_empty() {
+        "`undefined`".to_owned()
+    } else {
+        format!("`{}`.`undefined`", request.database_name.replace('`', "``"))
     };
-    let view = Box::pin(get_editable_view(application, &query)).await?;
+    let preview_sql = format!("create view {preview_name} AS \n{sql};");
     Ok(LegacyViewMetaResponse {
-        configurations: Vec::new(),
-        preview_sql: view.ddl.clone(),
-        sql: view.ddl,
+        configurations: mysql_view_configurations(),
+        preview_sql,
+        sql,
     })
+}
+
+fn mysql_view_configurations() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({
+            "labelName": "算法",
+            "name": "algorithm",
+            "inputType": "select",
+            "defaultValue": "3",
+            "required": false,
+            "multiple": false,
+            "display": null,
+            "selects": [
+                { "label": "UNDEFINED", "value": 0 },
+                { "label": "MERGE", "value": 1 },
+                { "label": "TEMPTABLE", "value": 2 },
+                { "label": null, "value": 3 }
+            ]
+        }),
+        serde_json::json!({
+            "labelName": "检查选项",
+            "name": "checkOption",
+            "inputType": "select",
+            "defaultValue": "2",
+            "required": false,
+            "multiple": false,
+            "display": null,
+            "selects": [
+                { "label": "CASCADED", "value": 0 },
+                { "label": "LOCAL", "value": 1 },
+                { "label": null, "value": 2 }
+            ]
+        }),
+        serde_json::json!({
+            "labelName": "SQL 安全性",
+            "name": "security",
+            "inputType": "select",
+            "defaultValue": "2",
+            "required": false,
+            "multiple": false,
+            "display": null,
+            "selects": [
+                { "label": "DEFINER", "value": 0 },
+                { "label": "INVOKER", "value": 1 },
+                { "label": null, "value": 2 }
+            ]
+        }),
+        serde_json::json!({
+            "labelName": "视图名称",
+            "name": "viewName",
+            "inputType": "input",
+            "defaultValue": null,
+            "required": false,
+            "multiple": false,
+            "display": null,
+            "selects": null
+        }),
+        serde_json::json!({
+            "labelName": "定义者",
+            "name": "definer",
+            "inputType": "input",
+            "defaultValue": null,
+            "required": false,
+            "multiple": false,
+            "display": null,
+            "selects": null
+        }),
+        serde_json::json!({
+            "labelName": "use or replace",
+            "name": "useOrReplace",
+            "inputType": "checkbox",
+            "defaultValue": "false",
+            "required": false,
+            "multiple": false,
+            "display": null,
+            "selects": null
+        }),
+    ]
 }
 
 /// Lists stored functions in the historical paged metadata shape.
@@ -3894,6 +4052,7 @@ fn simple_table_response(table: CommunityTable) -> LegacySimpleTable {
 
 fn column_response(column: CommunityTableColumn) -> LegacyColumn {
     let old_name = Some(column.name.clone());
+    let value = mysql_enum_set_editor_value(&column.extent);
     LegacyColumn {
         old_name,
         name: column.name,
@@ -3923,7 +4082,7 @@ fn column_response(column: CommunityTableColumn) -> LegacyColumn {
         extent: column.extent,
         char_set_name: column.charset,
         collation_name: column.collation,
-        value: String::new(),
+        value,
         unit: column.unit,
         sparse: column.sparse,
         default_constraint_name: column.default_constraint_name,
@@ -4631,11 +4790,11 @@ fn mysql_grid_copy_operation(
     {
         "CREATE" => MysqlResultGridCopyOperationType::Create,
         "UPDATE_COPY" => MysqlResultGridCopyOperationType::UpdateCopy,
-        "WHERE" => MysqlResultGridCopyOperationType::Where,
+        "WHERE" | "IN_VALUES" => MysqlResultGridCopyOperationType::Where,
         _ => {
             return Err(LegacyFailure::invalid(
                 "invalid_mysql_result_grid",
-                "copy operation type must be CREATE, UPDATE_COPY, or WHERE",
+                "copy operation type must be CREATE, UPDATE_COPY, WHERE, or IN_VALUES",
             ));
         }
     };
@@ -4752,6 +4911,7 @@ fn mysql_table_definition(
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn mysql_table_alter(
     old_table: &LegacyEditableTable,
     new_table: &LegacyEditableTable,
@@ -4800,6 +4960,16 @@ fn mysql_table_alter(
                     "columnList.oldName",
                 )?,
             }),
+            _ if mysql_column_moved(old_table, &active_columns, column) => {
+                columns.push(MysqlColumnAlter::Modify {
+                    old_name: required_name(
+                        column.old_name.as_deref().unwrap_or(&column.name),
+                        "columnList.oldName",
+                    )?,
+                    column: mysql_column_definition(column)?,
+                    position: mysql_column_position(&active_columns, column),
+                });
+            }
             _ => {}
         }
     }
@@ -5052,6 +5222,79 @@ fn mysql_column_position(
     }
 }
 
+fn mysql_column_moved(
+    old_table: &LegacyEditableTable,
+    active_columns: &[&LegacyColumn],
+    column: &LegacyColumn,
+) -> bool {
+    let original_name = legacy_column_original_name(column);
+    let old_columns = old_table
+        .column_list
+        .iter()
+        .filter(|candidate| !has_edit_status(candidate.edit_status.as_deref(), "DELETE"))
+        .collect::<Vec<_>>();
+    let Some(old_index) = old_columns.iter().position(|candidate| {
+        candidate.name.eq_ignore_ascii_case(original_name)
+            || legacy_column_original_name(candidate).eq_ignore_ascii_case(original_name)
+    }) else {
+        return false;
+    };
+    let Some(new_index) = active_columns.iter().position(|candidate| {
+        std::ptr::eq(*candidate, column)
+            || legacy_column_original_name(candidate).eq_ignore_ascii_case(original_name)
+    }) else {
+        return false;
+    };
+
+    let old_previous = old_index
+        .checked_sub(1)
+        .map(|index| legacy_column_original_name(old_columns[index]));
+    let new_previous = new_index
+        .checked_sub(1)
+        .map(|index| legacy_column_original_name(active_columns[index]));
+    match (old_previous, new_previous) {
+        (None, None) => false,
+        (Some(old), Some(new)) => !old.eq_ignore_ascii_case(new),
+        _ => true,
+    }
+}
+
+fn mysql_reordered_column_names(
+    old_table: &LegacyEditableTable,
+    new_table: &LegacyEditableTable,
+) -> Vec<String> {
+    let active_columns = new_table
+        .column_list
+        .iter()
+        .filter(|column| !has_edit_status(column.edit_status.as_deref(), "DELETE"))
+        .collect::<Vec<_>>();
+    new_table
+        .column_list
+        .iter()
+        .filter(|column| {
+            !matches!(
+                column
+                    .edit_status
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_uppercase()
+                    .as_str(),
+                "ADD" | "MODIFY" | "DELETE"
+            ) && mysql_column_moved(old_table, &active_columns, column)
+        })
+        .map(|column| legacy_column_original_name(column).to_owned())
+        .collect()
+}
+
+fn legacy_column_original_name(column: &LegacyColumn) -> &str {
+    column
+        .old_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(&column.name)
+}
+
 fn mysql_view_definition(
     request: &LegacyViewOperationRequest,
 ) -> LegacyResult<MysqlViewDefinition> {
@@ -5236,13 +5479,71 @@ fn parse_auto_increment(value: Option<&str>) -> LegacyResult<Option<u64>> {
 }
 
 fn parse_enum_values(value: &str) -> Vec<String> {
-    value
-        .split(',')
-        .map(str::trim)
-        .map(|value| value.trim_matches(['\'', '"']))
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .collect()
+    let value = value.trim();
+    let value = value
+        .strip_prefix('(')
+        .and_then(|value| value.strip_suffix(')'))
+        .unwrap_or(value);
+    let mut values = Vec::new();
+    let mut chars = value.chars().peekable();
+    while chars.peek().is_some() {
+        while matches!(chars.peek(), Some(character) if character.is_whitespace() || *character == ',')
+        {
+            chars.next();
+        }
+        let Some(first) = chars.next() else {
+            break;
+        };
+        let mut parsed = String::new();
+        let quoted = matches!(first, '\'' | '"');
+        if quoted {
+            let quote = first;
+            while let Some(character) = chars.next() {
+                if character == '\\' {
+                    if let Some(escaped) = chars.next() {
+                        parsed.push(escaped);
+                    }
+                } else if character == quote {
+                    if chars.peek() == Some(&quote) {
+                        chars.next();
+                        parsed.push(quote);
+                    } else {
+                        break;
+                    }
+                } else {
+                    parsed.push(character);
+                }
+            }
+            while matches!(chars.peek(), Some(character) if character.is_whitespace()) {
+                chars.next();
+            }
+            if chars.peek() == Some(&',') {
+                chars.next();
+            }
+        } else {
+            parsed.push(first);
+            for character in chars.by_ref() {
+                if character == ',' {
+                    break;
+                }
+                parsed.push(character);
+            }
+            parsed.truncate(parsed.trim_end().len());
+        }
+        if quoted || !parsed.is_empty() {
+            values.push(parsed);
+        }
+    }
+    values
+}
+
+fn mysql_enum_set_editor_value(extent: &str) -> String {
+    let extent = extent.trim();
+    extent
+        .strip_prefix('(')
+        .and_then(|value| value.strip_suffix(')'))
+        .unwrap_or(extent)
+        .to_owned()
 }
 
 fn paginate<T>(items: Vec<T>, page_no: u32, page_size: u32) -> LegacyPage<T> {
@@ -6831,6 +7132,210 @@ mod tests {
         assert_eq!((decimal.length, decimal.scale), (Some(12), Some(3)));
         let timestamp = definition("TIMESTAMP", Some(26), Some(6));
         assert_eq!((timestamp.length, timestamp.scale), (Some(6), None));
+    }
+
+    #[test]
+    fn table_editor_preserves_mysql_enum_and_set_values() {
+        let column = column_response(CommunityTableColumn {
+            name: "state".to_owned(),
+            column_type: "ENUM".to_owned(),
+            extent: "('','draft','needs,review','O''Reilly','close)later')".to_owned(),
+            ..CommunityTableColumn::default()
+        });
+
+        assert_eq!(
+            column.value,
+            "'','draft','needs,review','O''Reilly','close)later'"
+        );
+        let definition = mysql_column_definition(&column)
+            .expect("the retained enum definition must normalize for DDL");
+        assert_eq!(
+            definition.enum_values,
+            vec!["", "draft", "needs,review", "O'Reilly", "close)later"]
+        );
+    }
+
+    #[test]
+    fn table_editor_accepts_null_heavy_frontend_rows() {
+        let request: LegacyTableModifyRequest = serde_json::from_str(
+            r#"{
+            "dataSourceId": "mysql-local",
+            "databaseType": "MYSQL",
+            "databaseName": "inventory",
+            "newTable": {
+                "name": "items",
+                "comment": null,
+                "schemaName": null,
+                "type": null,
+                "dbType": null,
+                "ddl": null,
+                "engine": null,
+                "charset": null,
+                "collate": null,
+                "partition": null,
+                "tablespace": null,
+                "createTime": null,
+                "updateTime": null,
+                "columnList": [{
+                    "oldName": null,
+                    "name": "state",
+                    "tableName": null,
+                    "columnType": "VARCHAR",
+                    "dataType": null,
+                    "defaultValue": null,
+                    "autoIncrement": null,
+                    "comment": null,
+                    "primaryKey": null,
+                    "primaryKeyName": null,
+                    "primaryKeyOrder": null,
+                    "schemaName": null,
+                    "databaseName": null,
+                    "typeName": null,
+                    "columnSize": 32,
+                    "bufferLength": null,
+                    "decimalDigits": null,
+                    "numPrecRadix": null,
+                    "nullableInt": null,
+                    "sqlDataType": null,
+                    "sqlDatetimeSub": null,
+                    "charOctetLength": null,
+                    "ordinalPosition": null,
+                    "nullable": 1,
+                    "generatedColumn": null,
+                    "extent": null,
+                    "charSetName": null,
+                    "collationName": null,
+                    "value": null,
+                    "unit": null,
+                    "defaultConstraintName": null,
+                    "editStatus": "ADD"
+                }],
+                "indexList": [{
+                    "name": "",
+                    "type": null,
+                    "comment": null,
+                    "schemaName": null,
+                    "databaseName": null,
+                    "method": null,
+                    "foreignSchemaName": null,
+                    "foreignTableName": null,
+                    "foreignColumnNamelist": null,
+                    "columnList": [{
+                        "indexName": null,
+                        "tableName": null,
+                        "type": null,
+                        "comment": null,
+                        "columnName": "state",
+                        "collation": null,
+                        "schemaName": null,
+                        "databaseName": null,
+                        "indexQualifier": null,
+                        "ascOrDesc": null,
+                        "filterCondition": null
+                    }],
+                    "editStatus": "ADD"
+                }]
+            }
+        }"#,
+        )
+        .expect("the retained Community editor payload must accept explicit nulls");
+
+        let column = &request.new_table.column_list[0];
+        assert_eq!(column.primary_key_order, 0);
+        assert!(column.comment.is_empty());
+        assert!(column.char_set_name.is_empty());
+        let index = &request.new_table.index_list[0];
+        assert!(index.index_type.is_empty());
+        assert!(index.comment.is_empty());
+        assert!(index.column_list[0].index_name.is_empty());
+    }
+
+    #[test]
+    fn result_grid_in_values_accepts_the_frontend_operation_name() {
+        let operation: LegacyGridOperationRequest = serde_json::from_value(serde_json::json!({
+            "type": "IN_VALUES",
+            "dataList": ["1", "active"],
+            "selectCols": [1]
+        }))
+        .expect("the IN-values operation must deserialize");
+
+        let operation = mysql_grid_copy_operation(&operation)
+            .expect("the retained frontend operation name must normalize");
+        assert_eq!(
+            operation.operation_type,
+            MysqlResultGridCopyOperationType::Where
+        );
+    }
+
+    #[test]
+    fn table_alter_detects_column_order_from_array_position() {
+        let column = |name: &str| LegacyColumn {
+            old_name: Some(name.to_owned()),
+            name: name.to_owned(),
+            column_type: "INT".to_owned(),
+            nullable: Some(1),
+            ..LegacyColumn::default()
+        };
+        let old_table = LegacyEditableTable {
+            name: "items".to_owned(),
+            database_name: "inventory".to_owned(),
+            column_list: vec![column("a"), column("b"), column("c")],
+            ..LegacyEditableTable::default()
+        };
+        let mut new_table = old_table.clone();
+        new_table.column_list = vec![
+            old_table.column_list[2].clone(),
+            old_table.column_list[0].clone(),
+            old_table.column_list[1].clone(),
+        ];
+
+        assert_eq!(
+            mysql_reordered_column_names(&old_table, &new_table),
+            ["c", "a"]
+        );
+
+        let alter = mysql_table_alter(&old_table, &new_table, "inventory", "")
+            .expect("a drag-only reorder must normalize");
+        let sql = build_mysql_alter_table(&alter).expect("a drag-only reorder must build");
+
+        assert_eq!(sql.matches("MODIFY COLUMN").count(), 2);
+        assert!(sql.contains("MODIFY COLUMN `c` INT NULL FIRST"));
+        assert!(sql.contains("MODIFY COLUMN `a` INT NULL AFTER `c`"));
+    }
+
+    #[tokio::test]
+    async fn view_meta_returns_the_community_creation_template() {
+        let request: LegacyViewOperationRequest = serde_json::from_value(serde_json::json!({
+            "dataSourceId": "mysql-local",
+            "databaseType": "MYSQL",
+            "databaseName": "inventory",
+            "schemaName": "ignored_schema",
+            "viewName": ""
+        }))
+        .expect("view metadata request must deserialize");
+        let metadata = view_editor_meta(&Application::new(), &request)
+            .await
+            .expect("view metadata must not require an existing view");
+
+        assert_eq!(metadata.sql, "select * from table_name");
+        assert_eq!(metadata.configurations.len(), 6);
+        assert_eq!(
+            metadata
+                .configurations
+                .iter()
+                .map(|configuration| configuration["name"].as_str().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            vec![
+                "algorithm",
+                "checkOption",
+                "security",
+                "viewName",
+                "definer",
+                "useOrReplace"
+            ]
+        );
+        assert!(metadata.preview_sql.contains("`inventory`.`undefined`"));
+        assert!(!metadata.preview_sql.contains("ignored_schema"));
     }
 
     #[tokio::test]

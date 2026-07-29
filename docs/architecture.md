@@ -50,7 +50,14 @@ testing, datasource CRUD/tree, relational object metadata, editable table
 preview and insert/update/delete SQL, copy/count helpers, database/schema
 creation and confirmed deletion, table create/alter/drop/truncate/copy, view
 query/create-or-replace/drop, and bounded unparameterized Console reads,
-writes, scripts, transactions, cancellation, history, and large values.
+writes, scripts, transactions, cancellation, history, and large values. The
+MySQL editor adapter accepts the original frontend's explicit-null rows and
+`IN_VALUES` operation, derives column moves from array order, and preserves
+`UNSIGNED`, empty and quoted ENUM/SET members, and composite primary-key order
+through metadata round trips. Type modifiers are read outside the type's value
+list, so an ENUM/SET member containing `UNSIGNED` is not misclassified. Its view
+metadata route returns the original six-field creation form without querying an
+existing view.
 Signing, distribution, the remaining dialect estate, broader historical API
 coverage, and packaging remain target components. CLI and MCP attach to a
 running host rather than composing a second product runtime.
@@ -62,9 +69,13 @@ and retained-result paging. On 2026-07-29 the native MySQL path passed against
 MySQL 8.4 with a deliberately missing Java executable, including active-query
 cancellation and dormant-Java assertions after every product operation. The
 same local Docker MySQL 8.4 service also passed the historical Web editable-grid
-and DDL lifecycle, including database, table, and view cleanup, while Java
-remained dormant. The complete repository `make verify` gate and an explicit
-real-MySQL rerun passed after the final implementation.
+and DDL lifecycle, including explicit-null editor payloads, `IN_VALUES`,
+drag-only column reordering, type-preserving ENUM/SET and `UNSIGNED` ALTERs,
+composite primary-key ordering, and fail-closed generated/invisible-column
+reorders that retained their live definitions. View metadata and full
+database/table/view cleanup also passed while Java remained dormant. The
+complete repository `make verify` gate and an explicit real-MySQL rerun passed
+after the final implementation.
 
 ## Ownership
 
@@ -146,13 +157,19 @@ The native MySQL baseline implements:
 - JDBC-URL and connection-property translation into `mysql_async::Opts`, with
   explicit Rustls policy, TCP preference, and a 15-second connect deadline;
 - native database/schema/table/column/index/key/view/routine/trigger metadata
-  and safely quoted bounded table preview;
+  and safely quoted bounded table preview, including type-suffix-aware
+  `UNSIGNED`/`ZEROFILL`, empty and quoted ENUM/SET members, and ordered composite
+  primary keys required by the retained table editor;
 - structured, bounded insert/update/delete SQL for editable result grids,
-  primary-key-first optimistic predicates, copy/count helpers, and native
-  execution with datasource read-only enforcement;
+  primary-key-first optimistic predicates, copy/count helpers including the
+  frontend `IN_VALUES` operation, and native execution with datasource
+  read-only enforcement;
 - validated database/schema create and confirmed delete, table
-  create/alter/drop/truncate/copy, and view create-or-replace/drop operations
-  exposed through the shared historical Web/Tauri dispatcher;
+  create/alter/drop/truncate/copy, drag-derived column positioning, and view
+  metadata/create-or-replace/drop operations exposed through the shared
+  historical Web/Tauri dispatcher. Before rebuilding a moved column, the Rust
+  path checks its live MySQL definition and rejects generated, invisible,
+  `ZEROFILL`, or other attributes that the retained editor cannot represent;
 - semicolon and `DELIMITER` script splitting, preserved-single dispatch,
   multiple result sets, DDL/DML, explicit transactions, error continuation,
   `EXPLAIN`, normal/all-row paging, and datasource read-only enforcement;

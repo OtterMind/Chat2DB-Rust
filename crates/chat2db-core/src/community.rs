@@ -293,6 +293,28 @@ impl Application {
         .await
     }
 
+    /// Rejects native `MySQL` column reorders that cannot be rebuilt losslessly.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, metadata, connection, or unsupported-column errors.
+    pub async fn validate_native_mysql_column_reorder(
+        &self,
+        datasource_id: &str,
+        database_name: &str,
+        table_name: &str,
+        column_names: &[String],
+    ) -> Result<(), AppError> {
+        native_mysql::validate_column_reorder(
+            self,
+            datasource_id,
+            database_name,
+            table_name,
+            column_names,
+        )
+        .await
+    }
+
     /// Lists indexes through Community metadata using a forced read-only session.
     ///
     /// # Errors
