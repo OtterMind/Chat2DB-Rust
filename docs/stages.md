@@ -12,7 +12,7 @@ in runtime health until then.
 | 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
 | 5 | Complete | Product transports | Generated OpenAPI/TypeScript contract, Axum JSON/SSE, Tauri 2 commands/channels, shared SQL workbench, product H2 tests |
 | 6 | Complete | Agent, MCP, and CLI | Direct providers, durable bounded tool loop, SQL tools/permissions, compaction, Web/Tauri run transports, owner-only local attachment, read-query CLI, and bounded `rmcp` stdio tools |
-| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs through 7M bounded table preview are implemented; native `mysql_async` now owns the MySQL browser and unparameterized Console data plane while Java starts on demand for unmigrated compatibility work; the current product retains the original Community layout with historical HTTP/Tauri compatibility for MySQL browsing, saved Consoles, scripts, writes, transactions, history, cancellation, and large values |
+| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs through 7M bounded table preview are implemented; native `mysql_async` now owns the MySQL browser, editable result-grid and DDL lifecycle, and unparameterized Console data plane while Java starts on demand for unmigrated compatibility work; the current product retains the original Community layout with historical HTTP/Tauri compatibility for MySQL browsing, object editing, saved Consoles, scripts, writes, transactions, history, cancellation, and large values |
 | 8 | Planned | Packaging and release | License authorization, NOTICE/SBOM, jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
 
 Stage 3 completion means the versioned Rust-Java bridge can load an external
@@ -347,6 +347,24 @@ the complete repository `make verify` gate, and a real MySQL 8.4 native product
 vertical rerun after the final compatibility fix. The broad Community
 compatibility operations and other database types remain on the lazy Java/JDBC
 path.
+
+The editable-grid and DDL follow-up adds structured MySQL insert/update/delete
+generation and native execution, copy-as-SQL and bounded count helpers, table
+editor metadata, database/schema create and confirmed delete, table
+create/alter/drop/truncate/copy, and view query/create-or-replace/drop. Axum and
+desktop `legacy_request` use the same historical dispatcher, so the unchanged
+Community frontend reaches one Rust implementation on both transports. The SQL
+builders validate identifier segments, closed type/options, values, and view
+bodies; updates prefer primary keys and otherwise match the complete old row
+with `LIMIT 1`.
+
+Runtime-tested: yes. On 2026-07-29 the local Docker MySQL 8.4 gate passed the
+Core product, native Console, and historical Web editable-grid/DDL verticals.
+The Web vertical exercised database/table/view creation and deletion, table
+alter/copy/truncate, row insert/update/delete, copy/count helpers, automatic
+fixture cleanup, and a dormant Java assertion after every product operation.
+Core and Web focused tests, strict workspace Clippy, formatting, whitespace,
+and the complete repository `make verify` gate passed.
 
 Stage 7 remains incomplete. Complete MySQL type conformance, native bind
 parameters, remaining exact Community Console edge cases, data import/export,
