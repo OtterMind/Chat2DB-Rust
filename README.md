@@ -205,7 +205,9 @@ React / TypeScript              CLI / MCP client
 See [`docs/architecture.md`](docs/architecture.md) for ownership,
 [`docs/protocol.md`](docs/protocol.md) for the implemented 1.0 process contract,
 and [`docs/driver-packs.md`](docs/driver-packs.md) for the local manifest and
-startup contract.
+startup contract. [`docs/mysql-community-parity.md`](docs/mysql-community-parity.md)
+is the source-locked acceptance contract for matching the original Community
+frontend's complete MySQL feature surface.
 
 ## Build
 
