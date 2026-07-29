@@ -27,10 +27,13 @@
   exercises these mutations while proving Java remains dormant. The retained
   editor now accepts its explicit-null column and index payloads, recognizes
   `IN_VALUES`, infers `FIRST`/`AFTER` changes from drag-only array order, and
-  preserves `UNSIGNED`, ENUM/SET values, and composite primary-key order across
-  native metadata and subsequent ALTER statements. MySQL `view_meta` returns
-  the original six form configurations and creation template without requiring
-  an existing view.
+  preserves `UNSIGNED`, empty and quoted ENUM/SET values, and composite
+  primary-key order across native metadata and subsequent ALTER statements.
+  Type modifiers are parsed outside ENUM/SET value lists. Dragging a generated,
+  invisible, `ZEROFILL`, or otherwise unmodeled column is rejected after a live
+  metadata check instead of emitting a lossy `MODIFY COLUMN`. MySQL `view_meta`
+  returns the original six form configurations and creation template without
+  requiring an existing view.
 - Complete parity: not implemented.
 
 This file is the acceptance contract for MySQL work. Community frontend routes
@@ -61,9 +64,9 @@ route reaches it and a real MySQL product test covers the behavior.
 | Datasource import/export and namespaces | converter upload routes, `/api/connection/datasource/import_community`, `/datasource/export`, `/api/namespaces/*` | Not implemented | Support Community, Chat2DB, Navicat, DBeaver, DataGrip, export, grouping, and ordering. |
 | Database and schema metadata | `/api/rdb/database/list`, `/database_schema_list`, `/api/rdb/schema/list` | Database/schema list implemented | Match filtering, system flags, charset/collation, comments, and pagination envelopes. |
 | Database and schema mutation | database create/modify/delete and `/api/rdb/delete/{database,schema}/{prepare,execute}` | Historical create-SQL routes and two-phase confirmed database/schema deletion are implemented; database create/delete is real-MySQL tested | Add unsupported database alteration fields and close remaining exact projection differences. |
-| Table inventory and detail | `/api/rdb/table/list`, `/table_list`, `/table_meta`, `/column_list`, `/index_list`, `/key_list`, `/query` | List, compact list, table metadata/query, column, index, and key routes are implemented with native MySQL metadata; nullable defaults, `UNSIGNED`, ENUM/SET values, composite primary-key order, and legacy envelopes match the retained editor and are real-MySQL tested | Close remaining field-level differences as original editor scenarios expose them. |
+| Table inventory and detail | `/api/rdb/table/list`, `/table_list`, `/table_meta`, `/column_list`, `/index_list`, `/key_list`, `/query` | List, compact list, table metadata/query, column, index, and key routes are implemented with native MySQL metadata; nullable defaults, type-suffix-aware `UNSIGNED`/`ZEROFILL`, empty and quoted ENUM/SET values, composite primary-key order, and legacy envelopes match the retained editor and are real-MySQL tested | Close remaining field-level differences as original editor scenarios expose them. |
 | Table data operations | `/api/rdb/dml/execute_table`, `/execute_update`, `/get_update_sql`, `/copy_update_sql`, `/copy_in_values_sql`, `/count` | Editable previews, PK-first optimistic insert/update/delete SQL, bounded native execution, copy-as-INSERT/UPDATE/WHERE, frontend `IN_VALUES`, and protected count queries are implemented and real-MySQL tested | Close remaining clipboard and uncommon result-type differences. |
-| Table DDL | `/api/rdb/ddl/*`, `/api/rdb/table/modify/sql`, `/delete`, `/truncate`, `/copy`, create/update examples, DDL export | Create/alter/drop/truncate/copy previews and execution are implemented for columns, indexes, engine, charset, collation, comments, auto-increment, and MySQL editor types; explicit-null editor rows and drag-only `FIRST`/`AFTER` reordering are real-MySQL tested without type loss | Add foreign-key mutation, examples/export, and remaining table options. |
+| Table DDL | `/api/rdb/ddl/*`, `/api/rdb/table/modify/sql`, `/delete`, `/truncate`, `/copy`, create/update examples, DDL export | Create/alter/drop/truncate/copy previews and execution are implemented for columns, indexes, engine, charset, collation, comments, auto-increment, and MySQL editor types; explicit-null editor rows and drag-only `FIRST`/`AFTER` reordering are real-MySQL tested, while live metadata rejects generated, invisible, `ZEROFILL`, and other unmodeled columns before a lossy reorder | Add foreign-key mutation, examples/export, and remaining table options. |
 | Views | `/api/rdb/view/list`, `/column_list`, `/detail`, `/query`, `/view_meta`, `/modify/sql`, `/delete`, `/drop` | Native list/detail plus historical query, the six-option Community `view_meta` creation template, create-or-replace preview/execution, and drop are implemented and real-MySQL tested | Add any remaining delete alias and uncommon definer/security projection differences. |
 | Functions, procedures, and triggers | `/api/rdb/{function,procedure,trigger}/{list,detail}`, `/api/rdb/routine/{preview_invocation,preview_migration,execute_migration}` | Native list/detail and routine-parameter projections are implemented; every original list/detail route is mapped | Add invocation and migration preview/execution flows. |
 | Console SELECT | `/api/rdb/dml/execute`, desktop `sql-execute`/`sql-cancel` | Native unparameterized MySQL reads, CTEs, normal/all-row paging, preserved-single dispatch, `EXPLAIN`, limits, multiple result sets, affected-row counts, datasource read-only enforcement, and cancellation implemented | Add JDBC-style bind parameters and close remaining warning/error/result-shape differences. |
