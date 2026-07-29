@@ -430,6 +430,30 @@ pub(crate) async fn get_view(
     finish_connection(conn, result).await
 }
 
+pub(crate) async fn table_ddl(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    _schema_name: &str,
+    table_name: &str,
+) -> Result<String, AppError> {
+    validate_metadata_identifier(database_name, "databaseName")?;
+    validate_metadata_identifier(table_name, "tableName")?;
+    let qualified_name =
+        qualified_identifier(database_name, "databaseName", table_name, "tableName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let result =
+        metadata_query(conn.query_first::<Row, _>(format!("SHOW CREATE TABLE {qualified_name}")))
+            .await
+            .and_then(|row| {
+                let row =
+                    row.ok_or_else(|| metadata_not_found("table", database_name, table_name))?;
+                row_string_at(&row, 1).map(|ddl| format!("{ddl};"))
+            });
+    finish_connection(conn, result).await
+}
+
 pub(crate) async fn list_imported_keys(
     application: &Application,
     datasource_id: &str,

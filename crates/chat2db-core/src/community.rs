@@ -315,6 +315,21 @@ impl Application {
         .await
     }
 
+    /// Reads a `MySQL` table definition through the native driver without starting Java.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, metadata, connection, or identifier validation errors.
+    pub async fn table_ddl(
+        &self,
+        data_source_id: &str,
+        database_name: &str,
+        schema_name: &str,
+        table_name: &str,
+    ) -> Result<String, AppError> {
+        native_mysql::table_ddl(self, data_source_id, database_name, schema_name, table_name).await
+    }
+
     /// Lists indexes through Community metadata using a forced read-only session.
     ///
     /// # Errors
