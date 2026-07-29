@@ -112,6 +112,9 @@ impl Application {
         prepared: PreparedQuery,
     ) -> Result<QueryAccepted, AppError> {
         let storage = self.require_storage()?;
+        if !self.inner.engine.is_configured() {
+            let _engine = self.require_engine().await?;
+        }
         let resolved = resolve_datasource_connection(&storage, &prepared.datasource_id).await?;
         let backend = if self.is_native_mysql_driver(&resolved.driver_id)
             && crate::native_mysql::is_native_read_candidate(&prepared.sql)?
