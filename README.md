@@ -2,10 +2,11 @@
 
 Source-available implementation of the Chat2DB Community hybrid runtime.
 
-Chat2DB Rust owns the product runtime in Rust while retaining the public
-Chat2DB Community database compatibility layer behind a supervised Java
-process. The repository is under active development and is not yet a stable
-end-user release.
+Chat2DB Rust owns the product runtime in Rust, uses a native Rust path for the
+current MySQL browser and SELECT slice, and retains the broader public Chat2DB
+Community database compatibility layer behind a supervised Java process. The
+repository is under active development and is not yet a stable end-user
+release.
 
 ## Clone
 
@@ -90,15 +91,16 @@ Console compatibility slice:
 - product-owned Community DTOs and Core services exposed consistently through
   Axum and Tauri, with exact locked-classpath startup and forced-read-only
   metadata sessions; and
-- an original-frontend compatibility layer for MySQL connection testing,
+- an original-frontend compatibility layer for native MySQL connection testing,
   datasource CRUD/tree, database/schema/table discovery, and synchronous table
   preview over the historical `{success,data,errorCode,errorMessage}` envelope;
   and
 - durable SQLite-backed Community Console create/get/list/update/delete,
   including SQL text, datasource/database/schema binding, saved status, and
   open-tab state across process restarts; and
-- Community Console SELECT execution through the existing bounded Core query
-  and retained-result path: Web uses the historical synchronous result shape,
+- Community Console SELECT execution through upstream `mysql_async 0.37.0`, a
+  MySQL read-only transaction, and the existing bounded Core retained-result
+  path without starting Java: Web uses the historical synchronous result shape,
   while desktop maps operation lifecycle, rows, failure, and cancellation to
   the original JCEF event bus;
 - a shared Web/Tauri legacy dispatcher: Axum maps the original `/api` routes,
@@ -118,7 +120,11 @@ and three-row table preview. On 2026-07-28 commits `36ecac6`, `78e92d6`, and
 frontend tests, and the Community production build. A live MySQL 8.4 run then
 created a Console, returned real table rows, returned a renderable SQL error,
 saved edited SQL, closed it, restarted the Rust host, reopened it, and executed
-the restored SQL successfully.
+the restored SQL successfully. On 2026-07-29 commits `81301c3`, `4199862`, and
+`6c74421` passed 144 Core unit tests, strict Core Clippy, and a real MySQL 8.4
+vertical covering native connection, database/schema/table discovery, preview,
+typed Console SELECT, row truncation, active-query cancellation, retained
+paging, and proof after every operation that Java remained dormant.
 
 Stage 6 is complete. Web and desktop own the product runtime and publish its
 owner-only local endpoint; CLI and MCP attach to that host and never contact
@@ -156,7 +162,10 @@ build a row-limited SELECT without opening JDBC, then Rust validates that SQL an
 executes it through the existing forced-read-only query and retained-result
 path. The fixed 149-JAR classpath keeps H2 and MySQL; PostgreSQL and other
 dialects do not block the MySQL preview. MySQL writes, Agent, CLI, and MCP
-conformance remain outside this small read-only milestone.
+conformance remain outside this small read-only milestone. The current MySQL
+connection, database/schema/table, preview, and supported Console SELECT routes
+dispatch to `mysql_async` before Java lease acquisition; Community parser,
+formatter, completion, builders, and advanced metadata remain Java-backed.
 
 The first Console compatibility slice adds SQLite migration 3 for saved
 Consoles and the historical `/api/operation/saved/*` plus
@@ -242,6 +251,14 @@ product vertical against a local server:
 MYSQL_TEST_USER=root \
 MYSQL_TEST_PASSWORD='<local password>' \
 make community-product-mysql-integration
+```
+
+Run the native MySQL product path alone, without building Java or Connector/J:
+
+```bash
+MYSQL_TEST_USER=root \
+MYSQL_TEST_PASSWORD='<local password>' \
+make native-mysql-integration
 ```
 
 `MYSQL_TEST_HOST` and `MYSQL_TEST_PORT` default to `127.0.0.1:3306`. The test

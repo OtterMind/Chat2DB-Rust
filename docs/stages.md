@@ -12,7 +12,7 @@ in runtime health until then.
 | 4 | Complete | Product and result storage foundation | SQLite migration/integrity gates, mandatory vault boundary, revisioned datasource records, durable result frames, bounded paging/quota, expiry, writer cleanup and recovery tests |
 | 5 | Complete | Product transports | Generated OpenAPI/TypeScript contract, Axum JSON/SSE, Tauri 2 commands/channels, shared SQL workbench, product H2 tests |
 | 6 | Complete | Agent, MCP, and CLI | Direct providers, durable bounded tool loop, SQL tools/permissions, compaction, Web/Tauri run transports, owner-only local attachment, read-query CLI, and bounded `rmcp` stdio tools |
-| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs through 7M bounded table preview are implemented; the host now starts Java on first use, leases active generations, reaps them after three idle minutes, and reloads packs after restart; the current product retains the original Community layout with historical HTTP/Tauri compatibility for MySQL browsing, saved Consoles, and bounded SELECT execution |
+| 7 | In progress | Chat2DB compatibility estate | 7A managed JDBC packs through 7M bounded table preview are implemented; native `mysql_async` now owns the MySQL browser and supported SELECT path while Java starts on demand for unmigrated compatibility work; the current product retains the original Community layout with historical HTTP/Tauri compatibility for MySQL browsing, saved Consoles, and bounded SELECT execution |
 | 8 | Planned | Packaging and release | License authorization, NOTICE/SBOM, jlink runtime, Tauri installers, signed product/engine/driver manifests, atomic update and rollback, size measurement |
 
 Stage 3 completion means the versioned Rust-Java bridge can load an external
@@ -318,9 +318,27 @@ This slice is query-only. Arbitrary DDL, DML, and multi-statement Console
 execution are not implemented and must not be inferred from the historical
 endpoint name.
 
-Stage 7 remains incomplete. General type conversion, script execution, data
-import/export, non-relational behavior, remaining builder operations and plugin
-inventory, driver distribution, and per-dialect conformance are not
+The native MySQL follow-up pins upstream `mysql_async 0.37.0` with Rustls and
+routes MySQL connection testing, database/schema/table discovery, table preview,
+and supported Console SELECT before Java lease acquisition. SELECT executes in
+a MySQL read-only transaction and emits the existing typed retained-result wire
+messages directly from Core. Parameters, CTE-first SELECT, locking/server-file
+variants, and multi-statements fail before Java startup. Row and byte truncation
+plus cancellation terminate the active MySQL connection through a separate
+bounded control connection. The explicit `native-mysql-integration` target and
+MySQL CI job use a deliberately missing Java executable and verify connection,
+metadata, two-row preview, typed three-row Console output, one-row truncation,
+active `SELECT SLEEP(30)` cancellation, retained paging, and dormant Java health.
+
+Runtime-tested: yes. On 2026-07-29 commits `81301c3`, `4199862`, and `6c74421`
+passed 144 Core unit tests, strict Core all-target Clippy, formatting, Actionlint,
+and a real MySQL 8.4 native product vertical. The broad Community compatibility
+operations and other database types remain on the lazy Java/JDBC path.
+
+Stage 7 remains incomplete. Complete MySQL type conformance, native bind
+parameters and CTE-first SELECT, script execution, data import/export,
+non-relational behavior, remaining builder operations and plugin inventory,
+driver distribution, and per-dialect conformance are not
 implemented.
 
 Before Stage 8 may produce any Object-form distribution containing Community
