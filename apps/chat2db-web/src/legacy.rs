@@ -12,13 +12,21 @@ use std::{
 use axum::{
     Json, Router,
     extract::{Query, State},
+    http::StatusCode,
+    middleware,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use chat2db_contract::{
-    ApiError, ColumnNullability, CommunityTable, Datasource, DatasourceConnection,
-    DatasourceConnectionProperty, DatasourceSecretChange, JdbcDriver, JdbcValue, JdbcValueType,
-    ListCommunityDatabasesRequest, ListCommunitySchemasRequest, ListCommunityTablesRequest,
-    OperationEvent, QueryAccepted, QueryLimits, ResultColumn, ResultMetadata, ResultPageRequest,
+    ApiError, ColumnNullability, CommunityFunction, CommunityProcedure, CommunityTable,
+    CommunityTableColumn, CommunityTableIndex, CommunityTableIndexColumn, CommunityTrigger,
+    Datasource, DatasourceConnection, DatasourceConnectionProperty, DatasourceSecretChange,
+    GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
+    JdbcDriver, JdbcValue, JdbcValueType, ListCommunityColumnsRequest,
+    ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
+    ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTablesRequest,
+    ListCommunityTriggersRequest, ListCommunityViewsRequest, OperationEvent, QueryAccepted,
+    QueryLimits, ResultColumn, ResultMetadata, ResultPageRequest,
     StartCommunityTablePreviewRequest, StartQueryRequest, UpdateDatasourceRequest,
 };
 use chat2db_core::{AppError, Application};
@@ -32,6 +40,7 @@ const DEFAULT_PAGE_NO: u32 = 1;
 const DEFAULT_PAGE_SIZE: u32 = 20;
 const DEFAULT_PREVIEW_PAGE_SIZE: u32 = 200;
 const DEFAULT_SQL_PAGE_SIZE: u32 = 200;
+const MAX_METADATA_PAGE_SIZE: u32 = 100_000;
 const MAX_PREVIEW_ROWS: u32 = 1_000;
 const MAX_SQL_ROWS: u32 = 10_000;
 const RESULT_PAGE_MAX_BYTES: u64 = 8 * 1024 * 1024;
@@ -62,6 +71,41 @@ impl<T> LegacyEnvelope<T> {
         Self {
             success: false,
             data: None,
+            error_code: Some(error.code),
+            error_message: Some(error.message),
+        }
+    }
+}
+
+/// Historical list wrapper used by metadata screens that request the complete
+/// response instead of only its `data` field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyCountedEnvelope<T> {
+    pub success: bool,
+    pub data: Option<Vec<T>>,
+    pub total: Option<usize>,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+}
+
+impl<T> LegacyCountedEnvelope<T> {
+    fn success(data: Vec<T>) -> Self {
+        let total = data.len();
+        Self {
+            success: true,
+            data: Some(data),
+            total: Some(total),
+            error_code: None,
+            error_message: None,
+        }
+    }
+
+    fn failure(error: LegacyFailure) -> Self {
+        Self {
+            success: false,
+            data: None,
+            total: None,
             error_code: Some(error.code),
             error_message: Some(error.message),
         }
@@ -273,6 +317,111 @@ pub struct LegacyTable {
     pub data_length: Option<String>,
     pub create_time: String,
     pub update_time: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacySimpleTable {
+    pub name: String,
+    pub comment: String,
+    pub table_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyColumn {
+    pub old_name: Option<String>,
+    pub name: String,
+    pub table_name: String,
+    pub column_type: String,
+    pub data_type: Option<i32>,
+    pub default_value: Option<String>,
+    pub auto_increment: Option<bool>,
+    pub comment: String,
+    pub primary_key: Option<bool>,
+    pub schema_name: String,
+    pub database_name: String,
+    pub type_name: Option<String>,
+    pub column_size: Option<i32>,
+    pub buffer_length: Option<i32>,
+    pub decimal_digits: Option<i32>,
+    pub num_prec_radix: Option<i32>,
+    pub nullable_int: Option<i32>,
+    pub sql_data_type: Option<i32>,
+    pub sql_datetime_sub: Option<i32>,
+    pub char_octet_length: Option<i32>,
+    pub ordinal_position: Option<i32>,
+    pub nullable: Option<i32>,
+    pub generated_column: Option<bool>,
+    pub extent: String,
+    pub edit_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyIndexColumn {
+    pub index_name: String,
+    pub table_name: String,
+    #[serde(rename = "type")]
+    pub index_type: String,
+    pub comment: String,
+    pub column_name: String,
+    pub ordinal_position: Option<i32>,
+    pub collation: String,
+    pub schema_name: String,
+    pub database_name: String,
+    pub non_unique: Option<bool>,
+    pub index_qualifier: String,
+    pub asc_or_desc: String,
+    pub cardinality: Option<i64>,
+    pub pages: Option<i64>,
+    pub filter_condition: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyIndex {
+    pub columns: Option<String>,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub index_type: String,
+    pub comment: String,
+    pub column_list: Vec<LegacyIndexColumn>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyFunction {
+    pub database_name: String,
+    pub schema_name: String,
+    pub function_name: String,
+    pub remarks: String,
+    pub function_type: Option<i32>,
+    pub specific_name: String,
+    pub function_body: String,
+    pub function_template: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyProcedure {
+    pub database_name: String,
+    pub schema_name: String,
+    pub procedure_name: String,
+    pub remarks: String,
+    pub procedure_type: Option<i32>,
+    pub specific_name: String,
+    pub procedure_body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyTrigger {
+    pub database_name: String,
+    pub schema_name: String,
+    pub trigger_name: String,
+    pub event_manipulation: String,
+    pub trigger_body: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -491,6 +640,62 @@ pub struct LegacyTableListQuery {
     pub page_size: u32,
     #[serde(default)]
     pub search_key: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyTableDetailQuery {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub database_name: String,
+    #[serde(default)]
+    pub schema_name: String,
+    #[serde(default)]
+    pub database_type: String,
+    #[serde(default)]
+    pub table_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyFunctionDetailQuery {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub database_name: String,
+    #[serde(default)]
+    pub schema_name: String,
+    #[serde(default)]
+    pub database_type: String,
+    #[serde(default)]
+    pub function_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyProcedureDetailQuery {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub database_name: String,
+    #[serde(default)]
+    pub schema_name: String,
+    #[serde(default)]
+    pub database_type: String,
+    #[serde(default)]
+    pub procedure_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyTriggerDetailQuery {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub database_name: String,
+    #[serde(default)]
+    pub schema_name: String,
+    #[serde(default)]
+    pub database_type: String,
+    #[serde(default)]
+    pub trigger_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -960,6 +1165,7 @@ pub(crate) async fn list_tables(
     application: &Application,
     query: &LegacyTableListQuery,
 ) -> LegacyResult<LegacyPage<LegacyTable>> {
+    validate_metadata_page(query)?;
     let datasource_id = query.data_source_id.as_string();
     let database_type =
         resolve_database_type(application, &datasource_id, &query.database_type).await?;
@@ -978,11 +1184,267 @@ pub(crate) async fn list_tables(
         .into_iter()
         .map(table_response)
         .collect();
-    if !query.search_key.trim().is_empty() {
-        let needle = query.search_key.to_lowercase();
-        items.retain(|item| item.name.to_lowercase().contains(&needle));
-    }
+    items.retain(|item| table_matches_search(item, &query.search_key));
     Ok(paginate(items, query.page_no, query.page_size))
+}
+
+/// Lists the compact table projection used by autocomplete and table pickers.
+pub(crate) async fn list_simple_tables(
+    application: &Application,
+    query: &LegacyTableListQuery,
+) -> LegacyResult<Vec<LegacySimpleTable>> {
+    validate_metadata_page(query)?;
+    let datasource_id = query.data_source_id.as_string();
+    let database_type =
+        resolve_database_type(application, &datasource_id, &query.database_type).await?;
+    Ok(application
+        .list_community_tables(ListCommunityTablesRequest {
+            datasource_id,
+            database_type,
+            database_name: query.database_name.clone(),
+            schema_name: query.schema_name.clone(),
+            table_name_pattern: String::new(),
+        })
+        .await?
+        .items
+        .into_iter()
+        .map(simple_table_response)
+        .collect())
+}
+
+/// Lists table or view columns in the historical `ColumnResponse` shape.
+pub(crate) async fn list_columns(
+    application: &Application,
+    query: &LegacyTableDetailQuery,
+) -> LegacyResult<Vec<LegacyColumn>> {
+    let datasource_id = query.data_source_id.as_string();
+    let database_type =
+        resolve_database_type(application, &datasource_id, &query.database_type).await?;
+    Ok(application
+        .list_community_columns(ListCommunityColumnsRequest {
+            datasource_id,
+            database_type,
+            database_name: query.database_name.clone(),
+            schema_name: query.schema_name.clone(),
+            table_name: query.table_name.clone(),
+        })
+        .await?
+        .items
+        .into_iter()
+        .map(column_response)
+        .collect())
+}
+
+/// Lists table indexes in the historical `IndexResponse` shape.
+pub(crate) async fn list_indexes(
+    application: &Application,
+    query: &LegacyTableDetailQuery,
+) -> LegacyResult<Vec<LegacyIndex>> {
+    let datasource_id = query.data_source_id.as_string();
+    let database_type =
+        resolve_database_type(application, &datasource_id, &query.database_type).await?;
+    Ok(application
+        .list_community_indexes(ListCommunityIndexesRequest {
+            datasource_id,
+            database_type,
+            database_name: query.database_name.clone(),
+            schema_name: query.schema_name.clone(),
+            table_name: query.table_name.clone(),
+        })
+        .await?
+        .items
+        .into_iter()
+        .map(index_response)
+        .collect())
+}
+
+/// Community's historical key endpoint is an alias of its index metadata.
+pub(crate) async fn list_keys(
+    application: &Application,
+    query: &LegacyTableDetailQuery,
+) -> LegacyResult<Vec<LegacyIndex>> {
+    list_indexes(application, query).await
+}
+
+/// Lists views in the same page wrapper used by the retained tree.
+pub(crate) async fn list_views(
+    application: &Application,
+    query: &LegacyTableListQuery,
+) -> LegacyResult<LegacyPage<LegacyTable>> {
+    validate_metadata_page(query)?;
+    let datasource_id = query.data_source_id.as_string();
+    let database_type =
+        resolve_database_type(application, &datasource_id, &query.database_type).await?;
+    let items = application
+        .list_community_views(ListCommunityViewsRequest {
+            datasource_id,
+            database_type,
+            database_name: query.database_name.clone(),
+            schema_name: query.schema_name.clone(),
+            view_name_pattern: String::new(),
+        })
+        .await?
+        .items
+        .into_iter()
+        .map(table_response)
+        .collect();
+    Ok(full_page(items))
+}
+
+/// Reads one view, including its DDL, through the exact Core detail path.
+pub(crate) async fn get_view(
+    application: &Application,
+    query: &LegacyTableDetailQuery,
+) -> LegacyResult<LegacyTable> {
+    let datasource_id = query.data_source_id.as_string();
+    let database_type =
+        resolve_database_type(application, &datasource_id, &query.database_type).await?;
+    Ok(table_response(
+        application
+            .get_community_view(ListCommunityViewsRequest {
+                datasource_id,
+                database_type,
+                database_name: query.database_name.clone(),
+                schema_name: query.schema_name.clone(),
+                view_name_pattern: query.table_name.clone(),
+            })
+            .await?,
+    ))
+}
+
+/// Lists stored functions in the historical paged metadata shape.
+pub(crate) async fn list_functions(
+    application: &Application,
+    query: &LegacyTableListQuery,
+) -> LegacyResult<LegacyPage<LegacyFunction>> {
+    validate_metadata_page(query)?;
+    let datasource_id = query.data_source_id.as_string();
+    let database_type =
+        resolve_database_type(application, &datasource_id, &query.database_type).await?;
+    let items = application
+        .list_community_functions(ListCommunityFunctionsRequest {
+            datasource_id,
+            database_type,
+            database_name: query.database_name.clone(),
+            schema_name: query.schema_name.clone(),
+        })
+        .await?
+        .items
+        .into_iter()
+        .map(function_response)
+        .collect();
+    Ok(full_page(items))
+}
+
+/// Reads one stored function in the historical metadata shape.
+pub(crate) async fn get_function(
+    application: &Application,
+    query: &LegacyFunctionDetailQuery,
+) -> LegacyResult<LegacyFunction> {
+    let datasource_id = query.data_source_id.as_string();
+    let database_type =
+        resolve_database_type(application, &datasource_id, &query.database_type).await?;
+    Ok(function_response(
+        application
+            .get_community_function(GetCommunityFunctionRequest {
+                datasource_id,
+                database_type,
+                database_name: query.database_name.clone(),
+                schema_name: query.schema_name.clone(),
+                function_name: query.function_name.clone(),
+            })
+            .await?,
+    ))
+}
+
+/// Lists stored procedures in the historical paged metadata shape.
+pub(crate) async fn list_procedures(
+    application: &Application,
+    query: &LegacyTableListQuery,
+) -> LegacyResult<LegacyPage<LegacyProcedure>> {
+    validate_metadata_page(query)?;
+    let datasource_id = query.data_source_id.as_string();
+    let database_type =
+        resolve_database_type(application, &datasource_id, &query.database_type).await?;
+    let items = application
+        .list_community_procedures(ListCommunityProceduresRequest {
+            datasource_id,
+            database_type,
+            database_name: query.database_name.clone(),
+            schema_name: query.schema_name.clone(),
+        })
+        .await?
+        .items
+        .into_iter()
+        .map(procedure_response)
+        .collect();
+    Ok(full_page(items))
+}
+
+/// Reads one stored procedure in the historical metadata shape.
+pub(crate) async fn get_procedure(
+    application: &Application,
+    query: &LegacyProcedureDetailQuery,
+) -> LegacyResult<LegacyProcedure> {
+    let datasource_id = query.data_source_id.as_string();
+    let database_type =
+        resolve_database_type(application, &datasource_id, &query.database_type).await?;
+    Ok(procedure_response(
+        application
+            .get_community_procedure(GetCommunityProcedureRequest {
+                datasource_id,
+                database_type,
+                database_name: query.database_name.clone(),
+                schema_name: query.schema_name.clone(),
+                procedure_name: query.procedure_name.clone(),
+            })
+            .await?,
+    ))
+}
+
+/// Lists triggers in the historical paged metadata shape.
+pub(crate) async fn list_triggers(
+    application: &Application,
+    query: &LegacyTableListQuery,
+) -> LegacyResult<LegacyPage<LegacyTrigger>> {
+    validate_metadata_page(query)?;
+    let datasource_id = query.data_source_id.as_string();
+    let database_type =
+        resolve_database_type(application, &datasource_id, &query.database_type).await?;
+    let items = application
+        .list_community_triggers(ListCommunityTriggersRequest {
+            datasource_id,
+            database_type,
+            database_name: query.database_name.clone(),
+            schema_name: query.schema_name.clone(),
+        })
+        .await?
+        .items
+        .into_iter()
+        .map(trigger_response)
+        .collect();
+    Ok(full_page(items))
+}
+
+/// Reads one trigger in the historical metadata shape.
+pub(crate) async fn get_trigger(
+    application: &Application,
+    query: &LegacyTriggerDetailQuery,
+) -> LegacyResult<LegacyTrigger> {
+    let datasource_id = query.data_source_id.as_string();
+    let database_type =
+        resolve_database_type(application, &datasource_id, &query.database_type).await?;
+    Ok(trigger_response(
+        application
+            .get_community_trigger(GetCommunityTriggerRequest {
+                datasource_id,
+                database_type,
+                database_name: query.database_name.clone(),
+                schema_name: query.schema_name.clone(),
+                trigger_name: query.trigger_name.clone(),
+            })
+            .await?,
+    ))
 }
 
 /// Runs a table preview through the generated-SQL, forced-read-only Core path
@@ -1552,6 +2014,119 @@ fn table_response(table: CommunityTable) -> LegacyTable {
     }
 }
 
+fn simple_table_response(table: CommunityTable) -> LegacySimpleTable {
+    LegacySimpleTable {
+        name: table.name,
+        comment: table.comment,
+        // The original service built `SimpleTable` without setting this field.
+        table_type: None,
+    }
+}
+
+fn column_response(column: CommunityTableColumn) -> LegacyColumn {
+    let old_name = Some(column.name.clone());
+    LegacyColumn {
+        old_name,
+        name: column.name,
+        table_name: column.table_name,
+        column_type: column.column_type,
+        data_type: column.data_type,
+        default_value: column.default_value,
+        auto_increment: column.auto_increment,
+        comment: column.comment,
+        primary_key: column.primary_key,
+        schema_name: column.schema_name,
+        database_name: column.database_name,
+        type_name: None,
+        column_size: column.column_size,
+        buffer_length: column.buffer_length,
+        decimal_digits: column.decimal_digits,
+        num_prec_radix: column.num_prec_radix,
+        nullable_int: None,
+        sql_data_type: column.sql_data_type,
+        sql_datetime_sub: column.sql_datetime_sub,
+        char_octet_length: column.char_octet_length,
+        ordinal_position: column.ordinal_position,
+        nullable: column.nullable,
+        generated_column: column.generated_column,
+        extent: column.extent,
+        edit_status: None,
+    }
+}
+
+fn index_response(index: CommunityTableIndex) -> LegacyIndex {
+    LegacyIndex {
+        columns: None,
+        name: index.name,
+        index_type: index.index_type,
+        comment: index.comment,
+        column_list: index
+            .columns
+            .into_iter()
+            .map(index_column_response)
+            .collect(),
+    }
+}
+
+fn index_column_response(column: CommunityTableIndexColumn) -> LegacyIndexColumn {
+    LegacyIndexColumn {
+        index_name: column.index_name,
+        table_name: column.table_name,
+        index_type: column.column_type,
+        comment: column.comment,
+        column_name: column.column_name,
+        ordinal_position: column.ordinal_position,
+        collation: column.collation,
+        schema_name: column.schema_name,
+        database_name: column.database_name,
+        non_unique: column.non_unique,
+        index_qualifier: column.index_qualifier,
+        asc_or_desc: column.sort_order,
+        cardinality: decimal_i64(column.cardinality.as_deref()),
+        pages: decimal_i64(column.pages.as_deref()),
+        filter_condition: column.filter_condition,
+    }
+}
+
+fn function_response(function: CommunityFunction) -> LegacyFunction {
+    LegacyFunction {
+        database_name: function.database_name,
+        schema_name: function.schema_name,
+        function_name: function.name,
+        remarks: function.remarks,
+        function_type: function.function_type,
+        specific_name: function.specific_name,
+        function_body: function.body,
+        function_template: function.template,
+    }
+}
+
+fn procedure_response(procedure: CommunityProcedure) -> LegacyProcedure {
+    LegacyProcedure {
+        database_name: procedure.database_name,
+        schema_name: procedure.schema_name,
+        procedure_name: procedure.name,
+        remarks: procedure.remarks,
+        procedure_type: procedure.procedure_type,
+        specific_name: procedure.specific_name,
+        procedure_body: procedure.body,
+    }
+}
+
+fn trigger_response(trigger: CommunityTrigger) -> LegacyTrigger {
+    LegacyTrigger {
+        database_name: trigger.database_name,
+        schema_name: trigger.schema_name,
+        trigger_name: trigger.name,
+        event_manipulation: trigger.event_manipulation,
+        trigger_body: trigger.body,
+    }
+}
+
+fn decimal_i64(value: Option<&str>) -> Option<i64> {
+    value.and_then(|value| value.parse().ok())
+}
+
 fn result_header(column: &ResultColumn) -> LegacyResultHeader {
     LegacyResultHeader {
         data_type: legacy_data_type(column.value_type).to_owned(),
@@ -1809,6 +2384,36 @@ fn paginate<T>(items: Vec<T>, page_no: u32, page_size: u32) -> LegacyPage<T> {
     }
 }
 
+fn table_matches_search(table: &LegacyTable, search_key: &str) -> bool {
+    if search_key.trim().is_empty() {
+        return true;
+    }
+    let search_key = search_key.to_lowercase();
+    table.name.to_lowercase().contains(&search_key)
+        || (!table.comment.trim().is_empty() && table.comment.to_lowercase().contains(&search_key))
+}
+
+fn validate_metadata_page(query: &LegacyTableListQuery) -> LegacyResult<()> {
+    if !(1..=MAX_METADATA_PAGE_SIZE).contains(&query.page_size) {
+        return Err(LegacyFailure::invalid(
+            "invalid_legacy_request",
+            "pageSize must be between 1 and 100000",
+        ));
+    }
+    Ok(())
+}
+
+fn full_page<T>(items: Vec<T>) -> LegacyPage<T> {
+    let total = items.len();
+    LegacyPage {
+        data: items,
+        page_no: 1,
+        page_size: u32::try_from(total).unwrap_or(u32::MAX),
+        total,
+        has_next_page: false,
+    }
+}
+
 /// Dispatches a historical Community request without depending on Axum.
 ///
 /// Tauri IPC can pass its `requestUrl`, `method`, and `message` fields here and
@@ -1824,6 +2429,7 @@ pub async fn dispatch(
         .next()
         .unwrap_or(request.request_url.as_str());
     let method = request.method.to_ascii_lowercase();
+    let counted_response = LEGACY_COUNTED_PATHS.contains(&path);
     let result = match (method.as_str(), path) {
         ("get", "/api/system") => Ok(serde_json::json!({
             "systemUuid": "chat2db-rust-community"
@@ -1911,6 +2517,75 @@ pub async fn dispatch(
             Ok(query) => serialized(list_tables(application, &query).await),
             Err(error) => Err(error),
         },
+        ("get", "/api/rdb/table/table_list") => {
+            match decode::<LegacyTableListQuery>(request.message) {
+                Ok(query) => serialized(list_simple_tables(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        (
+            "get",
+            "/api/rdb/table/column_list" | "/api/rdb/ddl/column_list" | "/api/rdb/view/column_list",
+        ) => match decode::<LegacyTableDetailQuery>(request.message) {
+            Ok(query) => serialized(list_columns(application, &query).await),
+            Err(error) => Err(error),
+        },
+        ("get", "/api/rdb/table/index_list" | "/api/rdb/ddl/index_list") => {
+            match decode::<LegacyTableDetailQuery>(request.message) {
+                Ok(query) => serialized(list_indexes(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/rdb/table/key_list" | "/api/rdb/ddl/key_list") => {
+            match decode::<LegacyTableDetailQuery>(request.message) {
+                Ok(query) => serialized(list_keys(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/rdb/view/list") => match decode::<LegacyTableListQuery>(request.message) {
+            Ok(query) => serialized(list_views(application, &query).await),
+            Err(error) => Err(error),
+        },
+        ("get", "/api/rdb/view/detail") => {
+            match decode::<LegacyTableDetailQuery>(request.message) {
+                Ok(query) => serialized(get_view(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/rdb/function/list") => {
+            match decode::<LegacyTableListQuery>(request.message) {
+                Ok(query) => serialized(list_functions(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/rdb/function/detail") => {
+            match decode::<LegacyFunctionDetailQuery>(request.message) {
+                Ok(query) => serialized(get_function(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/rdb/procedure/list") => {
+            match decode::<LegacyTableListQuery>(request.message) {
+                Ok(query) => serialized(list_procedures(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/rdb/procedure/detail") => {
+            match decode::<LegacyProcedureDetailQuery>(request.message) {
+                Ok(query) => serialized(get_procedure(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/rdb/trigger/list") => match decode::<LegacyTableListQuery>(request.message) {
+            Ok(query) => serialized(list_triggers(application, &query).await),
+            Err(error) => Err(error),
+        },
+        ("get", "/api/rdb/trigger/detail") => {
+            match decode::<LegacyTriggerDetailQuery>(request.message) {
+                Ok(query) => serialized(get_trigger(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
         ("post" | "put", "/api/rdb/dml/execute_table") => {
             match decode::<LegacyTablePreviewRequest>(request.message) {
                 Ok(body) => serialized(preview_table(application, &body).await),
@@ -1932,7 +2607,11 @@ pub async fn dispatch(
             "The requested route does not exist",
         )),
     };
-    envelope_value(result)
+    if counted_response {
+        counted_envelope_value(result)
+    } else {
+        envelope_value(result)
+    }
 }
 
 const LEGACY_PATHS: &[&str] = &[
@@ -1952,8 +2631,31 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/rdb/database/list",
     "/api/rdb/schema/list",
     "/api/rdb/table/list",
+    "/api/rdb/table/table_list",
+    "/api/rdb/table/column_list",
+    "/api/rdb/table/index_list",
+    "/api/rdb/table/key_list",
+    "/api/rdb/ddl/column_list",
+    "/api/rdb/ddl/index_list",
+    "/api/rdb/ddl/key_list",
+    "/api/rdb/view/list",
+    "/api/rdb/view/column_list",
+    "/api/rdb/view/detail",
+    "/api/rdb/function/list",
+    "/api/rdb/function/detail",
+    "/api/rdb/procedure/list",
+    "/api/rdb/procedure/detail",
+    "/api/rdb/trigger/list",
+    "/api/rdb/trigger/detail",
     "/api/rdb/dml/execute",
     "/api/rdb/dml/execute_table",
+];
+
+const LEGACY_COUNTED_PATHS: &[&str] = &[
+    "/api/rdb/ddl/column_list",
+    "/api/rdb/ddl/index_list",
+    "/api/rdb/ddl/key_list",
+    "/api/rdb/view/column_list",
 ];
 
 fn decode<T: DeserializeOwned>(message: serde_json::Value) -> LegacyResult<T> {
@@ -1985,6 +2687,26 @@ fn envelope_value(result: LegacyResult<serde_json::Value>) -> serde_json::Value 
         serde_json::json!({
             "success": false,
             "data": null,
+            "errorCode": "internal_error",
+            "errorMessage": "The operation could not be completed"
+        })
+    })
+}
+
+fn counted_envelope_value(result: LegacyResult<serde_json::Value>) -> serde_json::Value {
+    let envelope: LegacyCountedEnvelope<serde_json::Value> = match result {
+        Ok(serde_json::Value::Array(data)) => LegacyCountedEnvelope::success(data),
+        Ok(_) => LegacyCountedEnvelope::failure(LegacyFailure {
+            code: "internal_error".to_owned(),
+            message: "The operation could not be completed".to_owned(),
+        }),
+        Err(error) => LegacyCountedEnvelope::failure(error),
+    };
+    serde_json::to_value(envelope).unwrap_or_else(|_| {
+        serde_json::json!({
+            "success": false,
+            "data": null,
+            "total": null,
             "errorCode": "internal_error",
             "errorMessage": "The operation could not be completed"
         })
@@ -2036,6 +2758,22 @@ pub(crate) fn routes() -> Router<Application> {
         .route("/api/rdb/database/list", get(database_list_handler))
         .route("/api/rdb/schema/list", get(schema_list_handler))
         .route("/api/rdb/table/list", get(table_list_handler))
+        .route("/api/rdb/table/table_list", get(simple_table_list_handler))
+        .route("/api/rdb/table/column_list", get(table_column_list_handler))
+        .route("/api/rdb/table/index_list", get(table_index_list_handler))
+        .route("/api/rdb/table/key_list", get(table_key_list_handler))
+        .route("/api/rdb/ddl/column_list", get(ddl_column_list_handler))
+        .route("/api/rdb/ddl/index_list", get(ddl_index_list_handler))
+        .route("/api/rdb/ddl/key_list", get(ddl_key_list_handler))
+        .route("/api/rdb/view/list", get(view_list_handler))
+        .route("/api/rdb/view/column_list", get(view_column_list_handler))
+        .route("/api/rdb/view/detail", get(view_detail_handler))
+        .route("/api/rdb/function/list", get(function_list_handler))
+        .route("/api/rdb/function/detail", get(function_detail_handler))
+        .route("/api/rdb/procedure/list", get(procedure_list_handler))
+        .route("/api/rdb/procedure/detail", get(procedure_detail_handler))
+        .route("/api/rdb/trigger/list", get(trigger_list_handler))
+        .route("/api/rdb/trigger/detail", get(trigger_detail_handler))
         .route(
             "/api/rdb/dml/execute",
             post(sql_execute_handler).put(sql_execute_handler),
@@ -2044,12 +2782,34 @@ pub(crate) fn routes() -> Router<Application> {
             "/api/rdb/dml/execute_table",
             post(table_preview_handler).put(table_preview_handler),
         )
+        .layer(middleware::map_response(legacy_bad_request_envelope))
 }
 
 fn envelope<T>(result: LegacyResult<T>) -> Json<LegacyEnvelope<T>> {
     Json(match result {
         Ok(data) => LegacyEnvelope::success(data),
         Err(error) => LegacyEnvelope::failure(error),
+    })
+}
+
+async fn legacy_bad_request_envelope(response: Response) -> Response {
+    if response.status() != StatusCode::BAD_REQUEST {
+        return response;
+    }
+    (
+        StatusCode::OK,
+        envelope::<serde_json::Value>(Err(LegacyFailure::invalid(
+            "invalid_legacy_request",
+            "The Community request query is invalid",
+        ))),
+    )
+        .into_response()
+}
+
+fn counted_envelope<T>(result: LegacyResult<Vec<T>>) -> Json<LegacyCountedEnvelope<T>> {
+    Json(match result {
+        Ok(data) => LegacyCountedEnvelope::success(data),
+        Err(error) => LegacyCountedEnvelope::failure(error),
     })
 }
 
@@ -2180,6 +2940,118 @@ async fn table_list_handler(
     envelope(list_tables(&application, &query).await)
 }
 
+async fn simple_table_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableListQuery>,
+) -> Json<LegacyEnvelope<Vec<LegacySimpleTable>>> {
+    envelope(list_simple_tables(&application, &query).await)
+}
+
+async fn table_column_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableDetailQuery>,
+) -> Json<LegacyEnvelope<Vec<LegacyColumn>>> {
+    envelope(list_columns(&application, &query).await)
+}
+
+async fn table_index_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableDetailQuery>,
+) -> Json<LegacyEnvelope<Vec<LegacyIndex>>> {
+    envelope(list_indexes(&application, &query).await)
+}
+
+async fn table_key_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableDetailQuery>,
+) -> Json<LegacyEnvelope<Vec<LegacyIndex>>> {
+    envelope(list_keys(&application, &query).await)
+}
+
+async fn ddl_column_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableDetailQuery>,
+) -> Json<LegacyCountedEnvelope<LegacyColumn>> {
+    counted_envelope(list_columns(&application, &query).await)
+}
+
+async fn ddl_index_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableDetailQuery>,
+) -> Json<LegacyCountedEnvelope<LegacyIndex>> {
+    counted_envelope(list_indexes(&application, &query).await)
+}
+
+async fn ddl_key_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableDetailQuery>,
+) -> Json<LegacyCountedEnvelope<LegacyIndex>> {
+    counted_envelope(list_keys(&application, &query).await)
+}
+
+async fn view_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableListQuery>,
+) -> Json<LegacyEnvelope<LegacyPage<LegacyTable>>> {
+    envelope(list_views(&application, &query).await)
+}
+
+async fn view_column_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableDetailQuery>,
+) -> Json<LegacyCountedEnvelope<LegacyColumn>> {
+    counted_envelope(list_columns(&application, &query).await)
+}
+
+async fn view_detail_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableDetailQuery>,
+) -> Json<LegacyEnvelope<LegacyTable>> {
+    envelope(get_view(&application, &query).await)
+}
+
+async fn function_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableListQuery>,
+) -> Json<LegacyEnvelope<LegacyPage<LegacyFunction>>> {
+    envelope(list_functions(&application, &query).await)
+}
+
+async fn function_detail_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyFunctionDetailQuery>,
+) -> Json<LegacyEnvelope<LegacyFunction>> {
+    envelope(get_function(&application, &query).await)
+}
+
+async fn procedure_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableListQuery>,
+) -> Json<LegacyEnvelope<LegacyPage<LegacyProcedure>>> {
+    envelope(list_procedures(&application, &query).await)
+}
+
+async fn procedure_detail_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyProcedureDetailQuery>,
+) -> Json<LegacyEnvelope<LegacyProcedure>> {
+    envelope(get_procedure(&application, &query).await)
+}
+
+async fn trigger_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableListQuery>,
+) -> Json<LegacyEnvelope<LegacyPage<LegacyTrigger>>> {
+    envelope(list_triggers(&application, &query).await)
+}
+
+async fn trigger_detail_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTriggerDetailQuery>,
+) -> Json<LegacyEnvelope<LegacyTrigger>> {
+    envelope(get_trigger(&application, &query).await)
+}
+
 async fn table_preview_handler(
     State(application): State<Application>,
     Json(request): Json<LegacyTablePreviewRequest>,
@@ -2192,4 +3064,381 @@ async fn sql_execute_handler(
     Json(request): Json<LegacySqlExecuteRequest>,
 ) -> Json<LegacyEnvelope<Vec<LegacyManageResult>>> {
     envelope(execute_sql(&application, &request).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+
+    use super::*;
+
+    const REQUIRED_METADATA_PATHS: &[&str] = &[
+        "/api/rdb/table/table_list",
+        "/api/rdb/table/column_list",
+        "/api/rdb/table/index_list",
+        "/api/rdb/table/key_list",
+        "/api/rdb/ddl/column_list",
+        "/api/rdb/ddl/index_list",
+        "/api/rdb/ddl/key_list",
+        "/api/rdb/view/list",
+        "/api/rdb/view/column_list",
+        "/api/rdb/view/detail",
+        "/api/rdb/function/list",
+        "/api/rdb/function/detail",
+        "/api/rdb/procedure/list",
+        "/api/rdb/procedure/detail",
+        "/api/rdb/trigger/list",
+        "/api/rdb/trigger/detail",
+    ];
+
+    fn metadata_message(path: &str) -> serde_json::Value {
+        let mut message = serde_json::json!({
+            "dataSourceId": 1,
+            "databaseName": "inventory",
+            "schemaName": ""
+        });
+        let object = message
+            .as_object_mut()
+            .expect("metadata message must be an object");
+        match path {
+            "/api/rdb/table/table_list"
+            | "/api/rdb/view/list"
+            | "/api/rdb/function/list"
+            | "/api/rdb/procedure/list"
+            | "/api/rdb/trigger/list" => {
+                object.insert("pageNo".to_owned(), serde_json::json!(1));
+                object.insert("pageSize".to_owned(), serde_json::json!(20));
+                object.insert("searchKey".to_owned(), serde_json::json!(""));
+            }
+            "/api/rdb/function/detail" => {
+                object.insert(
+                    "functionName".to_owned(),
+                    serde_json::json!("double_amount"),
+                );
+            }
+            "/api/rdb/procedure/detail" => {
+                object.insert("procedureName".to_owned(), serde_json::json!("count_items"));
+            }
+            "/api/rdb/trigger/detail" => {
+                object.insert(
+                    "triggerName".to_owned(),
+                    serde_json::json!("items_trim_label"),
+                );
+            }
+            _ => {
+                object.insert("tableName".to_owned(), serde_json::json!("items"));
+            }
+        }
+        message
+    }
+
+    fn metadata_query(path: &str) -> String {
+        let object_name = match path {
+            "/api/rdb/function/detail" => "&functionName=double_amount",
+            "/api/rdb/procedure/detail" => "&procedureName=count_items",
+            "/api/rdb/trigger/detail" => "&triggerName=items_trim_label",
+            "/api/rdb/table/table_list"
+            | "/api/rdb/view/list"
+            | "/api/rdb/function/list"
+            | "/api/rdb/procedure/list"
+            | "/api/rdb/trigger/list" => "&pageNo=1&pageSize=20&searchKey=",
+            _ => "&tableName=items",
+        };
+        format!("{path}?dataSourceId=1&databaseName=inventory&schemaName={object_name}")
+    }
+
+    #[test]
+    fn counted_metadata_envelope_keeps_total_at_the_top_level() {
+        let body = counted_envelope_value(Ok(serde_json::json!([
+            { "name": "id" },
+            { "name": "created_at" }
+        ])));
+
+        assert_eq!(body["success"], true);
+        assert_eq!(body["total"], 2);
+        assert_eq!(body["data"][0]["name"], "id");
+        assert!(body["data"].get("total").is_none());
+    }
+
+    #[test]
+    fn metadata_projections_use_the_historical_frontend_field_names() {
+        let column = column_response(CommunityTableColumn {
+            database_name: "catalog".to_owned(),
+            schema_name: "public".to_owned(),
+            table_name: "users".to_owned(),
+            name: "id".to_owned(),
+            column_type: "BIGINT".to_owned(),
+            data_type: Some(-5),
+            primary_key: Some(true),
+            nullable: Some(0),
+            ..CommunityTableColumn::default()
+        });
+        let column = serde_json::to_value(column).expect("column projection must serialize");
+        assert_eq!(column["oldName"], "id");
+        assert_eq!(column["tableName"], "users");
+        assert_eq!(column["columnType"], "BIGINT");
+        assert_eq!(column["primaryKey"], true);
+        assert_eq!(column["nullable"], 0);
+        assert!(column["defaultValue"].is_null());
+
+        let empty_default = column_response(CommunityTableColumn {
+            default_value: Some(String::new()),
+            ..CommunityTableColumn::default()
+        });
+        let empty_default =
+            serde_json::to_value(empty_default).expect("empty default must serialize");
+        assert_eq!(empty_default["defaultValue"], "");
+
+        let index = index_response(CommunityTableIndex {
+            name: "PRIMARY".to_owned(),
+            index_type: "BTREE".to_owned(),
+            columns: vec![CommunityTableIndexColumn {
+                index_name: "PRIMARY".to_owned(),
+                table_name: "users".to_owned(),
+                column_name: "id".to_owned(),
+                cardinality: Some("42".to_owned()),
+                sort_order: "A".to_owned(),
+                ..CommunityTableIndexColumn::default()
+            }],
+            ..CommunityTableIndex::default()
+        });
+        let index = serde_json::to_value(index).expect("index projection must serialize");
+        assert_eq!(index["type"], "BTREE");
+        assert_eq!(index["columnList"][0]["columnName"], "id");
+        assert_eq!(index["columnList"][0]["cardinality"], 42);
+        assert_eq!(index["columnList"][0]["ascOrDesc"], "A");
+
+        let function = function_response(CommunityFunction {
+            name: "calculate_total".to_owned(),
+            body: "RETURN 1".to_owned(),
+            template: "CREATE FUNCTION calculate_total".to_owned(),
+            ..CommunityFunction::default()
+        });
+        let function = serde_json::to_value(function).expect("function projection must serialize");
+        assert_eq!(function["functionName"], "calculate_total");
+        assert_eq!(function["functionBody"], "RETURN 1");
+        assert_eq!(
+            function["functionTemplate"],
+            "CREATE FUNCTION calculate_total"
+        );
+
+        let view = table_response(CommunityTable {
+            name: "active_users".to_owned(),
+            table_type: "VIEW".to_owned(),
+            ddl: "CREATE VIEW active_users AS SELECT 1".to_owned(),
+            ..CommunityTable::default()
+        });
+        let view = serde_json::to_value(view).expect("view projection must serialize");
+        assert_eq!(view["name"], "active_users");
+        assert_eq!(view["tableType"], "VIEW");
+        assert_eq!(view["ddl"], "CREATE VIEW active_users AS SELECT 1");
+
+        let procedure = procedure_response(CommunityProcedure {
+            name: "refresh_users".to_owned(),
+            body: "CREATE PROCEDURE refresh_users() SELECT 1".to_owned(),
+            ..CommunityProcedure::default()
+        });
+        let procedure =
+            serde_json::to_value(procedure).expect("procedure projection must serialize");
+        assert_eq!(procedure["procedureName"], "refresh_users");
+        assert_eq!(
+            procedure["procedureBody"],
+            "CREATE PROCEDURE refresh_users() SELECT 1"
+        );
+
+        let trigger = trigger_response(CommunityTrigger {
+            name: "users_before_insert".to_owned(),
+            event_manipulation: "INSERT".to_owned(),
+            body: "CREATE TRIGGER users_before_insert".to_owned(),
+            ..CommunityTrigger::default()
+        });
+        let trigger = serde_json::to_value(trigger).expect("trigger projection must serialize");
+        assert_eq!(trigger["triggerName"], "users_before_insert");
+        assert_eq!(trigger["eventManipulation"], "INSERT");
+        assert_eq!(trigger["triggerBody"], "CREATE TRIGGER users_before_insert");
+
+        let page = full_page(vec!["one", "two", "three"]);
+        assert_eq!(page.page_no, 1);
+        assert_eq!(page.page_size, 3);
+        assert_eq!(page.total, 3);
+        assert!(!page.has_next_page);
+    }
+
+    #[test]
+    fn table_search_matches_community_name_and_comment_behavior() {
+        let table = LegacyTable {
+            name: "orders".to_owned(),
+            comment: "Invoice archive".to_owned(),
+            table_type: "TABLE".to_owned(),
+            pinned: false,
+            ddl: String::new(),
+            engine: String::new(),
+            charset: String::new(),
+            collate: String::new(),
+            increment_value: None,
+            partition: String::new(),
+            tablespace: String::new(),
+            rows: None,
+            data_length: None,
+            create_time: String::new(),
+            update_time: String::new(),
+        };
+
+        assert!(table_matches_search(&table, "ORDER"));
+        assert!(table_matches_search(&table, "invoice"));
+        assert!(table_matches_search(&table, "  "));
+        assert!(!table_matches_search(&table, "customer"));
+    }
+
+    #[test]
+    fn required_metadata_paths_are_known_to_desktop_dispatch() {
+        let unique: HashSet<&str> = REQUIRED_METADATA_PATHS.iter().copied().collect();
+        assert_eq!(unique.len(), REQUIRED_METADATA_PATHS.len());
+        for path in REQUIRED_METADATA_PATHS {
+            assert!(LEGACY_PATHS.contains(path), "missing dispatch path: {path}");
+        }
+        for path in LEGACY_COUNTED_PATHS {
+            assert!(REQUIRED_METADATA_PATHS.contains(path));
+        }
+    }
+
+    #[tokio::test]
+    async fn required_metadata_paths_reach_their_desktop_dispatch_branches() {
+        for path in REQUIRED_METADATA_PATHS {
+            let response = dispatch(
+                &Application::new(),
+                LegacyDispatchRequest {
+                    request_url: (*path).to_owned(),
+                    method: "get".to_owned(),
+                    message: serde_json::Value::Null,
+                },
+            )
+            .await;
+            assert_eq!(
+                response["errorCode"], "invalid_legacy_request",
+                "missing desktop dispatch branch: {path}"
+            );
+            if LEGACY_COUNTED_PATHS.contains(path) {
+                assert!(response.get("total").is_some());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn required_metadata_paths_accept_community_dispatch_fields() {
+        let application = Application::new();
+        for path in REQUIRED_METADATA_PATHS {
+            let response = dispatch(
+                &application,
+                LegacyDispatchRequest {
+                    request_url: (*path).to_owned(),
+                    method: "get".to_owned(),
+                    message: metadata_message(path),
+                },
+            )
+            .await;
+            assert_eq!(response["success"], false, "unexpected success: {path}");
+            assert_ne!(
+                response["errorCode"], "invalid_legacy_request",
+                "Community fields did not decode: {path}"
+            );
+            assert_ne!(
+                response["errorCode"], "route_not_found",
+                "dispatch route is missing: {path}"
+            );
+            if LEGACY_COUNTED_PATHS.contains(path) {
+                assert!(response.get("total").is_some(), "missing total: {path}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn required_metadata_paths_accept_community_axum_query_fields() {
+        let router = routes().with_state(Application::new());
+        for path in REQUIRED_METADATA_PATHS {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::get(metadata_query(path))
+                        .body(Body::empty())
+                        .expect("request must build"),
+                )
+                .await
+                .expect("router must respond");
+            assert_eq!(response.status(), StatusCode::OK, "invalid route: {path}");
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .expect("response body must collect")
+                .to_bytes();
+            let body: serde_json::Value =
+                serde_json::from_slice(&body).expect("response body must be JSON");
+            assert_eq!(body["success"], false, "unexpected success: {path}");
+            assert!(body.get("errorCode").is_some(), "missing envelope: {path}");
+            if LEGACY_COUNTED_PATHS.contains(path) {
+                assert!(body.get("total").is_some(), "missing total: {path}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_axum_query_uses_the_community_json_envelope() {
+        let response = routes()
+            .with_state(Application::new())
+            .oneshot(
+                Request::get("/api/rdb/table/table_list?pageNo=1&pageSize=20")
+                    .body(Body::empty())
+                    .expect("request must build"),
+            )
+            .await
+            .expect("router must respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("response body must collect")
+            .to_bytes();
+        let body: serde_json::Value =
+            serde_json::from_slice(&body).expect("response body must be JSON");
+        assert_eq!(body["success"], false);
+        assert_eq!(body["data"], serde_json::Value::Null);
+        assert_eq!(body["errorCode"], "invalid_legacy_request");
+    }
+
+    #[tokio::test]
+    async fn metadata_page_size_matches_the_community_range() {
+        let application = Application::new();
+        for page_size in [0, MAX_METADATA_PAGE_SIZE + 1] {
+            let response = dispatch(
+                &application,
+                LegacyDispatchRequest {
+                    request_url: "/api/rdb/view/list".to_owned(),
+                    method: "get".to_owned(),
+                    message: serde_json::json!({
+                        "dataSourceId": 1,
+                        "databaseName": "inventory",
+                        "schemaName": "",
+                        "pageNo": 1,
+                        "pageSize": page_size,
+                        "searchKey": "ignored"
+                    }),
+                },
+            )
+            .await;
+            assert_eq!(response["success"], false);
+            assert_eq!(response["errorCode"], "invalid_legacy_request");
+            assert_eq!(
+                response["errorMessage"],
+                "pageSize must be between 1 and 100000"
+            );
+        }
+    }
 }

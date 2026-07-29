@@ -1673,7 +1673,7 @@ export interface components {
             /** Format: int32 */
             decimalDigits?: number | null;
             defaultConstraintName: string;
-            defaultValue: string;
+            defaultValue?: string | null;
             extent: string;
             generatedColumn?: boolean | null;
             /** Format: int32 */

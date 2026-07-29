@@ -6510,7 +6510,6 @@
           "tableName",
           "name",
           "columnType",
-          "defaultValue",
           "comment",
           "primaryKeyName",
           "primaryKeyOrder",
@@ -6581,7 +6580,10 @@
             "type": "string"
           },
           "defaultValue": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "extent": {
             "type": "string"

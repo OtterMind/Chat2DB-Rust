@@ -92,9 +92,10 @@ Console compatibility slice:
   Axum and Tauri, with exact locked-classpath startup and forced-read-only
   metadata sessions; and
 - an original-frontend compatibility layer for native MySQL connection testing,
-  datasource CRUD/tree, database/schema/table discovery, and synchronous table
-  preview over the historical `{success,data,errorCode,errorMessage}` envelope;
-  and
+  datasource CRUD/tree, database/schema/table discovery, compact table lists,
+  columns, indexes, keys, views, functions, procedures, triggers, and synchronous
+  table preview over the historical `{success,data,errorCode,errorMessage}`
+  envelope, including the original DDL-list `total` field; and
 - durable SQLite-backed Community Console create/get/list/update/delete,
   including SQL text, datasource/database/schema binding, saved status, and
   open-tab state across process restarts; and
@@ -127,6 +128,14 @@ typed Console SELECT, row truncation, active-query cancellation, retained
 paging, and proof after every operation that Java remained dormant.
 The complete repository `make verify` gate and the explicit real-MySQL
 `native-mysql-integration` target also passed after the final compatibility fix.
+The metadata parity increment adds a real MySQL fixture with a foreign key,
+composite index, view, function, procedure, and trigger; its Core product test,
+Axum queries, and desktop dispatch contracts pass while Java remains dormant.
+The legacy boundary matches paged table searches against names or comments,
+ignores `searchKey` on Community's complete-list endpoints, validates metadata
+`pageSize` in `1..=100000`, returns binding failures in the HTTP 200 JSON
+envelope, and preserves `defaultValue: null` separately from an empty-string
+default.
 
 Stage 6 is complete. Web and desktop own the product runtime and publish its
 owner-only local endpoint; CLI and MCP attach to that host and never contact
@@ -164,10 +173,10 @@ build a row-limited SELECT without opening JDBC, then Rust validates that SQL an
 executes it through the existing forced-read-only query and retained-result
 path. The fixed 149-JAR classpath keeps H2 and MySQL; PostgreSQL and other
 dialects do not block the MySQL preview. MySQL writes, Agent, CLI, and MCP
-conformance remain outside this small read-only milestone. The current MySQL
-connection, database/schema/table, preview, and supported Console SELECT routes
+conformance remain outside this read-only milestone. The current MySQL
+connection, object metadata, preview, and supported Console SELECT routes
 dispatch to `mysql_async` before Java lease acquisition; Community parser,
-formatter, completion, builders, and advanced metadata remain Java-backed.
+formatter, completion, and builders remain Java-backed.
 
 The first Console compatibility slice adds SQLite migration 3 for saved
 Consoles and the historical `/api/operation/saved/*` plus

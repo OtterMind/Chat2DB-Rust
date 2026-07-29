@@ -5,7 +5,14 @@
 - Community baseline: `OtterMind/Chat2DB` `main@3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c`.
 - Rust baseline: `OtterMind/Chat2DB-Rust` `main@352838b7d20fad568fd68f5d825e65c56104bd29`.
 - Product target: the original Community React frontend running against the Rust Web or Tauri host.
-- Runtime-tested now: datasource CRUD/test, database/schema/table discovery, bounded table preview, saved Console CRUD, and one unparameterized read-only MySQL `SELECT` with paging and cancellation.
+- Runtime-tested now: datasource CRUD/test; database, schema, table, column,
+  index, foreign-key, primary-key, view, function, procedure, trigger, and
+  routine-parameter metadata; all first-stage historical metadata routes;
+  bounded table preview; saved Console CRUD; and one unparameterized read-only MySQL
+  `SELECT` with paging and cancellation. Native metadata keeps Java dormant.
+  Paged table name/comment search, complete-list filtering, page-size validation,
+  HTTP binding-error envelopes, and nullable column defaults match the locked
+  Community baseline.
 - Complete parity: not implemented.
 
 This file is the acceptance contract for MySQL work. Community frontend routes
@@ -36,11 +43,11 @@ route reaches it and a real MySQL product test covers the behavior.
 | Datasource import/export and namespaces | converter upload routes, `/api/connection/datasource/import_community`, `/datasource/export`, `/api/namespaces/*` | Not implemented | Support Community, Chat2DB, Navicat, DBeaver, DataGrip, export, grouping, and ordering. |
 | Database and schema metadata | `/api/rdb/database/list`, `/database_schema_list`, `/api/rdb/schema/list` | Database/schema list implemented | Match filtering, system flags, charset/collation, comments, and pagination envelopes. |
 | Database and schema mutation | database create/modify/delete and `/api/rdb/delete/{database,schema}/{prepare,execute}` | Builder-only modern contracts | Generate previews through Community builders and execute only after the same explicit frontend command. |
-| Table inventory and detail | `/api/rdb/table/list`, `/table_list`, `/table_meta`, `/column_list`, `/index_list`, `/key_list`, `/query` | Table list and preview implemented; modern column/index/key contracts exist behind Java | Route every original endpoint and make MySQL metadata native before Java lease acquisition. |
+| Table inventory and detail | `/api/rdb/table/list`, `/table_list`, `/table_meta`, `/column_list`, `/index_list`, `/key_list`, `/query` | List, compact list, column, index, and key routes implemented with native MySQL metadata; nullable defaults and legacy envelopes match Community; `table_meta` and `/query` remain | Add the remaining table-meta and query projections without regressing the native routes. |
 | Table data operations | `/api/rdb/dml/execute_table`, `/execute_update`, `/get_update_sql`, `/copy_update_sql`, `/copy_in_values_sql`, `/count` | Read-only preview only; closed typed DML generation exists behind modern APIs | Support editable rows, insert/update/delete SQL, counts, copy helpers, optimistic predicates, and bounded execution. |
 | Table DDL | `/api/rdb/ddl/*`, `/api/rdb/table/modify/sql`, `/delete`, `/truncate`, `/copy`, create/update examples, DDL export | Partial builder infrastructure only | Match create/alter/drop/truncate/copy preview and execution, including columns, indexes, keys, charset, collation, comments, and MySQL types. |
-| Views | `/api/rdb/view/list`, `/column_list`, `/detail`, `/query`, `/view_meta`, `/modify/sql`, `/delete`, `/drop` | Modern view list exists behind Java; no legacy routes | Match list/detail/DDL/data preview and create/alter/drop flows. |
-| Functions, procedures, and triggers | `/api/rdb/{function,procedure,trigger}/{list,detail}`, `/api/rdb/routine/{preview_invocation,preview_migration,execute_migration}` | Modern metadata exists behind Java; no legacy routes | Make metadata native, preserve Community body/parameter projection, and map invocation/migration flows. |
+| Views | `/api/rdb/view/list`, `/column_list`, `/detail`, `/query`, `/view_meta`, `/modify/sql`, `/delete`, `/drop` | Native list, column list, and `SHOW CREATE VIEW` detail are mapped to the legacy routes | Add data query, metadata, preview, create/alter, and drop flows. |
+| Functions, procedures, and triggers | `/api/rdb/{function,procedure,trigger}/{list,detail}`, `/api/rdb/routine/{preview_invocation,preview_migration,execute_migration}` | Native list/detail and routine-parameter projections are implemented; every original list/detail route is mapped | Add invocation and migration preview/execution flows. |
 | Console SELECT | `/api/rdb/dml/execute`, desktop `sql-execute`/`sql-cancel` | One unparameterized SELECT, paging, limits, cancellation | Add parameters, CTEs, all MySQL read statements, multiple result sets, warnings, affected rows, and Community result shapes. |
 | Console scripts and writes | `/api/rdb/dml/execute`, `/execute_ddl` | Not implemented natively | Match Community statement splitting, script execution policy, DDL/DML, transaction settlement, cancellation, and per-statement results. |
 | Large cell values | `/api/rdb/cell/value`, `/download`, `/download_path` | Not implemented | Preserve bounded previews and explicit full-value download without loading unbounded cells into the WebView. |
@@ -54,7 +61,9 @@ route reaches it and a real MySQL product test covers the behavior.
 
 ## Delivery Order
 
-1. Native read-only object metadata and every matching original metadata route.
+1. Complete: native read-only object metadata and every matching original
+   metadata route, with Axum/dispatch contracts and a real MySQL 8.4 product
+   vertical that proves Java remains dormant.
 2. Full Console statement execution, multi-result handling, writes, transactions,
    history, cancellation, and large-cell retrieval.
 3. Table data editing plus database/schema/table/view DDL preview and execution.
@@ -77,5 +86,6 @@ the complete repository verification gate, and all GitHub Actions jobs.
 - `third_party/chat2db-community/chat2db-community-server/chat2db-community-web/src/main/java/ai/chat2db/community/web/api/controller/`
 - `third_party/chat2db-community/chat2db-community-server/chat2db-community-plugins/chat2db-community-mysql/src/main/java/ai/chat2db/plugin/mysql/`
 - `crates/chat2db-core/src/native_mysql.rs`
+- `crates/chat2db-core/tests/native_mysql_product.rs`
 - `crates/chat2db-core/src/community.rs`
 - `apps/chat2db-web/src/legacy.rs`

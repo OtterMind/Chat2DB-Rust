@@ -1,7 +1,13 @@
 use chat2db_contract::{
-    ApiError, CommunityDatabase, CommunityDatabaseList, CommunitySchemaList, CommunityTable,
-    CommunityTableList, CommunityTablePreviewAccepted, DatasourceConnection, QueryLimits,
-    ResultMetadata, StartCommunityTablePreviewRequest, StartQueryRequest,
+    ApiError, CommunityDatabase, CommunityDatabaseList, CommunityForeignKey,
+    CommunityForeignKeyList, CommunityFunction, CommunityFunctionList, CommunityFunctionParameter,
+    CommunityFunctionParameterList, CommunityPrimaryKey, CommunityPrimaryKeyList,
+    CommunityProcedure, CommunityProcedureList, CommunityProcedureParameter,
+    CommunityProcedureParameterList, CommunitySchemaList, CommunityTable, CommunityTableColumn,
+    CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
+    CommunityTableIndexList, CommunityTableList, CommunityTablePreviewAccepted, CommunityTrigger,
+    CommunityTriggerList, CommunityViewList, DatasourceConnection, QueryLimits, ResultMetadata,
+    StartCommunityTablePreviewRequest, StartQueryRequest,
 };
 use chat2db_engine_protocol::wire;
 use chat2db_java_bridge::QueryOptions;
@@ -9,10 +15,10 @@ use chat2db_storage::Storage;
 use mysql_async::{
     Column, Conn, Error as MysqlError, Opts, OptsBuilder, Row, SslOpts, Value,
     consts::{ColumnFlags, ColumnType},
-    prelude::Queryable,
+    prelude::{FromValue, Queryable},
 };
 use prost::Message;
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 use tokio::sync::watch;
 use url::Url;
 
@@ -28,6 +34,7 @@ const JDBC_MYSQL_SCHEME: &str = "jdbc:mysql://";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
+const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_BATCH_ROWS: u32 = 256;
 const DEFAULT_BATCH_BYTES: u32 = 256 * 1024;
 const DEFAULT_RESULT_BYTES: u64 = wire::JdbcResultByteLimit::DefaultResultBytes as u64;
@@ -50,6 +57,61 @@ type TableRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+);
+type ColumnRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    String,
+    i32,
+    Option<i32>,
+    String,
+    Option<String>,
+    Option<String>,
+);
+type IndexRow = (
+    String,
+    String,
+    u8,
+    String,
+    String,
+    i32,
+    Option<String>,
+    Option<String>,
+    Option<u64>,
+    Option<u64>,
+    String,
+    String,
+);
+type ForeignKeyRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i32,
+    String,
+    String,
+    String,
+    Option<String>,
+);
+type RoutineParameterRow = (
+    String,
+    String,
+    i32,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    Option<u64>,
+    Option<u64>,
+    Option<u64>,
+    Option<u32>,
+    Option<u32>,
 );
 
 #[derive(Debug, PartialEq, Eq)]
@@ -75,25 +137,23 @@ pub(crate) async fn list_databases(
 ) -> Result<CommunityDatabaseList, AppError> {
     let resolved = resolve_native_connection(application, datasource_id).await?;
     let mut conn = open_connection(&resolved.connection).await?;
-    let result = conn
-        .query::<(String, String, String), _>(
-            "SELECT SCHEMA_NAME, DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME \
+    let result = metadata_query(conn.query::<(String, String, String), _>(
+        "SELECT SCHEMA_NAME, DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME \
              FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME",
-        )
-        .await
-        .map(|rows| CommunityDatabaseList {
-            items: rows
-                .into_iter()
-                .map(|(name, charset, collation)| CommunityDatabase {
-                    system: is_system_database(&name),
-                    name,
-                    charset,
-                    collation,
-                    ..CommunityDatabase::default()
-                })
-                .collect(),
-        })
-        .map_err(mysql_query_error);
+    ))
+    .await
+    .map(|rows| CommunityDatabaseList {
+        items: rows
+            .into_iter()
+            .map(|(name, charset, collation)| CommunityDatabase {
+                system: is_system_database(&name),
+                name,
+                charset,
+                collation,
+                ..CommunityDatabase::default()
+            })
+            .collect(),
+    });
     finish_connection(conn, result).await
 }
 
@@ -127,50 +187,572 @@ pub(crate) async fn list_tables(
                  DATE_FORMAT(CREATE_TIME, '%Y-%m-%dT%H:%i:%s'), \
                  DATE_FORMAT(UPDATE_TIME, '%Y-%m-%dT%H:%i:%s') \
                  FROM information_schema.TABLES \
-                 WHERE TABLE_SCHEMA = ? AND (? = '' OR TABLE_NAME LIKE ?) \
+                 WHERE TABLE_SCHEMA = ? \
+                 AND TABLE_TYPE IN ('BASE TABLE', 'SYSTEM VIEW') \
+                 AND (? = '' OR TABLE_NAME LIKE ?) \
                  ORDER BY TABLE_NAME";
     let pattern = table_name_pattern.trim().to_owned();
-    let result = conn
-        .exec::<TableRow, _, _>(query, (database_name.to_owned(), pattern.clone(), pattern))
-        .await
-        .map(|rows| CommunityTableList {
-            items: rows
-                .into_iter()
-                .map(
-                    |(
-                        database_name,
-                        name,
-                        table_type,
-                        comment,
-                        engine,
-                        collation,
-                        increment_value,
-                        rows,
-                        data_length,
-                        create_time,
-                        update_time,
-                    )| CommunityTable {
-                        database_name,
-                        name,
-                        table_type: normalize_table_type(&table_type).to_owned(),
-                        comment,
-                        database_type: "MYSQL".to_owned(),
-                        engine,
-                        charset: collation
-                            .split_once('_')
-                            .map_or_else(String::new, |(charset, _)| charset.to_owned()),
-                        collation,
-                        increment_value,
-                        rows,
-                        data_length,
-                        create_time: create_time.unwrap_or_default(),
-                        update_time: update_time.unwrap_or_default(),
-                        ..CommunityTable::default()
-                    },
-                )
-                .collect(),
+    let result = metadata_query(
+        conn.exec::<TableRow, _, _>(query, (database_name.to_owned(), pattern.clone(), pattern)),
+    )
+    .await
+    .map(|rows| CommunityTableList {
+        items: rows
+            .into_iter()
+            .map(
+                |(
+                    database_name,
+                    name,
+                    table_type,
+                    comment,
+                    engine,
+                    collation,
+                    increment_value,
+                    rows,
+                    data_length,
+                    create_time,
+                    update_time,
+                )| CommunityTable {
+                    database_name,
+                    name,
+                    table_type: normalize_table_type(&table_type).to_owned(),
+                    comment,
+                    database_type: "MYSQL".to_owned(),
+                    engine,
+                    charset: collation
+                        .split_once('_')
+                        .map_or_else(String::new, |(charset, _)| charset.to_owned()),
+                    collation,
+                    increment_value,
+                    rows,
+                    data_length,
+                    create_time: create_time.unwrap_or_default(),
+                    update_time: update_time.unwrap_or_default(),
+                    ..CommunityTable::default()
+                },
+            )
+            .collect(),
+    });
+    finish_connection(conn, result).await
+}
+
+pub(crate) async fn list_columns(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    schema_name: &str,
+    table_name: &str,
+) -> Result<CommunityTableColumnList, AppError> {
+    validate_metadata_identifier(database_name, "databaseName")?;
+    validate_metadata_identifier(table_name, "tableName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let query = "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_DEFAULT, COALESCE(EXTRA, ''), \
+                 COALESCE(COLUMN_COMMENT, ''), COALESCE(COLUMN_KEY, ''), IS_NULLABLE, \
+                 ORDINAL_POSITION, NUMERIC_SCALE, COLUMN_TYPE, CHARACTER_SET_NAME, \
+                 COLLATION_NAME \
+                 FROM information_schema.COLUMNS \
+                 WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
+    let result = metadata_query(
+        conn.exec::<ColumnRow, _, _>(query, (database_name.to_owned(), table_name.to_owned())),
+    )
+    .await
+    .map(|rows| CommunityTableColumnList {
+        items: rows
+            .into_iter()
+            .map(|row| community_column(database_name, schema_name, table_name, row))
+            .collect(),
+    });
+    finish_connection(conn, result).await
+}
+
+pub(crate) async fn list_indexes(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    schema_name: &str,
+    table_name: &str,
+) -> Result<CommunityTableIndexList, AppError> {
+    validate_metadata_identifier(database_name, "databaseName")?;
+    validate_metadata_identifier(table_name, "tableName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let query = "SELECT TABLE_SCHEMA, TABLE_NAME, NON_UNIQUE, INDEX_SCHEMA, INDEX_NAME, \
+                 SEQ_IN_INDEX, COLUMN_NAME, COLLATION, CARDINALITY, SUB_PART, \
+                 INDEX_TYPE, COALESCE(INDEX_COMMENT, '') \
+                 FROM information_schema.STATISTICS \
+                 WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
+                 ORDER BY INDEX_NAME, SEQ_IN_INDEX";
+    let result = metadata_query(
+        conn.exec::<IndexRow, _, _>(query, (database_name.to_owned(), table_name.to_owned())),
+    )
+    .await
+    .map(|rows| CommunityTableIndexList {
+        items: community_indexes(rows, schema_name),
+    });
+    finish_connection(conn, result).await
+}
+
+pub(crate) async fn list_views(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    schema_name: &str,
+    view_name_pattern: &str,
+) -> Result<CommunityViewList, AppError> {
+    validate_metadata_identifier(database_name, "databaseName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let query = "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE, COALESCE(TABLE_COMMENT, ''), \
+                 COALESCE(ENGINE, ''), COALESCE(TABLE_COLLATION, ''), \
+                 CAST(AUTO_INCREMENT AS CHAR), CAST(TABLE_ROWS AS CHAR), \
+                 CAST(DATA_LENGTH AS CHAR), \
+                 DATE_FORMAT(CREATE_TIME, '%Y-%m-%dT%H:%i:%s'), \
+                 DATE_FORMAT(UPDATE_TIME, '%Y-%m-%dT%H:%i:%s') \
+                 FROM information_schema.TABLES \
+                 WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'VIEW' \
+                 AND (? = '' OR TABLE_NAME LIKE ?) ORDER BY TABLE_NAME";
+    let pattern = view_name_pattern.trim().to_owned();
+    let result = metadata_query(
+        conn.exec::<TableRow, _, _>(query, (database_name.to_owned(), pattern.clone(), pattern)),
+    )
+    .await
+    .map(|rows| CommunityViewList {
+        items: rows
+            .into_iter()
+            .map(|row| community_table(row, schema_name))
+            .collect(),
+    });
+    finish_connection(conn, result).await
+}
+
+pub(crate) async fn get_view(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    schema_name: &str,
+    view_name: &str,
+) -> Result<CommunityTable, AppError> {
+    validate_metadata_identifier(database_name, "databaseName")?;
+    validate_metadata_identifier(view_name, "viewName")?;
+    let qualified_name =
+        qualified_identifier(database_name, "databaseName", view_name, "viewName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let result =
+        metadata_query(conn.query_first::<Row, _>(format!("SHOW CREATE VIEW {qualified_name}")))
+            .await
+            .and_then(|row| {
+                let row =
+                    row.ok_or_else(|| metadata_not_found("view", database_name, view_name))?;
+                Ok(CommunityTable {
+                    database_name: database_name.to_owned(),
+                    schema_name: schema_name.to_owned(),
+                    name: view_name.to_owned(),
+                    table_type: "VIEW".to_owned(),
+                    database_type: "MYSQL".to_owned(),
+                    ddl: row_string_at(&row, 1)?,
+                    ..CommunityTable::default()
+                })
+            });
+    finish_connection(conn, result).await
+}
+
+pub(crate) async fn list_imported_keys(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    table_name: &str,
+) -> Result<CommunityForeignKeyList, AppError> {
+    validate_metadata_identifier(database_name, "databaseName")?;
+    validate_metadata_identifier(table_name, "tableName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let query = "SELECT kcu.REFERENCED_TABLE_SCHEMA, kcu.REFERENCED_TABLE_NAME, \
+                 kcu.REFERENCED_COLUMN_NAME, kcu.TABLE_SCHEMA, kcu.TABLE_NAME, \
+                 kcu.COLUMN_NAME, kcu.ORDINAL_POSITION, rc.UPDATE_RULE, rc.DELETE_RULE, \
+                 kcu.CONSTRAINT_NAME, rc.UNIQUE_CONSTRAINT_NAME \
+                 FROM information_schema.KEY_COLUMN_USAGE kcu \
+                 JOIN information_schema.REFERENTIAL_CONSTRAINTS rc \
+                   ON rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA \
+                  AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME \
+                  AND rc.TABLE_NAME = kcu.TABLE_NAME \
+                 WHERE kcu.TABLE_SCHEMA = ? AND kcu.TABLE_NAME = ? \
+                   AND kcu.REFERENCED_TABLE_NAME IS NOT NULL \
+                 ORDER BY kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION";
+    let result = metadata_query(
+        conn.exec::<ForeignKeyRow, _, _>(query, (database_name.to_owned(), table_name.to_owned())),
+    )
+    .await
+    .map(|rows| CommunityForeignKeyList {
+        items: rows.into_iter().map(community_foreign_key).collect(),
+    });
+    finish_connection(conn, result).await
+}
+
+pub(crate) async fn list_exported_keys(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    table_name: &str,
+) -> Result<CommunityForeignKeyList, AppError> {
+    validate_metadata_identifier(database_name, "databaseName")?;
+    validate_metadata_identifier(table_name, "tableName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let query = "SELECT kcu.REFERENCED_TABLE_SCHEMA, kcu.REFERENCED_TABLE_NAME, \
+                 kcu.REFERENCED_COLUMN_NAME, kcu.TABLE_SCHEMA, kcu.TABLE_NAME, \
+                 kcu.COLUMN_NAME, kcu.ORDINAL_POSITION, rc.UPDATE_RULE, rc.DELETE_RULE, \
+                 kcu.CONSTRAINT_NAME, rc.UNIQUE_CONSTRAINT_NAME \
+                 FROM information_schema.KEY_COLUMN_USAGE kcu \
+                 JOIN information_schema.REFERENTIAL_CONSTRAINTS rc \
+                   ON rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA \
+                  AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME \
+                  AND rc.TABLE_NAME = kcu.TABLE_NAME \
+                 WHERE kcu.REFERENCED_TABLE_SCHEMA = ? AND kcu.REFERENCED_TABLE_NAME = ? \
+                 ORDER BY kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, \
+                          kcu.ORDINAL_POSITION";
+    let result = metadata_query(
+        conn.exec::<ForeignKeyRow, _, _>(query, (database_name.to_owned(), table_name.to_owned())),
+    )
+    .await
+    .map(|rows| CommunityForeignKeyList {
+        items: rows.into_iter().map(community_foreign_key).collect(),
+    });
+    finish_connection(conn, result).await
+}
+
+pub(crate) async fn list_primary_keys(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    schema_name: &str,
+    table_name: &str,
+) -> Result<CommunityPrimaryKeyList, AppError> {
+    validate_metadata_identifier(database_name, "databaseName")?;
+    validate_metadata_identifier(table_name, "tableName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let query = "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, CONSTRAINT_NAME \
+                 FROM information_schema.KEY_COLUMN_USAGE \
+                 WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' \
+                 ORDER BY ORDINAL_POSITION";
+    let result = metadata_query(conn.exec::<(String, String, String, String), _, _>(
+        query,
+        (database_name.to_owned(), table_name.to_owned()),
+    ))
+    .await
+    .map(|rows| CommunityPrimaryKeyList {
+        items: rows
+            .into_iter()
+            .map(
+                |(database_name, table_name, column_name, name)| CommunityPrimaryKey {
+                    database_name,
+                    schema_name: schema_name.to_owned(),
+                    table_name,
+                    column_name,
+                    name,
+                },
+            )
+            .collect(),
+    });
+    finish_connection(conn, result).await
+}
+
+pub(crate) async fn list_functions(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    schema_name: &str,
+) -> Result<CommunityFunctionList, AppError> {
+    validate_metadata_identifier(database_name, "databaseName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let query = "SELECT ROUTINE_SCHEMA, ROUTINE_NAME, SPECIFIC_NAME, \
+                 COALESCE(ROUTINE_COMMENT, '') \
+                 FROM information_schema.ROUTINES \
+                 WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE = 'FUNCTION' \
+                 ORDER BY ROUTINE_NAME";
+    let result = metadata_query(
+        conn.exec::<(String, String, String, String), _, _>(query, (database_name.to_owned(),)),
+    )
+    .await
+    .map(|rows| CommunityFunctionList {
+        items: rows
+            .into_iter()
+            .map(
+                |(database_name, name, specific_name, remarks)| CommunityFunction {
+                    database_name,
+                    schema_name: schema_name.to_owned(),
+                    name,
+                    remarks,
+                    function_type: Some(1),
+                    specific_name,
+                    ..CommunityFunction::default()
+                },
+            )
+            .collect(),
+    });
+    finish_connection(conn, result).await
+}
+
+pub(crate) async fn get_function(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    schema_name: &str,
+    function_name: &str,
+) -> Result<CommunityFunction, AppError> {
+    validate_metadata_identifier(database_name, "databaseName")?;
+    validate_metadata_identifier(function_name, "functionName")?;
+    let qualified_name =
+        qualified_identifier(database_name, "databaseName", function_name, "functionName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let result = async {
+        let metadata = metadata_query(conn.exec_first::<(String, String, String, String), _, _>(
+            "SELECT ROUTINE_SCHEMA, ROUTINE_NAME, SPECIFIC_NAME, \
+                 COALESCE(ROUTINE_COMMENT, '') FROM information_schema.ROUTINES \
+                 WHERE ROUTINE_SCHEMA = ? AND ROUTINE_NAME = ? \
+                   AND ROUTINE_TYPE = 'FUNCTION'",
+            (database_name.to_owned(), function_name.to_owned()),
+        ))
+        .await?
+        .ok_or_else(|| metadata_not_found("function", database_name, function_name))?;
+        let row = metadata_query(
+            conn.query_first::<Row, _>(format!("SHOW CREATE FUNCTION {qualified_name}")),
+        )
+        .await?
+        .ok_or_else(|| metadata_not_found("function", database_name, function_name))?;
+        Ok(CommunityFunction {
+            database_name: metadata.0,
+            schema_name: schema_name.to_owned(),
+            name: metadata.1,
+            remarks: metadata.3,
+            function_type: Some(1),
+            specific_name: metadata.2,
+            body: row_string_at(&row, 2)?,
+            template: String::new(),
         })
-        .map_err(mysql_query_error);
+    }
+    .await;
+    finish_connection(conn, result).await
+}
+
+pub(crate) async fn list_function_parameters(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    schema_name: &str,
+    function_name: &str,
+) -> Result<CommunityFunctionParameterList, AppError> {
+    validate_metadata_identifier(database_name, "databaseName")?;
+    validate_metadata_identifier(function_name, "functionName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let query = "SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, ORDINAL_POSITION, PARAMETER_MODE, \
+                 PARAMETER_NAME, DATA_TYPE, DTD_IDENTIFIER, CHARACTER_MAXIMUM_LENGTH, \
+                 CHARACTER_OCTET_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, \
+                 DATETIME_PRECISION FROM information_schema.PARAMETERS \
+                 WHERE SPECIFIC_SCHEMA = ? AND SPECIFIC_NAME = ? \
+                   AND ROUTINE_TYPE = 'FUNCTION' ORDER BY ORDINAL_POSITION";
+    let result = metadata_query(conn.exec::<RoutineParameterRow, _, _>(
+        query,
+        (database_name.to_owned(), function_name.to_owned()),
+    ))
+    .await
+    .map(|rows| CommunityFunctionParameterList {
+        items: rows
+            .into_iter()
+            .map(|row| community_function_parameter(row, schema_name))
+            .collect(),
+    });
+    finish_connection(conn, result).await
+}
+
+pub(crate) async fn list_procedures(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    schema_name: &str,
+) -> Result<CommunityProcedureList, AppError> {
+    validate_metadata_identifier(database_name, "databaseName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let query = "SELECT ROUTINE_SCHEMA, ROUTINE_NAME, SPECIFIC_NAME, \
+                 COALESCE(ROUTINE_COMMENT, '') \
+                 FROM information_schema.ROUTINES \
+                 WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE = 'PROCEDURE' \
+                 ORDER BY ROUTINE_NAME";
+    let result = metadata_query(
+        conn.exec::<(String, String, String, String), _, _>(query, (database_name.to_owned(),)),
+    )
+    .await
+    .map(|rows| CommunityProcedureList {
+        items: rows
+            .into_iter()
+            .map(
+                |(database_name, name, specific_name, remarks)| CommunityProcedure {
+                    database_name,
+                    schema_name: schema_name.to_owned(),
+                    name,
+                    remarks,
+                    procedure_type: Some(2),
+                    specific_name,
+                    body: String::new(),
+                },
+            )
+            .collect(),
+    });
+    finish_connection(conn, result).await
+}
+
+pub(crate) async fn get_procedure(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    schema_name: &str,
+    procedure_name: &str,
+) -> Result<CommunityProcedure, AppError> {
+    validate_metadata_identifier(database_name, "databaseName")?;
+    validate_metadata_identifier(procedure_name, "procedureName")?;
+    let qualified_name = qualified_identifier(
+        database_name,
+        "databaseName",
+        procedure_name,
+        "procedureName",
+    )?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let result = async {
+        let metadata = metadata_query(conn.exec_first::<(String, String, String, String), _, _>(
+            "SELECT ROUTINE_SCHEMA, ROUTINE_NAME, SPECIFIC_NAME, \
+                 COALESCE(ROUTINE_COMMENT, '') FROM information_schema.ROUTINES \
+                 WHERE ROUTINE_SCHEMA = ? AND ROUTINE_NAME = ? \
+                   AND ROUTINE_TYPE = 'PROCEDURE'",
+            (database_name.to_owned(), procedure_name.to_owned()),
+        ))
+        .await?
+        .ok_or_else(|| metadata_not_found("procedure", database_name, procedure_name))?;
+        let row = metadata_query(
+            conn.query_first::<Row, _>(format!("SHOW CREATE PROCEDURE {qualified_name}")),
+        )
+        .await?
+        .ok_or_else(|| metadata_not_found("procedure", database_name, procedure_name))?;
+        Ok(CommunityProcedure {
+            database_name: metadata.0,
+            schema_name: schema_name.to_owned(),
+            name: metadata.1,
+            remarks: metadata.3,
+            procedure_type: Some(2),
+            specific_name: metadata.2,
+            body: row_string_at(&row, 2)?,
+        })
+    }
+    .await;
+    finish_connection(conn, result).await
+}
+
+pub(crate) async fn list_procedure_parameters(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    schema_name: &str,
+    procedure_name: &str,
+) -> Result<CommunityProcedureParameterList, AppError> {
+    validate_metadata_identifier(database_name, "databaseName")?;
+    validate_metadata_identifier(procedure_name, "procedureName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let query = "SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, ORDINAL_POSITION, PARAMETER_MODE, \
+                 PARAMETER_NAME, DATA_TYPE, DTD_IDENTIFIER, CHARACTER_MAXIMUM_LENGTH, \
+                 CHARACTER_OCTET_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, \
+                 DATETIME_PRECISION FROM information_schema.PARAMETERS \
+                 WHERE SPECIFIC_SCHEMA = ? AND SPECIFIC_NAME = ? \
+                   AND ROUTINE_TYPE = 'PROCEDURE' ORDER BY ORDINAL_POSITION";
+    let result = metadata_query(conn.exec::<RoutineParameterRow, _, _>(
+        query,
+        (database_name.to_owned(), procedure_name.to_owned()),
+    ))
+    .await
+    .map(|rows| CommunityProcedureParameterList {
+        items: rows
+            .into_iter()
+            .map(|row| community_procedure_parameter(row, schema_name))
+            .collect(),
+    });
+    finish_connection(conn, result).await
+}
+
+pub(crate) async fn list_triggers(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    schema_name: &str,
+) -> Result<CommunityTriggerList, AppError> {
+    validate_metadata_identifier(database_name, "databaseName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let query = "SELECT TRIGGER_SCHEMA, TRIGGER_NAME, EVENT_MANIPULATION \
+                 FROM information_schema.TRIGGERS \
+                 WHERE TRIGGER_SCHEMA = ? ORDER BY TRIGGER_NAME";
+    let result = metadata_query(
+        conn.exec::<(String, String, String), _, _>(query, (database_name.to_owned(),)),
+    )
+    .await
+    .map(|rows| CommunityTriggerList {
+        items: rows
+            .into_iter()
+            .map(
+                |(database_name, name, event_manipulation)| CommunityTrigger {
+                    database_name,
+                    schema_name: schema_name.to_owned(),
+                    name,
+                    event_manipulation,
+                    body: String::new(),
+                },
+            )
+            .collect(),
+    });
+    finish_connection(conn, result).await
+}
+
+pub(crate) async fn get_trigger(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    schema_name: &str,
+    trigger_name: &str,
+) -> Result<CommunityTrigger, AppError> {
+    validate_metadata_identifier(database_name, "databaseName")?;
+    validate_metadata_identifier(trigger_name, "triggerName")?;
+    let qualified_name =
+        qualified_identifier(database_name, "databaseName", trigger_name, "triggerName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let result = async {
+        let metadata = metadata_query(conn.exec_first::<(String, String, String), _, _>(
+            "SELECT TRIGGER_SCHEMA, TRIGGER_NAME, EVENT_MANIPULATION \
+                 FROM information_schema.TRIGGERS \
+                 WHERE TRIGGER_SCHEMA = ? AND TRIGGER_NAME = ?",
+            (database_name.to_owned(), trigger_name.to_owned()),
+        ))
+        .await?
+        .ok_or_else(|| metadata_not_found("trigger", database_name, trigger_name))?;
+        let row = metadata_query(
+            conn.query_first::<Row, _>(format!("SHOW CREATE TRIGGER {qualified_name}")),
+        )
+        .await?
+        .ok_or_else(|| metadata_not_found("trigger", database_name, trigger_name))?;
+        Ok(CommunityTrigger {
+            database_name: metadata.0,
+            schema_name: schema_name.to_owned(),
+            name: metadata.1,
+            event_manipulation: metadata.2,
+            body: row_string_at(&row, 2)?,
+        })
+    }
+    .await;
     finish_connection(conn, result).await
 }
 
@@ -1047,6 +1629,461 @@ fn mysql_display(value: Value) -> String {
     mysql_text(value).unwrap_or_else(|_| "[unavailable]".to_owned())
 }
 
+fn community_table(
+    (
+        database_name,
+        name,
+        table_type,
+        comment,
+        engine,
+        collation,
+        increment_value,
+        rows,
+        data_length,
+        create_time,
+        update_time,
+    ): TableRow,
+    schema_name: &str,
+) -> CommunityTable {
+    CommunityTable {
+        database_name,
+        schema_name: schema_name.to_owned(),
+        name,
+        table_type: normalize_table_type(&table_type).to_owned(),
+        comment,
+        database_type: "MYSQL".to_owned(),
+        engine,
+        charset: collation
+            .split_once('_')
+            .map_or_else(String::new, |(charset, _)| charset.to_owned()),
+        collation,
+        increment_value,
+        rows,
+        data_length,
+        create_time: create_time.unwrap_or_default(),
+        update_time: update_time.unwrap_or_default(),
+        ..CommunityTable::default()
+    }
+}
+
+fn community_column(
+    database_name: &str,
+    schema_name: &str,
+    table_name: &str,
+    (
+        name,
+        data_type,
+        default_value,
+        extra,
+        comment,
+        column_key,
+        is_nullable,
+        ordinal_position,
+        numeric_scale,
+        column_definition,
+        charset,
+        collation,
+    ): ColumnRow,
+) -> CommunityTableColumn {
+    let data_type = data_type.to_ascii_uppercase();
+    let (column_size, decimal_digits) =
+        mysql_column_size(&data_type, &column_definition, numeric_scale);
+    CommunityTableColumn {
+        database_name: database_name.to_owned(),
+        schema_name: schema_name.to_owned(),
+        table_name: table_name.to_owned(),
+        name,
+        column_type: data_type,
+        default_value,
+        auto_increment: Some(extra.contains("auto_increment")),
+        comment,
+        primary_key: Some(column_key.eq_ignore_ascii_case("PRI")),
+        column_size,
+        decimal_digits,
+        ordinal_position: Some(ordinal_position),
+        nullable: Some(i32::from(is_nullable.eq_ignore_ascii_case("YES"))),
+        charset: charset.unwrap_or_default(),
+        collation: collation.unwrap_or_default(),
+        on_update_current_timestamp: Some(extra.contains("on update CURRENT_TIMESTAMP")),
+        ..CommunityTableColumn::default()
+    }
+}
+
+fn mysql_column_size(
+    data_type: &str,
+    column_definition: &str,
+    numeric_scale: Option<i32>,
+) -> (Option<i32>, Option<i32>) {
+    let mut decimal_digits = Some(numeric_scale.unwrap_or_default());
+    let Some(open) = column_definition.find('(') else {
+        return (None, decimal_digits);
+    };
+    let Some(close_offset) = column_definition[open + 1..].find(')') else {
+        return (None, decimal_digits);
+    };
+    if matches!(data_type, "ENUM" | "SET") {
+        return (None, decimal_digits);
+    }
+    let size = &column_definition[open + 1..open + 1 + close_offset];
+    let mut parts = size.split(',').map(str::trim);
+    let column_size = parts.next().and_then(|value| value.parse::<i32>().ok());
+    if let Some(scale) = parts.next().and_then(|value| value.parse::<i32>().ok()) {
+        decimal_digits = Some(scale);
+    }
+    (column_size, decimal_digits)
+}
+
+fn community_indexes(rows: Vec<IndexRow>, schema_name: &str) -> Vec<CommunityTableIndex> {
+    let mut indexes: Vec<CommunityTableIndex> = Vec::new();
+    for (
+        database_name,
+        table_name,
+        non_unique,
+        index_schema,
+        index_name,
+        ordinal_position,
+        column_name,
+        collation,
+        cardinality,
+        sub_part,
+        method,
+        comment,
+    ) in rows
+    {
+        let non_unique = non_unique != 0;
+        let column = CommunityTableIndexColumn {
+            database_name: database_name.clone(),
+            schema_name: schema_name.to_owned(),
+            table_name: table_name.clone(),
+            index_name: index_name.clone(),
+            column_name: column_name.unwrap_or_default(),
+            ordinal_position: Some(ordinal_position),
+            collation: collation.clone().unwrap_or_default(),
+            non_unique: Some(non_unique),
+            index_qualifier: index_schema,
+            sort_order: mysql_index_sort_order(collation.as_deref()),
+            cardinality: cardinality.map(|value| value.to_string()),
+            sub_part: sub_part.map(|value| value.to_string()),
+            ..CommunityTableIndexColumn::default()
+        };
+        if let Some(index) = indexes.iter_mut().find(|index| index.name == index_name) {
+            index.columns.push(column);
+            continue;
+        }
+        let unique = !non_unique;
+        indexes.push(CommunityTableIndex {
+            database_name,
+            schema_name: schema_name.to_owned(),
+            table_name,
+            name: index_name.clone(),
+            index_type: mysql_index_type(&index_name, unique, &method).to_owned(),
+            unique: Some(unique),
+            comment,
+            columns: vec![column],
+            method,
+            ..CommunityTableIndex::default()
+        });
+    }
+    indexes
+}
+
+fn mysql_index_type(index_name: &str, unique: bool, method: &str) -> &'static str {
+    if index_name.eq_ignore_ascii_case("PRIMARY") {
+        "Primary"
+    } else if unique {
+        "Unique"
+    } else if method.eq_ignore_ascii_case("SPATIAL") {
+        "Spatial"
+    } else if method.eq_ignore_ascii_case("FULLTEXT") {
+        "Fulltext"
+    } else {
+        "Normal"
+    }
+}
+
+fn mysql_index_sort_order(collation: Option<&str>) -> String {
+    match collation {
+        Some(value) if value.eq_ignore_ascii_case("A") => "ASC".to_owned(),
+        Some(value) if value.eq_ignore_ascii_case("D") => "DESC".to_owned(),
+        _ => String::new(),
+    }
+}
+
+fn community_foreign_key(
+    (
+        primary_table_database,
+        primary_table_name,
+        primary_column_name,
+        foreign_table_database,
+        foreign_table_name,
+        foreign_column_name,
+        key_sequence,
+        update_rule,
+        delete_rule,
+        foreign_key_name,
+        primary_key_name,
+    ): ForeignKeyRow,
+) -> CommunityForeignKey {
+    CommunityForeignKey {
+        primary_table_database,
+        primary_table_name,
+        primary_column_name,
+        foreign_table_database,
+        foreign_table_name,
+        foreign_column_name,
+        key_sequence,
+        update_rule: mysql_referential_rule(&update_rule),
+        delete_rule: mysql_referential_rule(&delete_rule),
+        foreign_key_name,
+        primary_key_name: primary_key_name.unwrap_or_default(),
+        deferrability: 7,
+        ..CommunityForeignKey::default()
+    }
+}
+
+fn mysql_referential_rule(rule: &str) -> i32 {
+    match rule.trim().to_ascii_uppercase().as_str() {
+        "CASCADE" => 0,
+        "RESTRICT" => 1,
+        "SET NULL" => 2,
+        "SET DEFAULT" => 4,
+        _ => 3,
+    }
+}
+
+fn community_function_parameter(
+    row: RoutineParameterRow,
+    schema_name: &str,
+) -> CommunityFunctionParameter {
+    let RoutineParameterProjection {
+        database_name,
+        routine_name,
+        ordinal_position,
+        mode,
+        parameter_name,
+        data_type,
+        precision,
+        length,
+        scale,
+        radix,
+        char_octet_length,
+    } = routine_parameter_projection(row);
+    CommunityFunctionParameter {
+        function_database: database_name,
+        function_schema: schema_name.to_owned(),
+        function_name: routine_name.clone(),
+        column_name: parameter_name,
+        column_type: Some(mysql_function_column_type(
+            mode.as_deref(),
+            ordinal_position,
+        )),
+        data_type: Some(mysql_metadata_jdbc_type(&data_type)),
+        type_name: data_type.to_ascii_uppercase(),
+        precision,
+        length,
+        scale,
+        radix,
+        nullable: Some(1),
+        char_octet_length,
+        ordinal_position: Some(ordinal_position),
+        is_nullable: "YES".to_owned(),
+        specific_name: routine_name,
+        ..CommunityFunctionParameter::default()
+    }
+}
+
+fn community_procedure_parameter(
+    row: RoutineParameterRow,
+    schema_name: &str,
+) -> CommunityProcedureParameter {
+    let RoutineParameterProjection {
+        database_name,
+        routine_name,
+        ordinal_position,
+        mode,
+        parameter_name,
+        data_type,
+        precision,
+        length,
+        scale,
+        radix,
+        char_octet_length,
+    } = routine_parameter_projection(row);
+    CommunityProcedureParameter {
+        procedure_database: database_name,
+        procedure_schema: schema_name.to_owned(),
+        procedure_name: routine_name.clone(),
+        column_name: parameter_name,
+        column_type: Some(mysql_procedure_column_type(mode.as_deref())),
+        data_type: Some(mysql_metadata_jdbc_type(&data_type)),
+        type_name: data_type.to_ascii_uppercase(),
+        precision,
+        length,
+        scale,
+        radix,
+        nullable: Some(1),
+        char_octet_length,
+        ordinal_position: Some(ordinal_position),
+        is_nullable: "YES".to_owned(),
+        specific_name: routine_name,
+        ..CommunityProcedureParameter::default()
+    }
+}
+
+struct RoutineParameterProjection {
+    database_name: String,
+    routine_name: String,
+    ordinal_position: i32,
+    mode: Option<String>,
+    parameter_name: String,
+    data_type: String,
+    precision: Option<i32>,
+    length: Option<i32>,
+    scale: Option<i32>,
+    radix: Option<i32>,
+    char_octet_length: Option<i32>,
+}
+
+fn routine_parameter_projection(
+    (
+        database_name,
+        routine_name,
+        ordinal_position,
+        mode,
+        parameter_name,
+        data_type,
+        _column_definition,
+        character_length,
+        character_octet_length,
+        numeric_precision,
+        numeric_scale,
+        datetime_precision,
+    ): RoutineParameterRow,
+) -> RoutineParameterProjection {
+    let temporal_size = mysql_temporal_display_size(&data_type, datetime_precision);
+    let precision =
+        optional_metadata_i32_clamped(numeric_precision.or(character_length).or(temporal_size));
+    let length = optional_metadata_i32_clamped(
+        character_octet_length
+            .or(character_length)
+            .or(temporal_size),
+    );
+    let scale = numeric_scale.map(|value| i32::try_from(value).unwrap_or(i32::MAX));
+    RoutineParameterProjection {
+        database_name,
+        routine_name,
+        ordinal_position,
+        mode,
+        parameter_name: parameter_name.unwrap_or_default(),
+        data_type,
+        precision,
+        length,
+        scale,
+        radix: Some(10),
+        char_octet_length: optional_metadata_i32_clamped(character_octet_length),
+    }
+}
+
+fn optional_metadata_i32_clamped(value: Option<u64>) -> Option<i32> {
+    value.map(|value| i32::try_from(value).unwrap_or(i32::MAX))
+}
+
+fn mysql_temporal_display_size(data_type: &str, fractional_seconds: Option<u32>) -> Option<u64> {
+    let fractional = fractional_seconds
+        .filter(|value| *value > 0)
+        .map_or(0, |value| u64::from(value) + 1);
+    match data_type.trim().to_ascii_uppercase().as_str() {
+        "DATE" => Some(10),
+        "TIME" => Some(8 + fractional),
+        "DATETIME" | "TIMESTAMP" => Some(19 + fractional),
+        "YEAR" => Some(4),
+        _ => None,
+    }
+}
+
+fn mysql_function_column_type(mode: Option<&str>, ordinal_position: i32) -> i32 {
+    match mode.map(str::trim) {
+        None if ordinal_position == 0 => 4,
+        Some(value) if value.eq_ignore_ascii_case("IN") => 1,
+        Some(value) if value.eq_ignore_ascii_case("INOUT") => 2,
+        Some(value) if value.eq_ignore_ascii_case("OUT") => 3,
+        _ => 0,
+    }
+}
+
+fn mysql_procedure_column_type(mode: Option<&str>) -> i32 {
+    match mode.map(str::trim) {
+        Some(value) if value.eq_ignore_ascii_case("IN") => 1,
+        Some(value) if value.eq_ignore_ascii_case("INOUT") => 2,
+        Some(value) if value.eq_ignore_ascii_case("OUT") => 4,
+        _ => 0,
+    }
+}
+
+fn mysql_metadata_jdbc_type(data_type: &str) -> i32 {
+    match data_type.trim().to_ascii_uppercase().as_str() {
+        "BIT" => -7,
+        "TINYINT" => -6,
+        "SMALLINT" => 5,
+        "MEDIUMINT" | "INT" | "INTEGER" => 4,
+        "BIGINT" => -5,
+        "FLOAT" => 7,
+        "DOUBLE" | "DOUBLE PRECISION" | "REAL" => 8,
+        "DECIMAL" | "NUMERIC" => 3,
+        "DATE" | "YEAR" => 91,
+        "TIME" => 92,
+        "DATETIME" | "TIMESTAMP" => 93,
+        "CHAR" | "ENUM" | "SET" => 1,
+        "VARCHAR" => 12,
+        "BINARY" => -2,
+        "VARBINARY" => -3,
+        "TINYBLOB" | "BLOB" | "MEDIUMBLOB" | "LONGBLOB" | "GEOMETRY" => -4,
+        "TINYTEXT" | "TEXT" | "MEDIUMTEXT" | "LONGTEXT" | "JSON" => -1,
+        "BOOLEAN" | "BOOL" => 16,
+        _ => 1111,
+    }
+}
+
+fn row_string_at(row: &Row, index: usize) -> Result<String, AppError> {
+    row_value_at(row, index)
+}
+
+fn row_value_at<T: FromValue>(row: &Row, index: usize) -> Result<T, AppError> {
+    row.get_opt::<T, _>(index)
+        .ok_or_else(result_decode_error)?
+        .map_err(|_| result_decode_error())
+}
+
+fn validate_metadata_identifier(value: &str, field: &str) -> Result<(), AppError> {
+    if value.trim().is_empty() || value.len() > MAX_IDENTIFIER_BYTES || value.contains('\0') {
+        return Err(AppError::invalid(
+            "invalid_mysql_metadata_request",
+            format!("{field} is invalid"),
+        ));
+    }
+    Ok(())
+}
+
+fn qualified_identifier(
+    database_name: &str,
+    database_field: &str,
+    object_name: &str,
+    object_field: &str,
+) -> Result<String, AppError> {
+    Ok(format!(
+        "{}.{}",
+        quote_identifier(database_name, database_field)?,
+        quote_identifier(object_name, object_field)?
+    ))
+}
+
+fn metadata_not_found(kind: &str, database_name: &str, object_name: &str) -> AppError {
+    AppError::invalid(
+        "mysql_metadata_not_found",
+        format!("MySQL {kind} {database_name}.{object_name} does not exist"),
+    )
+}
+
 fn validate_query_options(options: QueryOptions) -> Result<(), AppError> {
     if options.target_batch_rows > MAX_BATCH_ROWS {
         return Err(AppError::invalid(
@@ -1237,8 +2274,23 @@ async fn open_connection_with_opts(opts: Opts) -> Result<Conn, AppError> {
         .map_err(mysql_connection_error)
 }
 
+async fn metadata_query<T, F>(query: F) -> Result<T, AppError>
+where
+    F: Future<Output = Result<T, MysqlError>>,
+{
+    tokio::time::timeout(METADATA_TIMEOUT, query)
+        .await
+        .map_err(|_| {
+            AppError::unavailable(
+                "mysql_metadata_timeout",
+                "The MySQL metadata query did not finish in time",
+            )
+        })?
+        .map_err(mysql_query_error)
+}
+
 async fn finish_connection<T>(conn: Conn, result: Result<T, AppError>) -> Result<T, AppError> {
-    let close = conn.disconnect().await.map_err(mysql_connection_error);
+    let close = disconnect_connection(conn).await;
     match result {
         Ok(value) => close.map(|()| value),
         Err(error) => {
@@ -1398,8 +2450,10 @@ mod tests {
     use chat2db_contract::{DatasourceConnection, DatasourceConnectionProperty};
 
     use super::{
-        connection_opts, is_mysql_database_type, is_native_read_candidate, normalize_table_type,
-        quote_identifier, validate_read_sql,
+        community_column, community_foreign_key, community_function_parameter, community_indexes,
+        community_procedure_parameter, connection_opts, is_mysql_database_type,
+        is_native_read_candidate, normalize_table_type, qualified_identifier, quote_identifier,
+        validate_read_sql,
     };
 
     #[test]
@@ -1514,10 +2568,196 @@ mod tests {
     }
 
     #[test]
+    fn mysql_column_metadata_preserves_community_projection() {
+        let column = community_column(
+            "inventory",
+            "",
+            "items",
+            (
+                "amount".to_owned(),
+                "decimal".to_owned(),
+                Some("0.00".to_owned()),
+                "DEFAULT_GENERATED on update CURRENT_TIMESTAMP".to_owned(),
+                "Money".to_owned(),
+                "PRI".to_owned(),
+                "NO".to_owned(),
+                2,
+                Some(2),
+                "decimal(12,2) unsigned".to_owned(),
+                None,
+                None,
+            ),
+        );
+
+        assert_eq!(column.database_name, "inventory");
+        assert_eq!(column.table_name, "items");
+        assert_eq!(column.column_type, "DECIMAL");
+        assert_eq!(column.default_value.as_deref(), Some("0.00"));
+        assert_eq!(column.column_size, Some(12));
+        assert_eq!(column.decimal_digits, Some(2));
+        assert_eq!(column.ordinal_position, Some(2));
+        assert_eq!(column.nullable, Some(0));
+        assert_eq!(column.primary_key, Some(true));
+        assert_eq!(column.auto_increment, Some(false));
+        assert_eq!(column.on_update_current_timestamp, Some(true));
+    }
+
+    #[test]
+    fn mysql_index_metadata_groups_columns_and_uses_community_types() {
+        let indexes = community_indexes(
+            vec![
+                (
+                    "inventory".to_owned(),
+                    "items".to_owned(),
+                    0,
+                    "inventory".to_owned(),
+                    "PRIMARY".to_owned(),
+                    1,
+                    Some("id".to_owned()),
+                    Some("A".to_owned()),
+                    Some(2),
+                    None,
+                    "BTREE".to_owned(),
+                    String::new(),
+                ),
+                (
+                    "inventory".to_owned(),
+                    "items".to_owned(),
+                    1,
+                    "inventory".to_owned(),
+                    "idx_label_amount".to_owned(),
+                    1,
+                    Some("label".to_owned()),
+                    Some("A".to_owned()),
+                    Some(2),
+                    Some(16),
+                    "BTREE".to_owned(),
+                    "Lookup".to_owned(),
+                ),
+                (
+                    "inventory".to_owned(),
+                    "items".to_owned(),
+                    1,
+                    "inventory".to_owned(),
+                    "idx_label_amount".to_owned(),
+                    2,
+                    Some("amount".to_owned()),
+                    Some("D".to_owned()),
+                    Some(2),
+                    None,
+                    "BTREE".to_owned(),
+                    "Lookup".to_owned(),
+                ),
+            ],
+            "",
+        );
+
+        assert_eq!(indexes.len(), 2);
+        assert_eq!(indexes[0].index_type, "Primary");
+        assert_eq!(indexes[0].unique, Some(true));
+        assert_eq!(indexes[1].index_type, "Normal");
+        assert_eq!(indexes[1].columns.len(), 2);
+        assert_eq!(indexes[1].columns[0].sort_order, "ASC");
+        assert_eq!(indexes[1].columns[0].sub_part.as_deref(), Some("16"));
+        assert_eq!(indexes[1].columns[1].sort_order, "DESC");
+    }
+
+    #[test]
+    fn mysql_relation_and_routine_metadata_match_jdbc_constants() {
+        let key = community_foreign_key((
+            "inventory".to_owned(),
+            "parent".to_owned(),
+            "id".to_owned(),
+            "inventory".to_owned(),
+            "child".to_owned(),
+            "parent_id".to_owned(),
+            1,
+            "CASCADE".to_owned(),
+            "SET NULL".to_owned(),
+            "fk_child_parent".to_owned(),
+            Some("PRIMARY".to_owned()),
+        ));
+        assert_eq!(key.update_rule, 0);
+        assert_eq!(key.delete_rule, 2);
+        assert_eq!(key.deferrability, 7);
+
+        let function_return = community_function_parameter(
+            (
+                "inventory".to_owned(),
+                "calculate_total".to_owned(),
+                0,
+                None,
+                None,
+                "decimal".to_owned(),
+                "decimal(12,2)".to_owned(),
+                None,
+                None,
+                Some(12),
+                Some(2),
+                None,
+            ),
+            "",
+        );
+        assert_eq!(function_return.column_type, Some(4));
+        assert_eq!(function_return.data_type, Some(3));
+        assert_eq!(function_return.precision, Some(12));
+        assert_eq!(function_return.scale, Some(2));
+
+        let procedure_output = community_procedure_parameter(
+            (
+                "inventory".to_owned(),
+                "load_total".to_owned(),
+                1,
+                Some("OUT".to_owned()),
+                Some("total".to_owned()),
+                "int".to_owned(),
+                "int".to_owned(),
+                None,
+                None,
+                Some(10),
+                Some(0),
+                None,
+            ),
+            "",
+        );
+        assert_eq!(procedure_output.column_type, Some(4));
+        assert_eq!(procedure_output.data_type, Some(4));
+        assert_eq!(procedure_output.radix, Some(10));
+
+        let long_text_input = community_procedure_parameter(
+            (
+                "inventory".to_owned(),
+                "store_text".to_owned(),
+                1,
+                Some("IN".to_owned()),
+                Some("content".to_owned()),
+                "longtext".to_owned(),
+                "longtext".to_owned(),
+                Some(4_294_967_295),
+                Some(4_294_967_295),
+                None,
+                None,
+                None,
+            ),
+            "",
+        );
+        assert_eq!(long_text_input.precision, Some(i32::MAX));
+        assert_eq!(long_text_input.length, Some(i32::MAX));
+        assert_eq!(long_text_input.char_octet_length, Some(i32::MAX));
+        assert_eq!(long_text_input.nullable, Some(1));
+        assert_eq!(long_text_input.is_nullable, "YES");
+    }
+
+    #[test]
     fn preview_identifiers_are_quoted_as_one_mysql_identifier() {
         assert_eq!(
             quote_identifier("odd`name", "tableName").expect("identifier should quote"),
             "`odd``name`"
+        );
+        assert_eq!(
+            qualified_identifier("odd`db", "databaseName", "run`me", "procedureName")
+                .expect("qualified identifier should quote each component"),
+            "`odd``db`.`run``me`"
         );
         assert!(quote_identifier("", "tableName").is_err());
         assert!(quote_identifier("bad\0name", "tableName").is_err());

@@ -3,10 +3,13 @@ use std::{panic::AssertUnwindSafe, time::Duration};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chat2db_contract::{
     CancelDisposition, ComponentState, CreateDatasourceRequest, DatasourceConnection,
-    DatasourceConnectionProperty, JdbcValue, ListCommunityDatabasesRequest,
-    ListCommunitySchemasRequest, ListCommunityTablesRequest, OperationEvent, OperationStatus,
-    QueryLimits, QueryParameter, ResultMetadata, ResultPageRequest,
-    StartCommunityTablePreviewRequest, StartQueryRequest,
+    DatasourceConnectionProperty, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
+    GetCommunityTriggerRequest, JdbcValue, ListCommunityColumnsRequest,
+    ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
+    ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
+    ListCommunityTablesRequest, ListCommunityTriggersRequest, ListCommunityViewsRequest,
+    OperationEvent, OperationStatus, QueryLimits, QueryParameter, ResultMetadata,
+    ResultPageRequest, StartCommunityTablePreviewRequest, StartQueryRequest,
 };
 use chat2db_core::{Application, RuntimeConfig, RuntimeHost};
 use chat2db_java_bridge::{EngineCommand, EngineConfig};
@@ -170,6 +173,7 @@ async fn verify_native_product(config: &MysqlTestConfig, database_name: &str) {
         .expect("native MySQL datasource must persist without a JDBC pack");
 
     verify_native_metadata(&application, &datasource.id, database_name).await;
+    verify_native_object_metadata(&application, &datasource.id, database_name).await;
     verify_native_preview(&application, &datasource.id, database_name).await;
     verify_native_console(&application, &datasource.id).await;
     verify_rejected_native_selects(&application, &datasource.id).await;
@@ -233,9 +237,263 @@ async fn verify_native_metadata(
         .iter()
         .find(|table| table.name == "items")
         .expect("fixture table must be visible");
+    assert!(
+        tables
+            .items
+            .iter()
+            .all(|table| table.name != "active_items"),
+        "views must not leak into the Community table inventory"
+    );
     assert_eq!(table.database_name, database_name);
     assert_eq!(table.table_type, "TABLE");
     assert_eq!(table.engine, "InnoDB");
+    assert_java_dormant(application);
+}
+
+#[allow(clippy::too_many_lines)]
+async fn verify_native_object_metadata(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+) {
+    let columns = application
+        .list_community_columns(ListCommunityColumnsRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: MYSQL_DATABASE_TYPE.to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: String::new(),
+            table_name: "items".to_owned(),
+        })
+        .await
+        .expect("native MySQL columns must list");
+    let amount = columns
+        .items
+        .iter()
+        .find(|column| column.name == "amount")
+        .expect("fixture amount column must be visible");
+    assert_eq!(amount.column_type, "DECIMAL");
+    assert_eq!(amount.default_value.as_deref(), Some("0.00"));
+    assert_eq!(amount.column_size, Some(12));
+    assert_eq!(amount.decimal_digits, Some(2));
+    let label = columns
+        .items
+        .iter()
+        .find(|column| column.name == "label")
+        .expect("fixture label column must be visible");
+    assert_eq!(label.default_value, None);
+
+    let indexes = application
+        .list_community_indexes(ListCommunityIndexesRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: MYSQL_DATABASE_TYPE.to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: String::new(),
+            table_name: "items".to_owned(),
+        })
+        .await
+        .expect("native MySQL indexes must list");
+    assert!(
+        indexes
+            .items
+            .iter()
+            .any(|index| index.name == "PRIMARY" && index.index_type == "Primary")
+    );
+    let composite = indexes
+        .items
+        .iter()
+        .find(|index| index.name == "idx_items_label_amount")
+        .expect("fixture composite index must be visible");
+    assert_eq!(composite.columns.len(), 2);
+    assert_eq!(composite.columns[0].column_name, "label");
+    assert_eq!(composite.columns[1].column_name, "amount");
+    assert_eq!(composite.columns[1].sort_order, "DESC");
+
+    let table_keys = ListCommunityTableKeysRequest {
+        datasource_id: datasource_id.to_owned(),
+        database_type: MYSQL_DATABASE_TYPE.to_owned(),
+        database_name: database_name.to_owned(),
+        schema_name: String::new(),
+        table_name: "items".to_owned(),
+    };
+    let imported = application
+        .list_community_imported_keys(table_keys.clone())
+        .await
+        .expect("native MySQL imported keys must list");
+    assert!(imported.items.iter().any(|key| {
+        key.foreign_key_name == "fk_items_category"
+            && key.primary_table_name == "categories"
+            && key.foreign_table_name == "items"
+    }));
+    let primary = application
+        .list_community_primary_keys(table_keys)
+        .await
+        .expect("native MySQL primary keys must list");
+    assert!(
+        primary
+            .items
+            .iter()
+            .any(|key| key.name == "PRIMARY" && key.column_name == "id")
+    );
+    let exported = application
+        .list_community_exported_keys(ListCommunityTableKeysRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: MYSQL_DATABASE_TYPE.to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: String::new(),
+            table_name: "categories".to_owned(),
+        })
+        .await
+        .expect("native MySQL exported keys must list");
+    assert!(
+        exported
+            .items
+            .iter()
+            .any(|key| key.foreign_key_name == "fk_items_category")
+    );
+
+    let view_request = ListCommunityViewsRequest {
+        datasource_id: datasource_id.to_owned(),
+        database_type: MYSQL_DATABASE_TYPE.to_owned(),
+        database_name: database_name.to_owned(),
+        schema_name: String::new(),
+        view_name_pattern: "active_items".to_owned(),
+    };
+    let views = application
+        .list_community_views(view_request.clone())
+        .await
+        .expect("native MySQL views must list");
+    assert!(views.items.iter().any(|view| view.name == "active_items"));
+    let view = application
+        .get_community_view(view_request)
+        .await
+        .expect("native MySQL view detail must load");
+    assert_eq!(view.table_type, "VIEW");
+    assert!(view.ddl.contains("CREATE"));
+    assert!(view.ddl.contains("active_items"));
+
+    let functions = application
+        .list_community_functions(ListCommunityFunctionsRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: MYSQL_DATABASE_TYPE.to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: String::new(),
+        })
+        .await
+        .expect("native MySQL functions must list");
+    assert!(
+        functions
+            .items
+            .iter()
+            .any(|function| function.name == "double_amount")
+    );
+    let function = application
+        .get_community_function(GetCommunityFunctionRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: MYSQL_DATABASE_TYPE.to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: String::new(),
+            function_name: "double_amount".to_owned(),
+        })
+        .await
+        .expect("native MySQL function detail must load");
+    assert!(function.body.contains("CREATE"));
+    assert!(function.body.contains("double_amount"));
+    let function_parameters = application
+        .list_community_function_parameters(GetCommunityFunctionRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: MYSQL_DATABASE_TYPE.to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: String::new(),
+            function_name: "double_amount".to_owned(),
+        })
+        .await
+        .expect("native MySQL function parameters must list");
+    assert!(
+        function_parameters
+            .items
+            .iter()
+            .any(|parameter| parameter.ordinal_position == Some(0))
+    );
+    assert!(
+        function_parameters
+            .items
+            .iter()
+            .any(|parameter| parameter.column_name == "input_value")
+    );
+
+    let procedures = application
+        .list_community_procedures(ListCommunityProceduresRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: MYSQL_DATABASE_TYPE.to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: String::new(),
+        })
+        .await
+        .expect("native MySQL procedures must list");
+    assert!(
+        procedures
+            .items
+            .iter()
+            .any(|procedure| procedure.name == "count_items")
+    );
+    let procedure = application
+        .get_community_procedure(GetCommunityProcedureRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: MYSQL_DATABASE_TYPE.to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: String::new(),
+            procedure_name: "count_items".to_owned(),
+        })
+        .await
+        .expect("native MySQL procedure detail must load");
+    assert!(procedure.body.contains("CREATE"));
+    assert!(procedure.body.contains("count_items"));
+    let procedure_parameters = application
+        .list_community_procedure_parameters(GetCommunityProcedureRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: MYSQL_DATABASE_TYPE.to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: String::new(),
+            procedure_name: "count_items".to_owned(),
+        })
+        .await
+        .expect("native MySQL procedure parameters must list");
+    assert!(
+        procedure_parameters
+            .items
+            .iter()
+            .any(|parameter| parameter.column_name == "item_count"
+                && parameter.column_type == Some(4))
+    );
+
+    let triggers = application
+        .list_community_triggers(ListCommunityTriggersRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: MYSQL_DATABASE_TYPE.to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: String::new(),
+        })
+        .await
+        .expect("native MySQL triggers must list");
+    assert!(
+        triggers
+            .items
+            .iter()
+            .any(|trigger| trigger.name == "items_trim_label")
+    );
+    let trigger = application
+        .get_community_trigger(GetCommunityTriggerRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: MYSQL_DATABASE_TYPE.to_owned(),
+            database_name: database_name.to_owned(),
+            schema_name: String::new(),
+            trigger_name: "items_trim_label".to_owned(),
+        })
+        .await
+        .expect("native MySQL trigger detail must load");
+    assert_eq!(trigger.event_manipulation, "INSERT");
+    assert!(trigger.body.contains("CREATE"));
+    assert!(trigger.body.contains("items_trim_label"));
     assert_java_dormant(application);
 }
 
@@ -482,22 +740,62 @@ async fn provision_database(config: &MysqlTestConfig, database_name: &str) {
     .await
     .expect("native MySQL fixture database must create");
     conn.query_drop(format!(
+        "CREATE TABLE `{database_name}`.`categories` (\
+         `id` BIGINT NOT NULL, `name` VARCHAR(128) NOT NULL, PRIMARY KEY (`id`)\
+         ) ENGINE=InnoDB"
+    ))
+    .await
+    .expect("native MySQL category fixture must create");
+    conn.query_drop(format!(
         "CREATE TABLE `{database_name}`.`items` (\
          `id` BIGINT NOT NULL, `label` VARCHAR(128) NOT NULL, \
-         `amount` DECIMAL(12,2) NOT NULL, `active` BOOLEAN NOT NULL, \
-         `created_at` DATETIME NOT NULL, PRIMARY KEY (`id`)\
+         `amount` DECIMAL(12,2) NOT NULL DEFAULT 0.00, `active` BOOLEAN NOT NULL, \
+         `created_at` DATETIME NOT NULL, `category_id` BIGINT NOT NULL, \
+         PRIMARY KEY (`id`), \
+         KEY `idx_items_label_amount` (`label`, `amount` DESC), \
+         CONSTRAINT `fk_items_category` FOREIGN KEY (`category_id`) \
+         REFERENCES `{database_name}`.`categories` (`id`)\
          ) ENGINE=InnoDB"
     ))
     .await
     .expect("native MySQL fixture table must create");
     conn.query_drop(format!(
+        "INSERT INTO `{database_name}`.`categories` VALUES (1, 'default')"
+    ))
+    .await
+    .expect("native MySQL category fixture row must insert");
+    conn.query_drop(format!(
         "INSERT INTO `{database_name}`.`items` VALUES \
-         (1, 'mysql-ready', 99.99, TRUE, '2026-07-27 12:34:56'), \
-         (2, 'second', 2.50, FALSE, '2026-07-28 01:02:03'), \
-         (3, 'third', 3.75, TRUE, '2026-07-29 04:05:06')"
+         (1, 'mysql-ready', 99.99, TRUE, '2026-07-27 12:34:56', 1), \
+         (2, 'second', 2.50, FALSE, '2026-07-28 01:02:03', 1), \
+         (3, 'third', 3.75, TRUE, '2026-07-29 04:05:06', 1)"
     ))
     .await
     .expect("native MySQL fixture rows must insert");
+    conn.query_drop(format!(
+        "CREATE VIEW `{database_name}`.`active_items` AS \
+         SELECT `id`, `label`, `amount` FROM `{database_name}`.`items` WHERE `active` = TRUE"
+    ))
+    .await
+    .expect("native MySQL fixture view must create");
+    conn.query_drop(format!(
+        "CREATE FUNCTION `{database_name}`.`double_amount`(input_value DECIMAL(12,2)) \
+         RETURNS DECIMAL(12,2) DETERMINISTIC RETURN input_value * 2"
+    ))
+    .await
+    .expect("native MySQL fixture function must create");
+    conn.query_drop(format!(
+        "CREATE PROCEDURE `{database_name}`.`count_items`(OUT item_count INT) \
+         SELECT COUNT(*) INTO item_count FROM `{database_name}`.`items`"
+    ))
+    .await
+    .expect("native MySQL fixture procedure must create");
+    conn.query_drop(format!(
+        "CREATE TRIGGER `{database_name}`.`items_trim_label` BEFORE INSERT \
+         ON `{database_name}`.`items` FOR EACH ROW SET NEW.`label` = TRIM(NEW.`label`)"
+    ))
+    .await
+    .expect("native MySQL fixture trigger must create");
     conn.disconnect()
         .await
         .expect("native MySQL fixture connection must close");

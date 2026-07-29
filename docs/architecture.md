@@ -71,8 +71,8 @@ after preserving the disabled-engine error contract.
 | Durable state | Rust | SQLite, retained-result files, and a mandatory injected secret-vault contract |
 | AI agent | Rust | Provider adapters, tool loop, limits, compaction, and cancellation |
 | MCP and CLI | Rust | Adapters around the same product services and policy |
-| Native MySQL product slice | Rust / `mysql_async` | Connection, database/schema/table discovery, preview, supported SELECT, typed streaming, limits, cancellation, and retained results |
-| Compatibility databases and advanced MySQL operations | Java 17 | Existing SPI/plugins, JDBC, advanced metadata, builders, parsing, formatting, completion, writes, and transactions |
+| Native MySQL product slice | Rust / `mysql_async` | Connection, first-stage read-only object metadata and Community-compatible legacy routes/envelopes, nullable defaults, preview, supported SELECT, typed streaming, limits, cancellation, and retained results |
+| Compatibility databases and advanced MySQL operations | Java 17 | Existing SPI/plugins, JDBC, SQL builders, parsing, formatting, completion, writes, transactions, and non-MySQL metadata |
 | SQL parsing, formatting, and completion | Java 17 | Existing Java ANTLR grammars, parser behavior, formatter behavior, and completion |
 | Rust-to-Java IPC | Shared Protobuf contract | Length-prefixed frames over private stdin/stdout |
 

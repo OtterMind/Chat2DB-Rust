@@ -248,6 +248,16 @@ impl Application {
         &self,
         request: ListCommunityColumnsRequest,
     ) -> Result<CommunityTableColumnList, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::list_columns(
+                self,
+                &request.datasource_id,
+                &request.database_name,
+                &request.schema_name,
+                &request.table_name,
+            )
+            .await;
+        }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
         let ListCommunityColumnsRequest {
@@ -292,6 +302,16 @@ impl Application {
         &self,
         request: ListCommunityIndexesRequest,
     ) -> Result<CommunityTableIndexList, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::list_indexes(
+                self,
+                &request.datasource_id,
+                &request.database_name,
+                &request.schema_name,
+                &request.table_name,
+            )
+            .await;
+        }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
         let ListCommunityIndexesRequest {
@@ -336,6 +356,16 @@ impl Application {
         &self,
         request: ListCommunityViewsRequest,
     ) -> Result<CommunityViewList, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::list_views(
+                self,
+                &request.datasource_id,
+                &request.database_name,
+                &request.schema_name,
+                &request.view_name_pattern,
+            )
+            .await;
+        }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
         let ListCommunityViewsRequest {
@@ -371,6 +401,39 @@ impl Application {
         .await
     }
 
+    /// Reads one view in the Community table projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, storage, engine, metadata, or not-found errors.
+    pub async fn get_community_view(
+        &self,
+        request: ListCommunityViewsRequest,
+    ) -> Result<CommunityTable, AppError> {
+        let view_name = request.view_name_pattern.clone();
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::get_view(
+                self,
+                &request.datasource_id,
+                &request.database_name,
+                &request.schema_name,
+                &view_name,
+            )
+            .await;
+        }
+        self.list_community_views(request)
+            .await?
+            .items
+            .into_iter()
+            .find(|view| view.name.eq_ignore_ascii_case(&view_name))
+            .ok_or_else(|| {
+                AppError::invalid(
+                    "community_view_not_found",
+                    "The requested Community view does not exist",
+                )
+            })
+    }
+
     /// Lists foreign keys imported by one table using a forced read-only session.
     ///
     /// # Errors
@@ -380,6 +443,15 @@ impl Application {
         &self,
         request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityForeignKeyList, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::list_imported_keys(
+                self,
+                &request.datasource_id,
+                &request.database_name,
+                &request.table_name,
+            )
+            .await;
+        }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
         let ListCommunityTableKeysRequest {
@@ -424,6 +496,15 @@ impl Application {
         &self,
         request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityForeignKeyList, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::list_exported_keys(
+                self,
+                &request.datasource_id,
+                &request.database_name,
+                &request.table_name,
+            )
+            .await;
+        }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
         let ListCommunityTableKeysRequest {
@@ -468,6 +549,16 @@ impl Application {
         &self,
         request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityPrimaryKeyList, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::list_primary_keys(
+                self,
+                &request.datasource_id,
+                &request.database_name,
+                &request.schema_name,
+                &request.table_name,
+            )
+            .await;
+        }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
         let ListCommunityTableKeysRequest {
@@ -512,6 +603,15 @@ impl Application {
         &self,
         request: ListCommunityFunctionsRequest,
     ) -> Result<CommunityFunctionList, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::list_functions(
+                self,
+                &request.datasource_id,
+                &request.database_name,
+                &request.schema_name,
+            )
+            .await;
+        }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
         let ListCommunityFunctionsRequest {
@@ -548,6 +648,16 @@ impl Application {
         &self,
         request: GetCommunityFunctionRequest,
     ) -> Result<CommunityFunction, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::get_function(
+                self,
+                &request.datasource_id,
+                &request.database_name,
+                &request.schema_name,
+                &request.function_name,
+            )
+            .await;
+        }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
         let GetCommunityFunctionRequest {
@@ -590,6 +700,16 @@ impl Application {
         &self,
         request: GetCommunityFunctionRequest,
     ) -> Result<CommunityFunctionParameterList, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::list_function_parameters(
+                self,
+                &request.datasource_id,
+                &request.database_name,
+                &request.schema_name,
+                &request.function_name,
+            )
+            .await;
+        }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
         let GetCommunityFunctionRequest {
@@ -637,6 +757,15 @@ impl Application {
         &self,
         request: ListCommunityProceduresRequest,
     ) -> Result<CommunityProcedureList, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::list_procedures(
+                self,
+                &request.datasource_id,
+                &request.database_name,
+                &request.schema_name,
+            )
+            .await;
+        }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
         let ListCommunityProceduresRequest {
@@ -673,6 +802,16 @@ impl Application {
         &self,
         request: GetCommunityProcedureRequest,
     ) -> Result<CommunityProcedure, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::get_procedure(
+                self,
+                &request.datasource_id,
+                &request.database_name,
+                &request.schema_name,
+                &request.procedure_name,
+            )
+            .await;
+        }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
         let GetCommunityProcedureRequest {
@@ -715,6 +854,16 @@ impl Application {
         &self,
         request: GetCommunityProcedureRequest,
     ) -> Result<CommunityProcedureParameterList, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::list_procedure_parameters(
+                self,
+                &request.datasource_id,
+                &request.database_name,
+                &request.schema_name,
+                &request.procedure_name,
+            )
+            .await;
+        }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
         let GetCommunityProcedureRequest {
@@ -762,6 +911,15 @@ impl Application {
         &self,
         request: ListCommunityTriggersRequest,
     ) -> Result<CommunityTriggerList, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::list_triggers(
+                self,
+                &request.datasource_id,
+                &request.database_name,
+                &request.schema_name,
+            )
+            .await;
+        }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
         let ListCommunityTriggersRequest {
@@ -798,6 +956,16 @@ impl Application {
         &self,
         request: GetCommunityTriggerRequest,
     ) -> Result<CommunityTrigger, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::get_trigger(
+                self,
+                &request.datasource_id,
+                &request.database_name,
+                &request.schema_name,
+                &request.trigger_name,
+            )
+            .await;
+        }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
         let GetCommunityTriggerRequest {
@@ -1269,7 +1437,7 @@ fn community_table_column(column: BridgeCommunityTableColumn) -> CommunityTableC
         name: column.name,
         column_type: column.column_type,
         data_type: column.data_type,
-        default_value: column.default_value,
+        default_value: Some(column.default_value),
         auto_increment: column.auto_increment,
         comment: column.comment,
         primary_key: column.primary_key,
@@ -2244,7 +2412,7 @@ mod tests {
                 name: "id".to_owned(),
                 column_type: "BIGINT".to_owned(),
                 data_type: Some(-5),
-                default_value: "NEXT VALUE FOR seq_items".to_owned(),
+                default_value: Some("NEXT VALUE FOR seq_items".to_owned()),
                 auto_increment: Some(true),
                 comment: "Primary identifier".to_owned(),
                 primary_key: Some(true),
