@@ -3,7 +3,9 @@
 ## Status
 
 - Community baseline: `OtterMind/Chat2DB` `main@3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c`.
-- Rust baseline: `OtterMind/Chat2DB-Rust` `main@e6e0c9ff07b4d2c8d07d8ce8a0ea12849e596db4`.
+- Rust baseline: `OtterMind/Chat2DB-Rust` `main@fb042aa056a7dbc18969f1bc191d2b771fea787d`.
+- Current Issue `#10` branch: commits `1e52a69` and `21947cb` add native
+  table-DDL retrieval plus the original Web and Tauri route aliases.
 - Product target: the original Community React frontend running against the Rust Web or Tauri host.
 - Runtime-tested now: datasource CRUD/test; database, schema, table, column,
   index, foreign-key, primary-key, view, function, procedure, trigger, and
@@ -33,7 +35,11 @@
   invisible, `ZEROFILL`, or otherwise unmodeled column is rejected after a live
   metadata check instead of emitting a lossy `MODIFY COLUMN`. MySQL `view_meta`
   returns the original six form configurations and creation template without
-  requiring an existing view.
+  requiring an existing view. Native `SHOW CREATE TABLE` now backs both
+  `/api/rdb/ddl/export` and `/api/rdb/table/export`; the four Community
+  create/update example aliases preserve MySQL's successful `data: null`
+  contract. HTTP and desktop dispatch return identical envelopes, and the real
+  MySQL 8.4 vertical proves Java remains dormant.
 - Complete parity: not implemented.
 
 This file is the acceptance contract for MySQL work. Community frontend routes
@@ -66,7 +72,7 @@ route reaches it and a real MySQL product test covers the behavior.
 | Database and schema mutation | database create/modify/delete and `/api/rdb/delete/{database,schema}/{prepare,execute}` | Historical create-SQL routes and two-phase confirmed database/schema deletion are implemented; database create/delete is real-MySQL tested | Add unsupported database alteration fields and close remaining exact projection differences. |
 | Table inventory and detail | `/api/rdb/table/list`, `/table_list`, `/table_meta`, `/column_list`, `/index_list`, `/key_list`, `/query` | List, compact list, table metadata/query, column, index, and key routes are implemented with native MySQL metadata; nullable defaults, type-suffix-aware `UNSIGNED`/`ZEROFILL`, empty and quoted ENUM/SET values, composite primary-key order, and legacy envelopes match the retained editor and are real-MySQL tested | Close remaining field-level differences as original editor scenarios expose them. |
 | Table data operations | `/api/rdb/dml/execute_table`, `/execute_update`, `/get_update_sql`, `/copy_update_sql`, `/copy_in_values_sql`, `/count` | Editable previews, PK-first optimistic insert/update/delete SQL, bounded native execution, copy-as-INSERT/UPDATE/WHERE, frontend `IN_VALUES`, and protected count queries are implemented and real-MySQL tested | Close remaining clipboard and uncommon result-type differences. |
-| Table DDL | `/api/rdb/ddl/*`, `/api/rdb/table/modify/sql`, `/delete`, `/truncate`, `/copy`, create/update examples, DDL export | Create/alter/drop/truncate/copy previews and execution are implemented for columns, indexes, engine, charset, collation, comments, auto-increment, and MySQL editor types; explicit-null editor rows and drag-only `FIRST`/`AFTER` reordering are real-MySQL tested, while live metadata rejects generated, invisible, `ZEROFILL`, and other unmodeled columns before a lossy reorder | Add foreign-key mutation, examples/export, and remaining table options. |
+| Table DDL | `/api/rdb/ddl/*`, `/api/rdb/table/modify/sql`, `/delete`, `/truncate`, `/copy`, create/update examples, DDL export | Create/alter/drop/truncate/copy previews and execution are implemented for columns, indexes, engine, charset, collation, comments, auto-increment, and MySQL editor types; explicit-null editor rows and drag-only `FIRST`/`AFTER` reordering are real-MySQL tested, while live metadata rejects generated, invisible, `ZEROFILL`, and other unmodeled columns before a lossy reorder. Native `SHOW CREATE TABLE` backs both export aliases with the Community trailing semicolon; all four MySQL example aliases preserve Community's null response. Foreign keys are implemented as read-only metadata; pinned Community `MysqlSqlBuilder` and `MysqlIndexTypeEnum` do not generate or modify `foreignKeyList`, and the Community MySQL editor exposes no foreign-key mutation contract. | Add remaining table options and close field-level edge cases; foreign-key mutation is not a current Community parity requirement, while foreign-key metadata remains available to read-only metadata and future ER flows. |
 | Views | `/api/rdb/view/list`, `/column_list`, `/detail`, `/query`, `/view_meta`, `/modify/sql`, `/delete`, `/drop` | Native list/detail plus historical query, the six-option Community `view_meta` creation template, create-or-replace preview/execution, and drop are implemented and real-MySQL tested | Add any remaining delete alias and uncommon definer/security projection differences. |
 | Functions, procedures, and triggers | `/api/rdb/{function,procedure,trigger}/{list,detail}`, `/api/rdb/routine/{preview_invocation,preview_migration,execute_migration}` | Native list/detail and routine-parameter projections are implemented; every original list/detail route is mapped | Add invocation and migration preview/execution flows. |
 | Console SELECT | `/api/rdb/dml/execute`, desktop `sql-execute`/`sql-cancel` | Native unparameterized MySQL reads, CTEs, normal/all-row paging, preserved-single dispatch, `EXPLAIN`, limits, multiple result sets, affected-row counts, datasource read-only enforcement, and cancellation implemented | Add JDBC-style bind parameters and close remaining warning/error/result-shape differences. |
@@ -90,8 +96,11 @@ route reaches it and a real MySQL product test covers the behavior.
    large-cell retrieval. Bind parameters and remaining exact Community edge-case
    conformance are still required for complete parity.
 3. Implemented slice: table data editing plus database/schema/table/view DDL
-   preview and execution. Foreign-key mutation, DDL export/examples, and
-   remaining exact Community edge cases are still required for complete parity.
+   preview and execution, native table DDL retrieval/export, and the Community
+   create/update example route aliases.
+   Foreign-key mutation is not a current Community MySQL editor requirement;
+   foreign keys remain read-only metadata for metadata and future ER flows.
+   Remaining exact Community edge cases are still required for complete parity.
 4. Import/export/tasks, datasource lifecycle/SSH/import, account administration,
    routines, structure comparison, pins, and ER metadata.
 5. Original AI mapping and MySQL conformance for Agent, CLI, and MCP.

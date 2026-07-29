@@ -214,6 +214,46 @@ async fn verify_product_vertical(config: &MysqlTestConfig, database_name: &str) 
     )
     .await;
 
+    let export_message = json!({
+        "dataSourceId": datasource,
+        "databaseType": "MYSQL",
+        "databaseName": database_name,
+        "schemaName": "",
+        "tableName": "items"
+    });
+    let mut exported_ddl = None;
+    for path in ["/api/rdb/ddl/export", "/api/rdb/table/export"] {
+        let http_ddl = get(
+            &router,
+            &format!(
+                "{path}?dataSourceId={datasource}&databaseType=MYSQL&databaseName={database_name}&schemaName=&tableName=items"
+            ),
+        )
+        .await;
+        let http_ddl = http_ddl.as_str().expect("exported DDL must be a string");
+        assert!(http_ddl.starts_with("CREATE TABLE `items`"));
+        assert!(http_ddl.contains("`label` varchar(128) NOT NULL COMMENT 'editable label'"));
+        assert!(http_ddl.ends_with(';'));
+        if let Some(expected) = exported_ddl.as_deref() {
+            assert_eq!(http_ddl, expected, "HTTP export aliases diverged");
+        } else {
+            exported_ddl = Some(http_ddl.to_owned());
+        }
+
+        let desktop = chat2db_web::legacy::dispatch(
+            &application,
+            chat2db_web::legacy::LegacyDispatchRequest {
+                request_url: path.to_owned(),
+                method: "get".to_owned(),
+                message: export_message.clone(),
+            },
+        )
+        .await;
+        assert_eq!(desktop["success"], true, "desktop export failed: {desktop}");
+        assert_eq!(desktop["data"], http_ddl, "desktop export diverged: {path}");
+    }
+    assert_java_dormant(&application);
+
     let old_table = get(
         &router,
         &format!(

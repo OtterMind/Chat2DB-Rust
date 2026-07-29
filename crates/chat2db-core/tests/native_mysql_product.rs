@@ -248,6 +248,22 @@ async fn verify_native_metadata(
     assert_eq!(table.table_type, "TABLE");
     assert_eq!(table.engine, "InnoDB");
     assert_java_dormant(application);
+
+    let ddl = application
+        .table_ddl(datasource_id, database_name, "", "items")
+        .await
+        .expect("native MySQL table DDL must load");
+    assert!(ddl.starts_with("CREATE TABLE `items`"));
+    assert!(ddl.contains("CONSTRAINT `fk_items_category`"));
+    assert!(ddl.ends_with(';'));
+    assert_java_dormant(application);
+
+    let invalid = application
+        .table_ddl(datasource_id, database_name, "", "")
+        .await
+        .expect_err("an empty MySQL table identifier must be rejected");
+    assert_eq!(invalid.api_error().code, "invalid_mysql_metadata_request");
+    assert_java_dormant(application);
 }
 
 #[allow(clippy::too_many_lines)]
