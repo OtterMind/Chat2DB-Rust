@@ -91,6 +91,7 @@ use crate::{
     AppError, Application,
     datasource_session::{SessionReadOnly, open_datasource_session, resolve_datasource_connection},
     engine_manager::EngineLease,
+    native_mysql,
 };
 
 impl Application {
@@ -119,6 +120,9 @@ impl Application {
         &self,
         request: ListCommunitySchemasRequest,
     ) -> Result<CommunitySchemaList, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::list_schemas(self, &request.datasource_id).await;
+        }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
         let ListCommunitySchemasRequest {
@@ -154,6 +158,9 @@ impl Application {
         &self,
         request: ListCommunityDatabasesRequest,
     ) -> Result<CommunityDatabaseList, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::list_databases(self, &request.datasource_id).await;
+        }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
         let ListCommunityDatabasesRequest {
@@ -188,6 +195,15 @@ impl Application {
         &self,
         request: ListCommunityTablesRequest,
     ) -> Result<CommunityTableList, AppError> {
+        if native_mysql::is_mysql_database_type(&request.database_type) {
+            return native_mysql::list_tables(
+                self,
+                &request.datasource_id,
+                &request.database_name,
+                &request.table_name_pattern,
+            )
+            .await;
+        }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
         let ListCommunityTablesRequest {

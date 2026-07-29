@@ -7,6 +7,7 @@ mod datasource_session;
 mod driver_pack;
 mod engine_manager;
 mod error;
+mod native_mysql;
 mod operation;
 mod query;
 
@@ -369,6 +370,9 @@ impl Application {
             ));
         }
         self.require_managed_driver(driver_id)?;
+        if self.is_native_mysql_driver(driver_id) {
+            return native_mysql::test_connection(&connection).await;
+        }
         let engine = self.require_engine().await?;
         let session = datasource_session::open_datasource_session(
             &engine,
@@ -478,6 +482,25 @@ impl Application {
             Some(driver_ids) if !driver_ids.contains(driver_id) => Err(driver_not_installed()),
             _ => Ok(()),
         }
+    }
+
+    pub(crate) fn is_native_mysql_driver(&self, driver_id: &str) -> bool {
+        let identity = self
+            .inner
+            .drivers
+            .iter()
+            .find(|driver| driver.driver_id == driver_id)
+            .map_or_else(
+                || driver_id.to_ascii_lowercase(),
+                |driver| {
+                    format!(
+                        "{} {} {} {}",
+                        driver.pack_id, driver.name, driver.driver_id, driver.driver_class
+                    )
+                    .to_ascii_lowercase()
+                },
+            );
+        identity.contains("mysql")
     }
 
     async fn require_managed_driver_for_update(
