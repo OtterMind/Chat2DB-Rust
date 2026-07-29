@@ -332,8 +332,10 @@ active `SELECT SLEEP(30)` cancellation, retained paging, and dormant Java health
 
 Runtime-tested: yes. On 2026-07-29 commits `81301c3`, `4199862`, and `6c74421`
 passed 144 Core unit tests, strict Core all-target Clippy, formatting, Actionlint,
-and a real MySQL 8.4 native product vertical. The broad Community compatibility
-operations and other database types remain on the lazy Java/JDBC path.
+the complete repository `make verify` gate, and a real MySQL 8.4 native product
+vertical rerun after the final compatibility fix. The broad Community
+compatibility operations and other database types remain on the lazy Java/JDBC
+path.
 
 Stage 7 remains incomplete. Complete MySQL type conformance, native bind
 parameters and CTE-first SELECT, script execution, data import/export,

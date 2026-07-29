@@ -125,6 +125,8 @@ the restored SQL successfully. On 2026-07-29 commits `81301c3`, `4199862`, and
 vertical covering native connection, database/schema/table discovery, preview,
 typed Console SELECT, row truncation, active-query cancellation, retained
 paging, and proof after every operation that Java remained dormant.
+The complete repository `make verify` gate and the explicit real-MySQL
+`native-mysql-integration` target also passed after the final compatibility fix.
 
 Stage 6 is complete. Web and desktop own the product runtime and publish its
 owner-only local endpoint; CLI and MCP attach to that host and never contact

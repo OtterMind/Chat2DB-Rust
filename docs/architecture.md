@@ -56,7 +56,9 @@ complete stored-datasource path passed against MySQL 8.4, from real Community
 identifier/DQL/page-limit generation through forced-read-only JDBC execution
 and retained-result paging. On 2026-07-29 the native MySQL path passed against
 MySQL 8.4 with a deliberately missing Java executable, including active-query
-cancellation and dormant-Java assertions after every product operation.
+cancellation and dormant-Java assertions after every product operation. The
+complete repository `make verify` gate and an explicit real-MySQL rerun passed
+after preserving the disabled-engine error contract.
 
 ## Ownership
 
