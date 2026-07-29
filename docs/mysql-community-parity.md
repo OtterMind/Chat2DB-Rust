@@ -19,7 +19,12 @@
   expects. Native metadata and Console execution keep Java dormant. Paged table
   name/comment search, complete-list filtering, page-size validation, HTTP
   binding-error envelopes, and nullable column defaults match the locked
-  Community baseline.
+  Community baseline. The original Web and Tauri contracts now also expose
+  editable table previews, create/update/delete SQL generation and execution,
+  copy-as-SQL helpers, bounded counts, table metadata/query, database/schema
+  create and confirmed delete, table create/alter/drop/truncate/copy, and view
+  query/metadata/create-or-replace/drop. A real Web-to-native-MySQL 8.4 vertical
+  exercises these mutations while proving Java remains dormant.
 - Complete parity: not implemented.
 
 This file is the acceptance contract for MySQL work. Community frontend routes
@@ -49,11 +54,11 @@ route reaches it and a real MySQL product test covers the behavior.
 | SSH and JDBC driver management | `/api/connection/ssh/pre_connect`, `/api/jdbc/driver/download`, `/upload`, `/save`, `/delete` | Not implemented | Match Community SSH testing and local driver lifecycle without exposing secrets. |
 | Datasource import/export and namespaces | converter upload routes, `/api/connection/datasource/import_community`, `/datasource/export`, `/api/namespaces/*` | Not implemented | Support Community, Chat2DB, Navicat, DBeaver, DataGrip, export, grouping, and ordering. |
 | Database and schema metadata | `/api/rdb/database/list`, `/database_schema_list`, `/api/rdb/schema/list` | Database/schema list implemented | Match filtering, system flags, charset/collation, comments, and pagination envelopes. |
-| Database and schema mutation | database create/modify/delete and `/api/rdb/delete/{database,schema}/{prepare,execute}` | Builder-only modern contracts | Generate previews through Community builders and execute only after the same explicit frontend command. |
-| Table inventory and detail | `/api/rdb/table/list`, `/table_list`, `/table_meta`, `/column_list`, `/index_list`, `/key_list`, `/query` | List, compact list, column, index, and key routes implemented with native MySQL metadata; nullable defaults and legacy envelopes match Community; `table_meta` and `/query` remain | Add the remaining table-meta and query projections without regressing the native routes. |
-| Table data operations | `/api/rdb/dml/execute_table`, `/execute_update`, `/get_update_sql`, `/copy_update_sql`, `/copy_in_values_sql`, `/count` | Read-only preview only; closed typed DML generation exists behind modern APIs | Support editable rows, insert/update/delete SQL, counts, copy helpers, optimistic predicates, and bounded execution. |
-| Table DDL | `/api/rdb/ddl/*`, `/api/rdb/table/modify/sql`, `/delete`, `/truncate`, `/copy`, create/update examples, DDL export | Partial builder infrastructure only | Match create/alter/drop/truncate/copy preview and execution, including columns, indexes, keys, charset, collation, comments, and MySQL types. |
-| Views | `/api/rdb/view/list`, `/column_list`, `/detail`, `/query`, `/view_meta`, `/modify/sql`, `/delete`, `/drop` | Native list, column list, and `SHOW CREATE VIEW` detail are mapped to the legacy routes | Add data query, metadata, preview, create/alter, and drop flows. |
+| Database and schema mutation | database create/modify/delete and `/api/rdb/delete/{database,schema}/{prepare,execute}` | Historical create-SQL routes and two-phase confirmed database/schema deletion are implemented; database create/delete is real-MySQL tested | Add unsupported database alteration fields and close remaining exact projection differences. |
+| Table inventory and detail | `/api/rdb/table/list`, `/table_list`, `/table_meta`, `/column_list`, `/index_list`, `/key_list`, `/query` | List, compact list, table metadata/query, column, index, and key routes are implemented with native MySQL metadata; nullable defaults and legacy envelopes match Community | Close remaining field-level differences as original editor scenarios expose them. |
+| Table data operations | `/api/rdb/dml/execute_table`, `/execute_update`, `/get_update_sql`, `/copy_update_sql`, `/copy_in_values_sql`, `/count` | Editable previews, PK-first optimistic insert/update/delete SQL, bounded native execution, copy-as-INSERT/UPDATE/WHERE, `IN` values, and protected count queries are implemented and real-MySQL tested | Close remaining clipboard and uncommon result-type differences. |
+| Table DDL | `/api/rdb/ddl/*`, `/api/rdb/table/modify/sql`, `/delete`, `/truncate`, `/copy`, create/update examples, DDL export | Create/alter/drop/truncate/copy previews and execution are implemented for columns, indexes, engine, charset, collation, comments, auto-increment, and MySQL editor types; the lifecycle is real-MySQL tested | Add foreign-key mutation, examples/export, and remaining table options. |
+| Views | `/api/rdb/view/list`, `/column_list`, `/detail`, `/query`, `/view_meta`, `/modify/sql`, `/delete`, `/drop` | Native list/detail plus historical query, metadata, create-or-replace preview/execution, and drop are implemented and real-MySQL tested | Add any remaining delete alias and uncommon definer/security projection differences. |
 | Functions, procedures, and triggers | `/api/rdb/{function,procedure,trigger}/{list,detail}`, `/api/rdb/routine/{preview_invocation,preview_migration,execute_migration}` | Native list/detail and routine-parameter projections are implemented; every original list/detail route is mapped | Add invocation and migration preview/execution flows. |
 | Console SELECT | `/api/rdb/dml/execute`, desktop `sql-execute`/`sql-cancel` | Native unparameterized MySQL reads, CTEs, normal/all-row paging, preserved-single dispatch, `EXPLAIN`, limits, multiple result sets, affected-row counts, datasource read-only enforcement, and cancellation implemented | Add JDBC-style bind parameters and close remaining warning/error/result-shape differences. |
 | Console scripts and writes | `/api/rdb/dml/execute`, `/execute_ddl` | Native unparameterized DDL/DML, semicolon and `DELIMITER` scripts, explicit transactions, error-continue policy, cancellation, and per-statement results implemented | Add bind parameters and complete exact Community conformance for unsupported edge-case scripts. |
@@ -75,7 +80,9 @@ route reaches it and a real MySQL product test covers the behavior.
    multi-result handling, writes, transactions, history, cancellation, and
    large-cell retrieval. Bind parameters and remaining exact Community edge-case
    conformance are still required for complete parity.
-3. Table data editing plus database/schema/table/view DDL preview and execution.
+3. Implemented slice: table data editing plus database/schema/table/view DDL
+   preview and execution. Foreign-key mutation, DDL export/examples, and
+   remaining exact Community edge cases are still required for complete parity.
 4. Import/export/tasks, datasource lifecycle/SSH/import, account administration,
    routines, structure comparison, pins, and ER metadata.
 5. Original AI mapping and MySQL conformance for Agent, CLI, and MCP.
@@ -95,10 +102,12 @@ the complete repository verification gate, and all GitHub Actions jobs.
 - `third_party/chat2db-community/chat2db-community-server/chat2db-community-web/src/main/java/ai/chat2db/community/web/api/controller/`
 - `third_party/chat2db-community/chat2db-community-server/chat2db-community-plugins/chat2db-community-mysql/src/main/java/ai/chat2db/plugin/mysql/`
 - `crates/chat2db-core/src/native_mysql.rs`
+- `crates/chat2db-core/src/mysql_ddl.rs`
 - `crates/chat2db-core/src/large_value.rs`
 - `crates/chat2db-core/tests/native_mysql_console_docker.rs`
 - `crates/chat2db-storage/src/operation_log.rs`
 - `crates/chat2db-storage/migrations/004_operation_log.sql`
 - `crates/chat2db-core/tests/native_mysql_product.rs`
+- `apps/chat2db-web/tests/native_mysql_editable_ddl_docker.rs`
 - `crates/chat2db-core/src/community.rs`
 - `apps/chat2db-web/src/legacy.rs`

@@ -7,6 +7,7 @@
 use std::{
     collections::{BTreeMap, HashSet},
     fs,
+    future::Future,
     path::PathBuf,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -36,6 +37,21 @@ use chat2db_contract::{
 use chat2db_core::{
     AppError, Application, LargeValueChunk, LargeValueEncoding, LargeValuePreview, LargeValueType,
     MysqlConsoleCancellation, MysqlConsoleRequest, MysqlConsoleResult,
+    mysql_ddl::{
+        MysqlColumnAlter, MysqlColumnDefinition, MysqlColumnPosition, MysqlDatabaseDefinition,
+        MysqlIndexAlter, MysqlIndexColumn, MysqlIndexDefinition, MysqlIndexKind, MysqlIndexMethod,
+        MysqlQualifiedName, MysqlResultGridCopyOperation, MysqlResultGridCopyOperationType,
+        MysqlResultGridHeader, MysqlResultGridOperation, MysqlResultGridOperationType,
+        MysqlSortOrder, MysqlTableAlter, MysqlTableCopy, MysqlTableDefinition,
+        MysqlTableEditorMeta, MysqlViewAlgorithm, MysqlViewCheckOption, MysqlViewDefiner,
+        MysqlViewDefinition, MysqlViewSecurity, build_mysql_alter_table, build_mysql_copy_table,
+        build_mysql_count_query, build_mysql_create_database, build_mysql_create_schema,
+        build_mysql_create_table, build_mysql_create_view, build_mysql_drop_database,
+        build_mysql_drop_schema, build_mysql_drop_table, build_mysql_drop_view,
+        build_mysql_external_in_values, build_mysql_result_grid_copy_sql,
+        build_mysql_result_grid_in_values, build_mysql_result_grid_script,
+        build_mysql_truncate_table, mysql_table_editor_meta,
+    },
 };
 use chat2db_storage::{
     CreateOperationLog, CreateSavedConsole, OperationLogListQuery, OperationLogRecord,
@@ -54,6 +70,7 @@ const MAX_SQL_ROWS: u32 = 10_000;
 const LARGE_VALUE_CHUNK_SIZE: u32 = 256 * 1024;
 const LARGE_VALUE_FALLBACK_PREVIEW_BYTES: usize = 64 * 1024;
 const RESULT_PAGE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const LARGE_VALUE_PREVIEW_PREFIX: &str = "CHAT2DB_LARGE_VALUE_PREVIEW:";
 const PREVIEW_TIMEOUT: Duration = Duration::from_secs(30);
 const SQL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(60);
 const SQL_CANCELLATION_GRACE: Duration = Duration::from_secs(10);
@@ -338,8 +355,8 @@ pub struct LegacySimpleTable {
     pub table_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct LegacyColumn {
     pub old_name: Option<String>,
     pub name: String,
@@ -350,6 +367,8 @@ pub struct LegacyColumn {
     pub auto_increment: Option<bool>,
     pub comment: String,
     pub primary_key: Option<bool>,
+    pub primary_key_name: String,
+    pub primary_key_order: i32,
     pub schema_name: String,
     pub database_name: String,
     pub type_name: Option<String>,
@@ -365,11 +384,20 @@ pub struct LegacyColumn {
     pub nullable: Option<i32>,
     pub generated_column: Option<bool>,
     pub extent: String,
+    pub char_set_name: String,
+    pub collation_name: String,
+    pub value: String,
+    pub unit: String,
+    pub sparse: Option<bool>,
+    pub default_constraint_name: String,
+    pub seed: Option<i32>,
+    pub increment: Option<i32>,
+    pub on_update_current_timestamp: Option<bool>,
     pub edit_status: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct LegacyIndexColumn {
     pub index_name: String,
     pub table_name: String,
@@ -387,17 +415,269 @@ pub struct LegacyIndexColumn {
     pub cardinality: Option<i64>,
     pub pages: Option<i64>,
     pub filter_condition: String,
+    pub sub_part: Option<i64>,
+    pub edit_status: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct LegacyIndex {
     pub columns: Option<String>,
+    pub old_name: Option<String>,
     pub name: String,
+    pub table_name: String,
     #[serde(rename = "type")]
     pub index_type: String,
+    pub unique: Option<bool>,
     pub comment: String,
+    pub schema_name: String,
+    pub database_name: String,
     pub column_list: Vec<LegacyIndexColumn>,
+    pub edit_status: Option<String>,
+    pub concurrently: Option<bool>,
+    pub method: String,
+    pub foreign_schema_name: String,
+    pub foreign_table_name: String,
+    pub foreign_column_namelist: Vec<String>,
+}
+
+/// Full table projection consumed by Community's retained table editor.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LegacyEditableTable {
+    pub name: String,
+    pub comment: String,
+    pub schema_name: String,
+    pub database_name: String,
+    #[serde(rename = "type")]
+    pub table_type: String,
+    pub column_list: Vec<LegacyColumn>,
+    pub index_list: Vec<LegacyIndex>,
+    pub foreign_key_list: Vec<serde_json::Value>,
+    pub db_type: String,
+    pub pinned: bool,
+    pub ddl: String,
+    pub engine: String,
+    pub charset: String,
+    pub collate: String,
+    pub increment_value: Option<String>,
+    pub partition: String,
+    pub tablespace: String,
+    pub rows: Option<String>,
+    pub data_length: Option<String>,
+    pub create_time: String,
+    pub update_time: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyTableModifyRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub schema_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_type: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub table_name: String,
+    #[serde(default)]
+    pub old_table: Option<LegacyEditableTable>,
+    pub new_table: LegacyEditableTable,
+}
+
+/// Historical `{ sql }` object returned by DDL-preview routes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacySqlResponse {
+    pub sql: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyGridHeaderRequest {
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub column_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub column_type: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub data_type: String,
+    #[serde(default, deserialize_with = "deserialize_boolish_or_default")]
+    pub primary_key: bool,
+    #[serde(default, deserialize_with = "deserialize_boolish_or_default")]
+    pub auto_increment: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyGridOperationRequest {
+    #[serde(
+        rename = "type",
+        default,
+        deserialize_with = "deserialize_string_or_default"
+    )]
+    pub operation_type: String,
+    #[serde(default, deserialize_with = "deserialize_optional_string_vec")]
+    pub data_list: Vec<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_optional_string_vec")]
+    pub old_data_list: Vec<Option<String>>,
+    #[serde(default)]
+    pub select_cols: Vec<usize>,
+    #[serde(default)]
+    pub selected_cell: Option<LegacyResultCell>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyGridUpdateRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub schema_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_type: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub table_name: String,
+    #[serde(default)]
+    pub console_id: Option<LegacyIdentifier>,
+    #[serde(default)]
+    pub header_list: Vec<LegacyGridHeaderRequest>,
+    #[serde(default)]
+    pub operations: Vec<LegacyGridOperationRequest>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub source_type: String,
+    #[serde(default)]
+    pub external_values: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyTableOperationRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub schema_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_type: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub table_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyTableCopyRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub schema_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_type: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub table_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub new_name: String,
+    #[serde(default)]
+    pub copy_data: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyDatabaseDefinitionRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_type: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub charset: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub collation: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacySchemaDefinitionRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_type: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub schema_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyDeleteObjectRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_type: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub schema_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub confirm_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyDeletePrepareResponse {
+    pub confirm_name: String,
+    pub sql_preview: String,
+    pub object_type: String,
+    pub db_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyViewOperationRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_type: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub schema_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub table_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub view_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub view_body: String,
+    #[serde(default)]
+    pub view_attributes: Vec<String>,
+    #[serde(default)]
+    pub use_or_replace: bool,
+    #[serde(default)]
+    pub use_if_not_exists: bool,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub algorithm: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub definer: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub security: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub check_option: String,
+    #[serde(default)]
+    pub is_modify: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyViewMetaResponse {
+    pub configurations: Vec<serde_json::Value>,
+    pub sql: String,
+    pub preview_sql: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -942,6 +1222,46 @@ where
     T: Deserialize<'de>,
 {
     Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn deserialize_boolish_or_default<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match value {
+        Some(serde_json::Value::Bool(value)) => value,
+        Some(serde_json::Value::Number(value)) => value.as_i64().is_some_and(|value| value != 0),
+        Some(serde_json::Value::String(value)) => {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        }
+        None
+        | Some(
+            serde_json::Value::Null | serde_json::Value::Array(_) | serde_json::Value::Object(_),
+        ) => false,
+    })
+}
+
+fn deserialize_optional_string_vec<'de, D>(deserializer: D) -> Result<Vec<Option<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<Vec<serde_json::Value>>::deserialize(deserializer)?
+        .unwrap_or_default()
+        .into_iter()
+        .map(|value| match value {
+            serde_json::Value::Null => Ok(None),
+            serde_json::Value::String(value) => Ok(Some(value)),
+            serde_json::Value::Bool(value) => Ok(Some(value.to_string())),
+            serde_json::Value::Number(value) => Ok(Some(value.to_string())),
+            _ => Err(serde::de::Error::custom(
+                "grid values must be strings, numbers, booleans, or null",
+            )),
+        })
+        .collect()
 }
 
 fn default_page_no() -> u32 {
@@ -1615,6 +1935,462 @@ pub(crate) async fn get_view(
     ))
 }
 
+/// Reads the full table projection required by Community's table editor.
+pub(crate) async fn get_editable_table(
+    application: &Application,
+    query: &LegacyTableDetailQuery,
+) -> LegacyResult<LegacyEditableTable> {
+    if query.table_name.trim().is_empty() {
+        return Err(LegacyFailure::invalid(
+            "invalid_table_query",
+            "tableName is required",
+        ));
+    }
+    let datasource_id = query.data_source_id.as_string();
+    let database_type =
+        resolve_mysql_database_type(application, &datasource_id, &query.database_type).await?;
+    let tables = application
+        .list_community_tables(ListCommunityTablesRequest {
+            datasource_id: datasource_id.clone(),
+            database_type: database_type.clone(),
+            database_name: query.database_name.clone(),
+            schema_name: query.schema_name.clone(),
+            table_name_pattern: query.table_name.clone(),
+        })
+        .await?
+        .items;
+    let table = tables
+        .into_iter()
+        .find(|table| table.name.eq_ignore_ascii_case(&query.table_name))
+        .ok_or_else(|| LegacyFailure {
+            code: "table_not_found".to_owned(),
+            message: format!("Table {} does not exist", query.table_name),
+        })?;
+    let (columns, indexes) = tokio::try_join!(
+        application.list_community_columns(ListCommunityColumnsRequest {
+            datasource_id: datasource_id.clone(),
+            database_type: database_type.clone(),
+            database_name: query.database_name.clone(),
+            schema_name: query.schema_name.clone(),
+            table_name: query.table_name.clone(),
+        }),
+        application.list_community_indexes(ListCommunityIndexesRequest {
+            datasource_id,
+            database_type: database_type.clone(),
+            database_name: query.database_name.clone(),
+            schema_name: query.schema_name.clone(),
+            table_name: query.table_name.clone(),
+        }),
+    )?;
+    Ok(editable_table_response(
+        table,
+        columns.items,
+        indexes.items,
+        database_type,
+    ))
+}
+
+/// Reads the full view projection used by Community's retained view editor.
+pub(crate) async fn get_editable_view(
+    application: &Application,
+    query: &LegacyTableDetailQuery,
+) -> LegacyResult<LegacyEditableTable> {
+    if query.table_name.trim().is_empty() {
+        return Err(LegacyFailure::invalid(
+            "invalid_view_query",
+            "tableName is required",
+        ));
+    }
+    let datasource_id = query.data_source_id.as_string();
+    let database_type =
+        resolve_mysql_database_type(application, &datasource_id, &query.database_type).await?;
+    let (view, columns) = tokio::try_join!(
+        application.get_community_view(ListCommunityViewsRequest {
+            datasource_id: datasource_id.clone(),
+            database_type: database_type.clone(),
+            database_name: query.database_name.clone(),
+            schema_name: query.schema_name.clone(),
+            view_name_pattern: query.table_name.clone(),
+        }),
+        application.list_community_columns(ListCommunityColumnsRequest {
+            datasource_id,
+            database_type: database_type.clone(),
+            database_name: query.database_name.clone(),
+            schema_name: query.schema_name.clone(),
+            table_name: query.table_name.clone(),
+        }),
+    )?;
+    Ok(editable_table_response(
+        view,
+        columns.items,
+        Vec::new(),
+        database_type,
+    ))
+}
+
+/// Returns the `MySQL` type and option inventory used by the retained table editor.
+pub(crate) async fn table_editor_meta(
+    application: &Application,
+    query: &LegacyMetadataQuery,
+) -> LegacyResult<MysqlTableEditorMeta> {
+    let datasource_id = query.data_source_id.as_string();
+    resolve_mysql_database_type(application, &datasource_id, &query.database_type).await?;
+    Ok(mysql_table_editor_meta())
+}
+
+/// Builds a `MySQL` script for Community result-grid create, update, and delete operations.
+pub(crate) async fn build_grid_update_sql(
+    application: &Application,
+    request: &LegacyGridUpdateRequest,
+) -> LegacyResult<String> {
+    let datasource_id = request.data_source_id.as_string();
+    resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
+    if request.table_name.trim().is_empty() {
+        return Err(LegacyFailure::invalid(
+            "invalid_mysql_result_grid",
+            "tableName is required",
+        ));
+    }
+    let headers = request
+        .header_list
+        .iter()
+        .map(mysql_grid_header)
+        .collect::<LegacyResult<Vec<_>>>()?;
+    let operations = request
+        .operations
+        .iter()
+        .map(mysql_grid_operation)
+        .collect::<LegacyResult<Vec<_>>>()?;
+    reject_legacy_partial_large_values(&operations)?;
+    Ok(build_mysql_result_grid_script(
+        &mysql_qualified_name(
+            &request.database_name,
+            &request.schema_name,
+            &request.table_name,
+        ),
+        &headers,
+        &operations,
+    )?)
+}
+
+/// Builds Community's copy-as-INSERT, copy-as-UPDATE, or copy-as-WHERE SQL.
+pub(crate) async fn build_grid_copy_sql(
+    application: &Application,
+    request: &LegacyGridUpdateRequest,
+) -> LegacyResult<String> {
+    let datasource_id = request.data_source_id.as_string();
+    resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
+    let headers = request
+        .header_list
+        .iter()
+        .map(mysql_grid_header)
+        .collect::<LegacyResult<Vec<_>>>()?;
+    let operations = request
+        .operations
+        .iter()
+        .map(mysql_grid_copy_operation)
+        .collect::<LegacyResult<Vec<_>>>()?;
+    Ok(build_mysql_result_grid_copy_sql(
+        &mysql_qualified_name(
+            &request.database_name,
+            &request.schema_name,
+            &required_name(&request.table_name, "tableName")?,
+        ),
+        &headers,
+        &operations,
+    )?)
+}
+
+/// Builds Community's clipboard SQL `IN` list for result cells or external text.
+pub(crate) async fn build_grid_in_values(
+    application: &Application,
+    request: &LegacyGridUpdateRequest,
+) -> LegacyResult<String> {
+    let datasource_id = request.data_source_id.as_string();
+    resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
+    match request.source_type.trim().to_ascii_uppercase().as_str() {
+        "EXTERNAL_TEXT" => Ok(build_mysql_external_in_values(&request.external_values)?),
+        "RESULT_SET" => {
+            let headers = request
+                .header_list
+                .iter()
+                .map(mysql_grid_header)
+                .collect::<LegacyResult<Vec<_>>>()?;
+            reject_unsupported_copy_cells(&request.operations)?;
+            let operations = request
+                .operations
+                .iter()
+                .map(mysql_grid_copy_operation)
+                .collect::<LegacyResult<Vec<_>>>()?;
+            Ok(build_mysql_result_grid_in_values(&headers, &operations)?)
+        }
+        _ => Err(LegacyFailure::invalid(
+            "invalid_mysql_result_grid",
+            "sourceType must be RESULT_SET or EXTERNAL_TEXT",
+        )),
+    }
+}
+
+/// Builds CREATE or ALTER TABLE statements in the historical `{ sql }[]` shape.
+pub(crate) async fn build_table_modify_sql(
+    application: &Application,
+    request: &LegacyTableModifyRequest,
+) -> LegacyResult<Vec<LegacySqlResponse>> {
+    let datasource_id = request.data_source_id.as_string();
+    resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
+    let sql = if let Some(old_table) = request.old_table.as_ref() {
+        build_mysql_alter_table(&mysql_table_alter(
+            old_table,
+            &request.new_table,
+            &request.database_name,
+            &request.schema_name,
+        )?)?
+    } else {
+        build_mysql_create_table(&mysql_table_definition(
+            &request.new_table,
+            &request.database_name,
+            &request.schema_name,
+        )?)?
+    };
+    Ok(vec![LegacySqlResponse { sql }])
+}
+
+/// Builds a CREATE DATABASE preview without executing it.
+pub(crate) async fn build_create_database_sql(
+    application: &Application,
+    request: &LegacyDatabaseDefinitionRequest,
+) -> LegacyResult<LegacySqlResponse> {
+    let datasource_id = request.data_source_id.as_string();
+    resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
+    let name = first_non_blank(&request.name, &request.database_name);
+    Ok(LegacySqlResponse {
+        sql: build_mysql_create_database(&MysqlDatabaseDefinition {
+            name,
+            if_not_exists: false,
+            charset: non_blank(&request.charset),
+            collation: non_blank(&request.collation),
+        })?,
+    })
+}
+
+/// `MySQL` treats Community schemas as database aliases.
+pub(crate) async fn build_create_schema_sql(
+    application: &Application,
+    request: &LegacySchemaDefinitionRequest,
+) -> LegacyResult<LegacySqlResponse> {
+    let datasource_id = request.data_source_id.as_string();
+    resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
+    let name = first_non_blank(&request.name, &request.schema_name);
+    Ok(LegacySqlResponse {
+        sql: build_mysql_create_schema(&MysqlDatabaseDefinition {
+            name,
+            if_not_exists: false,
+            charset: None,
+            collation: None,
+        })?,
+    })
+}
+
+pub(crate) async fn prepare_database_delete(
+    application: &Application,
+    request: &LegacyDeleteObjectRequest,
+) -> LegacyResult<LegacyDeletePrepareResponse> {
+    let datasource_id = request.data_source_id.as_string();
+    let database_type =
+        resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
+    let confirm_name = required_name(&request.database_name, "databaseName")?;
+    Ok(LegacyDeletePrepareResponse {
+        sql_preview: build_mysql_drop_database(&confirm_name, false)?,
+        confirm_name,
+        object_type: "DATABASE".to_owned(),
+        db_type: database_type,
+    })
+}
+
+pub(crate) async fn prepare_schema_delete(
+    application: &Application,
+    request: &LegacyDeleteObjectRequest,
+) -> LegacyResult<LegacyDeletePrepareResponse> {
+    let datasource_id = request.data_source_id.as_string();
+    let database_type =
+        resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
+    let target = first_non_blank(&request.schema_name, &request.database_name);
+    let confirm_name = required_name(&target, "schemaName")?;
+    Ok(LegacyDeletePrepareResponse {
+        sql_preview: build_mysql_drop_schema(&confirm_name, false)?,
+        confirm_name,
+        object_type: "SCHEMA".to_owned(),
+        db_type: database_type,
+    })
+}
+
+pub(crate) async fn execute_database_delete(
+    application: &Application,
+    request: &LegacyDeleteObjectRequest,
+) -> LegacyResult<()> {
+    let prepared = prepare_database_delete(application, request).await?;
+    validate_delete_confirmation(&prepared.confirm_name, &request.confirm_name)?;
+    execute_generated_action(
+        application,
+        request.data_source_id.clone(),
+        &prepared.confirm_name,
+        "",
+        "",
+        prepared.sql_preview,
+    )
+    .await
+}
+
+pub(crate) async fn execute_schema_delete(
+    application: &Application,
+    request: &LegacyDeleteObjectRequest,
+) -> LegacyResult<()> {
+    let prepared = prepare_schema_delete(application, request).await?;
+    validate_delete_confirmation(&prepared.confirm_name, &request.confirm_name)?;
+    execute_generated_action(
+        application,
+        request.data_source_id.clone(),
+        &prepared.confirm_name,
+        "",
+        "",
+        prepared.sql_preview,
+    )
+    .await
+}
+
+pub(crate) async fn drop_table(
+    application: &Application,
+    request: &LegacyTableOperationRequest,
+) -> LegacyResult<()> {
+    let datasource_id = request.data_source_id.as_string();
+    resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
+    let sql = build_mysql_drop_table(
+        &mysql_qualified_name(
+            &request.database_name,
+            &request.schema_name,
+            &request.table_name,
+        ),
+        false,
+    )?;
+    execute_generated_action(
+        application,
+        request.data_source_id.clone(),
+        &request.database_name,
+        &request.schema_name,
+        &request.table_name,
+        sql,
+    )
+    .await
+}
+
+pub(crate) async fn truncate_table(
+    application: &Application,
+    request: &LegacyTableOperationRequest,
+) -> LegacyResult<()> {
+    let datasource_id = request.data_source_id.as_string();
+    resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
+    let sql = build_mysql_truncate_table(&mysql_qualified_name(
+        &request.database_name,
+        &request.schema_name,
+        &request.table_name,
+    ))?;
+    execute_generated_action(
+        application,
+        request.data_source_id.clone(),
+        &request.database_name,
+        &request.schema_name,
+        &request.table_name,
+        sql,
+    )
+    .await
+}
+
+pub(crate) async fn copy_table(
+    application: &Application,
+    request: &LegacyTableCopyRequest,
+) -> LegacyResult<()> {
+    let datasource_id = request.data_source_id.as_string();
+    resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
+    let new_name = if request.new_name.trim().is_empty() {
+        format!("{}_copy", request.table_name.trim())
+    } else {
+        request.new_name.trim().to_owned()
+    };
+    let statements = build_mysql_copy_table(&MysqlTableCopy {
+        source: mysql_qualified_name(
+            &request.database_name,
+            &request.schema_name,
+            &request.table_name,
+        ),
+        target: mysql_qualified_name(&request.database_name, &request.schema_name, &new_name),
+        if_not_exists: false,
+        copy_data: request.copy_data,
+    })?;
+    for sql in statements {
+        execute_generated_action(
+            application,
+            request.data_source_id.clone(),
+            &request.database_name,
+            &request.schema_name,
+            &new_name,
+            sql,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn build_view_modify_sql(
+    application: &Application,
+    request: &LegacyViewOperationRequest,
+) -> LegacyResult<String> {
+    let datasource_id = request.data_source_id.as_string();
+    resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
+    Ok(build_mysql_create_view(&mysql_view_definition(request)?)?)
+}
+
+pub(crate) async fn drop_view(
+    application: &Application,
+    request: &LegacyViewOperationRequest,
+) -> LegacyResult<()> {
+    let datasource_id = request.data_source_id.as_string();
+    resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
+    let view_name = first_non_blank(&request.view_name, &request.table_name);
+    let sql = build_mysql_drop_view(
+        &mysql_qualified_name(&request.database_name, &request.schema_name, &view_name),
+        false,
+    )?;
+    execute_generated_action(
+        application,
+        request.data_source_id.clone(),
+        &request.database_name,
+        &request.schema_name,
+        &view_name,
+        sql,
+    )
+    .await
+}
+
+pub(crate) async fn view_editor_meta(
+    application: &Application,
+    request: &LegacyViewOperationRequest,
+) -> LegacyResult<LegacyViewMetaResponse> {
+    let view_name = first_non_blank(&request.view_name, &request.table_name);
+    let query = LegacyTableDetailQuery {
+        data_source_id: request.data_source_id.clone(),
+        database_name: request.database_name.clone(),
+        schema_name: request.schema_name.clone(),
+        database_type: request.database_type.clone(),
+        table_name: view_name,
+    };
+    let view = Box::pin(get_editable_view(application, &query)).await?;
+    Ok(LegacyViewMetaResponse {
+        configurations: Vec::new(),
+        preview_sql: view.ddl.clone(),
+        sql: view.ddl,
+    })
+}
+
 /// Lists stored functions in the historical paged metadata shape.
 pub(crate) async fn list_functions(
     application: &Application,
@@ -1795,6 +2571,16 @@ pub(crate) async fn preview_table(
     let datasource_id = request.data_source_id.as_string();
     let database_type =
         resolve_database_type(application, &datasource_id, &request.database_type).await?;
+    let editable_columns = application
+        .list_community_columns(ListCommunityColumnsRequest {
+            datasource_id: datasource_id.clone(),
+            database_type: database_type.clone(),
+            database_name: request.database_name.clone(),
+            schema_name: request.schema_name.clone(),
+            table_name: request.table_name.clone(),
+        })
+        .await?
+        .items;
     let accepted = application
         .start_community_table_preview(StartCommunityTablePreviewRequest {
             datasource_id,
@@ -1832,9 +2618,10 @@ pub(crate) async fn preview_table(
     let has_next_page = page.has_more
         || page.metadata.truncated_by_max_rows
         || page.metadata.truncated_by_max_result_bytes;
-    let headers: Vec<LegacyResultHeader> = page.columns.iter().map(result_header).collect();
+    let mut headers: Vec<LegacyResultHeader> = page.columns.iter().map(result_header).collect();
+    enrich_headers_from_columns(&mut headers, &editable_columns);
     let large_value_owner = application.create_large_value_owner();
-    let data_list = page
+    let mut data_list: Vec<Vec<LegacyResultCell>> = page
         .rows
         .into_iter()
         .map(|row| {
@@ -1845,6 +2632,7 @@ pub(crate) async fn preview_table(
                 .collect()
         })
         .collect();
+    prepend_synthetic_row_numbers(&mut headers, &mut data_list, u64::from(offset));
     Ok(vec![LegacyManageResult {
         data_list,
         header_list: headers,
@@ -1855,7 +2643,7 @@ pub(crate) async fn preview_table(
         success: true,
         duration: 0,
         update_count: 0,
-        can_edit: false,
+        can_edit: true,
         table_name: request.table_name.clone(),
         sql_type: "SELECT".to_owned(),
         refresh_targets: Vec::new(),
@@ -2085,6 +2873,79 @@ pub async fn execute_ddl(
         })
 }
 
+/// Counts the rows produced by one `MySQL` query for Community's total-row control.
+pub(crate) async fn count_mysql_rows(
+    application: &Application,
+    request: &LegacySqlExecuteRequest,
+) -> LegacyResult<u64> {
+    let (datasource_id, _) = validate_sql_execute_request(request)?;
+    if !uses_native_mysql_console(application, request).await? {
+        return Err(LegacyFailure::invalid(
+            "unsupported_database_type",
+            "The historical count route currently supports native MySQL only",
+        ));
+    }
+    if request.sql.trim().is_empty() {
+        return Ok(0);
+    }
+    let count_sql = build_mysql_count_query(&request.sql)?;
+    let results = application
+        .execute_mysql_console(
+            MysqlConsoleRequest {
+                datasource_id,
+                database_name: request.database_name.clone(),
+                sql: count_sql,
+                page_no: 1,
+                page_size: 1,
+                result_set_id: None,
+                single: true,
+                page_size_all: false,
+                explain: false,
+                error_continue: false,
+            },
+            MysqlConsoleCancellation::new(),
+        )
+        .await?;
+    let result = results.into_iter().next().ok_or_else(|| {
+        LegacyFailure::invalid(
+            "mysql_count_failed",
+            "The MySQL count query returned no result",
+        )
+    })?;
+    if !result.success {
+        return Err(LegacyFailure {
+            code: "mysql_count_failed".to_owned(),
+            message: result.error.map_or(result.message, |error| error.message),
+        });
+    }
+    let value = result
+        .rows
+        .first()
+        .and_then(|row| row.values.first())
+        .ok_or_else(|| {
+            LegacyFailure::invalid(
+                "mysql_count_failed",
+                "The MySQL count query returned no value",
+            )
+        })?;
+    let (JdbcValue::SignedInteger { value }
+    | JdbcValue::UnsignedInteger { value }
+    | JdbcValue::Decimal { value }
+    | JdbcValue::Text { value }) = value
+    else {
+        return Err(LegacyFailure::invalid(
+            "mysql_count_failed",
+            "The MySQL count query returned a non-integer value",
+        ));
+    };
+    value.parse::<u64>().map_err(|_| {
+        LegacyFailure::invalid(
+            "mysql_count_failed",
+            "The MySQL count query returned an invalid integer",
+        )
+    })
+}
+
 /// Executes the native `MySQL` Console contract with a caller-owned cancellation
 /// source. Desktop keeps this source by execution id while HTTP uses it for the
 /// synchronous timeout boundary.
@@ -2100,6 +2961,23 @@ pub async fn execute_mysql_sql(
     history_source: &str,
 ) -> LegacyResult<Vec<LegacyManageResult>> {
     let (datasource_id, _) = validate_sql_execute_request(request)?;
+    let editable_columns = if request.table_name.trim().is_empty() {
+        None
+    } else {
+        let database_type =
+            resolve_database_type(application, &datasource_id, &request.database_type).await?;
+        application
+            .list_community_columns(ListCommunityColumnsRequest {
+                datasource_id: datasource_id.clone(),
+                database_type,
+                database_name: request.database_name.clone(),
+                schema_name: request.schema_name.clone(),
+                table_name: request.table_name.clone(),
+            })
+            .await
+            .ok()
+            .map(|columns| columns.items)
+    };
 
     let execution = application.execute_mysql_console(
         MysqlConsoleRequest {
@@ -2125,7 +3003,15 @@ pub async fn execute_mysql_sql(
     let results = match timed_out {
         Some(Ok(results)) => results
             .into_iter()
-            .map(|result| mysql_console_result(application, &large_value_owner, request, result))
+            .map(|result| {
+                mysql_console_result(
+                    application,
+                    &large_value_owner,
+                    request,
+                    result,
+                    editable_columns.as_deref(),
+                )
+            })
             .collect(),
         Some(Err(error)) => {
             let error = LegacyFailure::from(error);
@@ -2503,6 +3389,7 @@ fn mysql_console_result(
     large_value_owner: &str,
     request: &LegacySqlExecuteRequest,
     result: MysqlConsoleResult,
+    editable_columns: Option<&[CommunityTableColumn]>,
 ) -> LegacyManageResult {
     let MysqlConsoleResult {
         statement_sequence,
@@ -2518,8 +3405,11 @@ fn mysql_console_result(
         duration_ms,
         error,
     } = result;
-    let header_list = columns.iter().map(result_header).collect();
-    let data_list = rows
+    let mut header_list: Vec<_> = columns.iter().map(result_header).collect();
+    let can_edit = editable_columns.is_some_and(|editable_columns| {
+        enrich_direct_table_headers(&mut header_list, editable_columns, &request.table_name)
+    });
+    let mut data_list: Vec<Vec<LegacyResultCell>> = rows
         .into_iter()
         .map(|row| {
             row.values
@@ -2529,6 +3419,11 @@ fn mysql_console_result(
                 .collect()
         })
         .collect();
+    if can_edit {
+        let offset = u64::from(request.page_no.saturating_sub(1))
+            .saturating_mul(u64::from(request.page_size));
+        prepend_synthetic_row_numbers(&mut header_list, &mut data_list, offset);
+    }
     let sql_type = legacy_sql_type(&sql).to_owned();
     let extra = error.map_or_else(
         || serde_json::json!({}),
@@ -2559,7 +3454,7 @@ fn mysql_console_result(
         success,
         duration: duration_ms,
         update_count,
-        can_edit: false,
+        can_edit,
         table_name: request.table_name.clone(),
         refresh_targets: refresh_targets(request, &sql_type, success),
         sql_type,
@@ -3009,6 +3904,8 @@ fn column_response(column: CommunityTableColumn) -> LegacyColumn {
         auto_increment: column.auto_increment,
         comment: column.comment,
         primary_key: column.primary_key,
+        primary_key_name: column.primary_key_name,
+        primary_key_order: column.primary_key_order,
         schema_name: column.schema_name,
         database_name: column.database_name,
         type_name: None,
@@ -3024,6 +3921,15 @@ fn column_response(column: CommunityTableColumn) -> LegacyColumn {
         nullable: column.nullable,
         generated_column: column.generated_column,
         extent: column.extent,
+        char_set_name: column.charset,
+        collation_name: column.collation,
+        value: String::new(),
+        unit: column.unit,
+        sparse: column.sparse,
+        default_constraint_name: column.default_constraint_name,
+        seed: column.seed,
+        increment: column.increment,
+        on_update_current_timestamp: column.on_update_current_timestamp,
         edit_status: None,
     }
 }
@@ -3031,15 +3937,46 @@ fn column_response(column: CommunityTableColumn) -> LegacyColumn {
 fn index_response(index: CommunityTableIndex) -> LegacyIndex {
     LegacyIndex {
         columns: None,
+        old_name: Some(index.name.clone()),
         name: index.name,
+        table_name: index.table_name,
         index_type: index.index_type,
+        unique: index.unique,
         comment: index.comment,
+        schema_name: index.schema_name,
+        database_name: index.database_name,
         column_list: index
             .columns
             .into_iter()
             .map(index_column_response)
             .collect(),
+        edit_status: None,
+        concurrently: index.concurrently,
+        method: index.method,
+        foreign_schema_name: index.foreign_schema_name,
+        foreign_table_name: index.foreign_table_name,
+        foreign_column_namelist: index.foreign_column_names,
     }
+}
+
+fn editable_index_response(index: CommunityTableIndex) -> LegacyIndex {
+    let method = index.index_type.clone();
+    let index_type = if index.name.eq_ignore_ascii_case("PRIMARY") {
+        "Primary"
+    } else if method.eq_ignore_ascii_case("FULLTEXT") {
+        "Fulltext"
+    } else if method.eq_ignore_ascii_case("SPATIAL") {
+        "Spatial"
+    } else if index.unique == Some(true) {
+        "Unique"
+    } else {
+        "Normal"
+    }
+    .to_owned();
+    let mut response = index_response(index);
+    response.index_type = index_type;
+    response.method = method;
+    response
 }
 
 fn index_column_response(column: CommunityTableIndexColumn) -> LegacyIndexColumn {
@@ -3059,6 +3996,39 @@ fn index_column_response(column: CommunityTableIndexColumn) -> LegacyIndexColumn
         cardinality: decimal_i64(column.cardinality.as_deref()),
         pages: decimal_i64(column.pages.as_deref()),
         filter_condition: column.filter_condition,
+        sub_part: decimal_i64(column.sub_part.as_deref()),
+        edit_status: None,
+    }
+}
+
+fn editable_table_response(
+    table: CommunityTable,
+    columns: Vec<CommunityTableColumn>,
+    indexes: Vec<CommunityTableIndex>,
+    database_type: String,
+) -> LegacyEditableTable {
+    LegacyEditableTable {
+        name: table.name,
+        comment: table.comment,
+        schema_name: table.schema_name,
+        database_name: table.database_name,
+        table_type: table.table_type,
+        column_list: columns.into_iter().map(column_response).collect(),
+        index_list: indexes.into_iter().map(editable_index_response).collect(),
+        foreign_key_list: Vec::new(),
+        db_type: database_type,
+        pinned: table.pinned,
+        ddl: table.ddl,
+        engine: table.engine,
+        charset: table.charset,
+        collate: table.collation,
+        increment_value: table.increment_value,
+        partition: table.partition,
+        tablespace: table.tablespace,
+        rows: table.rows,
+        data_length: table.data_length,
+        create_time: table.create_time,
+        update_time: table.update_time,
     }
 }
 
@@ -3118,6 +4088,128 @@ fn result_header(column: &ResultColumn) -> LegacyResultHeader {
         column_size: column.precision.or(column.display_size),
         decimal_digits: column.scale,
         editor_type: None,
+    }
+}
+
+fn enrich_direct_table_headers(
+    headers: &mut [LegacyResultHeader],
+    columns: &[CommunityTableColumn],
+    expected_table_name: &str,
+) -> bool {
+    if headers.is_empty() || expected_table_name.trim().is_empty() {
+        return false;
+    }
+    let mut direct_table = None::<&str>;
+    for header in headers.iter() {
+        let Some(table_name) = header.table_name.as_deref().filter(|name| !name.is_empty()) else {
+            return false;
+        };
+        if !table_name.eq_ignore_ascii_case(expected_table_name) {
+            return false;
+        }
+        if direct_table.is_some_and(|current| !current.eq_ignore_ascii_case(table_name)) {
+            return false;
+        }
+        direct_table = Some(table_name);
+    }
+
+    enrich_headers_from_columns(headers, columns)
+}
+
+fn enrich_headers_from_columns(
+    headers: &mut [LegacyResultHeader],
+    columns: &[CommunityTableColumn],
+) -> bool {
+    for header in headers.iter_mut() {
+        let metadata = columns.iter().find(|column| {
+            column.name.eq_ignore_ascii_case(&header.column_name)
+                || column.name.eq_ignore_ascii_case(&header.name)
+        });
+        let Some(metadata) = metadata else {
+            return false;
+        };
+        header.primary_key = metadata.primary_key.unwrap_or(false);
+        if !metadata.column_type.trim().is_empty() {
+            header.column_type.clone_from(&metadata.column_type);
+        }
+        header.table_name = non_blank(&metadata.table_name);
+        header.database_name = non_blank(&metadata.database_name);
+        header.schema_name = non_blank(&metadata.schema_name);
+        header.comment = Some(metadata.comment.clone());
+        header.default_value.clone_from(&metadata.default_value);
+        header.auto_increment = metadata.auto_increment.map(i32::from);
+        header.nullable = metadata.nullable.unwrap_or(1) != 0;
+        header.column_size = metadata.column_size.and_then(|size| size.try_into().ok());
+        header.decimal_digits = metadata.decimal_digits;
+        header.editor_type = Some(result_editor_type(&metadata.column_type).to_owned());
+    }
+    true
+}
+
+fn result_editor_type(column_type: &str) -> &'static str {
+    let base_type = column_type
+        .split(|character: char| character == '(' || character.is_ascii_whitespace())
+        .next()
+        .unwrap_or_default();
+    if base_type.eq_ignore_ascii_case("DATE") {
+        "DATE"
+    } else if base_type.eq_ignore_ascii_case("TIME") {
+        "TIME"
+    } else if base_type.eq_ignore_ascii_case("DATETIME") {
+        "DATETIME"
+    } else if base_type.eq_ignore_ascii_case("TIMESTAMP") {
+        "TIMESTAMP"
+    } else {
+        "TEXT"
+    }
+}
+
+fn prepend_synthetic_row_numbers(
+    headers: &mut Vec<LegacyResultHeader>,
+    rows: &mut [Vec<LegacyResultCell>],
+    offset: u64,
+) {
+    headers.insert(
+        0,
+        LegacyResultHeader {
+            data_type: "CHAT2DB_ROW_NUMBER".to_owned(),
+            name: "CHAT2DB_ROW_NUMBER".to_owned(),
+            column_name: "CHAT2DB_ROW_NUMBER".to_owned(),
+            column_type: "BIGINT".to_owned(),
+            table_name: None,
+            database_name: None,
+            schema_name: None,
+            primary_key: false,
+            comment: None,
+            default_value: None,
+            auto_increment: None,
+            nullable: false,
+            column_size: Some(20),
+            decimal_digits: Some(0),
+            editor_type: None,
+        },
+    );
+    for (index, row) in rows.iter_mut().enumerate() {
+        let row_number = offset
+            .saturating_add(u64::try_from(index).unwrap_or(u64::MAX))
+            .saturating_add(1);
+        row.insert(
+            0,
+            LegacyResultCell {
+                value: Some(row_number.to_string()),
+                large_value: false,
+                large_value_id: None,
+                value_type: "UNKNOWN".to_owned(),
+                sql_type: -5,
+                column_type: "BIGINT".to_owned(),
+                size_bytes: None,
+                size_chars: None,
+                loaded_bytes: None,
+                loaded_chars: None,
+                truncated: false,
+                unsupported_reason: None,
+            },
+        );
     }
 }
 
@@ -3448,6 +4540,22 @@ async fn resolve_database_type(
         ))
 }
 
+async fn resolve_mysql_database_type(
+    application: &Application,
+    datasource_id: &str,
+    explicit: &str,
+) -> LegacyResult<String> {
+    let database_type = resolve_database_type(application, datasource_id, explicit).await?;
+    if database_type == "MYSQL" {
+        Ok(database_type)
+    } else {
+        Err(LegacyFailure {
+            code: "unsupported_database_type".to_owned(),
+            message: "This Community compatibility route currently supports MySQL only".to_owned(),
+        })
+    }
+}
+
 fn database_type_for_driver(driver: &JdbcDriver) -> String {
     let identity =
         format!("{} {} {}", driver.pack_id, driver.name, driver.driver_class).to_ascii_lowercase();
@@ -3473,6 +4581,559 @@ fn normalize_database_type(value: &str) -> String {
     } else {
         normalized
     }
+}
+
+fn mysql_grid_header(header: &LegacyGridHeaderRequest) -> LegacyResult<MysqlResultGridHeader> {
+    let name = first_non_blank(&header.column_name, &header.name);
+    Ok(MysqlResultGridHeader {
+        name: required_name(&name, "headerList.name")?,
+        column_type: header.column_type.clone(),
+        data_type: header.data_type.clone(),
+        primary_key: header.primary_key,
+        auto_increment: header.auto_increment,
+    })
+}
+
+fn mysql_grid_operation(
+    operation: &LegacyGridOperationRequest,
+) -> LegacyResult<MysqlResultGridOperation> {
+    let operation_type = match operation
+        .operation_type
+        .trim()
+        .to_ascii_uppercase()
+        .as_str()
+    {
+        "CREATE" => MysqlResultGridOperationType::Create,
+        "UPDATE" => MysqlResultGridOperationType::Update,
+        "DELETE" => MysqlResultGridOperationType::Delete,
+        _ => {
+            return Err(LegacyFailure::invalid(
+                "invalid_mysql_result_grid",
+                "operation type must be CREATE, UPDATE, or DELETE",
+            ));
+        }
+    };
+    Ok(MysqlResultGridOperation {
+        operation_type,
+        data_list: operation.data_list.clone(),
+        old_data_list: operation.old_data_list.clone(),
+    })
+}
+
+fn mysql_grid_copy_operation(
+    operation: &LegacyGridOperationRequest,
+) -> LegacyResult<MysqlResultGridCopyOperation> {
+    let operation_type = match operation
+        .operation_type
+        .trim()
+        .to_ascii_uppercase()
+        .as_str()
+    {
+        "CREATE" => MysqlResultGridCopyOperationType::Create,
+        "UPDATE_COPY" => MysqlResultGridCopyOperationType::UpdateCopy,
+        "WHERE" => MysqlResultGridCopyOperationType::Where,
+        _ => {
+            return Err(LegacyFailure::invalid(
+                "invalid_mysql_result_grid",
+                "copy operation type must be CREATE, UPDATE_COPY, or WHERE",
+            ));
+        }
+    };
+    Ok(MysqlResultGridCopyOperation {
+        operation_type,
+        data_list: operation.data_list.clone(),
+        select_cols: operation.select_cols.clone(),
+    })
+}
+
+fn reject_unsupported_copy_cells(operations: &[LegacyGridOperationRequest]) -> LegacyResult<()> {
+    if operations.iter().any(|operation| {
+        operation.selected_cell.as_ref().is_some_and(|cell| {
+            cell.large_value
+                || cell.truncated
+                || cell.large_value_id.is_some()
+                || matches!(cell.value_type.as_str(), "BINARY" | "BLOB" | "BYTES")
+        })
+    }) {
+        return Err(LegacyFailure::invalid(
+            "mysql_partial_large_value_rejected",
+            "Binary and partial large values cannot be copied as SQL IN values",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_legacy_partial_large_values(operations: &[MysqlResultGridOperation]) -> LegacyResult<()> {
+    let has_partial = operations.iter().any(|operation| {
+        operation
+            .data_list
+            .iter()
+            .chain(&operation.old_data_list)
+            .flatten()
+            .any(|value| {
+                value
+                    .to_ascii_uppercase()
+                    .starts_with(LARGE_VALUE_PREVIEW_PREFIX)
+            })
+    });
+    if has_partial {
+        Err(LegacyFailure::invalid(
+            "mysql_partial_large_value_rejected",
+            "Partial large-value previews cannot be written back",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn mysql_qualified_name(database_name: &str, schema_name: &str, name: &str) -> MysqlQualifiedName {
+    MysqlQualifiedName {
+        database_name: non_blank(database_name),
+        schema_name: non_blank(schema_name),
+        name: name.trim().to_owned(),
+    }
+}
+
+fn mysql_table_definition(
+    table: &LegacyEditableTable,
+    database_name: &str,
+    schema_name: &str,
+) -> LegacyResult<MysqlTableDefinition> {
+    let columns = table
+        .column_list
+        .iter()
+        .filter(|column| !has_edit_status(column.edit_status.as_deref(), "DELETE"))
+        .map(mysql_column_definition)
+        .collect::<LegacyResult<Vec<_>>>()?;
+    let mut indexes = table
+        .index_list
+        .iter()
+        .filter(|index| !has_edit_status(index.edit_status.as_deref(), "DELETE"))
+        .map(mysql_index_definition)
+        .collect::<LegacyResult<Vec<_>>>()?;
+    if !indexes
+        .iter()
+        .any(|index| index.kind == MysqlIndexKind::Primary)
+    {
+        let primary_columns = table
+            .column_list
+            .iter()
+            .filter(|column| column.primary_key == Some(true))
+            .map(|column| {
+                Ok(MysqlIndexColumn {
+                    name: required_name(&column.name, "columnList.name")?,
+                    prefix_length: None,
+                    order: None,
+                })
+            })
+            .collect::<LegacyResult<Vec<_>>>()?;
+        if !primary_columns.is_empty() {
+            indexes.push(MysqlIndexDefinition {
+                kind: MysqlIndexKind::Primary,
+                name: None,
+                columns: primary_columns,
+                method: Some(MysqlIndexMethod::Btree),
+                comment: None,
+            });
+        }
+    }
+    let table_database = first_non_blank(database_name, &table.database_name);
+    let table_schema = first_non_blank(schema_name, &table.schema_name);
+    Ok(MysqlTableDefinition {
+        name: mysql_qualified_name(&table_database, &table_schema, &table.name),
+        if_not_exists: false,
+        columns,
+        indexes,
+        engine: non_blank(&table.engine),
+        charset: non_blank(&table.charset),
+        collation: non_blank(&table.collate),
+        comment: Some(table.comment.clone()),
+        auto_increment: parse_auto_increment(table.increment_value.as_deref())?,
+    })
+}
+
+fn mysql_table_alter(
+    old_table: &LegacyEditableTable,
+    new_table: &LegacyEditableTable,
+    database_name: &str,
+    schema_name: &str,
+) -> LegacyResult<MysqlTableAlter> {
+    let table_database = first_non_blank(database_name, &old_table.database_name);
+    let table_schema = first_non_blank(schema_name, &old_table.schema_name);
+    let table = mysql_qualified_name(&table_database, &table_schema, &old_table.name);
+    let rename_to = (!new_table.name.eq_ignore_ascii_case(&old_table.name)).then(|| {
+        mysql_qualified_name(
+            &first_non_blank(database_name, &new_table.database_name),
+            &first_non_blank(schema_name, &new_table.schema_name),
+            &new_table.name,
+        )
+    });
+    let mut columns = Vec::new();
+    let active_columns = new_table
+        .column_list
+        .iter()
+        .filter(|column| !has_edit_status(column.edit_status.as_deref(), "DELETE"))
+        .collect::<Vec<_>>();
+    for column in &new_table.column_list {
+        let status = column
+            .edit_status
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_uppercase();
+        match status.as_str() {
+            "ADD" => columns.push(MysqlColumnAlter::Add {
+                column: mysql_column_definition(column)?,
+                position: mysql_column_position(&active_columns, column),
+            }),
+            "MODIFY" => columns.push(MysqlColumnAlter::Modify {
+                old_name: required_name(
+                    column.old_name.as_deref().unwrap_or(&column.name),
+                    "columnList.oldName",
+                )?,
+                column: mysql_column_definition(column)?,
+                position: mysql_column_position(&active_columns, column),
+            }),
+            "DELETE" => columns.push(MysqlColumnAlter::Delete {
+                name: required_name(
+                    column.old_name.as_deref().unwrap_or(&column.name),
+                    "columnList.oldName",
+                )?,
+            }),
+            _ => {}
+        }
+    }
+
+    let mut indexes = Vec::new();
+    for index in &new_table.index_list {
+        let status = index
+            .edit_status
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_uppercase();
+        let old_index = old_table.index_list.iter().find(|candidate| {
+            candidate
+                .name
+                .eq_ignore_ascii_case(index.old_name.as_deref().unwrap_or(index.name.as_str()))
+        });
+        match status.as_str() {
+            "ADD" => indexes.push(MysqlIndexAlter::Add {
+                index: mysql_index_definition(index)?,
+            }),
+            "MODIFY" => indexes.push(MysqlIndexAlter::Modify {
+                old_kind: old_index.map_or_else(|| mysql_index_kind(index), mysql_index_kind),
+                old_name: mysql_index_name(old_index.map_or(index, |old_index| old_index))?,
+                index: mysql_index_definition(index)?,
+            }),
+            "DELETE" => {
+                let old_index = old_index.unwrap_or(index);
+                indexes.push(MysqlIndexAlter::Delete {
+                    kind: mysql_index_kind(old_index),
+                    name: mysql_index_name(old_index)?,
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(MysqlTableAlter {
+        table,
+        rename_to,
+        columns,
+        indexes,
+        engine: changed_non_blank(&old_table.engine, &new_table.engine),
+        charset: changed_non_blank(&old_table.charset, &new_table.charset),
+        collation: changed_non_blank(&old_table.collate, &new_table.collate),
+        comment: (old_table.comment != new_table.comment).then(|| new_table.comment.clone()),
+        auto_increment: if old_table.increment_value == new_table.increment_value {
+            None
+        } else {
+            parse_auto_increment(new_table.increment_value.as_deref())?
+        },
+    })
+}
+
+fn mysql_column_definition(column: &LegacyColumn) -> LegacyResult<MysqlColumnDefinition> {
+    let type_name = required_name(&column.column_type, "columnList.columnType")?;
+    Ok(MysqlColumnDefinition {
+        name: required_name(&column.name, "columnList.name")?,
+        unsigned: type_name.to_ascii_uppercase().contains("UNSIGNED"),
+        type_name,
+        length: positive_u32(column.column_size),
+        scale: positive_or_zero_u32(column.decimal_digits),
+        nullable: column.nullable.unwrap_or(1) != 0,
+        default_value: column.default_value.clone(),
+        auto_increment: column.auto_increment.unwrap_or(false),
+        charset: non_blank(&column.char_set_name),
+        collation: non_blank(&column.collation_name),
+        comment: non_blank(&column.comment),
+        enum_values: parse_enum_values(&column.value),
+        on_update_current_timestamp: column.on_update_current_timestamp.unwrap_or(false),
+    })
+}
+
+fn mysql_index_definition(index: &LegacyIndex) -> LegacyResult<MysqlIndexDefinition> {
+    let kind = mysql_index_kind(index);
+    let columns = index
+        .column_list
+        .iter()
+        .filter(|column| !has_edit_status(column.edit_status.as_deref(), "DELETE"))
+        .map(|column| {
+            Ok(MysqlIndexColumn {
+                name: required_name(&column.column_name, "indexList.columnList.columnName")?,
+                prefix_length: column.sub_part.and_then(|value| value.try_into().ok()),
+                order: match column.asc_or_desc.trim().to_ascii_uppercase().as_str() {
+                    "A" | "ASC" => Some(MysqlSortOrder::Asc),
+                    "D" | "DESC" => Some(MysqlSortOrder::Desc),
+                    _ => None,
+                },
+            })
+        })
+        .collect::<LegacyResult<Vec<_>>>()?;
+    Ok(MysqlIndexDefinition {
+        kind,
+        name: mysql_index_name(index)?,
+        columns,
+        method: match index.method.trim().to_ascii_uppercase().as_str() {
+            "BTREE" => Some(MysqlIndexMethod::Btree),
+            "HASH" => Some(MysqlIndexMethod::Hash),
+            _ => None,
+        },
+        comment: non_blank(&index.comment),
+    })
+}
+
+fn mysql_index_kind(index: &LegacyIndex) -> MysqlIndexKind {
+    if index.name.eq_ignore_ascii_case("PRIMARY")
+        || index.index_type.eq_ignore_ascii_case("PRIMARY")
+    {
+        MysqlIndexKind::Primary
+    } else if index.index_type.eq_ignore_ascii_case("UNIQUE") || index.unique == Some(true) {
+        MysqlIndexKind::Unique
+    } else if index.index_type.eq_ignore_ascii_case("FULLTEXT") {
+        MysqlIndexKind::Fulltext
+    } else if index.index_type.eq_ignore_ascii_case("SPATIAL") {
+        MysqlIndexKind::Spatial
+    } else {
+        MysqlIndexKind::Normal
+    }
+}
+
+fn mysql_index_name(index: &LegacyIndex) -> LegacyResult<Option<String>> {
+    if mysql_index_kind(index) == MysqlIndexKind::Primary {
+        Ok(None)
+    } else {
+        Ok(Some(required_name(&index.name, "indexList.name")?))
+    }
+}
+
+fn mysql_column_position(
+    active_columns: &[&LegacyColumn],
+    column: &LegacyColumn,
+) -> Option<MysqlColumnPosition> {
+    let index = active_columns.iter().position(|candidate| {
+        std::ptr::eq(*candidate, column) || candidate.name.eq_ignore_ascii_case(&column.name)
+    })?;
+    if index == 0 {
+        Some(MysqlColumnPosition::First)
+    } else {
+        Some(MysqlColumnPosition::After(
+            active_columns[index - 1].name.clone(),
+        ))
+    }
+}
+
+fn mysql_view_definition(
+    request: &LegacyViewOperationRequest,
+) -> LegacyResult<MysqlViewDefinition> {
+    if request.use_if_not_exists {
+        return Err(LegacyFailure::invalid(
+            "invalid_mysql_ddl",
+            "MySQL does not support CREATE VIEW IF NOT EXISTS",
+        ));
+    }
+    let view_name = first_non_blank(&request.view_name, &request.table_name);
+    Ok(MysqlViewDefinition {
+        name: mysql_qualified_name(&request.database_name, &request.schema_name, &view_name),
+        columns: request.view_attributes.clone(),
+        use_or_replace: request.use_or_replace || request.is_modify.unwrap_or(false),
+        algorithm: match request.algorithm.trim().to_ascii_uppercase().as_str() {
+            "" => None,
+            "UNDEFINED" => Some(MysqlViewAlgorithm::Undefined),
+            "MERGE" => Some(MysqlViewAlgorithm::Merge),
+            "TEMPTABLE" => Some(MysqlViewAlgorithm::Temptable),
+            _ => {
+                return Err(LegacyFailure::invalid(
+                    "invalid_mysql_ddl",
+                    "algorithm must be UNDEFINED, MERGE, or TEMPTABLE",
+                ));
+            }
+        },
+        definer: parse_view_definer(&request.definer)?,
+        sql_security: match request.security.trim().to_ascii_uppercase().as_str() {
+            "" => None,
+            "DEFINER" => Some(MysqlViewSecurity::Definer),
+            "INVOKER" => Some(MysqlViewSecurity::Invoker),
+            _ => {
+                return Err(LegacyFailure::invalid(
+                    "invalid_mysql_ddl",
+                    "security must be DEFINER or INVOKER",
+                ));
+            }
+        },
+        check_option: match request.check_option.trim().to_ascii_uppercase().as_str() {
+            "" | "NONE" => None,
+            "CASCADED" => Some(MysqlViewCheckOption::Cascaded),
+            "LOCAL" => Some(MysqlViewCheckOption::Local),
+            _ => {
+                return Err(LegacyFailure::invalid(
+                    "invalid_mysql_ddl",
+                    "checkOption must be CASCADED or LOCAL",
+                ));
+            }
+        },
+        body: required_name(&request.view_body, "viewBody")?,
+    })
+}
+
+fn parse_view_definer(value: &str) -> LegacyResult<Option<MysqlViewDefiner>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let Some((user, host)) = value.split_once('@') else {
+        return Err(LegacyFailure::invalid(
+            "invalid_mysql_ddl",
+            "definer must use the user@host form",
+        ));
+    };
+    let trim_part = |part: &str| part.trim().trim_matches(['\'', '"', '`']).to_owned();
+    Ok(Some(MysqlViewDefiner {
+        user: required_name(&trim_part(user), "definer user")?,
+        host: required_name(&trim_part(host), "definer host")?,
+    }))
+}
+
+async fn execute_generated_action(
+    application: &Application,
+    data_source_id: LegacyIdentifier,
+    database_name: &str,
+    schema_name: &str,
+    table_name: &str,
+    sql: String,
+) -> LegacyResult<()> {
+    let result = execute_ddl(
+        application,
+        &LegacySqlExecuteRequest {
+            data_source_id,
+            data_source_name: String::new(),
+            database_name: database_name.to_owned(),
+            schema_name: schema_name.to_owned(),
+            database_type: "MYSQL".to_owned(),
+            table_name: table_name.to_owned(),
+            sql,
+            single: true,
+            page_no: DEFAULT_PAGE_NO,
+            page_size: DEFAULT_SQL_PAGE_SIZE,
+            page_size_all: false,
+            console_id: None,
+            apply_id: None,
+            result_set_id: None,
+            error_continue: Some(false),
+            explain: false,
+        },
+    )
+    .await?;
+    if result.success {
+        Ok(())
+    } else {
+        Err(LegacyFailure {
+            code: "mysql_ddl_execution_failed".to_owned(),
+            message: if result.message.trim().is_empty() {
+                "The MySQL DDL statement failed".to_owned()
+            } else {
+                result.message
+            },
+        })
+    }
+}
+
+fn validate_delete_confirmation(expected: &str, actual: &str) -> LegacyResult<()> {
+    if expected == actual.trim() {
+        Ok(())
+    } else {
+        Err(LegacyFailure::invalid(
+            "database_object_delete_confirmation_mismatch",
+            "confirmName must exactly match the database object name",
+        ))
+    }
+}
+
+fn required_name(value: &str, field: &'static str) -> LegacyResult<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(LegacyFailure {
+            code: "invalid_legacy_request".to_owned(),
+            message: format!("{field} is required"),
+        })
+    } else {
+        Ok(value.to_owned())
+    }
+}
+
+fn first_non_blank(primary: &str, fallback: &str) -> String {
+    if primary.trim().is_empty() {
+        fallback.trim().to_owned()
+    } else {
+        primary.trim().to_owned()
+    }
+}
+
+fn has_edit_status(status: Option<&str>, expected: &str) -> bool {
+    status.is_some_and(|status| status.trim().eq_ignore_ascii_case(expected))
+}
+
+fn changed_non_blank(old: &str, new: &str) -> Option<String> {
+    (old != new)
+        .then(|| new.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn positive_u32(value: Option<i32>) -> Option<u32> {
+    value
+        .filter(|value| *value > 0)
+        .and_then(|value| value.try_into().ok())
+}
+
+fn positive_or_zero_u32(value: Option<i32>) -> Option<u32> {
+    value
+        .filter(|value| *value >= 0)
+        .and_then(|value| value.try_into().ok())
+}
+
+fn parse_auto_increment(value: Option<&str>) -> LegacyResult<Option<u64>> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value.trim().parse::<u64>().map_err(|_| {
+                LegacyFailure::invalid(
+                    "invalid_mysql_ddl",
+                    "incrementValue must be a positive integer",
+                )
+            })
+        })
+        .transpose()
+}
+
+fn parse_enum_values(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .map(|value| value.trim_matches(['\'', '"']))
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn paginate<T>(items: Vec<T>, page_no: u32, page_size: u32) -> LegacyPage<T> {
@@ -3530,8 +5191,15 @@ fn full_page<T>(items: Vec<T>) -> LegacyPage<T> {
 ///
 /// Tauri IPC can pass its `requestUrl`, `method`, and `message` fields here and
 /// return the resulting JSON value unchanged.
+pub fn dispatch(
+    application: &Application,
+    request: LegacyDispatchRequest,
+) -> impl Future<Output = serde_json::Value> + Send + '_ {
+    Box::pin(dispatch_inner(application, request))
+}
+
 #[allow(clippy::too_many_lines)]
-pub async fn dispatch(
+async fn dispatch_inner(
     application: &Application,
     request: LegacyDispatchRequest,
 ) -> serde_json::Value {
@@ -3644,6 +5312,18 @@ pub async fn dispatch(
             Ok(query) => serialized(list_schemas(application, &query).await),
             Err(error) => Err(error),
         },
+        ("get", "/api/rdb/table/table_meta") => {
+            match decode::<LegacyMetadataQuery>(request.message) {
+                Ok(query) => serialized(table_editor_meta(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/rdb/table/query") => {
+            match decode::<LegacyTableDetailQuery>(request.message) {
+                Ok(query) => serialized(Box::pin(get_editable_table(application, &query)).await),
+                Err(error) => Err(error),
+            }
+        }
         ("get", "/api/rdb/table/list") => match decode::<LegacyTableListQuery>(request.message) {
             Ok(query) => serialized(list_tables(application, &query).await),
             Err(error) => Err(error),
@@ -3680,6 +5360,16 @@ pub async fn dispatch(
         ("get", "/api/rdb/view/detail") => {
             match decode::<LegacyTableDetailQuery>(request.message) {
                 Ok(query) => serialized(get_view(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/rdb/view/query") => match decode::<LegacyTableDetailQuery>(request.message) {
+            Ok(query) => serialized(Box::pin(get_editable_view(application, &query)).await),
+            Err(error) => Err(error),
+        },
+        ("get", "/api/rdb/view/view_meta") => {
+            match decode::<LegacyViewOperationRequest>(request.message) {
+                Ok(query) => serialized(Box::pin(view_editor_meta(application, &query)).await),
                 Err(error) => Err(error),
             }
         }
@@ -3729,9 +5419,105 @@ pub async fn dispatch(
                 Err(error) => Err(error),
             }
         }
-        ("post" | "put", "/api/rdb/dml/execute_ddl") => {
+        ("post" | "put", "/api/rdb/dml/execute_ddl" | "/api/rdb/dml/execute_update") => {
             match decode::<LegacySqlExecuteRequest>(request.message) {
                 Ok(body) => serialized(execute_ddl(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post" | "put", "/api/rdb/dml/get_update_sql") => {
+            match decode::<LegacyGridUpdateRequest>(request.message) {
+                Ok(body) => serialized(build_grid_update_sql(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post" | "put", "/api/rdb/dml/copy_update_sql") => {
+            match decode::<LegacyGridUpdateRequest>(request.message) {
+                Ok(body) => serialized(build_grid_copy_sql(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post" | "put", "/api/rdb/dml/copy_in_values_sql") => {
+            match decode::<LegacyGridUpdateRequest>(request.message) {
+                Ok(body) => serialized(build_grid_in_values(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post" | "put", "/api/rdb/dml/count") => {
+            match decode::<LegacySqlExecuteRequest>(request.message) {
+                Ok(body) => serialized(count_mysql_rows(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/table/modify/sql") => {
+            match decode::<LegacyTableModifyRequest>(request.message) {
+                Ok(body) => serialized(build_table_modify_sql(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/ddl/delete") => {
+            match decode::<LegacyTableOperationRequest>(request.message) {
+                Ok(body) => serialized(drop_table(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/table/truncate") => {
+            match decode::<LegacyTableOperationRequest>(request.message) {
+                Ok(body) => serialized(truncate_table(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/table/copy") => {
+            match decode::<LegacyTableCopyRequest>(request.message) {
+                Ok(body) => serialized(copy_table(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/database/create_database_sql") => {
+            match decode::<LegacyDatabaseDefinitionRequest>(request.message) {
+                Ok(body) => serialized(build_create_database_sql(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/schema/create_schema_sql") => {
+            match decode::<LegacySchemaDefinitionRequest>(request.message) {
+                Ok(body) => serialized(build_create_schema_sql(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/delete/database/prepare") => {
+            match decode::<LegacyDeleteObjectRequest>(request.message) {
+                Ok(body) => serialized(prepare_database_delete(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/delete/database/execute") => {
+            match decode::<LegacyDeleteObjectRequest>(request.message) {
+                Ok(body) => serialized(execute_database_delete(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/delete/schema/prepare") => {
+            match decode::<LegacyDeleteObjectRequest>(request.message) {
+                Ok(body) => serialized(prepare_schema_delete(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/delete/schema/execute") => {
+            match decode::<LegacyDeleteObjectRequest>(request.message) {
+                Ok(body) => serialized(execute_schema_delete(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/view/modify/sql") => {
+            match decode::<LegacyViewOperationRequest>(request.message) {
+                Ok(body) => serialized(build_view_modify_sql(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/view/drop") => {
+            match decode::<LegacyViewOperationRequest>(request.message) {
+                Ok(body) => serialized(drop_view(application, &body).await),
                 Err(error) => Err(error),
             }
         }
@@ -3781,8 +5567,15 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/operation/log",
     "/api/namespaces/tree_list",
     "/api/rdb/database/list",
+    "/api/rdb/database/create_database_sql",
     "/api/rdb/schema/list",
+    "/api/rdb/schema/create_schema_sql",
     "/api/rdb/table/list",
+    "/api/rdb/table/table_meta",
+    "/api/rdb/table/query",
+    "/api/rdb/table/modify/sql",
+    "/api/rdb/table/truncate",
+    "/api/rdb/table/copy",
     "/api/rdb/table/table_list",
     "/api/rdb/table/column_list",
     "/api/rdb/table/index_list",
@@ -3790,9 +5583,18 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/rdb/ddl/column_list",
     "/api/rdb/ddl/index_list",
     "/api/rdb/ddl/key_list",
+    "/api/rdb/ddl/delete",
+    "/api/rdb/delete/database/prepare",
+    "/api/rdb/delete/database/execute",
+    "/api/rdb/delete/schema/prepare",
+    "/api/rdb/delete/schema/execute",
     "/api/rdb/view/list",
     "/api/rdb/view/column_list",
     "/api/rdb/view/detail",
+    "/api/rdb/view/query",
+    "/api/rdb/view/view_meta",
+    "/api/rdb/view/modify/sql",
+    "/api/rdb/view/drop",
     "/api/rdb/function/list",
     "/api/rdb/function/detail",
     "/api/rdb/procedure/list",
@@ -3801,6 +5603,11 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/rdb/trigger/detail",
     "/api/rdb/dml/execute",
     "/api/rdb/dml/execute_ddl",
+    "/api/rdb/dml/execute_update",
+    "/api/rdb/dml/get_update_sql",
+    "/api/rdb/dml/copy_update_sql",
+    "/api/rdb/dml/copy_in_values_sql",
+    "/api/rdb/dml/count",
     "/api/rdb/dml/execute_table",
     "/api/rdb/cell/value",
     "/api/rdb/cell/download",
@@ -3869,6 +5676,7 @@ fn counted_envelope_value(result: LegacyResult<serde_json::Value>) -> serde_json
     })
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn routes() -> Router<Application> {
     Router::new()
         .route("/api/system", get(system_handler))
@@ -3918,8 +5726,21 @@ pub(crate) fn routes() -> Router<Application> {
         .route("/api/operation/log", get(get_operation_log_handler))
         .route("/api/namespaces/tree_list", get(namespace_tree_handler))
         .route("/api/rdb/database/list", get(database_list_handler))
+        .route(
+            "/api/rdb/database/create_database_sql",
+            post(create_database_sql_handler),
+        )
         .route("/api/rdb/schema/list", get(schema_list_handler))
+        .route(
+            "/api/rdb/schema/create_schema_sql",
+            post(create_schema_sql_handler),
+        )
         .route("/api/rdb/table/list", get(table_list_handler))
+        .route("/api/rdb/table/table_meta", get(table_meta_handler))
+        .route("/api/rdb/table/query", get(table_query_handler))
+        .route("/api/rdb/table/modify/sql", post(table_modify_sql_handler))
+        .route("/api/rdb/table/truncate", post(table_truncate_handler))
+        .route("/api/rdb/table/copy", post(table_copy_handler))
         .route("/api/rdb/table/table_list", get(simple_table_list_handler))
         .route("/api/rdb/table/column_list", get(table_column_list_handler))
         .route("/api/rdb/table/index_list", get(table_index_list_handler))
@@ -3927,9 +5748,30 @@ pub(crate) fn routes() -> Router<Application> {
         .route("/api/rdb/ddl/column_list", get(ddl_column_list_handler))
         .route("/api/rdb/ddl/index_list", get(ddl_index_list_handler))
         .route("/api/rdb/ddl/key_list", get(ddl_key_list_handler))
+        .route("/api/rdb/ddl/delete", post(table_drop_handler))
+        .route(
+            "/api/rdb/delete/database/prepare",
+            post(database_delete_prepare_handler),
+        )
+        .route(
+            "/api/rdb/delete/database/execute",
+            post(database_delete_execute_handler),
+        )
+        .route(
+            "/api/rdb/delete/schema/prepare",
+            post(schema_delete_prepare_handler),
+        )
+        .route(
+            "/api/rdb/delete/schema/execute",
+            post(schema_delete_execute_handler),
+        )
         .route("/api/rdb/view/list", get(view_list_handler))
         .route("/api/rdb/view/column_list", get(view_column_list_handler))
         .route("/api/rdb/view/detail", get(view_detail_handler))
+        .route("/api/rdb/view/query", get(view_query_handler))
+        .route("/api/rdb/view/view_meta", get(view_meta_handler))
+        .route("/api/rdb/view/modify/sql", post(view_modify_sql_handler))
+        .route("/api/rdb/view/drop", post(view_drop_handler))
         .route("/api/rdb/function/list", get(function_list_handler))
         .route("/api/rdb/function/detail", get(function_detail_handler))
         .route("/api/rdb/procedure/list", get(procedure_list_handler))
@@ -3943,6 +5785,26 @@ pub(crate) fn routes() -> Router<Application> {
         .route(
             "/api/rdb/dml/execute_ddl",
             post(sql_execute_ddl_handler).put(sql_execute_ddl_handler),
+        )
+        .route(
+            "/api/rdb/dml/execute_update",
+            post(sql_execute_ddl_handler).put(sql_execute_ddl_handler),
+        )
+        .route(
+            "/api/rdb/dml/get_update_sql",
+            post(grid_update_sql_handler).put(grid_update_sql_handler),
+        )
+        .route(
+            "/api/rdb/dml/copy_update_sql",
+            post(grid_copy_sql_handler).put(grid_copy_sql_handler),
+        )
+        .route(
+            "/api/rdb/dml/copy_in_values_sql",
+            post(grid_in_values_handler).put(grid_in_values_handler),
+        )
+        .route(
+            "/api/rdb/dml/count",
+            post(sql_count_handler).put(sql_count_handler),
         )
         .route(
             "/api/rdb/dml/execute_table",
@@ -3965,7 +5827,10 @@ fn envelope<T>(result: LegacyResult<T>) -> Json<LegacyEnvelope<T>> {
 }
 
 async fn legacy_bad_request_envelope(response: Response) -> Response {
-    if response.status() != StatusCode::BAD_REQUEST {
+    if !matches!(
+        response.status(),
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+    ) {
         return response;
     }
     (
@@ -4122,11 +5987,95 @@ async fn database_list_handler(
     envelope(list_databases(&application, &query).await)
 }
 
+async fn create_database_sql_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyDatabaseDefinitionRequest>,
+) -> Json<LegacyEnvelope<LegacySqlResponse>> {
+    envelope(build_create_database_sql(&application, &request).await)
+}
+
 async fn schema_list_handler(
     State(application): State<Application>,
     Query(query): Query<LegacyMetadataQuery>,
 ) -> Json<LegacyEnvelope<Vec<LegacySchema>>> {
     envelope(list_schemas(&application, &query).await)
+}
+
+async fn create_schema_sql_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacySchemaDefinitionRequest>,
+) -> Json<LegacyEnvelope<LegacySqlResponse>> {
+    envelope(build_create_schema_sql(&application, &request).await)
+}
+
+async fn table_meta_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyMetadataQuery>,
+) -> Json<LegacyEnvelope<MysqlTableEditorMeta>> {
+    envelope(table_editor_meta(&application, &query).await)
+}
+
+async fn table_query_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableDetailQuery>,
+) -> Json<LegacyEnvelope<LegacyEditableTable>> {
+    envelope(Box::pin(get_editable_table(&application, &query)).await)
+}
+
+async fn table_modify_sql_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyTableModifyRequest>,
+) -> Json<LegacyEnvelope<Vec<LegacySqlResponse>>> {
+    envelope(build_table_modify_sql(&application, &request).await)
+}
+
+async fn table_drop_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyTableOperationRequest>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(drop_table(&application, &request).await)
+}
+
+async fn table_truncate_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyTableOperationRequest>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(truncate_table(&application, &request).await)
+}
+
+async fn table_copy_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyTableCopyRequest>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(copy_table(&application, &request).await)
+}
+
+async fn database_delete_prepare_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyDeleteObjectRequest>,
+) -> Json<LegacyEnvelope<LegacyDeletePrepareResponse>> {
+    envelope(prepare_database_delete(&application, &request).await)
+}
+
+async fn database_delete_execute_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyDeleteObjectRequest>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(execute_database_delete(&application, &request).await)
+}
+
+async fn schema_delete_prepare_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyDeleteObjectRequest>,
+) -> Json<LegacyEnvelope<LegacyDeletePrepareResponse>> {
+    envelope(prepare_schema_delete(&application, &request).await)
+}
+
+async fn schema_delete_execute_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyDeleteObjectRequest>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(execute_schema_delete(&application, &request).await)
 }
 
 async fn table_list_handler(
@@ -4206,6 +6155,34 @@ async fn view_detail_handler(
     envelope(get_view(&application, &query).await)
 }
 
+async fn view_query_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableDetailQuery>,
+) -> Json<LegacyEnvelope<LegacyEditableTable>> {
+    envelope(Box::pin(get_editable_view(&application, &query)).await)
+}
+
+async fn view_meta_handler(
+    State(application): State<Application>,
+    Query(request): Query<LegacyViewOperationRequest>,
+) -> Json<LegacyEnvelope<LegacyViewMetaResponse>> {
+    envelope(Box::pin(view_editor_meta(&application, &request)).await)
+}
+
+async fn view_modify_sql_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyViewOperationRequest>,
+) -> Json<LegacyEnvelope<String>> {
+    envelope(build_view_modify_sql(&application, &request).await)
+}
+
+async fn view_drop_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyViewOperationRequest>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(drop_view(&application, &request).await)
+}
+
 async fn function_list_handler(
     State(application): State<Application>,
     Query(query): Query<LegacyTableListQuery>,
@@ -4267,6 +6244,34 @@ async fn sql_execute_ddl_handler(
     Json(request): Json<LegacySqlExecuteRequest>,
 ) -> Json<LegacyEnvelope<LegacyManageResult>> {
     envelope(execute_ddl(&application, &request).await)
+}
+
+async fn grid_update_sql_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyGridUpdateRequest>,
+) -> Json<LegacyEnvelope<String>> {
+    envelope(build_grid_update_sql(&application, &request).await)
+}
+
+async fn grid_copy_sql_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyGridUpdateRequest>,
+) -> Json<LegacyEnvelope<String>> {
+    envelope(build_grid_copy_sql(&application, &request).await)
+}
+
+async fn grid_in_values_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyGridUpdateRequest>,
+) -> Json<LegacyEnvelope<String>> {
+    envelope(build_grid_in_values(&application, &request).await)
+}
+
+async fn sql_count_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacySqlExecuteRequest>,
+) -> Json<LegacyEnvelope<u64>> {
+    envelope(count_mysql_rows(&application, &request).await)
 }
 
 async fn large_cell_value_handler(
@@ -4340,6 +6345,35 @@ mod tests {
         "/api/rdb/procedure/detail",
         "/api/rdb/trigger/list",
         "/api/rdb/trigger/detail",
+    ];
+
+    const REQUIRED_EDITABLE_PATHS: &[(&str, &str)] = &[
+        ("get", "/api/rdb/table/table_meta"),
+        ("get", "/api/rdb/table/query"),
+        ("post", "/api/rdb/table/modify/sql"),
+        ("post", "/api/rdb/ddl/delete"),
+        ("post", "/api/rdb/table/truncate"),
+        ("post", "/api/rdb/table/copy"),
+        ("post", "/api/rdb/database/create_database_sql"),
+        ("post", "/api/rdb/schema/create_schema_sql"),
+        ("post", "/api/rdb/delete/database/prepare"),
+        ("post", "/api/rdb/delete/database/execute"),
+        ("post", "/api/rdb/delete/schema/prepare"),
+        ("post", "/api/rdb/delete/schema/execute"),
+        ("get", "/api/rdb/view/query"),
+        ("get", "/api/rdb/view/view_meta"),
+        ("post", "/api/rdb/view/modify/sql"),
+        ("post", "/api/rdb/view/drop"),
+        ("post", "/api/rdb/dml/get_update_sql"),
+        ("put", "/api/rdb/dml/get_update_sql"),
+        ("post", "/api/rdb/dml/copy_update_sql"),
+        ("put", "/api/rdb/dml/copy_update_sql"),
+        ("post", "/api/rdb/dml/copy_in_values_sql"),
+        ("put", "/api/rdb/dml/copy_in_values_sql"),
+        ("post", "/api/rdb/dml/count"),
+        ("put", "/api/rdb/dml/count"),
+        ("post", "/api/rdb/dml/execute_update"),
+        ("put", "/api/rdb/dml/execute_update"),
     ];
 
     fn metadata_message(path: &str) -> serde_json::Value {
@@ -4510,6 +6544,215 @@ mod tests {
         assert_eq!(body["total"], 2);
         assert_eq!(body["data"][0]["name"], "id");
         assert!(body["data"].get("total").is_none());
+    }
+
+    #[test]
+    fn editable_preview_prepends_page_aware_row_numbers_and_column_metadata() {
+        let mut headers = vec![LegacyResultHeader {
+            data_type: "NUMERIC".to_owned(),
+            name: "id".to_owned(),
+            column_name: "id".to_owned(),
+            column_type: "BIGINT".to_owned(),
+            table_name: Some("items".to_owned()),
+            database_name: Some("inventory".to_owned()),
+            schema_name: None,
+            primary_key: false,
+            comment: None,
+            default_value: None,
+            auto_increment: None,
+            nullable: true,
+            column_size: None,
+            decimal_digits: None,
+            editor_type: None,
+        }];
+        let metadata = vec![CommunityTableColumn {
+            database_name: "inventory".to_owned(),
+            table_name: "items".to_owned(),
+            name: "id".to_owned(),
+            column_type: "BIGINT".to_owned(),
+            default_value: Some("0".to_owned()),
+            auto_increment: Some(true),
+            comment: "primary id".to_owned(),
+            primary_key: Some(true),
+            column_size: Some(20),
+            decimal_digits: Some(0),
+            nullable: Some(0),
+            ..CommunityTableColumn::default()
+        }];
+        assert!(enrich_direct_table_headers(
+            &mut headers,
+            &metadata,
+            "items"
+        ));
+        let mut rows = vec![vec![LegacyResultCell {
+            value: Some("7".to_owned()),
+            large_value: false,
+            large_value_id: None,
+            value_type: "UNKNOWN".to_owned(),
+            sql_type: -5,
+            column_type: "BIGINT".to_owned(),
+            size_bytes: None,
+            size_chars: None,
+            loaded_bytes: None,
+            loaded_chars: None,
+            truncated: false,
+            unsupported_reason: None,
+        }]];
+        prepend_synthetic_row_numbers(&mut headers, &mut rows, 20);
+
+        assert_eq!(headers[0].name, "CHAT2DB_ROW_NUMBER");
+        assert_eq!(headers[0].data_type, "CHAT2DB_ROW_NUMBER");
+        assert_eq!(rows[0][0].value.as_deref(), Some("21"));
+        assert_eq!(rows[0][1].value.as_deref(), Some("7"));
+        assert!(headers[1].primary_key);
+        assert_eq!(headers[1].default_value.as_deref(), Some("0"));
+        assert_eq!(headers[1].auto_increment, Some(1));
+        assert!(!headers[1].nullable);
+        assert_eq!(headers[1].comment.as_deref(), Some("primary id"));
+        assert_eq!(headers[1].editor_type.as_deref(), Some("TEXT"));
+    }
+
+    #[tokio::test]
+    async fn grid_update_mapping_builds_sql_and_rejects_partial_large_values() {
+        let request: LegacyGridUpdateRequest = serde_json::from_value(serde_json::json!({
+            "dataSourceId": "mysql-local",
+            "databaseType": "MYSQL",
+            "databaseName": "inventory",
+            "schemaName": "",
+            "tableName": "items",
+            "headerList": [
+                { "name": "CHAT2DB_ROW_NUMBER", "columnType": "BIGINT" },
+                { "name": "id", "columnType": "BIGINT", "primaryKey": true, "autoIncrement": 1 },
+                { "name": "label", "columnType": "VARCHAR" }
+            ],
+            "operations": [{
+                "type": "UPDATE",
+                "dataList": ["1", "7", "new label"],
+                "oldDataList": ["1", "7", "old label"]
+            }]
+        }))
+        .expect("frontend grid request must deserialize");
+        let sql = build_grid_update_sql(&Application::new(), &request)
+            .await
+            .expect("grid SQL must build without opening a datasource");
+        assert_eq!(
+            sql,
+            "UPDATE `inventory`.`items` SET `label` = 'new label' WHERE `id` = 7;"
+        );
+
+        let mut partial = request;
+        partial.operations[0].old_data_list[2] =
+            Some("CHAT2DB_LARGE_VALUE_PREVIEW:PARTIAL".to_owned());
+        let error = build_grid_update_sql(&Application::new(), &partial)
+            .await
+            .expect_err("partial large-value previews must never enter DML");
+        assert_eq!(error.code, "mysql_partial_large_value_rejected");
+    }
+
+    #[tokio::test]
+    async fn table_and_view_editor_payloads_map_to_core_builders() {
+        let table_request: LegacyTableModifyRequest = serde_json::from_value(serde_json::json!({
+            "dataSourceId": "mysql-local",
+            "databaseType": "MYSQL",
+            "databaseName": "inventory",
+            "newTable": {
+                "name": "items",
+                "comment": "stock",
+                "engine": "InnoDB",
+                "charset": "utf8mb4",
+                "columnList": [
+                    {
+                        "name": "id",
+                        "columnType": "BIGINT",
+                        "nullable": 0,
+                        "autoIncrement": true,
+                        "primaryKey": true
+                    },
+                    {
+                        "name": "label",
+                        "columnType": "VARCHAR",
+                        "columnSize": 255,
+                        "nullable": 0
+                    }
+                ],
+                "indexList": []
+            }
+        }))
+        .expect("table editor request must deserialize");
+        let table_sql = build_table_modify_sql(&Application::new(), &table_request)
+            .await
+            .expect("table SQL must build");
+        assert_eq!(table_sql.len(), 1);
+        assert!(
+            table_sql[0]
+                .sql
+                .starts_with("CREATE TABLE `inventory`.`items`")
+        );
+        assert!(table_sql[0].sql.contains("PRIMARY KEY (`id`) USING BTREE"));
+        assert!(table_sql[0].sql.contains("`label` VARCHAR(255) NOT NULL"));
+
+        let view_request: LegacyViewOperationRequest = serde_json::from_value(serde_json::json!({
+            "dataSourceId": "mysql-local",
+            "databaseType": "MYSQL",
+            "databaseName": "inventory",
+            "viewName": "active_items",
+            "viewBody": "SELECT id FROM items WHERE active = 1",
+            "useOrReplace": true,
+            "algorithm": "MERGE",
+            "definer": "reporter@localhost",
+            "security": "INVOKER",
+            "checkOption": "LOCAL"
+        }))
+        .expect("view editor request must deserialize");
+        let view_sql = build_view_modify_sql(&Application::new(), &view_request)
+            .await
+            .expect("view SQL must build");
+        assert!(view_sql.starts_with("CREATE OR REPLACE ALGORITHM = MERGE"));
+        assert!(view_sql.contains("DEFINER = 'reporter'@'localhost'"));
+        assert!(view_sql.ends_with("WITH LOCAL CHECK OPTION"));
+    }
+
+    #[tokio::test]
+    async fn editable_paths_are_registered_for_dispatch_and_axum() {
+        let router = routes().with_state(Application::new());
+        for (method, path) in REQUIRED_EDITABLE_PATHS {
+            assert!(LEGACY_PATHS.contains(path), "missing dispatch path: {path}");
+            let response = dispatch(
+                &Application::new(),
+                LegacyDispatchRequest {
+                    request_url: (*path).to_owned(),
+                    method: (*method).to_owned(),
+                    message: serde_json::Value::Null,
+                },
+            )
+            .await;
+            assert_eq!(
+                response["errorCode"], "invalid_legacy_request",
+                "missing desktop dispatch branch: {method} {path}"
+            );
+
+            let http_method = method
+                .to_ascii_uppercase()
+                .parse::<axum::http::Method>()
+                .expect("method must be valid");
+            let mut builder = Request::builder().method(http_method).uri(*path);
+            let body = if *method == "get" {
+                Body::empty()
+            } else {
+                builder = builder.header("content-type", "application/json");
+                Body::from("null")
+            };
+            let response = router
+                .clone()
+                .oneshot(builder.body(body).expect("request must build"))
+                .await
+                .expect("router must respond");
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "missing Axum route: {method} {path}"
+            );
+        }
     }
 
     #[test]
