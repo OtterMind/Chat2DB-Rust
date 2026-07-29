@@ -253,6 +253,48 @@ async fn verify_product_vertical(config: &MysqlTestConfig, database_name: &str) 
     )
     .await;
     assert!(column_exists(config, database_name, "items", "note").await);
+
+    let old_table = get(
+        &router,
+        &format!(
+            "/api/rdb/table/query?dataSourceId={datasource}&databaseType=MYSQL&databaseName={database_name}&tableName=items"
+        ),
+    )
+    .await;
+    let mut new_table = old_table.clone();
+    let label = new_table["columnList"]
+        .as_array_mut()
+        .expect("table columns")
+        .iter_mut()
+        .find(|column| column["name"] == "label")
+        .expect("label column");
+    label["primaryKey"] = json!(true);
+    label["primaryKeyOrder"] = json!(2);
+    label["editStatus"] = json!("MODIFY");
+    let primary_key_sql = post(
+        &router,
+        "/api/rdb/table/modify/sql",
+        json!({
+            "dataSourceId": datasource,
+            "databaseType": "MYSQL",
+            "databaseName": database_name,
+            "oldTable": old_table,
+            "newTable": new_table
+        }),
+    )
+    .await;
+    execute_ddl(
+        &router,
+        &datasource,
+        database_name,
+        "items",
+        primary_key_sql[0]["sql"].as_str().expect("primary key SQL"),
+    )
+    .await;
+    assert_eq!(
+        primary_key_columns(config, database_name, "items").await,
+        ["id", "label"]
+    );
     assert_java_dormant(&application);
 
     let empty_preview = preview(&router, &datasource, database_name, "items").await;
@@ -262,6 +304,7 @@ async fn verify_product_vertical(config: &MysqlTestConfig, database_name: &str) 
         "CHAT2DB_ROW_NUMBER"
     );
     assert_eq!(empty_preview["headerList"][1]["primaryKey"], true);
+    assert_eq!(empty_preview["headerList"][2]["primaryKey"], true);
     assert_eq!(empty_preview["headerList"][1]["autoIncrement"], 1);
     let headers = empty_preview["headerList"].clone();
 
@@ -756,6 +799,29 @@ async fn column_exists(
         .unwrap_or_default();
     conn.disconnect().await.expect("column probe must close");
     count > 0
+}
+
+async fn primary_key_columns(
+    config: &MysqlTestConfig,
+    database_name: &str,
+    table_name: &str,
+) -> Vec<String> {
+    let mut conn = Conn::new(config.options())
+        .await
+        .expect("primary-key probe must connect");
+    let columns = conn
+        .exec::<String, _, _>(
+            "SELECT COLUMN_NAME FROM information_schema.STATISTICS \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = 'PRIMARY' \
+             ORDER BY SEQ_IN_INDEX",
+            (database_name, table_name),
+        )
+        .await
+        .expect("primary-key probe must execute");
+    conn.disconnect()
+        .await
+        .expect("primary-key probe must close");
+    columns
 }
 
 async fn object_exists(config: &MysqlTestConfig, database_name: &str, object_name: &str) -> bool {
