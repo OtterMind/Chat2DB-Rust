@@ -878,8 +878,11 @@ fn sync_root_directory(root: &LegacySqlRoot) -> Result<(), String> {
 }
 
 fn sync_directory(directory: &Dir) -> io::Result<()> {
-    let file = directory.try_clone()?.into_std_file();
-    match file.sync_all() {
+    #[cfg(not(windows))]
+    let sync_result = directory.open(".")?.sync_all();
+    #[cfg(windows)]
+    let sync_result = directory.try_clone()?.into_std_file().sync_all();
+    match sync_result {
         Ok(()) => Ok(()),
         #[cfg(windows)]
         Err(error)
