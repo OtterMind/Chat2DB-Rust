@@ -67,6 +67,7 @@ async fn product_services_invoke_the_fixed_community_h2_compatibility_slice() {
                 jdbc_url: jdbc_url.to_owned(),
                 properties: Vec::new(),
                 read_only: false,
+                ssh: None,
             }),
         })
         .await

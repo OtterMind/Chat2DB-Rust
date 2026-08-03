@@ -62,6 +62,17 @@ if [[ -z "${expected_driver_sha}" || "${actual_driver_sha}" != "${expected_drive
   exit 1
 fi
 
+h2_manifest="${driver_root}/02-h2-migration/driver-pack.json"
+h2_jar="${driver_root}/02-h2-migration/h2-2.1.214.jar"
+require_file "${h2_manifest}"
+require_file "${h2_jar}"
+expected_h2_sha="$(awk -F '"' '/"sha256"/ { print $4; exit }' "${h2_manifest}")"
+actual_h2_sha="$(shasum -a 256 -- "${h2_jar}" | awk '{ print $1 }')"
+if [[ -z "${expected_h2_sha}" || "${actual_h2_sha}" != "${expected_h2_sha}" ]]; then
+  echo "packaged H2 migration driver digest does not match its manifest" >&2
+  exit 1
+fi
+
 "${java_bin}" -version
 while IFS= read -r module; do
   [[ -z "${module}" || "${module}" == \#* ]] && continue

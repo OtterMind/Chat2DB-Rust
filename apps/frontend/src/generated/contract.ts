@@ -1880,6 +1880,7 @@ export interface components {
             properties: components["schemas"]["DatasourceConnectionProperty"][];
             /** @description Whether sessions opened from this descriptor must be read-only. */
             readOnly: boolean;
+            ssh?: null | components["schemas"]["SshTunnelConfig"];
         };
         /** @description One JDBC connection property supplied by the user. */
         DatasourceConnectionProperty: {
@@ -2456,6 +2457,46 @@ export interface components {
          * @enum {string}
          */
         SqlPermissionMode: "read_only" | "ask_before_write";
+        /** @description SSH user authentication material accepted only at a connection boundary. */
+        SshAuthentication: {
+            /** @description SSH password, never returned or logged. */
+            password: string;
+            /** @enum {string} */
+            type: "password";
+        } | {
+            /** @description User-selected local private-key path. */
+            key_file: string;
+            /** @description Optional encrypted-key passphrase, never returned or logged. */
+            passphrase?: string | null;
+            /** @enum {string} */
+            type: "private_key";
+        };
+        /**
+         * @description SSH server host-key verification policy.
+         * @enum {string}
+         */
+        SshHostKeyVerification: "known_hosts";
+        /** @description Complete ephemeral SSH connection descriptor. */
+        SshTunnelConfig: {
+            /** @description Password or private-key authentication. */
+            authentication: components["schemas"]["SshAuthentication"];
+            /** @description Server host-key verification policy. */
+            hostKeyVerification?: components["schemas"]["SshHostKeyVerification"];
+            /** @description SSH server hostname or IP address. */
+            hostName: string;
+            /**
+             * Format: int32
+             * @description Preferred loopback listener port, or an OS-assigned port when absent/zero.
+             */
+            localPort?: number | null;
+            /**
+             * Format: int32
+             * @description SSH server port.
+             */
+            port: number;
+            /** @description SSH username. */
+            userName: string;
+        };
         /** @description Request to start one bounded agent run in an existing session. */
         StartAgentRunRequest: {
             /** @description New user message. */

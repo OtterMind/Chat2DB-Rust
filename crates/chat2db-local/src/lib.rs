@@ -7,8 +7,9 @@ mod transport;
 use std::{fmt, io};
 
 use chat2db_contract::{
-    ApiError, CancelOperationResponse, DatasourceList, HealthResponse, OperationSnapshot,
-    QueryAccepted, ResultPage, ResultPageRequest, StartQueryRequest,
+    ApiError, CancelOperationResponse, DatabaseWriteResult, DatasourceList,
+    ExecuteDatabaseWriteRequest, HealthResponse, OperationSnapshot, QueryAccepted, ResultPage,
+    ResultPageRequest, StartQueryRequest,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -59,6 +60,9 @@ enum AttachmentCommand {
     StartReadQuery {
         request: StartQueryRequest,
     },
+    ExecuteDatabaseWrite {
+        request: ExecuteDatabaseWriteRequest,
+    },
     OperationSnapshot {
         operation_id: String,
     },
@@ -92,6 +96,7 @@ enum AttachmentPayload {
     Health(Box<HealthResponse>),
     Datasources(Box<DatasourceList>),
     QueryAccepted(Box<QueryAccepted>),
+    DatabaseWrite(Box<DatabaseWriteResult>),
     OperationSnapshot(Box<OperationSnapshot>),
     CancelOperation(Box<CancelOperationResponse>),
     ResultPage(Box<ResultPage>),

@@ -1,33 +1,38 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chat2db_contract::{
-    ApiError, CommunityDatabase, CommunityDatabaseList, CommunityForeignKey,
-    CommunityForeignKeyList, CommunityFunction, CommunityFunctionList, CommunityFunctionParameter,
-    CommunityFunctionParameterList, CommunityPrimaryKey, CommunityPrimaryKeyList,
-    CommunityProcedure, CommunityProcedureList, CommunityProcedureParameter,
-    CommunityProcedureParameterList, CommunityRoutineInvocationPreview, CommunitySchemaList,
-    CommunityTable, CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex,
-    CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList,
-    CommunityTablePreviewAccepted, CommunityTrigger, CommunityTriggerList, CommunityViewList,
-    DatasourceConnection, JdbcValue, JdbcValueType, PreviewCommunityRoutineInvocationRequest,
-    QueryLimits, ResultColumn, ResultMetadata, ResultRow, StartCommunityTablePreviewRequest,
-    StartQueryRequest,
+    ApiError, CommunityDatabase, CommunityDatabaseList, CommunityErColumn, CommunityErForeignKey,
+    CommunityErTable, CommunityForeignKey, CommunityForeignKeyList, CommunityFunction,
+    CommunityFunctionList, CommunityFunctionParameter, CommunityFunctionParameterList,
+    CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
+    CommunityProcedureParameter, CommunityProcedureParameterList,
+    CommunityRoutineInvocationPreview, CommunityRoutineMigrationExecution,
+    CommunityRoutineMigrationRequest, CommunitySchemaList, CommunityTable, CommunityTableColumn,
+    CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
+    CommunityTableIndexList, CommunityTableList, CommunityTablePreviewAccepted, CommunityTrigger,
+    CommunityTriggerList, CommunityViewList, DatasourceConnection, JdbcValue, JdbcValueType,
+    PreviewCommunityRoutineInvocationRequest, QueryLimits, ResultColumn, ResultMetadata, ResultRow,
+    StartCommunityTablePreviewRequest, StartQueryRequest,
 };
 use chat2db_engine_protocol::wire;
-use chat2db_java_bridge::QueryOptions;
+use chat2db_java_bridge::{JdbcParameter, JdbcValue as BridgeJdbcValue, QueryOptions};
 use chat2db_storage::Storage;
+use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Timelike, Utc};
 use mysql_async::{
-    Column, Conn, Error as MysqlError, Opts, OptsBuilder, Row, SslOpts, Value,
+    Column, Conn, DriverError, Error as MysqlError, Opts, OptsBuilder, Params, Row, SslOpts, Value,
     consts::{ColumnFlags, ColumnType},
     prelude::{FromRow, FromValue, Queryable},
 };
 use prost::Message;
+use sqlparser::{ast::Statement, dialect::MySqlDialect, parser::Parser};
 use std::{
     collections::HashMap,
     future::Future,
     mem::size_of,
+    ops::{Deref, DerefMut},
     time::{Duration, Instant},
 };
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::{
@@ -35,8 +40,10 @@ use crate::{
     datasource_session::{ResolvedDatasourceConnection, resolve_datasource_connection},
     operation::CancellationRequest,
     query::{
-        MysqlConsoleRequest, MysqlConsoleResult, PreparedQuery, QueryTaskError, RetainedWriter,
+        DatabaseWriteError, MysqlConsoleRequest, MysqlConsoleResult, PreparedQuery, QueryTaskError,
+        RetainedWriter,
     },
+    ssh::{SshTunnel, SshTunnelIdentity, mysql_target, rewrite_mysql_target},
 };
 
 const MYSQL_SCHEME: &str = "mysql://";
@@ -52,6 +59,7 @@ const MAX_RESULT_BYTES: u64 = wire::JdbcResultByteLimit::MaxResultBytes as u64;
 const MAX_BATCH_ROWS: u32 = wire::JdbcProtocolLimit::MaxBatchRows as u32;
 const MAX_BATCH_BYTES: u32 = wire::JdbcProtocolLimit::MaxBatchBytes as u32;
 const MAX_COLUMNS: usize = wire::JdbcProtocolLimit::MaxColumns as usize;
+const MAX_PARAMETERS: usize = wire::JdbcProtocolLimit::MaxParameters as usize;
 const MAX_SQL_BYTES: usize = wire::JdbcProtocolLimit::MaxSqlBytes as usize;
 const MAX_SCALAR_BYTES: usize = wire::JdbcProtocolLimit::MaxScalarBytes as usize;
 const MAX_CONSOLE_VALUE_BYTES: usize = 32 * 1024 * 1024;
@@ -59,6 +67,48 @@ const MAX_CONSOLE_RESULT_BYTES: u64 = DEFAULT_RESULT_BYTES;
 const MAX_CONSOLE_STATEMENTS: usize = 1_000;
 const MAX_IDENTIFIER_BYTES: usize = 256;
 const MAX_CONSOLE_PAGE_SIZE: u32 = 10_000;
+const ER_TABLE_QUERY: &str = "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE, \
+                              COALESCE(TABLE_COMMENT, ''), COALESCE(ENGINE, ''), \
+                              COALESCE(TABLE_COLLATION, ''), CAST(AUTO_INCREMENT AS CHAR), \
+                              CAST(TABLE_ROWS AS CHAR), CAST(DATA_LENGTH AS CHAR), \
+                              DATE_FORMAT(CREATE_TIME, '%Y-%m-%dT%H:%i:%s'), \
+                              DATE_FORMAT(UPDATE_TIME, '%Y-%m-%dT%H:%i:%s') \
+                              FROM information_schema.TABLES \
+                              WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' \
+                              ORDER BY TABLE_NAME";
+const ER_COLUMN_QUERY: &str = "SELECT c.TABLE_NAME AS table_name, c.COLUMN_NAME AS name, \
+                               c.DATA_TYPE AS data_type, c.COLUMN_DEFAULT AS default_value, \
+                               COALESCE(c.EXTRA, '') AS extra, \
+                               COALESCE(c.COLUMN_COMMENT, '') AS comment, \
+                               COALESCE(c.COLUMN_KEY, '') AS column_key, \
+                               c.IS_NULLABLE AS is_nullable, \
+                               c.ORDINAL_POSITION AS ordinal_position, \
+                               c.NUMERIC_SCALE AS numeric_scale, \
+                               c.COLUMN_TYPE AS column_definition, \
+                               c.CHARACTER_SET_NAME AS charset, c.COLLATION_NAME AS collation, \
+                               CAST(COALESCE(pk.SEQ_IN_INDEX, 0) AS SIGNED) AS primary_key_order \
+                               FROM information_schema.COLUMNS AS c \
+                               LEFT JOIN information_schema.STATISTICS AS pk \
+                                 ON pk.TABLE_SCHEMA = c.TABLE_SCHEMA \
+                                AND pk.TABLE_NAME = c.TABLE_NAME \
+                                AND pk.COLUMN_NAME = c.COLUMN_NAME \
+                                AND pk.INDEX_NAME = 'PRIMARY' \
+                               WHERE c.TABLE_SCHEMA = ? \
+                               ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION";
+const ER_FOREIGN_KEY_QUERY: &str = "SELECT kcu.REFERENCED_TABLE_SCHEMA, \
+                                    kcu.REFERENCED_TABLE_NAME, kcu.REFERENCED_COLUMN_NAME, \
+                                    kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.COLUMN_NAME, \
+                                    kcu.ORDINAL_POSITION, rc.UPDATE_RULE, rc.DELETE_RULE, \
+                                    kcu.CONSTRAINT_NAME, rc.UNIQUE_CONSTRAINT_NAME \
+                                    FROM information_schema.KEY_COLUMN_USAGE kcu \
+                                    JOIN information_schema.REFERENTIAL_CONSTRAINTS rc \
+                                      ON rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA \
+                                     AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME \
+                                     AND rc.TABLE_NAME = kcu.TABLE_NAME \
+                                    WHERE kcu.TABLE_SCHEMA = ? \
+                                      AND kcu.REFERENCED_TABLE_NAME IS NOT NULL \
+                                    ORDER BY kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, \
+                                             kcu.ORDINAL_POSITION";
 type TableRow = (
     String,
     String,
@@ -75,6 +125,24 @@ type TableRow = (
 #[derive(FromRow)]
 #[mysql(crate_name = "mysql_async")]
 struct ColumnRow {
+    name: String,
+    data_type: String,
+    default_value: Option<String>,
+    extra: String,
+    comment: String,
+    column_key: String,
+    is_nullable: String,
+    ordinal_position: i32,
+    numeric_scale: Option<i32>,
+    column_definition: String,
+    charset: Option<String>,
+    collation: Option<String>,
+    primary_key_order: i32,
+}
+#[derive(FromRow)]
+#[mysql(crate_name = "mysql_async")]
+struct ErColumnRow {
+    table_name: String,
     name: String,
     data_type: String,
     default_value: Option<String>,
@@ -162,10 +230,61 @@ struct RoutineInvocationParameter {
     ordinal_position: i32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RoutineMigrationPlan {
+    routine_type: MysqlRoutineType,
+    database_name: String,
+    routine_name: String,
+    drop_sql: String,
+    create_sql: String,
+    preview_sql: String,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum SqlToken {
     Word(String),
     Semicolon,
+}
+
+pub(crate) struct ManagedMysqlConnection {
+    connection: Option<Conn>,
+    tunnel: Option<SshTunnel>,
+}
+
+impl ManagedMysqlConnection {
+    fn new(connection: Conn, tunnel: Option<SshTunnel>) -> Self {
+        Self {
+            connection: Some(connection),
+            tunnel,
+        }
+    }
+
+    fn local_tunnel_port(&self) -> Option<u16> {
+        self.tunnel.as_ref().map(SshTunnel::local_port)
+    }
+}
+
+impl Deref for ManagedMysqlConnection {
+    type Target = Conn;
+
+    fn deref(&self) -> &Self::Target {
+        self.connection
+            .as_ref()
+            .expect("managed MySQL connection must exist until cleanup")
+    }
+}
+
+impl DerefMut for ManagedMysqlConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.connection
+            .as_mut()
+            .expect("managed MySQL connection must exist until cleanup")
+    }
+}
+
+struct PreparedMysqlConnection {
+    options: Opts,
+    tunnel: Option<SshTunnel>,
 }
 
 pub(crate) fn is_mysql_database_type(database_type: &str) -> bool {
@@ -173,10 +292,19 @@ pub(crate) fn is_mysql_database_type(database_type: &str) -> bool {
 }
 
 pub(crate) async fn test_connection(connection: &DatasourceConnection) -> Result<(), AppError> {
+    test_connection_with_local_port(connection)
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn test_connection_with_local_port(
+    connection: &DatasourceConnection,
+) -> Result<Option<u16>, AppError> {
     let mut conn = open_connection(connection).await?;
+    let local_port = conn.local_tunnel_port();
     let result = conn.ping().await.map_err(mysql_connection_error);
-    let close = conn.disconnect().await.map_err(mysql_connection_error);
-    result.and(close)
+    finish_connection(conn, result).await?;
+    Ok(local_port)
 }
 
 pub(crate) async fn list_databases(
@@ -184,7 +312,7 @@ pub(crate) async fn list_databases(
     datasource_id: &str,
 ) -> Result<CommunityDatabaseList, AppError> {
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let result = metadata_query(conn.query::<(String, String, String), _>(
         "SELECT SCHEMA_NAME, DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME \
              FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME",
@@ -210,7 +338,7 @@ pub(crate) async fn list_schemas(
     datasource_id: &str,
 ) -> Result<CommunitySchemaList, AppError> {
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let conn = open_connection(&resolved.connection).await?;
+    let conn = open_resolved_connection(&resolved).await?;
     finish_connection(conn, Ok(CommunitySchemaList::default())).await
 }
 
@@ -227,7 +355,7 @@ pub(crate) async fn list_tables(
         ));
     }
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let query = "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE, COALESCE(TABLE_COMMENT, ''), \
                  COALESCE(ENGINE, ''), COALESCE(TABLE_COLLATION, ''), \
                  CAST(AUTO_INCREMENT AS CHAR), CAST(TABLE_ROWS AS CHAR), \
@@ -294,7 +422,7 @@ pub(crate) async fn list_columns(
     validate_metadata_identifier(database_name, "databaseName")?;
     validate_metadata_identifier(table_name, "tableName")?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let query = "SELECT c.COLUMN_NAME AS name, c.DATA_TYPE AS data_type, \
                  c.COLUMN_DEFAULT AS default_value, COALESCE(c.EXTRA, '') AS extra, \
                  COALESCE(c.COLUMN_COMMENT, '') AS comment, \
@@ -321,6 +449,110 @@ pub(crate) async fn list_columns(
     finish_connection(conn, result).await
 }
 
+pub(crate) async fn load_er_tables(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    schema_name: &str,
+) -> Result<Vec<CommunityErTable>, AppError> {
+    validate_metadata_identifier(database_name, "databaseName")?;
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
+    let result = async {
+        let table_rows = metadata_query(
+            conn.exec::<TableRow, _, _>(ER_TABLE_QUERY, (database_name.to_owned(),)),
+        )
+        .await?;
+        let column_rows = metadata_query(
+            conn.exec::<ErColumnRow, _, _>(ER_COLUMN_QUERY, (database_name.to_owned(),)),
+        )
+        .await?;
+        let foreign_key_rows = metadata_query(
+            conn.exec::<ForeignKeyRow, _, _>(ER_FOREIGN_KEY_QUERY, (database_name.to_owned(),)),
+        )
+        .await?;
+
+        let mut columns_by_table = HashMap::<String, Vec<CommunityErColumn>>::new();
+        for row in column_rows {
+            let ErColumnRow {
+                table_name,
+                name,
+                data_type,
+                default_value,
+                extra,
+                comment,
+                column_key,
+                is_nullable,
+                ordinal_position,
+                numeric_scale,
+                column_definition,
+                charset,
+                collation,
+                primary_key_order,
+            } = row;
+            let column = community_column(
+                database_name,
+                schema_name,
+                &table_name,
+                ColumnRow {
+                    name,
+                    data_type,
+                    default_value,
+                    extra,
+                    comment,
+                    column_key,
+                    is_nullable,
+                    ordinal_position,
+                    numeric_scale,
+                    column_definition,
+                    charset,
+                    collation,
+                    primary_key_order,
+                },
+            );
+            columns_by_table
+                .entry(table_name)
+                .or_default()
+                .push(CommunityErColumn {
+                    name: column.name,
+                    column_type: column.column_type,
+                    primary_key: column.primary_key.unwrap_or(false),
+                    comment: column.comment,
+                });
+        }
+
+        let mut foreign_keys_by_table = HashMap::<String, Vec<CommunityErForeignKey>>::new();
+        for row in foreign_key_rows {
+            let table_name = row.4.clone();
+            foreign_keys_by_table
+                .entry(table_name)
+                .or_default()
+                .push(CommunityErForeignKey {
+                    pk_table_name: row.1,
+                    pk_column_name: row.2,
+                    fk_table_name: row.4,
+                    fk_column_name: row.5,
+                });
+        }
+
+        Ok(table_rows
+            .into_iter()
+            .map(|row| {
+                let table = community_table(row, schema_name);
+                let name = table.name;
+                CommunityErTable {
+                    comment: table.comment,
+                    column_list: columns_by_table.remove(&name).unwrap_or_default(),
+                    foreign_key_list: foreign_keys_by_table.remove(&name).unwrap_or_default(),
+                    name,
+                }
+            })
+            .collect())
+    }
+    .await;
+    finish_connection(conn, result).await
+}
+
 pub(crate) async fn validate_column_reorder(
     application: &Application,
     datasource_id: &str,
@@ -334,7 +566,7 @@ pub(crate) async fn validate_column_reorder(
     validate_metadata_identifier(database_name, "databaseName")?;
     validate_metadata_identifier(table_name, "tableName")?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let query = "SELECT COLUMN_NAME, COLUMN_TYPE, COALESCE(EXTRA, ''), \
                  COALESCE(GENERATION_EXPRESSION, '') \
                  FROM information_schema.COLUMNS \
@@ -381,7 +613,7 @@ pub(crate) async fn list_indexes(
     validate_metadata_identifier(database_name, "databaseName")?;
     validate_metadata_identifier(table_name, "tableName")?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let query = "SELECT TABLE_SCHEMA, TABLE_NAME, NON_UNIQUE, INDEX_SCHEMA, INDEX_NAME, \
                  SEQ_IN_INDEX, COLUMN_NAME, COLLATION, CARDINALITY, SUB_PART, \
                  INDEX_TYPE, COALESCE(INDEX_COMMENT, '') \
@@ -407,7 +639,7 @@ pub(crate) async fn list_views(
 ) -> Result<CommunityViewList, AppError> {
     validate_metadata_identifier(database_name, "databaseName")?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let query = "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE, COALESCE(TABLE_COMMENT, ''), \
                  COALESCE(ENGINE, ''), COALESCE(TABLE_COLLATION, ''), \
                  CAST(AUTO_INCREMENT AS CHAR), CAST(TABLE_ROWS AS CHAR), \
@@ -443,7 +675,7 @@ pub(crate) async fn get_view(
     let qualified_name =
         qualified_identifier(database_name, "databaseName", view_name, "viewName")?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let result =
         metadata_query(conn.query_first::<Row, _>(format!("SHOW CREATE VIEW {qualified_name}")))
             .await
@@ -475,7 +707,7 @@ pub(crate) async fn table_ddl(
     let qualified_name =
         qualified_identifier(database_name, "databaseName", table_name, "tableName")?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let result =
         metadata_query(conn.query_first::<Row, _>(format!("SHOW CREATE TABLE {qualified_name}")))
             .await
@@ -496,7 +728,7 @@ pub(crate) async fn list_imported_keys(
     validate_metadata_identifier(database_name, "databaseName")?;
     validate_metadata_identifier(table_name, "tableName")?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let query = "SELECT kcu.REFERENCED_TABLE_SCHEMA, kcu.REFERENCED_TABLE_NAME, \
                  kcu.REFERENCED_COLUMN_NAME, kcu.TABLE_SCHEMA, kcu.TABLE_NAME, \
                  kcu.COLUMN_NAME, kcu.ORDINAL_POSITION, rc.UPDATE_RULE, rc.DELETE_RULE, \
@@ -528,7 +760,7 @@ pub(crate) async fn list_exported_keys(
     validate_metadata_identifier(database_name, "databaseName")?;
     validate_metadata_identifier(table_name, "tableName")?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let query = "SELECT kcu.REFERENCED_TABLE_SCHEMA, kcu.REFERENCED_TABLE_NAME, \
                  kcu.REFERENCED_COLUMN_NAME, kcu.TABLE_SCHEMA, kcu.TABLE_NAME, \
                  kcu.COLUMN_NAME, kcu.ORDINAL_POSITION, rc.UPDATE_RULE, rc.DELETE_RULE, \
@@ -561,7 +793,7 @@ pub(crate) async fn list_primary_keys(
     validate_metadata_identifier(database_name, "databaseName")?;
     validate_metadata_identifier(table_name, "tableName")?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let query = "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, CONSTRAINT_NAME \
                  FROM information_schema.KEY_COLUMN_USAGE \
                  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' \
@@ -596,7 +828,7 @@ pub(crate) async fn list_functions(
 ) -> Result<CommunityFunctionList, AppError> {
     validate_metadata_identifier(database_name, "databaseName")?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let query = "SELECT ROUTINE_SCHEMA, ROUTINE_NAME, SPECIFIC_NAME, \
                  COALESCE(ROUTINE_COMMENT, '') \
                  FROM information_schema.ROUTINES \
@@ -637,7 +869,7 @@ pub(crate) async fn get_function(
     let qualified_name =
         qualified_identifier(database_name, "databaseName", function_name, "functionName")?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let result = async {
         let metadata = metadata_query(conn.exec_first::<(String, String, String, String), _, _>(
             "SELECT ROUTINE_SCHEMA, ROUTINE_NAME, SPECIFIC_NAME, \
@@ -678,7 +910,7 @@ pub(crate) async fn list_function_parameters(
     validate_metadata_identifier(database_name, "databaseName")?;
     validate_metadata_identifier(function_name, "functionName")?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let query = "SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, ORDINAL_POSITION, PARAMETER_MODE, \
                  PARAMETER_NAME, DATA_TYPE, DTD_IDENTIFIER, CHARACTER_MAXIMUM_LENGTH, \
                  CHARACTER_OCTET_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, \
@@ -707,7 +939,7 @@ pub(crate) async fn list_procedures(
 ) -> Result<CommunityProcedureList, AppError> {
     validate_metadata_identifier(database_name, "databaseName")?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let query = "SELECT ROUTINE_SCHEMA, ROUTINE_NAME, SPECIFIC_NAME, \
                  COALESCE(ROUTINE_COMMENT, '') \
                  FROM information_schema.ROUTINES \
@@ -752,7 +984,7 @@ pub(crate) async fn get_procedure(
         "procedureName",
     )?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let result = async {
         let metadata = metadata_query(conn.exec_first::<(String, String, String, String), _, _>(
             "SELECT ROUTINE_SCHEMA, ROUTINE_NAME, SPECIFIC_NAME, \
@@ -792,7 +1024,7 @@ pub(crate) async fn list_procedure_parameters(
     validate_metadata_identifier(database_name, "databaseName")?;
     validate_metadata_identifier(procedure_name, "procedureName")?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let query = "SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, ORDINAL_POSITION, PARAMETER_MODE, \
                  PARAMETER_NAME, DATA_TYPE, DTD_IDENTIFIER, CHARACTER_MAXIMUM_LENGTH, \
                  CHARACTER_OCTET_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, \
@@ -824,7 +1056,7 @@ pub(crate) async fn preview_routine_invocation(
     validate_metadata_identifier(&routine_name, "routineName")?;
     validate_metadata_identifier(&database_name, "databaseName")?;
     let resolved = resolve_native_connection(application, &request.datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let query = "SELECT ORDINAL_POSITION, PARAMETER_MODE, PARAMETER_NAME, DATA_TYPE \
                  FROM information_schema.PARAMETERS \
                  WHERE SPECIFIC_SCHEMA = ? AND SPECIFIC_NAME = ? AND ROUTINE_TYPE = ? \
@@ -847,6 +1079,218 @@ pub(crate) async fn preview_routine_invocation(
     finish_connection(conn, result).await
 }
 
+pub(crate) fn preview_routine_migration(
+    request: &CommunityRoutineMigrationRequest,
+) -> Result<CommunityRoutineInvocationPreview, AppError> {
+    let plan = routine_migration_plan(request)?;
+    Ok(CommunityRoutineInvocationPreview {
+        sql: plan.preview_sql,
+    })
+}
+
+pub(crate) async fn execute_routine_migration(
+    application: &Application,
+    request: CommunityRoutineMigrationRequest,
+) -> Result<CommunityRoutineMigrationExecution, AppError> {
+    let plan = routine_migration_plan(&request)?;
+    let resolved = resolve_native_connection(application, &request.datasource_id).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
+    let result = execute_routine_migration_with_connection(&mut conn, &plan).await;
+    finish_connection(conn, Ok(result)).await
+}
+
+async fn execute_routine_migration_with_connection(
+    conn: &mut Conn,
+    plan: &RoutineMigrationPlan,
+) -> CommunityRoutineMigrationExecution {
+    let selected_database = quote_identifier(&plan.database_name, "databaseName")
+        .expect("validated migration database name must remain valid");
+    if let Err(error) = metadata_query(conn.query_drop(format!("USE {selected_database}"))).await {
+        return routine_migration_failure(
+            plan,
+            migration_error(&error),
+            "BEFORE_IMAGE",
+            false,
+            false,
+        );
+    }
+
+    let previous = match capture_previous_routine(conn, plan).await {
+        Ok(previous) => previous,
+        Err(error) => {
+            return routine_migration_failure(
+                plan,
+                format!(
+                    "Routine migration was rejected because the existing routine definition could not be captured before DROP: {}",
+                    migration_error(&error)
+                ),
+                "BEFORE_IMAGE",
+                false,
+                false,
+            );
+        }
+    };
+
+    if let Err(error) = metadata_query(conn.query_drop(&plan.drop_sql)).await {
+        return routine_migration_failure(
+            plan,
+            format!(
+                "Routine migration failed before the previous routine was dropped. Original error: {}",
+                migration_error(&error)
+            ),
+            "DROP",
+            false,
+            false,
+        );
+    }
+
+    match metadata_query(conn.query_drop(&plan.create_sql)).await {
+        Ok(()) => CommunityRoutineMigrationExecution {
+            success: true,
+            message: "Statement executed successfully".to_owned(),
+            sql: plan.preview_sql.clone(),
+            failure_stage: None,
+            restore_attempted: false,
+            restore_succeeded: false,
+        },
+        Err(create_error) => {
+            let Some(previous) = previous else {
+                return routine_migration_failure(
+                    plan,
+                    format!(
+                        "Routine migration failed. No previous routine definition existed. Original error: {}",
+                        migration_error(&create_error)
+                    ),
+                    "APPLY",
+                    false,
+                    false,
+                );
+            };
+            let restore = async {
+                metadata_query(conn.query_drop(&plan.drop_sql)).await?;
+                metadata_query(conn.query_drop(previous)).await
+            }
+            .await;
+            match restore {
+                Ok(()) => routine_migration_failure(
+                    plan,
+                    format!(
+                        "Routine migration failed. The previous routine definition was restored. Original error: {}",
+                        migration_error(&create_error)
+                    ),
+                    "APPLY",
+                    true,
+                    true,
+                ),
+                Err(restore_error) => routine_migration_failure(
+                    plan,
+                    format!(
+                        "Routine migration failed after the previous routine was dropped, and automatic restore failed. Original error: {}; restore error: {}",
+                        migration_error(&create_error),
+                        migration_error(&restore_error)
+                    ),
+                    "APPLY",
+                    true,
+                    false,
+                ),
+            }
+        }
+    }
+}
+
+async fn capture_previous_routine(
+    conn: &mut Conn,
+    plan: &RoutineMigrationPlan,
+) -> Result<Option<String>, AppError> {
+    let exists = metadata_query(conn.exec_first::<u8, _, _>(
+        "SELECT 1 FROM information_schema.ROUTINES \
+         WHERE ROUTINE_SCHEMA = ? AND ROUTINE_NAME = ? AND ROUTINE_TYPE = ? LIMIT 1",
+        (
+            plan.database_name.clone(),
+            plan.routine_name.clone(),
+            plan.routine_type.as_str(),
+        ),
+    ))
+    .await?
+    .is_some();
+    if !exists {
+        return Ok(None);
+    }
+    let qualified_name = qualified_identifier(
+        &plan.database_name,
+        "databaseName",
+        &plan.routine_name,
+        "routineName",
+    )?;
+    let row = metadata_query(conn.query_first::<Row, _>(format!(
+        "SHOW CREATE {} {qualified_name}",
+        plan.routine_type.as_str()
+    )))
+    .await?
+    .ok_or_else(AppError::internal)?;
+    let mut ddl = row_string_at(&row, 2)?;
+    ensure_sql_terminated(&mut ddl);
+    Ok(Some(ddl))
+}
+
+fn routine_migration_plan(
+    request: &CommunityRoutineMigrationRequest,
+) -> Result<RoutineMigrationPlan, AppError> {
+    let routine_type = normalize_mysql_routine_type(&request.routine_type)?;
+    let database_name = request.database_name.trim().to_owned();
+    let routine_name = mysql_routine_lookup_name(request.routine_name.trim());
+    validate_metadata_identifier(&database_name, "databaseName")?;
+    validate_metadata_identifier(&routine_name, "routineName")?;
+    let ddl = request.ddl.trim();
+    if ddl.is_empty() || ddl.len() > MAX_SQL_BYTES || ddl.contains('\0') {
+        return Err(AppError::invalid(
+            "invalid_community_routine_migration_request",
+            "ddl is invalid",
+        ));
+    }
+    let qualified_name =
+        qualified_identifier(&database_name, "databaseName", &routine_name, "routineName")?;
+    let drop_sql = format!("DROP {} IF EXISTS {qualified_name}", routine_type.as_str());
+    let mut create_sql = ddl.to_owned();
+    ensure_sql_terminated(&mut create_sql);
+    let preview_sql = format!("{drop_sql};\n\n{create_sql}");
+    Ok(RoutineMigrationPlan {
+        routine_type,
+        database_name,
+        routine_name,
+        drop_sql,
+        create_sql,
+        preview_sql,
+    })
+}
+
+fn ensure_sql_terminated(sql: &mut String) {
+    if !sql.trim_end().ends_with(';') {
+        sql.push(';');
+    }
+}
+
+fn routine_migration_failure(
+    plan: &RoutineMigrationPlan,
+    message: String,
+    failure_stage: &str,
+    restore_attempted: bool,
+    restore_succeeded: bool,
+) -> CommunityRoutineMigrationExecution {
+    CommunityRoutineMigrationExecution {
+        success: false,
+        message,
+        sql: plan.preview_sql.clone(),
+        failure_stage: Some(failure_stage.to_owned()),
+        restore_attempted,
+        restore_succeeded,
+    }
+}
+
+fn migration_error(error: &AppError) -> String {
+    error.api_error().message
+}
+
 pub(crate) async fn list_triggers(
     application: &Application,
     datasource_id: &str,
@@ -855,7 +1299,7 @@ pub(crate) async fn list_triggers(
 ) -> Result<CommunityTriggerList, AppError> {
     validate_metadata_identifier(database_name, "databaseName")?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let query = "SELECT TRIGGER_SCHEMA, TRIGGER_NAME, EVENT_MANIPULATION \
                  FROM information_schema.TRIGGERS \
                  WHERE TRIGGER_SCHEMA = ? ORDER BY TRIGGER_NAME";
@@ -892,7 +1336,7 @@ pub(crate) async fn get_trigger(
     let qualified_name =
         qualified_identifier(database_name, "databaseName", trigger_name, "triggerName")?;
     let resolved = resolve_native_connection(application, datasource_id).await?;
-    let mut conn = open_connection(&resolved.connection).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
     let result = async {
         let metadata = metadata_query(conn.exec_first::<(String, String, String), _, _>(
             "SELECT TRIGGER_SCHEMA, TRIGGER_NAME, EVENT_MANIPULATION \
@@ -933,18 +1377,216 @@ pub(crate) fn validate_query(query: &PreparedQuery) -> Result<(), AppError> {
             format!("SQL cannot exceed {MAX_SQL_BYTES} UTF-8 bytes"),
         ));
     }
-    if !query.parameters.is_empty() {
-        return Err(AppError::invalid(
-            "invalid_query_request",
-            "Native MySQL SELECT does not accept parameters yet",
-        ));
-    }
+    let _ = mysql_query_parameters(&query.parameters)?;
     validate_read_sql(&query.sql)?;
     validate_query_options(query.options)
 }
 
+fn mysql_query_parameters(parameters: &[JdbcParameter]) -> Result<Params, AppError> {
+    if parameters.is_empty() {
+        return Ok(Params::Empty);
+    }
+    if parameters.len() > MAX_PARAMETERS {
+        return Err(AppError::invalid(
+            "invalid_query_parameter_count",
+            format!("MySQL queries accept at most {MAX_PARAMETERS} parameters"),
+        ));
+    }
+
+    let mut ordered = parameters.iter().collect::<Vec<_>>();
+    ordered.sort_unstable_by_key(|parameter| parameter.position);
+    let mut values = Vec::with_capacity(ordered.len());
+    for (index, parameter) in ordered.into_iter().enumerate() {
+        let expected = u32::try_from(index + 1).map_err(|_| AppError::internal())?;
+        if parameter.position != expected {
+            return Err(AppError::invalid(
+                "invalid_query_parameter",
+                "MySQL parameter positions must be unique and contiguous from 1",
+            ));
+        }
+        values.push(mysql_query_value(&parameter.value)?);
+    }
+    Ok(Params::Positional(values))
+}
+
+fn mysql_query_value(value: &BridgeJdbcValue) -> Result<Value, AppError> {
+    match value {
+        BridgeJdbcValue::Null => Ok(Value::NULL),
+        BridgeJdbcValue::Boolean(value) => Ok(Value::Int(i64::from(*value))),
+        BridgeJdbcValue::SignedInteger(value) => Ok(Value::Int(*value)),
+        BridgeJdbcValue::UnsignedInteger(value) => Ok(Value::UInt(*value)),
+        BridgeJdbcValue::Float32(value) => Ok(Value::Float(*value)),
+        BridgeJdbcValue::Float64(value) => Ok(Value::Double(*value)),
+        BridgeJdbcValue::Decimal(value) => {
+            validate_mysql_decimal(value)?;
+            mysql_query_bytes(value.as_bytes(), "decimal")
+        }
+        BridgeJdbcValue::Text(value) => mysql_query_bytes(value.as_bytes(), "text"),
+        BridgeJdbcValue::Binary(value) => mysql_query_bytes(value, "binary"),
+        BridgeJdbcValue::Date(value) => mysql_date_parameter(value),
+        BridgeJdbcValue::Time(value) => mysql_time_parameter(value),
+        BridgeJdbcValue::Timestamp(value) => mysql_timestamp_parameter(value),
+        BridgeJdbcValue::TimestampWithTimeZone(value) => {
+            mysql_timestamp_with_time_zone_parameter(value)
+        }
+        BridgeJdbcValue::Json(value) => mysql_query_bytes(value.as_bytes(), "JSON"),
+        BridgeJdbcValue::Uuid(value) => mysql_query_bytes(value.as_bytes(), "UUID"),
+        BridgeJdbcValue::Opaque { .. } => Err(AppError::invalid(
+            "invalid_query_parameter",
+            "Opaque JDBC values cannot be MySQL query parameters",
+        )),
+    }
+}
+
+fn mysql_query_bytes(value: &[u8], label: &str) -> Result<Value, AppError> {
+    if value.len() > MAX_SCALAR_BYTES {
+        return Err(AppError::invalid(
+            "invalid_query_parameter",
+            format!("The MySQL {label} parameter exceeds {MAX_SCALAR_BYTES} bytes"),
+        ));
+    }
+    Ok(Value::Bytes(value.to_vec()))
+}
+
+fn validate_mysql_decimal(value: &str) -> Result<(), AppError> {
+    let unsigned = value.strip_prefix(['+', '-']).unwrap_or(value);
+    let mut digits = 0_usize;
+    let mut decimal_points = 0_u8;
+    for byte in unsigned.bytes() {
+        if byte.is_ascii_digit() {
+            digits += 1;
+        } else if byte == b'.' {
+            decimal_points += 1;
+        } else {
+            return Err(mysql_temporal_parameter_error("decimal"));
+        }
+    }
+    if digits == 0 || decimal_points > 1 {
+        return Err(mysql_temporal_parameter_error("decimal"));
+    }
+    Ok(())
+}
+
+fn mysql_date_parameter(value: &str) -> Result<Value, AppError> {
+    mysql_query_bytes(value.as_bytes(), "date")?;
+    let date = NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .map_err(|_| mysql_temporal_parameter_error("date"))?;
+    let datetime = date
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| mysql_temporal_parameter_error("date"))?;
+    mysql_datetime_value(datetime, "date")
+}
+
+fn mysql_time_parameter(value: &str) -> Result<Value, AppError> {
+    mysql_query_bytes(value.as_bytes(), "time")?;
+    let (negative, unsigned) = value
+        .strip_prefix('-')
+        .map_or((false, value), |value| (true, value));
+    let unsigned = unsigned.strip_prefix('+').unwrap_or(unsigned);
+    let mut parts = unsigned.split(':');
+    let hours = parse_mysql_time_part::<u32>(parts.next(), "time")?;
+    let minutes = parse_mysql_time_part::<u8>(parts.next(), "time")?;
+    let seconds = parts
+        .next()
+        .ok_or_else(|| mysql_temporal_parameter_error("time"))?;
+    if parts.next().is_some() || hours > 838 || minutes > 59 {
+        return Err(mysql_temporal_parameter_error("time"));
+    }
+    let (seconds, micros) = parse_mysql_seconds(seconds)?;
+    Ok(Value::Time(
+        negative,
+        hours / 24,
+        u8::try_from(hours % 24).map_err(|_| AppError::internal())?,
+        minutes,
+        seconds,
+        micros,
+    ))
+}
+
+fn parse_mysql_time_part<T>(value: Option<&str>, label: &str) -> Result<T, AppError>
+where
+    T: std::str::FromStr,
+{
+    value
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| mysql_temporal_parameter_error(label))?
+        .parse::<T>()
+        .map_err(|_| mysql_temporal_parameter_error(label))
+}
+
+fn parse_mysql_seconds(value: &str) -> Result<(u8, u32), AppError> {
+    let (seconds, fraction) = value
+        .split_once('.')
+        .map_or((value, None), |(seconds, fraction)| {
+            (seconds, Some(fraction))
+        });
+    let seconds = parse_mysql_time_part::<u8>(Some(seconds), "time")?;
+    if seconds > 59 {
+        return Err(mysql_temporal_parameter_error("time"));
+    }
+    let Some(fraction) = fraction else {
+        return Ok((seconds, 0));
+    };
+    if fraction.is_empty()
+        || fraction.len() > 6
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(mysql_temporal_parameter_error("time"));
+    }
+    let parsed = fraction
+        .parse::<u32>()
+        .map_err(|_| mysql_temporal_parameter_error("time"))?;
+    let padding = u32::try_from(6 - fraction.len()).map_err(|_| AppError::internal())?;
+    Ok((seconds, parsed * 10_u32.pow(padding)))
+}
+
+fn mysql_timestamp_parameter(value: &str) -> Result<Value, AppError> {
+    mysql_query_bytes(value.as_bytes(), "timestamp")?;
+    let datetime = ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f"]
+        .into_iter()
+        .find_map(|format| NaiveDateTime::parse_from_str(value, format).ok())
+        .ok_or_else(|| mysql_temporal_parameter_error("timestamp"))?;
+    mysql_datetime_value(datetime, "timestamp")
+}
+
+fn mysql_timestamp_with_time_zone_parameter(value: &str) -> Result<Value, AppError> {
+    mysql_query_bytes(value.as_bytes(), "timestamp with time zone")?;
+    let datetime = DateTime::parse_from_rfc3339(value)
+        .map_err(|_| mysql_temporal_parameter_error("timestamp with time zone"))?
+        .with_timezone(&Utc)
+        .naive_utc();
+    mysql_datetime_value(datetime, "timestamp with time zone")
+}
+
+fn mysql_datetime_value(datetime: NaiveDateTime, label: &str) -> Result<Value, AppError> {
+    let year = u16::try_from(datetime.year())
+        .ok()
+        .filter(|year| *year > 0 && *year <= 9_999)
+        .ok_or_else(|| mysql_temporal_parameter_error(label))?;
+    Ok(Value::Date(
+        year,
+        u8::try_from(datetime.month()).map_err(|_| AppError::internal())?,
+        u8::try_from(datetime.day()).map_err(|_| AppError::internal())?,
+        u8::try_from(datetime.hour()).map_err(|_| AppError::internal())?,
+        u8::try_from(datetime.minute()).map_err(|_| AppError::internal())?,
+        u8::try_from(datetime.second()).map_err(|_| AppError::internal())?,
+        datetime.nanosecond() / 1_000,
+    ))
+}
+
+fn mysql_temporal_parameter_error(label: &str) -> AppError {
+    AppError::invalid(
+        "invalid_query_parameter",
+        format!("The MySQL {label} parameter is invalid"),
+    )
+}
+
 fn validate_read_sql(sql: &str) -> Result<(), AppError> {
-    let tokens = sql_tokens(sql)?;
+    let tokens = read_policy_tokens(
+        sql,
+        "mysql_native_query_unsupported",
+        "Native MySQL read queries do not accept executable comments",
+    )?;
     if !matches!(tokens.first(), Some(SqlToken::Word(keyword)) if keyword == "SELECT") {
         return Err(AppError::invalid(
             "mysql_native_query_unsupported",
@@ -986,9 +1628,31 @@ fn validate_read_sql(sql: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+struct SqlLexemes {
+    tokens: Vec<SqlToken>,
+    executable_comment: bool,
+}
+
 fn sql_tokens(sql: &str) -> Result<Vec<SqlToken>, AppError> {
+    Ok(sql_lexemes(sql)?.tokens)
+}
+
+fn read_policy_tokens(
+    sql: &str,
+    error_code: &'static str,
+    error_message: &'static str,
+) -> Result<Vec<SqlToken>, AppError> {
+    let lexemes = sql_lexemes(sql)?;
+    if lexemes.executable_comment {
+        return Err(AppError::invalid(error_code, error_message));
+    }
+    Ok(lexemes.tokens)
+}
+
+fn sql_lexemes(sql: &str) -> Result<SqlLexemes, AppError> {
     let bytes = sql.as_bytes();
     let mut tokens = Vec::new();
+    let mut executable_comment = false;
     let mut index = 0;
     while index < bytes.len() {
         match bytes[index] {
@@ -1000,6 +1664,11 @@ fn sql_tokens(sql: &str) -> Result<Vec<SqlToken>, AppError> {
                 skip_line_comment(bytes, &mut index);
             }
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                executable_comment |= bytes.get(index + 2) == Some(&b'!')
+                    || (bytes
+                        .get(index + 2)
+                        .is_some_and(|byte| matches!(byte, b'm' | b'M'))
+                        && bytes.get(index + 3) == Some(&b'!'));
                 index += 2;
                 let mut terminated = false;
                 while index + 1 < bytes.len() {
@@ -1054,7 +1723,10 @@ fn sql_tokens(sql: &str) -> Result<Vec<SqlToken>, AppError> {
             _ => index += 1,
         }
     }
-    Ok(tokens)
+    Ok(SqlLexemes {
+        tokens,
+        executable_comment,
+    })
 }
 
 fn skip_line_comment(bytes: &[u8], index: &mut usize) {
@@ -1113,35 +1785,24 @@ pub(crate) async fn execute_console(
     application: &Application,
     request: MysqlConsoleRequest,
     mut cancellation: watch::Receiver<CancellationRequest>,
+    force_read_only: bool,
 ) -> Result<Vec<MysqlConsoleResult>, AppError> {
-    let (page_offset, page_end) = validate_console_request(&request)?;
-    let mut statements = if request.single {
-        vec![request.sql.trim().to_owned()]
-    } else {
-        split_mysql_script(&request.sql)?
-    };
-    if statements.is_empty() {
-        return Err(AppError::invalid(
-            "invalid_mysql_console_request",
-            "sql must contain at least one MySQL statement",
-        ));
-    }
-    if request.explain {
-        for statement in &mut statements {
-            *statement = format!("EXPLAIN {statement}");
-        }
-    }
+    let (statements, page_offset, page_end) = prepare_console_statements(&request)?;
 
     let initial_cancellation = { cancellation.borrow().clone() };
     if let CancellationRequest::Requested { reason } = initial_cancellation {
         return Err(mysql_console_cancelled(reason));
     }
+    if force_read_only {
+        validate_forced_read_console(&statements)?;
+    }
     let resolved = resolve_native_connection(application, &request.datasource_id).await?;
-    if resolved.connection.read_only {
+    if resolved.connection.read_only && !force_read_only {
         validate_read_only_console(&statements)?;
     }
-    let options = connection_opts(&resolved.connection)?;
-    let mut conn = match open_query_connection(options.clone(), &mut cancellation).await {
+    let prepared = prepare_resolved_connection(&resolved).await?;
+    let options = prepared.options.clone();
+    let mut conn = match open_query_connection(prepared, &mut cancellation).await {
         Ok(conn) => conn,
         Err(QueryTaskError::Cancelled(reason)) => return Err(mysql_console_cancelled(reason)),
         Err(QueryTaskError::Failed(error)) => return Err(error),
@@ -1161,6 +1822,10 @@ pub(crate) async fn execute_console(
         {
             return finish_console_error(conn, options, connection_id, error).await;
         }
+    }
+    if force_read_only && let Err(error) = start_read_only_transaction(&mut conn).await {
+        disconnect_quietly(conn).await;
+        return Err(error);
     }
 
     let mut results = Vec::new();
@@ -1205,8 +1870,142 @@ pub(crate) async fn execute_console(
         }
     }
 
-    disconnect_connection(conn).await?;
+    if force_read_only {
+        finish_read_only_connection_quietly(conn).await;
+    } else {
+        disconnect_connection(conn).await?;
+    }
     Ok(results)
+}
+
+fn prepare_console_statements(
+    request: &MysqlConsoleRequest,
+) -> Result<(Vec<String>, u64, u64), AppError> {
+    let (page_offset, page_end) = validate_console_request(request)?;
+    let mut statements = if request.single {
+        vec![request.sql.trim().to_owned()]
+    } else {
+        split_mysql_script(&request.sql)?
+    };
+    if statements.is_empty() {
+        return Err(AppError::invalid(
+            "invalid_mysql_console_request",
+            "sql must contain at least one MySQL statement",
+        ));
+    }
+    if request.explain {
+        for statement in &mut statements {
+            *statement = format!("EXPLAIN {statement}");
+        }
+    }
+    Ok((statements, page_offset, page_end))
+}
+
+pub(crate) async fn execute_update(
+    resolved: ResolvedDatasourceConnection,
+    sql: String,
+    cancellation: CancellationToken,
+) -> Result<u64, DatabaseWriteError> {
+    if cancellation.is_cancelled() {
+        return Err(DatabaseWriteError::not_started(AppError::new(
+            AppErrorKind::Conflict,
+            ApiError::new(
+                "database_write_cancelled",
+                "The database write was cancelled before dispatch",
+            ),
+        )));
+    }
+    let sql = validate_single_write_sql(&sql).map_err(DatabaseWriteError::not_started)?;
+    if resolved.connection.read_only {
+        return Err(DatabaseWriteError::not_started(AppError::new(
+            AppErrorKind::Conflict,
+            ApiError::new(
+                "datasource_read_only",
+                "The datasource connection is configured as read-only",
+            ),
+        )));
+    }
+
+    let prepared = prepare_resolved_connection(&resolved)
+        .await
+        .map_err(DatabaseWriteError::not_started)?;
+    let options = prepared.options.clone();
+    let open = open_prepared_connection(prepared);
+    tokio::pin!(open);
+    let mut conn = tokio::select! {
+        biased;
+        () = cancellation.cancelled() => {
+            return Err(DatabaseWriteError::not_started(AppError::new(
+                AppErrorKind::Conflict,
+                ApiError::new(
+                    "database_write_cancelled",
+                    "The database write was cancelled before dispatch",
+                ),
+            )));
+        }
+        result = &mut open => result.map_err(DatabaseWriteError::not_started)?,
+    };
+    if cancellation.is_cancelled() {
+        disconnect_quietly(conn).await;
+        return Err(DatabaseWriteError::not_started(AppError::new(
+            AppErrorKind::Conflict,
+            ApiError::new(
+                "database_write_cancelled",
+                "The database write was cancelled before dispatch",
+            ),
+        )));
+    }
+
+    let connection_id = conn.id();
+    let result = {
+        // Prepared statements are a second boundary against multi-statement
+        // execution even if a future parser regression accepts a script.
+        let query = conn.exec_drop(sql, ());
+        tokio::pin!(query);
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => None,
+            result = &mut query => Some(result),
+        }
+    };
+    let Some(result) = result else {
+        terminate_connection_quietly(options, connection_id).await;
+        drop(conn);
+        return Err(DatabaseWriteError::unknown(AppError::new(
+            AppErrorKind::Unavailable,
+            ApiError::new(
+                "database_write_outcome_unknown",
+                "The database write was interrupted after dispatch; do not retry it blindly",
+            ),
+        )));
+    };
+
+    match result {
+        Ok(()) => {
+            let affected_rows = conn.affected_rows();
+            disconnect_quietly(conn).await;
+            Ok(affected_rows)
+        }
+        Err(error @ MysqlError::Server(_)) => {
+            disconnect_quietly(conn).await;
+            tracing::warn!(
+                error = %error,
+                "MySQL rejected a dispatched write whose partial effects cannot be excluded"
+            );
+            Err(DatabaseWriteError::unknown(AppError::new(
+                AppErrorKind::Unavailable,
+                ApiError::new(
+                    "database_write_outcome_unknown",
+                    "MySQL reported an error after write dispatch; partial effects cannot be excluded, so do not retry it blindly",
+                ),
+            )))
+        }
+        Err(error) => {
+            terminate_connection_quietly(options, connection_id).await;
+            drop(conn);
+            Err(DatabaseWriteError::unknown(mysql_query_error(error)))
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -1415,16 +2214,19 @@ async fn execute_console_control(
 }
 
 async fn finish_console_error<T>(
-    conn: Conn,
+    conn: ManagedMysqlConnection,
     options: Opts,
     connection_id: u32,
     error: ConsoleExecutionError,
 ) -> Result<T, AppError> {
-    drop(conn);
     match error {
-        ConsoleExecutionError::Cancelled(reason) => Err(mysql_console_cancelled(reason)),
+        ConsoleExecutionError::Cancelled(reason) => {
+            drop(conn);
+            Err(mysql_console_cancelled(reason))
+        }
         ConsoleExecutionError::Fatal(error) => {
             terminate_connection_quietly(options, connection_id).await;
+            drop(conn);
             Err(error)
         }
     }
@@ -1503,7 +2305,11 @@ fn validate_console_request(request: &MysqlConsoleRequest) -> Result<(u64, u64),
 
 fn validate_read_only_console(statements: &[String]) -> Result<(), AppError> {
     for statement in statements {
-        let tokens = sql_tokens(statement)?;
+        let tokens = read_policy_tokens(
+            statement,
+            "datasource_read_only",
+            "Read-only datasource connections do not accept executable comments",
+        )?;
         let words = tokens
             .iter()
             .filter_map(|token| match token {
@@ -1531,6 +2337,145 @@ fn validate_read_only_console(statements: &[String]) -> Result<(), AppError> {
         }
     }
     Ok(())
+}
+
+fn validate_forced_read_console(statements: &[String]) -> Result<(), AppError> {
+    let [statement] = statements else {
+        return Err(AppError::invalid(
+            "chart_query_must_be_read_only",
+            "Chart refresh accepts exactly one MySQL SELECT statement",
+        ));
+    };
+    let tokens = read_policy_tokens(
+        statement,
+        "chart_query_must_be_read_only",
+        "Chart refresh SQL must not use MySQL executable comments",
+    )?;
+    let parsed = Parser::parse_sql(&MySqlDialect {}, statement).map_err(|_| {
+        AppError::invalid(
+            "chart_query_must_be_read_only",
+            "Chart refresh SQL must be one valid MySQL SELECT statement",
+        )
+    })?;
+    if !matches!(parsed.as_slice(), [Statement::Query(_)]) {
+        return Err(AppError::invalid(
+            "chart_query_must_be_read_only",
+            "Chart refresh accepts exactly one MySQL SELECT statement",
+        ));
+    }
+
+    if !matches!(
+        tokens.first(),
+        Some(SqlToken::Word(keyword)) if keyword == "SELECT" || keyword == "WITH"
+    ) {
+        return Err(AppError::invalid(
+            "chart_query_must_be_read_only",
+            "Chart refresh accepts SELECT statements and SELECT CTEs only",
+        ));
+    }
+    let words = tokens
+        .iter()
+        .filter_map(|token| match token {
+            SqlToken::Word(word) => Some(word.as_str()),
+            SqlToken::Semicolon => None,
+        })
+        .collect::<Vec<_>>();
+    let mutating = words.iter().any(|word| {
+        matches!(
+            *word,
+            "INSERT"
+                | "UPDATE"
+                | "DELETE"
+                | "REPLACE"
+                | "CREATE"
+                | "ALTER"
+                | "DROP"
+                | "TRUNCATE"
+                | "RENAME"
+                | "CALL"
+                | "GRANT"
+                | "REVOKE"
+                | "LOAD"
+        )
+    });
+    let unsafe_select = words.windows(2).any(|window| {
+        matches!(
+            window,
+            ["INTO", "OUTFILE" | "DUMPFILE"] | ["FOR", "UPDATE" | "SHARE"]
+        )
+    }) || words
+        .windows(4)
+        .any(|window| matches!(window, ["LOCK", "IN", "SHARE", "MODE"]));
+    if mutating || unsafe_select {
+        return Err(AppError::invalid(
+            "chart_query_must_be_read_only",
+            "Chart refresh SQL must not write data, lock rows, or write server files",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_single_write_sql(sql: &str) -> Result<String, AppError> {
+    if contains_delimiter_directive(sql) {
+        return Err(AppError::invalid(
+            "invalid_database_write",
+            "DELIMITER is not accepted by the confirmed MySQL write surface",
+        ));
+    }
+    let mut statements = split_mysql_script(sql)?;
+    if statements.len() != 1 {
+        return Err(AppError::invalid(
+            "invalid_database_write",
+            "Exactly one MySQL write statement is required",
+        ));
+    }
+    let statement = statements.pop().expect("length checked above");
+    let tokens = sql_tokens(&statement)?;
+    let first_word = tokens.iter().find_map(|token| match token {
+        SqlToken::Word(word) => Some(word.as_str()),
+        SqlToken::Semicolon => None,
+    });
+    if !matches!(
+        first_word,
+        Some(
+            "INSERT"
+                | "UPDATE"
+                | "DELETE"
+                | "REPLACE"
+                | "CREATE"
+                | "ALTER"
+                | "DROP"
+                | "TRUNCATE"
+                | "RENAME"
+                | "GRANT"
+                | "REVOKE"
+                | "ANALYZE"
+                | "OPTIMIZE"
+                | "REPAIR"
+                | "CALL"
+        )
+    ) {
+        return Err(AppError::invalid(
+            "database_write_statement_required",
+            "The confirmed MySQL write surface accepts one DML, DDL, grant, or routine statement",
+        ));
+    }
+    Ok(statement)
+}
+
+fn contains_delimiter_directive(sql: &str) -> bool {
+    const KEYWORD: &str = "delimiter";
+
+    sql.lines().any(|line| {
+        let line = line.trim_start();
+        line.get(..KEYWORD.len()).is_some_and(|prefix| {
+            prefix.eq_ignore_ascii_case(KEYWORD)
+                && line
+                    .as_bytes()
+                    .get(KEYWORD.len())
+                    .is_none_or(u8::is_ascii_whitespace)
+        })
+    })
 }
 
 fn mysql_console_cancelled(reason: Option<String>) -> AppError {
@@ -1931,7 +2876,7 @@ async fn cancel_console_connection(options: Opts, connection_id: u32) -> Result<
         kill_console_target(&mut control, format!("KILL QUERY {connection_id}")).await;
     let connection_cancel =
         kill_console_target(&mut control, format!("KILL CONNECTION {connection_id}")).await;
-    disconnect_quietly(control).await;
+    disconnect_raw_quietly(control).await;
     match (query_cancel, connection_cancel) {
         (_, Ok(())) => Ok(()),
         (Ok(()), Err(error)) => Err(error),
@@ -1971,15 +2916,17 @@ pub(crate) async fn execute_query_task(
         return Err(QueryTaskError::Cancelled(reason));
     }
 
-    let options = connection_opts(&resolved.connection)?;
-    let mut conn = open_query_connection(options.clone(), &mut cancellation).await?;
+    let parameters = mysql_query_parameters(&query.parameters)?;
+    let prepared = prepare_resolved_connection(&resolved).await?;
+    let options = prepared.options.clone();
+    let mut conn = open_query_connection(prepared, &mut cancellation).await?;
     let connection_id = conn.id();
     if let Err(error) = start_read_only_transaction(&mut conn).await {
         disconnect_quietly(conn).await;
         return Err(error.into());
     }
     let query_result = {
-        let query_future = conn.exec_iter(query.sql, ());
+        let query_future = conn.exec_iter(query.sql, parameters);
         tokio::pin!(query_future);
         let mut cancellation_open = true;
         loop {
@@ -3433,7 +4380,7 @@ fn validate_query_options(options: QueryOptions) -> Result<(), AppError> {
     Ok(())
 }
 
-fn quote_identifier(value: &str, field: &str) -> Result<String, AppError> {
+pub(crate) fn quote_identifier(value: &str, field: &str) -> Result<String, AppError> {
     if value.trim().is_empty() || value.len() > MAX_IDENTIFIER_BYTES || value.contains('\0') {
         return Err(AppError::invalid(
             "invalid_community_table_preview_request",
@@ -3459,15 +4406,15 @@ async fn terminate_connection(options: Opts, connection_id: u32) -> Result<(), A
     };
     match result {
         Ok(()) => {
-            disconnect_quietly(control).await;
+            disconnect_raw_quietly(control).await;
             Ok(())
         }
         Err(MysqlError::Server(server)) if server.code == 1094 => {
-            disconnect_quietly(control).await;
+            disconnect_raw_quietly(control).await;
             Ok(())
         }
         Err(error) => {
-            disconnect_quietly(control).await;
+            disconnect_raw_quietly(control).await;
             Err(mysql_query_error(error))
         }
     }
@@ -3480,10 +4427,10 @@ async fn terminate_connection_quietly(options: Opts, connection_id: u32) {
 }
 
 async fn open_query_connection(
-    options: Opts,
+    prepared: PreparedMysqlConnection,
     cancellation: &mut watch::Receiver<CancellationRequest>,
-) -> Result<Conn, QueryTaskError> {
-    let open = open_connection_with_opts(options);
+) -> Result<ManagedMysqlConnection, QueryTaskError> {
+    let open = open_prepared_connection(prepared);
     tokio::pin!(open);
     let mut cancellation_open = true;
     loop {
@@ -3519,7 +4466,7 @@ async fn start_read_only_transaction(conn: &mut Conn) -> Result<(), AppError> {
     .map_err(mysql_query_error)
 }
 
-async fn finish_read_only_connection_quietly(mut conn: Conn) {
+async fn finish_read_only_connection_quietly(mut conn: ManagedMysqlConnection) {
     let rollback = tokio::time::timeout(CONTROL_TIMEOUT, conn.query_drop("ROLLBACK")).await;
     match rollback {
         Ok(Ok(())) => {}
@@ -3532,7 +4479,28 @@ async fn finish_read_only_connection_quietly(mut conn: Conn) {
     disconnect_quietly(conn).await;
 }
 
-async fn disconnect_connection(conn: Conn) -> Result<(), AppError> {
+async fn disconnect_connection(mut conn: ManagedMysqlConnection) -> Result<(), AppError> {
+    let connection = conn
+        .connection
+        .take()
+        .expect("managed MySQL connection must exist until cleanup");
+    let database_result = disconnect_raw_connection(connection).await;
+    let tunnel_result = match conn.tunnel.take() {
+        Some(tunnel) => tunnel.close().await,
+        None => Ok(()),
+    };
+    match database_result {
+        Ok(()) => tunnel_result,
+        Err(error) => {
+            if let Err(tunnel_error) = tunnel_result {
+                tracing::warn!(error = %tunnel_error, "SSH tunnel cleanup failed after MySQL disconnect failure");
+            }
+            Err(error)
+        }
+    }
+}
+
+async fn disconnect_raw_connection(conn: Conn) -> Result<(), AppError> {
     tokio::time::timeout(DISCONNECT_TIMEOUT, conn.disconnect())
         .await
         .map_err(|_| {
@@ -3544,9 +4512,15 @@ async fn disconnect_connection(conn: Conn) -> Result<(), AppError> {
         .map_err(mysql_connection_error)
 }
 
-async fn disconnect_quietly(conn: Conn) {
+async fn disconnect_quietly(conn: ManagedMysqlConnection) {
     if let Err(error) = disconnect_connection(conn).await {
         tracing::warn!(error = %error, "native MySQL connection cleanup failed");
+    }
+}
+
+async fn disconnect_raw_quietly(conn: Conn) {
+    if let Err(error) = disconnect_raw_connection(conn).await {
+        tracing::warn!(error = %error, "native MySQL control connection cleanup failed");
     }
 }
 
@@ -3567,7 +4541,7 @@ fn result_decode_error() -> AppError {
     )
 }
 
-async fn resolve_native_connection(
+pub(crate) async fn resolve_native_connection(
     application: &Application,
     datasource_id: &str,
 ) -> Result<ResolvedDatasourceConnection, AppError> {
@@ -3582,9 +4556,81 @@ async fn resolve_native_connection(
     Ok(resolved)
 }
 
-async fn open_connection(connection: &DatasourceConnection) -> Result<Conn, AppError> {
-    let opts = connection_opts(connection)?;
-    open_connection_with_opts(opts).await
+pub(crate) async fn open_connection(
+    connection: &DatasourceConnection,
+) -> Result<ManagedMysqlConnection, AppError> {
+    open_prepared_connection(prepare_connection(connection).await?).await
+}
+
+pub(crate) async fn open_resolved_connection(
+    resolved: &ResolvedDatasourceConnection,
+) -> Result<ManagedMysqlConnection, AppError> {
+    open_prepared_connection(prepare_resolved_connection(resolved).await?).await
+}
+
+async fn prepare_connection(
+    connection: &DatasourceConnection,
+) -> Result<PreparedMysqlConnection, AppError> {
+    prepare_connection_with_identity(connection, SshTunnelIdentity::Ephemeral).await
+}
+
+async fn prepare_resolved_connection(
+    resolved: &ResolvedDatasourceConnection,
+) -> Result<PreparedMysqlConnection, AppError> {
+    prepare_connection_with_identity(
+        &resolved.connection,
+        SshTunnelIdentity::Datasource {
+            datasource_id: &resolved.datasource_id,
+            revision: resolved.datasource_revision,
+        },
+    )
+    .await
+}
+
+async fn prepare_connection_with_identity(
+    connection: &DatasourceConnection,
+    identity: SshTunnelIdentity<'_>,
+) -> Result<PreparedMysqlConnection, AppError> {
+    let Some(ssh) = connection.ssh.as_ref() else {
+        return Ok(PreparedMysqlConnection {
+            options: connection_opts(connection)?,
+            tunnel: None,
+        });
+    };
+    let (target_host, target_port) = mysql_target(&connection.jdbc_url)?;
+    let tunnel = SshTunnel::open(identity, ssh, target_host, target_port).await?;
+    let mut forwarded = connection.clone();
+    forwarded.jdbc_url = rewrite_mysql_target(&forwarded.jdbc_url, tunnel.local_port())?;
+    forwarded.ssh = None;
+    let options = match connection_opts(&forwarded) {
+        Ok(options) => options,
+        Err(error) => {
+            if tunnel.close().await.is_err() {
+                tracing::warn!("SSH tunnel cleanup failed after MySQL option validation failure");
+            }
+            return Err(error);
+        }
+    };
+    Ok(PreparedMysqlConnection {
+        options,
+        tunnel: Some(tunnel),
+    })
+}
+
+async fn open_prepared_connection(
+    mut prepared: PreparedMysqlConnection,
+) -> Result<ManagedMysqlConnection, AppError> {
+    match open_connection_with_opts(prepared.options).await {
+        Ok(connection) => Ok(ManagedMysqlConnection::new(connection, prepared.tunnel)),
+        Err(error) => {
+            if let Some(tunnel) = prepared.tunnel.take()
+                && tunnel.close().await.is_err()
+            {
+                tracing::warn!("SSH tunnel cleanup failed after MySQL connection failure");
+            }
+            Err(error)
+        }
+    }
 }
 
 async fn open_connection_with_opts(opts: Opts) -> Result<Conn, AppError> {
@@ -3614,7 +4660,10 @@ where
         .map_err(mysql_query_error)
 }
 
-async fn finish_connection<T>(conn: Conn, result: Result<T, AppError>) -> Result<T, AppError> {
+pub(crate) async fn finish_connection<T>(
+    conn: ManagedMysqlConnection,
+    result: Result<T, AppError>,
+) -> Result<T, AppError> {
     let close = disconnect_connection(conn).await;
     match result {
         Ok(value) => close.map(|()| value),
@@ -3759,6 +4808,20 @@ fn mysql_connection_error(error: MysqlError) -> AppError {
 
 fn mysql_query_error(error: MysqlError) -> AppError {
     match error {
+        MysqlError::Driver(DriverError::StmtParamsMismatch { required, supplied }) => {
+            AppError::invalid(
+                "invalid_query_parameter_count",
+                format!(
+                    "The MySQL statement expects {required} parameters but {supplied} were supplied"
+                ),
+            )
+        }
+        MysqlError::Driver(DriverError::StmtParamsNumberExceedsLimit { supplied }) => {
+            AppError::invalid(
+                "invalid_query_parameter_count",
+                format!("The MySQL statement cannot accept {supplied} parameters"),
+            )
+        }
         MysqlError::Server(server) => AppError::new(
             AppErrorKind::InvalidRequest,
             ApiError::new("mysql_query_failed", server.message),
@@ -3773,7 +4836,8 @@ fn mysql_query_error(error: MysqlError) -> AppError {
 #[cfg(test)]
 mod tests {
     use chat2db_contract::{
-        DatasourceConnection, DatasourceConnectionProperty, JdbcValue, ResultRow,
+        CommunityRoutineMigrationRequest, DatasourceConnection, DatasourceConnectionProperty,
+        JdbcValue, ResultRow,
     };
     use mysql_async::{Conn, Opts};
     use tokio::sync::watch;
@@ -3788,8 +4852,9 @@ mod tests {
         mysql_routine_lookup_name, normalize_mysql_routine_type, normalize_table_type,
         open_connection_with_opts, qualified_identifier, quote_identifier,
         render_routine_invocation_preview, reserve_console_result_bytes,
-        routine_invocation_parameter, split_mysql_script, validate_console_request,
-        validate_read_only_console, validate_read_sql,
+        routine_invocation_parameter, routine_migration_plan, split_mysql_script,
+        validate_console_request, validate_forced_read_console, validate_read_only_console,
+        validate_read_sql, validate_single_write_sql,
     };
     use super::{MysqlRoutineType, RoutineInvocationParameter};
     use crate::{MysqlConsoleRequest, operation::CancellationRequest};
@@ -3885,6 +4950,7 @@ mod tests {
                 },
             ],
             read_only: false,
+            ssh: None,
         })
         .expect("live MySQL options should build");
         let mut conn = open_connection_with_opts(options.clone())
@@ -4125,6 +5191,7 @@ mod tests {
                 },
             ],
             read_only: false,
+            ssh: None,
         })
         .expect("JDBC URL should convert");
 
@@ -4273,6 +5340,44 @@ mod tests {
     }
 
     #[test]
+    fn mysql_routine_migration_preview_is_qualified_and_terminated() {
+        let plan = routine_migration_plan(&CommunityRoutineMigrationRequest {
+            datasource_id: "mysql-local".to_owned(),
+            database_type: "MYSQL".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: String::new(),
+            routine_type: " function ".to_owned(),
+            routine_name: "`odd``name`".to_owned(),
+            ddl: "CREATE FUNCTION `odd``name`() RETURNS INT RETURN 2".to_owned(),
+        })
+        .expect("valid migration must render");
+
+        assert_eq!(plan.routine_name, "odd`name");
+        assert_eq!(
+            plan.preview_sql,
+            "DROP FUNCTION IF EXISTS `inventory`.`odd``name`;\n\nCREATE FUNCTION `odd``name`() RETURNS INT RETURN 2;"
+        );
+    }
+
+    #[test]
+    fn mysql_routine_migration_rejects_missing_ddl() {
+        let error = routine_migration_plan(&CommunityRoutineMigrationRequest {
+            datasource_id: "mysql-local".to_owned(),
+            database_type: "MYSQL".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: String::new(),
+            routine_type: "PROCEDURE".to_owned(),
+            routine_name: "refresh_items".to_owned(),
+            ddl: "  ".to_owned(),
+        })
+        .expect_err("empty ddl must fail");
+        assert_eq!(
+            error.api_error().code,
+            "invalid_community_routine_migration_request"
+        );
+    }
+
+    #[test]
     fn explicit_properties_override_url_values_and_ssl_modes_are_mapped() {
         let opts = connection_opts(&DatasourceConnection {
             jdbc_url: "mysql://url-user:url-pass@localhost/url_db?sslMode=VERIFY_IDENTITY"
@@ -4290,6 +5395,7 @@ mod tests {
                 },
             ],
             read_only: false,
+            ssh: None,
         })
         .expect("native URL should convert");
 
@@ -4310,6 +5416,7 @@ mod tests {
                 jdbc_url: jdbc_url.to_owned(),
                 properties: Vec::new(),
                 read_only: false,
+                ssh: None,
             })
             .expect_err("non-MySQL URLs must fail");
             assert_eq!(error.api_error().code, "invalid_mysql_connection");
@@ -4347,6 +5454,43 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_write_policy_accepts_one_write_and_rejects_reads_or_scripts() {
+        for sql in [
+            "INSERT INTO items(label) VALUES ('new')",
+            "UPDATE items SET label = 'changed' WHERE id = 1",
+            "DELETE FROM items WHERE id = 1",
+            "CREATE TABLE created_by_cli(id BIGINT PRIMARY KEY)",
+            "ALTER TABLE items ADD COLUMN note TEXT",
+            "GRANT SELECT ON app.* TO 'reader'@'localhost'",
+            "CALL mutating_procedure()",
+        ] {
+            validate_single_write_sql(sql)
+                .unwrap_or_else(|error| panic!("{sql} should be accepted: {error}"));
+        }
+        for sql in [
+            "SELECT 1",
+            "SHOW TABLES",
+            "START TRANSACTION",
+            "UPDATE items SET label = 'one'; DELETE FROM items WHERE id = 2",
+        ] {
+            assert!(
+                validate_single_write_sql(sql).is_err(),
+                "{sql} should be rejected"
+            );
+        }
+
+        for sql in [
+            "DELIMITER $$\nCREATE PROCEDURE mutate_item()\nBEGIN\n  UPDATE items SET label = 'changed' WHERE id = 1;\nEND$$\nDELIMITER ;",
+            "DELIMITER $$\nUPDATE items SET label = 'changed'; DELETE FROM items$$\nDELIMITER ;",
+            "  delimiter //\nDELETE FROM items//",
+        ] {
+            let error = validate_single_write_sql(sql)
+                .expect_err("confirmed writes must reject client delimiter directives");
+            assert_eq!(error.api_error().code, "invalid_database_write");
+        }
+    }
+
+    #[test]
     fn console_read_only_policy_allows_inspection_and_rejects_writes() {
         for sql in [
             "SELECT 1",
@@ -4371,6 +5515,32 @@ mod tests {
             let error = validate_read_only_console(&[sql.to_owned()])
                 .expect_err("writes and ambiguous statements must fail closed");
             assert_eq!(error.api_error().code, "datasource_read_only");
+        }
+    }
+
+    #[test]
+    fn chart_refresh_policy_accepts_select_ctes_and_rejects_side_effects() {
+        for sql in [
+            "SELECT 1",
+            "SELECT '/*! FOR SHARE */' AS harmless_text",
+            "WITH values_cte AS (SELECT 1 AS value) SELECT value FROM values_cte",
+        ] {
+            validate_forced_read_console(&[sql.to_owned()])
+                .unwrap_or_else(|error| panic!("{sql} should be chart-safe: {error}"));
+        }
+        for statements in [
+            vec!["UPDATE items SET label = 'changed'".to_owned()],
+            vec!["SELECT * FROM items FOR UPDATE".to_owned()],
+            vec!["SELECT * FROM items FOR SHARE".to_owned()],
+            vec!["SELECT 1 /*! INTO OUTFILE '/tmp/chart' */".to_owned()],
+            vec!["SELECT * FROM items /*M! FOR SHARE */".to_owned()],
+            vec!["SELECT 1 INTO OUTFILE '/tmp/chart'".to_owned()],
+            vec!["SELECT 1".to_owned(), "SELECT 2".to_owned()],
+            vec!["WITH ids AS (SELECT 1) UPDATE items SET label = 'changed'".to_owned()],
+        ] {
+            let error = validate_forced_read_console(&statements)
+                .expect_err("chart refresh must fail closed on non-read-only SQL");
+            assert_eq!(error.api_error().code, "chart_query_must_be_read_only");
         }
     }
 

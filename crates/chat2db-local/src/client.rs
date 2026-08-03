@@ -5,8 +5,9 @@ use std::fs;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chat2db_contract::{
-    CancelOperationResponse, DatasourceList, HealthResponse, OperationSnapshot, QueryAccepted,
-    ResultPage, ResultPageRequest, StartQueryRequest,
+    ApiError, CancelOperationResponse, DatabaseWriteResult, DatabaseWriteState, DatasourceList,
+    ExecuteDatabaseWriteRequest, HealthResponse, OperationSnapshot, QueryAccepted, ResultPage,
+    ResultPageRequest, StartQueryRequest,
 };
 use uuid::Uuid;
 
@@ -82,6 +83,38 @@ impl LocalClient {
         {
             AttachmentPayload::QueryAccepted(value) => Ok(*value),
             _ => Err(unexpected_payload()),
+        }
+    }
+
+    /// Executes one explicitly confirmed database write in the attached runtime.
+    ///
+    /// Transport failures after request delivery are returned as an `unknown`
+    /// write outcome so callers never retry a potentially committed statement.
+    pub async fn execute_database_write(
+        &self,
+        request: ExecuteDatabaseWriteRequest,
+    ) -> DatabaseWriteResult {
+        let probe = AttachmentRequest {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: "0".repeat(64),
+            token: "0".repeat(43),
+            command: AttachmentCommand::ExecuteDatabaseWrite { request },
+        };
+        if transport::encode_message(&probe, MAX_REQUEST_BYTES).is_err() {
+            return write_failure(
+                DatabaseWriteState::NotStarted,
+                ApiError::new(
+                    "invalid_database_write",
+                    "The database write request exceeds the local transport limit",
+                ),
+            );
+        }
+        match self.call(probe.command).await {
+            Ok(payload) => match *payload {
+                AttachmentPayload::DatabaseWrite(value) => *value,
+                _ => unknown_write_result(),
+            },
+            Err(error) => local_write_failure(error),
         }
     }
 
@@ -253,4 +286,147 @@ impl LocalClient {
 
 fn unexpected_payload() -> LocalError {
     LocalError::Protocol("runtime returned an unexpected payload type".to_owned())
+}
+
+fn local_write_failure(error: LocalError) -> DatabaseWriteResult {
+    match error {
+        LocalError::Remote(error) if remote_rejected_before_dispatch(&error.0.code) => {
+            write_failure(DatabaseWriteState::NotStarted, error.0)
+        }
+        LocalError::Unavailable(_) => write_failure(
+            DatabaseWriteState::NotStarted,
+            retryable_error(
+                "local_runtime_unavailable",
+                "The Chat2DB local runtime is unavailable",
+            ),
+        ),
+        LocalError::Timeout("connect") => write_failure(
+            DatabaseWriteState::NotStarted,
+            retryable_error(
+                "local_runtime_timeout",
+                "The Chat2DB local runtime could not be reached in time",
+            ),
+        ),
+        LocalError::Io { operation, .. } if write_was_not_dispatched(operation) => write_failure(
+            DatabaseWriteState::NotStarted,
+            retryable_error(
+                "local_runtime_io_error",
+                "The Chat2DB local runtime could not be reached",
+            ),
+        ),
+        LocalError::Remote(_)
+        | LocalError::Timeout(_)
+        | LocalError::Io { .. }
+        | LocalError::Protocol(_)
+        | LocalError::Json(_)
+        | LocalError::Task(_) => unknown_write_result(),
+    }
+}
+
+fn remote_rejected_before_dispatch(code: &str) -> bool {
+    matches!(
+        code,
+        "local_protocol_version_mismatch"
+            | "invalid_local_request"
+            | "local_attachment_unauthorized"
+    )
+}
+
+fn write_was_not_dispatched(operation: &str) -> bool {
+    operation.contains("metadata")
+        || operation.contains("data directory")
+        || operation.contains("connect")
+        || operation.contains("socket")
+        || operation.contains("named pipe")
+}
+
+fn unknown_write_result() -> DatabaseWriteResult {
+    write_failure(
+        DatabaseWriteState::Unknown,
+        ApiError::new(
+            "database_write_outcome_unknown",
+            "The database write outcome is unknown; do not retry it blindly",
+        ),
+    )
+}
+
+fn write_failure(state: DatabaseWriteState, error: ApiError) -> DatabaseWriteResult {
+    DatabaseWriteResult {
+        state,
+        affected_rows: None,
+        error: Some(error),
+    }
+}
+
+fn retryable_error(code: &'static str, message: &'static str) -> ApiError {
+    let mut error = ApiError::new(code, message);
+    error.retryable = true;
+    error
+}
+
+#[cfg(test)]
+mod tests {
+    use chat2db_contract::{ApiError, DatabaseWriteState, ExecuteDatabaseWriteRequest};
+
+    use super::{LocalClient, LocalError, MAX_REQUEST_BYTES, RemoteError, local_write_failure};
+
+    #[test]
+    fn write_transport_timeout_distinguishes_before_and_after_dispatch() {
+        let before_dispatch = local_write_failure(LocalError::Timeout("connect"));
+        assert_eq!(before_dispatch.state, DatabaseWriteState::NotStarted);
+        assert_eq!(
+            before_dispatch
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("local_runtime_timeout")
+        );
+
+        let after_dispatch = local_write_failure(LocalError::Timeout("response read"));
+        assert_eq!(after_dispatch.state, DatabaseWriteState::Unknown);
+        assert_eq!(
+            after_dispatch
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("database_write_outcome_unknown")
+        );
+        assert!(!after_dispatch.error.unwrap().retryable);
+    }
+
+    #[test]
+    fn only_known_local_rejections_are_classified_as_not_started() {
+        let unauthorized =
+            local_write_failure(LocalError::Remote(Box::new(RemoteError(ApiError::new(
+                "local_attachment_unauthorized",
+                "Local attachment authentication failed",
+            )))));
+        assert_eq!(unauthorized.state, DatabaseWriteState::NotStarted);
+
+        let oversized_response =
+            local_write_failure(LocalError::Remote(Box::new(RemoteError(ApiError::new(
+                "local_response_too_large",
+                "The local response exceeds the maximum transport frame",
+            )))));
+        assert_eq!(oversized_response.state, DatabaseWriteState::Unknown);
+    }
+
+    #[tokio::test]
+    async fn oversized_write_is_rejected_before_local_delivery() {
+        let result = LocalClient::new("missing-runtime")
+            .execute_database_write(ExecuteDatabaseWriteRequest {
+                datasource_id: "datasource-1".to_owned(),
+                sql: format!(
+                    "UPDATE items SET label = '{}';",
+                    "x".repeat(MAX_REQUEST_BYTES)
+                ),
+                confirmed: true,
+            })
+            .await;
+        assert_eq!(result.state, DatabaseWriteState::NotStarted);
+        assert_eq!(
+            result.error.as_ref().map(|error| error.code.as_str()),
+            Some("invalid_database_write")
+        );
+    }
 }

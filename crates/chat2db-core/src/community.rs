@@ -11,7 +11,8 @@ use chat2db_contract::{
     CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
     CommunityPluginServices, CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure,
     CommunityProcedureList, CommunityProcedureParameter, CommunityProcedureParameterList,
-    CommunityRoutineInvocationPreview, CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis,
+    CommunityRoutineInvocationPreview, CommunityRoutineMigrationExecution,
+    CommunityRoutineMigrationRequest, CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis,
     CommunitySqlCompletion, CommunitySqlCompletionActiveSnippetSlot,
     CommunitySqlCompletionCandidate, CommunitySqlCompletionEditorHint,
     CommunitySqlCompletionEditorHintItem, CommunitySqlCompletionRange, CommunitySqlDiagnostic,
@@ -956,6 +957,45 @@ impl Application {
             ));
         }
         native_mysql::preview_routine_invocation(self, request).await
+    }
+
+    /// Previews the compensating `MySQL` routine-replacement script.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation errors for unsupported database types or malformed
+    /// routine migration input.
+    pub fn preview_community_routine_migration(
+        &self,
+        request: &CommunityRoutineMigrationRequest,
+    ) -> Result<CommunityRoutineInvocationPreview, AppError> {
+        if !native_mysql::is_mysql_database_type(&request.database_type) {
+            return Err(AppError::invalid(
+                "invalid_community_routine_migration_request",
+                "routine migration supports only MySQL",
+            ));
+        }
+        native_mysql::preview_routine_migration(request)
+    }
+
+    /// Replaces one `MySQL` routine and restores its before-image when apply fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, datasource, connection, or cleanup errors. SQL apply
+    /// and compensation failures are returned as a successful product result
+    /// with `success = false`, matching the Community frontend contract.
+    pub async fn execute_community_routine_migration(
+        &self,
+        request: CommunityRoutineMigrationRequest,
+    ) -> Result<CommunityRoutineMigrationExecution, AppError> {
+        if !native_mysql::is_mysql_database_type(&request.database_type) {
+            return Err(AppError::invalid(
+                "invalid_community_routine_migration_request",
+                "routine migration supports only MySQL",
+            ));
+        }
+        native_mysql::execute_routine_migration(self, request).await
     }
 
     /// Lists triggers through Community metadata using a forced read-only session.

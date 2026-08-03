@@ -62,6 +62,36 @@ pub enum StorageError {
     /// A datasource field violates the durable contract.
     #[error("invalid datasource: {0}")]
     InvalidDatasource(&'static str),
+    /// The requested workspace namespace does not exist.
+    #[error("workspace namespace not found: {0}")]
+    WorkspaceNamespaceNotFound(String),
+    /// The requested namespace or datasource tree node does not exist.
+    #[error("workspace node not found: {0}")]
+    WorkspaceNodeNotFound(String),
+    /// A workspace namespace or tree operation violates the durable contract.
+    #[error("invalid workspace operation: {0}")]
+    InvalidWorkspace(&'static str),
+    /// The requested Community dashboard does not exist.
+    #[error("Community dashboard not found: {0}")]
+    CommunityDashboardNotFound(i64),
+    /// A Community dashboard field or page request violates the durable contract.
+    #[error("invalid Community dashboard: {0}")]
+    InvalidCommunityDashboard(&'static str),
+    /// The requested Community chart does not exist.
+    #[error("Community chart not found: {0}")]
+    CommunityChartNotFound(i64),
+    /// A Community chart field violates the durable contract.
+    #[error("invalid Community chart: {0}")]
+    InvalidCommunityChart(&'static str),
+    /// The requested transfer task does not exist.
+    #[error("transfer task not found: {0}")]
+    TransferTaskNotFound(i64),
+    /// The requested managed transfer artifact does not exist.
+    #[error("transfer artifact not found: {0}")]
+    TransferArtifactNotFound(String),
+    /// A transfer task or artifact violates the durable contract.
+    #[error("invalid transfer operation: {0}")]
+    InvalidTransfer(&'static str),
     /// The requested saved Console does not exist.
     #[error("saved Console not found: {0}")]
     SavedConsoleNotFound(i64),

@@ -1,12 +1,13 @@
 use std::time::Duration;
 
 use chat2db_contract::{
-    ApiError, QueryAccepted, QueryLimits, ResultColumn, ResultRow, StartQueryRequest,
+    ApiError, DatabaseWriteResult, DatabaseWriteState, ExecuteDatabaseWriteRequest, QueryAccepted,
+    QueryLimits, ResultColumn, ResultRow, StartQueryRequest,
 };
 use chat2db_engine_protocol::wire;
 use chat2db_java_bridge::{
-    BridgeError, CancelDisposition as BridgeCancelDisposition, ConnectionProperty, JdbcParameter,
-    QueryEvent, QueryOptions, QueryRequest, QueryStream, SessionConfig, UpdateRequest,
+    BridgeError, CancelDisposition as BridgeCancelDisposition, JdbcParameter, QueryEvent,
+    QueryOptions, QueryRequest, QueryStream,
 };
 use chat2db_storage::{ResultWriter, Storage, StorageError};
 use tokio::sync::{oneshot, watch};
@@ -156,7 +157,6 @@ enum QueryBackend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DatabaseWriteOutcome {
     NotStarted,
-    Failed,
     Unknown,
 }
 
@@ -193,7 +193,15 @@ impl Application {
         request: MysqlConsoleRequest,
         cancellation: MysqlConsoleCancellation,
     ) -> Result<Vec<MysqlConsoleResult>, AppError> {
-        crate::native_mysql::execute_console(self, request, cancellation.subscribe()).await
+        crate::native_mysql::execute_console(self, request, cancellation.subscribe(), false).await
+    }
+
+    pub(crate) async fn execute_mysql_read_console(
+        &self,
+        request: MysqlConsoleRequest,
+        cancellation: MysqlConsoleCancellation,
+    ) -> Result<Vec<MysqlConsoleResult>, AppError> {
+        crate::native_mysql::execute_console(self, request, cancellation.subscribe(), true).await
     }
 
     /// Accepts a query for asynchronous execution and returns its operation id.
@@ -219,6 +227,39 @@ impl Application {
         let mut prepared = PreparedQuery::try_from(request)?;
         prepared.force_read_only = true;
         self.start_prepared_query(prepared).await
+    }
+
+    /// Executes one explicitly confirmed database write and always reports whether
+    /// the statement was dispatched and whether retrying it can be safe.
+    #[must_use]
+    pub async fn execute_confirmed_database_write(
+        &self,
+        request: ExecuteDatabaseWriteRequest,
+    ) -> DatabaseWriteResult {
+        if !request.confirmed {
+            return database_write_result(
+                DatabaseWriteState::NotStarted,
+                None,
+                Some(ApiError::new(
+                    "database_write_confirmation_required",
+                    "Database writes require explicit confirmation",
+                )),
+            );
+        }
+
+        match self
+            .execute_agent_update(request.datasource_id, request.sql, CancellationToken::new())
+            .await
+        {
+            Ok(affected_rows) => {
+                database_write_result(DatabaseWriteState::Succeeded, Some(affected_rows), None)
+            }
+            Err(error) => database_write_result(
+                database_write_state(error.outcome),
+                None,
+                Some(error.error.api_error()),
+            ),
+        }
     }
 
     pub(crate) async fn start_agent_read_query(
@@ -548,18 +589,11 @@ impl Application {
         let storage = self
             .require_storage()
             .map_err(DatabaseWriteError::not_started)?;
-        let engine = self
-            .require_engine()
+        validate_database_write_sql(&sql).map_err(DatabaseWriteError::not_started)?;
+        let resolved = resolve_datasource_connection(&storage, &datasource_id)
             .await
             .map_err(DatabaseWriteError::not_started)?;
-        let ResolvedDatasourceConnection {
-            driver_id,
-            datasource_name: _,
-            connection,
-        } = resolve_datasource_connection(&storage, &datasource_id)
-            .await
-            .map_err(DatabaseWriteError::not_started)?;
-        if connection.read_only {
+        if resolved.connection.read_only {
             return Err(DatabaseWriteError::not_started(AppError::new(
                 AppErrorKind::Conflict,
                 ApiError::new(
@@ -568,73 +602,74 @@ impl Application {
                 ),
             )));
         }
-        let driver = engine
-            .driver_client()
-            .map_err(AppError::from)
-            .map_err(DatabaseWriteError::not_started)?;
-        let session = driver
-            .open_session(SessionConfig {
-                driver_id,
-                jdbc_url: connection.jdbc_url,
-                properties: connection
-                    .properties
-                    .into_iter()
-                    .map(|property| ConnectionProperty {
-                        key: property.key,
-                        value: property.value,
-                        sensitive: property.sensitive,
-                    })
-                    .collect(),
-                read_only: false,
-            })
-            .await
-            .map_err(|error| DatabaseWriteError::from_bridge(error, false))?;
-        if cancellation.is_cancelled() {
-            let _ = session.close().await;
-            return Err(DatabaseWriteError::not_started(AppError::new(
-                AppErrorKind::Conflict,
-                ApiError::new(
-                    "agent_tool_cancelled",
-                    "The database write was cancelled before dispatch",
-                ),
-            )));
+        if self.is_native_mysql_driver(&resolved.driver_id) {
+            return crate::native_mysql::execute_update(resolved, sql, cancellation).await;
         }
-
-        let result = session
-            .execute_update(UpdateRequest {
-                sql,
-                parameters: Vec::new(),
-                transaction_id: None,
-            })
-            .await;
-        let close_result = session.close().await;
-        if let Err(close_error) = close_result {
-            tracing::warn!(
-                error = %close_error,
-                "database write session cleanup failed after the outcome was determined"
-            );
-        }
-        result
-            .map(|completed| completed.affected_rows)
-            .map_err(|error| DatabaseWriteError::from_bridge(error, true))
+        Err(DatabaseWriteError::not_started(AppError::invalid(
+            "mysql_driver_mismatch",
+            "Confirmed database writes require a native MySQL datasource",
+        )))
     }
 }
 
 impl DatabaseWriteError {
-    fn not_started(error: AppError) -> Self {
+    pub(crate) fn not_started(error: AppError) -> Self {
         Self {
             error,
             outcome: DatabaseWriteOutcome::NotStarted,
         }
     }
 
-    fn from_bridge(error: BridgeError, dispatched: bool) -> Self {
-        let outcome = database_write_outcome(&error, dispatched);
+    pub(crate) fn unknown(error: AppError) -> Self {
         Self {
-            error: error.into(),
-            outcome,
+            error,
+            outcome: DatabaseWriteOutcome::Unknown,
         }
     }
+}
+
+fn database_write_result(
+    state: DatabaseWriteState,
+    affected_rows: Option<u64>,
+    error: Option<ApiError>,
+) -> DatabaseWriteResult {
+    DatabaseWriteResult {
+        state,
+        affected_rows: affected_rows.map(|value| value.to_string()),
+        error,
+    }
+}
+
+const fn database_write_state(outcome: DatabaseWriteOutcome) -> DatabaseWriteState {
+    match outcome {
+        DatabaseWriteOutcome::NotStarted => DatabaseWriteState::NotStarted,
+        DatabaseWriteOutcome::Unknown => DatabaseWriteState::Unknown,
+    }
+}
+
+fn validate_database_write_sql(sql: &str) -> Result<(), AppError> {
+    if sql.trim().is_empty() {
+        return Err(AppError::invalid(
+            "invalid_database_write",
+            "SQL cannot be empty",
+        ));
+    }
+    if sql.len() > wire::JdbcProtocolLimit::MaxSqlBytes as usize {
+        return Err(AppError::invalid(
+            "invalid_database_write",
+            format!(
+                "SQL exceeds the {} byte database-write limit",
+                wire::JdbcProtocolLimit::MaxSqlBytes as usize
+            ),
+        ));
+    }
+    if sql.contains('\0') {
+        return Err(AppError::invalid(
+            "invalid_database_write",
+            "SQL contains an invalid NUL byte",
+        ));
+    }
+    Ok(())
 }
 
 impl TryFrom<StartQueryRequest> for PreparedQuery {
@@ -733,40 +768,6 @@ impl RetainedWriter {
                 .map_err(AppError::from)?;
         }
         Ok(())
-    }
-}
-
-fn database_write_outcome(error: &BridgeError, dispatched: bool) -> DatabaseWriteOutcome {
-    use chat2db_engine_protocol::wire::OperationOutcome;
-    use chat2db_java_bridge::DeliveryOutcome;
-
-    match error {
-        BridgeError::Remote(remote) => match remote.outcome {
-            OperationOutcome::NotApplicable | OperationOutcome::NotStarted => {
-                DatabaseWriteOutcome::NotStarted
-            }
-            OperationOutcome::KnownFailed => DatabaseWriteOutcome::Failed,
-            OperationOutcome::Unknown | OperationOutcome::Unspecified => {
-                DatabaseWriteOutcome::Unknown
-            }
-        },
-        BridgeError::CommandChannelClosed { outcome }
-        | BridgeError::RequestTimeout { outcome, .. }
-        | BridgeError::ProcessUnavailable { outcome, .. } => match outcome {
-            DeliveryOutcome::NotSent => DatabaseWriteOutcome::NotStarted,
-            DeliveryOutcome::Unknown => DatabaseWriteOutcome::Unknown,
-        },
-        BridgeError::Protocol(_)
-        | BridgeError::UnexpectedResponse(_)
-        | BridgeError::Frame(_)
-        | BridgeError::SupervisorTask(_)
-        | BridgeError::ShutdownTimeout
-            if dispatched =>
-        {
-            DatabaseWriteOutcome::Unknown
-        }
-        _ if dispatched => DatabaseWriteOutcome::Failed,
-        _ => DatabaseWriteOutcome::NotStarted,
     }
 }
 

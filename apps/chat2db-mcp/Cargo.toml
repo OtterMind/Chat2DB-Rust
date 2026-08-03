@@ -16,15 +16,19 @@ path = "src/main.rs"
 chat2db-contract = { path = "../../crates/chat2db-contract" }
 chat2db-local = { path = "../../crates/chat2db-local" }
 clap.workspace = true
+hex.workspace = true
+rand.workspace = true
 rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
 chat2db-core = { path = "../../crates/chat2db-core" }
 chat2db-storage = { path = "../../crates/chat2db-storage" }
+rmcp = { workspace = true, features = ["client"] }
 tempfile = "3"
 
 [lints]

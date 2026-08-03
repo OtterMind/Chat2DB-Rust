@@ -1,14 +1,18 @@
 //! Durable `Chat2DB` product state and retained query-result storage.
 
 mod agent;
+mod community_dashboard;
 mod datasource;
 mod error;
+mod mysql_workspace;
 mod operation_log;
 mod provider;
 mod result_store;
 mod saved_console;
 mod secret;
+mod transfer;
 mod vault;
+mod workspace;
 
 use std::{
     collections::HashSet,
@@ -33,6 +37,11 @@ pub use agent::{
     SqlPermissionMode, StartAgentRun, StartedAgentRun, ToolPermissionDecision,
     ToolPermissionRecord, ToolPermissionStatus, UnknownAgentWrite, UpdateAgentSession,
 };
+pub use chat2db_contract::{
+    CommunityChart, CommunityDashboard, CommunityDashboardListQuery, CommunityDashboardPage,
+    CreateCommunityChartRequest, CreateCommunityDashboardRequest, UpdateCommunityChartRequest,
+    UpdateCommunityDashboardRequest,
+};
 pub use datasource::{
     CreateDatasource, DatasourceRecord, SecretChange, SecretCleanupReport, UpdateDatasource,
 };
@@ -52,14 +61,22 @@ pub use saved_console::{
     UpdateSavedConsole,
 };
 pub use secret::{SecretRef, SecretValue, SecretVault, SecretVaultError};
+pub use transfer::{
+    CreateTransferTask, ResolvedTransferArtifact, StoredTransferTaskKind, StoredTransferTaskStatus,
+    TransferArtifactRecord, TransferArtifactWriter, TransferRecoveryReport, TransferTaskRecord,
+};
 pub use vault::EncryptedFileVault;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use vault::OsSecretVault;
+pub use workspace::{
+    WorkspaceNamespaceRecord, WorkspaceNodeKind, WorkspaceNodeLocator, WorkspaceNodeRecord,
+};
 
 const DATABASE_FILE: &str = "chat2db.sqlite3";
 const LOCK_FILE: &str = ".chat2db.lock";
 const RESULTS_DIRECTORY: &str = "results";
-const CURRENT_SCHEMA_VERSION: i64 = 4;
+const ARTIFACTS_DIRECTORY: &str = "artifacts";
+const CURRENT_SCHEMA_VERSION: i64 = 8;
 
 #[cfg(test)]
 #[derive(Clone, Copy)]
@@ -135,6 +152,8 @@ pub struct StartupReport {
     pub secrets: SecretCleanupReport,
     /// Agent runs, permissions, and result handles recovered at startup.
     pub agents: AgentRecoveryReport,
+    /// Interrupted transfer tasks and managed artifact cleanup.
+    pub transfers: TransferRecoveryReport,
 }
 
 impl Default for StorageOptions {
@@ -155,6 +174,7 @@ pub(crate) struct StorageInner {
     data_dir: PathBuf,
     database_path: PathBuf,
     results_dir: PathBuf,
+    artifacts_dir: PathBuf,
     secret_gate: Mutex<()>,
     result_gate: Mutex<HashSet<String>>,
     max_retained_bytes: u64,
@@ -254,11 +274,17 @@ impl Storage {
         fs::create_dir_all(&results_dir).map_err(|error| StorageError::io(&results_dir, error))?;
         secure_directory(&results_dir)?;
 
+        let artifacts_dir = data_dir.join(ARTIFACTS_DIRECTORY);
+        fs::create_dir_all(&artifacts_dir)
+            .map_err(|error| StorageError::io(&artifacts_dir, error))?;
+        secure_directory(&artifacts_dir)?;
+
         let database_path = data_dir.join(DATABASE_FILE);
         let inner = Arc::new(StorageInner {
             data_dir,
             database_path,
             results_dir,
+            artifacts_dir,
             secret_gate: Mutex::new(()),
             result_gate: Mutex::new(HashSet::new()),
             max_retained_bytes: options.max_retained_bytes,
@@ -287,6 +313,7 @@ impl Storage {
         let timestamp = now_millis()?;
         let recovery = storage.recover_at(timestamp)?;
         let agents = storage.recover_agents_at(timestamp)?;
+        let transfers = storage.recover_transfers_at(timestamp)?;
         let secrets = storage.reconcile_secrets()?;
         storage
             .inner
@@ -295,6 +322,7 @@ impl Storage {
                 results: recovery,
                 secrets,
                 agents,
+                transfers,
             })
             .map_err(|_| {
                 StorageError::Integrity("startup recovery initialized twice".to_owned())
@@ -394,6 +422,31 @@ fn migrate(connection: &Connection) -> Result<(), StorageError> {
             connection,
             include_str!("../migrations/004_operation_log.sql"),
         )?;
+        version = 4;
+    }
+    if version == 4 {
+        apply_migration(
+            connection,
+            include_str!("../migrations/005_workspace_namespace.sql"),
+        )?;
+        version = 5;
+    }
+    if version == 5 {
+        apply_migration(connection, include_str!("../migrations/006_transfer.sql"))?;
+        version = 6;
+    }
+    if version == 6 {
+        apply_migration(
+            connection,
+            include_str!("../migrations/007_mysql_workspace.sql"),
+        )?;
+        version = 7;
+    }
+    if version == 7 {
+        apply_migration(
+            connection,
+            include_str!("../migrations/008_community_dashboard.sql"),
+        )?;
     }
     Ok(())
 }
@@ -485,8 +538,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        DATABASE_FILE, RecoveryReport, SecretRef, SecretValue, SecretVault, SecretVaultError,
-        Storage,
+        CURRENT_SCHEMA_VERSION, DATABASE_FILE, RecoveryReport, SecretRef, SecretValue, SecretVault,
+        SecretVaultError, Storage,
     };
     use crate::StorageError;
 
@@ -519,6 +572,28 @@ mod tests {
         Arc::new(TestVault)
     }
 
+    fn assert_current_schema_tables(connection: &Connection) {
+        for table in [
+            "workspace_namespaces",
+            "workspace_nodes",
+            "transfer_tasks",
+            "transfer_artifacts",
+            "mysql_pinned_tables",
+            "mysql_er_positions",
+            "community_dashboards",
+            "community_charts",
+        ] {
+            let table_count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .expect("current schema table count reads");
+            assert_eq!(table_count, 1, "current schema table {table} must exist");
+        }
+    }
+
     #[test]
     fn migration_and_required_pragmas_are_idempotent() {
         let directory = TempDir::new().expect("temp dir");
@@ -536,7 +611,8 @@ mod tests {
         let synchronous: i64 = connection
             .pragma_query_value(None, "synchronous", |row| row.get(0))
             .expect("synchronous reads");
-        assert_eq!(version, 4);
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
+        assert_current_schema_tables(&connection);
         assert_eq!(foreign_keys, 1);
         assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
         assert_eq!(synchronous, 2);
@@ -545,6 +621,12 @@ mod tests {
 
         let reopened = Storage::open(directory.path(), vault()).expect("storage reopens");
         assert_eq!(reopened.startup_report().results, RecoveryReport::default());
+        let connection = reopened.connection().expect("reopened connection opens");
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("reopened schema version reads");
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
+        assert_current_schema_tables(&connection);
     }
 
     #[test]
@@ -553,24 +635,25 @@ mod tests {
         let storage = Storage::open(directory.path(), vault()).expect("storage opens");
         drop(storage);
         let database = directory.path().join(DATABASE_FILE);
+        let unsupported_version = CURRENT_SCHEMA_VERSION + 1;
         Connection::open(&database)
             .expect("database opens")
-            .execute_batch("PRAGMA user_version = 5")
+            .pragma_update(None, "user_version", unsupported_version)
             .expect("test version updates");
 
         let error = Storage::open(directory.path(), vault()).expect_err("newer schema must fail");
-        assert!(matches!(
-            error,
-            StorageError::UnsupportedSchema {
-                found: 5,
-                supported: 4
+        match error {
+            StorageError::UnsupportedSchema { found, supported } => {
+                assert_eq!(found, unsupported_version);
+                assert_eq!(supported, CURRENT_SCHEMA_VERSION);
             }
-        ));
+            other => panic!("unexpected newer schema error: {other}"),
+        }
         let version: i64 = Connection::open(database)
             .expect("database opens")
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version reads");
-        assert_eq!(version, 5);
+        assert_eq!(version, unsupported_version);
     }
 
     #[test]
@@ -604,8 +687,9 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("provider table count reads");
-        assert_eq!(version, 4);
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
         assert_eq!(provider_table, 1);
+        assert_current_schema_tables(&connection);
         assert!(
             storage
                 .get_datasource("existing")
@@ -648,8 +732,9 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("saved Console table count reads");
-        assert_eq!(version, 4);
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
         assert_eq!(saved_console_table, 1);
+        assert_current_schema_tables(&connection);
         assert!(
             storage
                 .get_datasource("existing-v2")
@@ -746,8 +831,9 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("operation log table count reads");
-        assert_eq!(version, 4);
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
         assert_eq!(operation_log_table, 1);
+        assert_current_schema_tables(&connection);
         assert!(
             storage
                 .get_saved_console(42)

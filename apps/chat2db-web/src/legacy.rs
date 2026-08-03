@@ -5,17 +5,18 @@
 //! response translations without duplicating datasource or JDBC behavior.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     future::Future,
+    io::Write as _,
     path::PathBuf,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
     Json, Router,
-    body::Body,
-    extract::{Query, State},
+    body::{Body, Bytes},
+    extract::{DefaultBodyLimit, FromRequest as _, Multipart, Query, State},
     http::{StatusCode, header},
     middleware,
     response::{IntoResponse, Response},
@@ -23,21 +24,41 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chat2db_contract::{
-    ApiError, ColumnNullability, CommunityFunction, CommunityProcedure,
-    CommunityRoutineInvocationPreview, CommunityTable, CommunityTableColumn, CommunityTableIndex,
-    CommunityTableIndexColumn, CommunityTrigger, Datasource, DatasourceConnection,
-    DatasourceConnectionProperty, DatasourceSecretChange, GetCommunityFunctionRequest,
-    GetCommunityProcedureRequest, GetCommunityTriggerRequest, JdbcDriver, JdbcValue, JdbcValueType,
-    ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityFunctionsRequest,
-    ListCommunityIndexesRequest, ListCommunityProceduresRequest, ListCommunitySchemasRequest,
-    ListCommunityTablesRequest, ListCommunityTriggersRequest, ListCommunityViewsRequest,
-    OperationEvent, PreviewCommunityRoutineInvocationRequest, QueryAccepted, QueryLimits,
-    ResultColumn, ResultMetadata, ResultPageRequest, StartCommunityTablePreviewRequest,
-    StartQueryRequest, UpdateDatasourceRequest,
+    ApiError, CloneDatasourceRequest, ColumnNullability, CommunityAccount, CommunityAccountAction,
+    CommunityAccountCapability, CommunityAccountCommandRequest, CommunityAccountExecution,
+    CommunityAccountGrantsRequest, CommunityAccountPreview, CommunityAccountPrivilegeScope,
+    CommunityChart, CommunityChartDetailQuery, CommunityDashboard, CommunityDashboardListQuery,
+    CommunityDashboardPage, CommunityDatabase, CommunityDatasourceExport,
+    CommunityDatasourceFileImportRequest, CommunityDatasourceFileImportResult,
+    CommunityDatasourceImportFormat, CommunityErModel, CommunityErPositionRequest,
+    CommunityErQueryRequest, CommunityFunction, CommunityPinnedTableRequest, CommunityProcedure,
+    CommunityRoutineInvocationPreview, CommunityRoutineMigrationExecution,
+    CommunityRoutineMigrationRequest, CommunitySchema, CommunitySchemaDiffRequest,
+    CommunitySqlCompletionActiveSnippetSlot, CommunityTable, CommunityTableColumn,
+    CommunityTableIndex, CommunityTableIndexColumn, CommunityTrigger, CompleteCommunitySqlRequest,
+    CreateCommunityChartRequest, CreateCommunityDashboardRequest, CreateWorkspaceNamespaceRequest,
+    DatasourceConnection, DatasourceConnectionProperty, DatasourceEditProjection,
+    DatasourceSecretChange, DmlExportFormat, DmlExportRequest, DmlExportSize,
+    ExportCommunityDatasourcesRequest, FormatCommunitySqlRequest, GenerateMysqlClassRequest,
+    GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
+    ImportFileRequest, JdbcDriver, JdbcValue, JdbcValueType, ListCommunityColumnsRequest,
+    ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
+    ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTablesRequest,
+    ListCommunityTriggersRequest, ListCommunityViewsRequest, MoveWorkspaceNodeRequest,
+    NativeDriverAction, OperationEvent, OtherFileExportRequest,
+    PreviewCommunityRoutineInvocationRequest, QueryAccepted, QueryLimits, ResultColumn,
+    ResultMetadata, ResultPageRequest, SqlFileExportRequest, SshAuthentication,
+    SshAuthenticationType, SshHostKeyVerification, SshTunnelConfig,
+    StartCommunityTablePreviewRequest, StartQueryRequest, TabularImportEncoding,
+    TransferFileFormat, TransferSqlScope, TransferTask, TransferTaskKind, TransferTaskStatus,
+    UpdateCommunityChartRequest, UpdateCommunityDashboardRequest, UpdateDatasourceRequest,
+    UpdateWorkspaceNamespaceRequest, ValidateCommunitySqlRequest, WorkspaceNodeKind,
+    WorkspaceNodeRef, WorkspaceTreeNode,
 };
 use chat2db_core::{
-    AppError, Application, LargeValueChunk, LargeValueEncoding, LargeValuePreview, LargeValueType,
-    MysqlConsoleCancellation, MysqlConsoleRequest, MysqlConsoleResult,
+    AppError, AppErrorKind, Application, LargeValueChunk, LargeValueEncoding, LargeValuePreview,
+    LargeValueType, MysqlConsoleCancellation, MysqlConsoleRequest, MysqlConsoleResult,
+    TransferArtifactDownload,
     mysql_ddl::{
         MysqlColumnAlter, MysqlColumnDefinition, MysqlColumnPosition, MysqlDatabaseDefinition,
         MysqlIndexAlter, MysqlIndexColumn, MysqlIndexDefinition, MysqlIndexKind, MysqlIndexMethod,
@@ -60,6 +81,7 @@ use chat2db_storage::{
 };
 use chrono::{Local, TimeZone as _};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
+use tokio_util::io::ReaderStream;
 
 const DEFAULT_PAGE_NO: u32 = 1;
 const DEFAULT_PAGE_SIZE: u32 = 20;
@@ -71,6 +93,10 @@ const MAX_SQL_ROWS: u32 = 10_000;
 const LARGE_VALUE_CHUNK_SIZE: u32 = 256 * 1024;
 const LARGE_VALUE_FALLBACK_PREVIEW_BYTES: usize = 64 * 1024;
 const RESULT_PAGE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_LEGACY_DATASOURCE_IMPORT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_LEGACY_MULTIPART_BYTES: usize = MAX_LEGACY_DATASOURCE_IMPORT_BYTES + 1024 * 1024;
+const LEGACY_IMPORT_UPLOAD_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
+const LEGACY_IMPORT_CLEANUP_POLL: Duration = Duration::from_millis(250);
 const LARGE_VALUE_PREVIEW_PREFIX: &str = "CHAT2DB_LARGE_VALUE_PREVIEW:";
 const PREVIEW_TIMEOUT: Duration = Duration::from_secs(30);
 const SQL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(60);
@@ -260,10 +286,14 @@ pub struct LegacyDatasourceRequest {
     pub extend_info: Vec<LegacyConnectionProperty>,
     #[serde(default)]
     pub read_only: bool,
+    #[serde(default)]
+    pub ssh: Option<LegacySshTestRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+// These independent flags are fixed fields in Community's historical datasource DTO.
+#[allow(clippy::struct_excessive_bools)]
 pub struct LegacyDatasourceResponse {
     pub id: String,
     pub alias: String,
@@ -272,6 +302,9 @@ pub struct LegacyDatasourceResponse {
     pub url: String,
     pub user: String,
     pub password: String,
+    pub read_only: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<LegacySshTestRequest>,
     pub environment: LegacyEnvironment,
     pub environment_id: u64,
     pub extend_info: Vec<LegacyConnectionPropertyResponse>,
@@ -301,6 +334,133 @@ pub struct LegacyPage<T> {
     pub has_next_page: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyImportFileRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub database_name: String,
+    #[serde(default)]
+    pub schema_name: String,
+    #[serde(default)]
+    pub table_name: String,
+    #[serde(default)]
+    pub file_name: String,
+    #[serde(default)]
+    pub import_type: String,
+    #[serde(default = "default_true")]
+    pub contains_header: bool,
+    #[serde(default)]
+    pub tabular_encoding: TabularImportEncoding,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacySqlFileExportRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub database_name: String,
+    #[serde(default)]
+    pub schema_name: String,
+    #[serde(default)]
+    pub table_name: String,
+    #[serde(default)]
+    pub table_names: Vec<String>,
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub contain_data: bool,
+    #[serde(default)]
+    pub export_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyOtherFileExportRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub database_name: String,
+    #[serde(default)]
+    pub schema_name: String,
+    #[serde(default)]
+    pub table_name: String,
+    #[serde(default)]
+    pub table_names: Vec<String>,
+    #[serde(default)]
+    pub export_type: String,
+    #[serde(default = "default_true")]
+    pub contains_header: bool,
+    #[serde(default)]
+    pub export_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyDmlExportRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub database_name: String,
+    #[serde(default)]
+    pub schema_name: String,
+    #[serde(default)]
+    pub sql: String,
+    #[serde(default)]
+    pub original_sql: String,
+    #[serde(default)]
+    pub result_set_id: Option<u32>,
+    #[serde(default)]
+    pub export_size: String,
+    #[serde(default)]
+    pub export_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyGenerateClassRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub database_name: String,
+    #[serde(default)]
+    pub schema_name: String,
+    #[serde(default)]
+    pub table_name: String,
+    #[serde(default)]
+    pub export_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyTaskListQuery {
+    #[serde(default = "default_page_no")]
+    pub page_no: u32,
+    #[serde(default = "default_page_size")]
+    pub page_size: u32,
+    #[serde(default)]
+    pub task_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyTransferTask {
+    pub id: i64,
+    pub gmt_create: u64,
+    pub gmt_modified: u64,
+    pub data_source_id: String,
+    pub database_name: String,
+    pub schema_name: String,
+    pub table_name: Option<String>,
+    pub task_type: String,
+    pub task_status: String,
+    pub task_progress: String,
+    pub progress: String,
+    pub progress_desc: String,
+    pub current_progress: String,
+    pub task_name: String,
+    pub download_url: String,
+    pub info_log: String,
+    pub error_log: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LegacyNamespaceNode {
@@ -308,8 +468,45 @@ pub struct LegacyNamespaceNode {
     #[serde(rename = "type")]
     pub node_type: String,
     pub name: String,
-    pub data: LegacyDatasourceResponse,
+    pub data: serde_json::Value,
     pub children: Vec<Self>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyProgressResponse {
+    pub message: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyDatasourceFileUploadRequest {
+    pub file: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyDatagripUploadRequest {
+    #[serde(default)]
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyDatasourceUploadResponse {
+    pub result: String,
+    pub count: u32,
+}
+
+struct LegacyMultipartFile {
+    file_name: String,
+    content: Vec<u8>,
+}
+
+struct LegacyMysqlMultipartUpload {
+    request: LegacyImportFileRequest,
+    upload: LegacyMultipartFile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -326,6 +523,20 @@ pub struct LegacyDatabase {
 pub struct LegacySchema {
     pub name: String,
     pub system: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyMetaDatabase {
+    pub name: String,
+    pub schemas: Vec<LegacySchema>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyMetaSchemaResponse {
+    pub databases: Vec<LegacyMetaDatabase>,
+    pub schemas: Vec<LegacySchema>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -907,6 +1118,28 @@ pub struct LegacyPageQuery {
     pub search_key: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyCommunityDashboardUpdateRequest {
+    pub id: i64,
+    #[serde(flatten)]
+    pub update: UpdateCommunityDashboardRequest,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyCommunityChartUpdateRequest {
+    pub id: i64,
+    #[serde(flatten)]
+    pub update: UpdateCommunityChartRequest,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyCommunityEntityQuery {
+    pub id: i64,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LegacySavedConsoleCreateRequest {
@@ -1119,6 +1352,104 @@ pub struct LegacyDriverQuery {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LegacyDriverMutationRequest {
+    #[serde(default)]
+    pub db_type: String,
+    #[serde(default)]
+    pub jdbc_driver_class: String,
+    #[serde(default)]
+    pub jdbc_driver: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyCloneDatasourceRequest {
+    pub id: LegacyIdentifier,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyConsoleConnectQuery {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub console_id: Option<LegacyIdentifier>,
+    #[serde(default)]
+    pub database_name: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacySshTestRequest {
+    #[serde(default, rename = "use")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub host_name: String,
+    #[serde(default)]
+    pub port: String,
+    #[serde(default)]
+    pub user_name: String,
+    #[serde(default)]
+    pub local_port: String,
+    #[serde(default)]
+    pub authentication_type: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub key_file: String,
+    #[serde(default)]
+    pub passphrase: String,
+    #[serde(default)]
+    pub r_host: String,
+    #[serde(default)]
+    pub r_port: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyNamespaceRequest {
+    #[serde(default)]
+    pub id: Option<LegacyIdentifier>,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub parent_id: Option<LegacyIdentifier>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyWorkspaceNodeRef {
+    pub id: LegacyIdentifier,
+    #[serde(rename = "type")]
+    pub node_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyWorkspaceMoveRequest {
+    pub drag_node: LegacyWorkspaceNodeRef,
+    pub drop_to_node: LegacyWorkspaceNodeRef,
+    pub drop_position: i8,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyDatasourceAssignmentRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub namespace_id: Option<LegacyIdentifier>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyDatasourceExportRequest {
+    #[serde(default)]
+    pub datasource_ids: Option<Vec<LegacyIdentifier>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LegacyTableDdlExampleQuery {
     pub db_type: String,
 }
@@ -1133,6 +1464,165 @@ pub struct LegacyMetadataQuery {
     pub schema_name: String,
     #[serde(default)]
     pub database_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyErPositionRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub database_name: String,
+    #[serde(default)]
+    pub schema_name: String,
+    #[serde(default)]
+    pub position: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyAccountQuery {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub user: String,
+    #[serde(default)]
+    pub host: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyAccountCommandRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub user: String,
+    #[serde(default)]
+    pub host: String,
+    pub action_type: CommunityAccountAction,
+    #[serde(default)]
+    pub scope: Option<CommunityAccountPrivilegeScope>,
+    #[serde(default)]
+    pub database_name: Option<String>,
+    #[serde(default)]
+    pub table_name: Option<String>,
+    #[serde(default)]
+    pub privileges: Vec<String>,
+    #[serde(default)]
+    pub grant_option: bool,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub preview_token: Option<String>,
+}
+
+impl LegacyAccountCommandRequest {
+    fn core_request(&self) -> CommunityAccountCommandRequest {
+        CommunityAccountCommandRequest {
+            datasource_id: self.data_source_id.as_string(),
+            user: self.user.clone(),
+            host: self.host.clone(),
+            action_type: self.action_type,
+            scope: self.scope,
+            database_name: self.database_name.clone(),
+            table_name: self.table_name.clone(),
+            privileges: self.privileges.clone(),
+            grant_option: self.grant_option,
+            password: self.password.clone(),
+            preview_token: self.preview_token.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacySqlUtilityRequest {
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub sql: String,
+    #[serde(
+        default,
+        alias = "databaseType",
+        deserialize_with = "deserialize_string_or_default"
+    )]
+    pub db_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacySqlParserRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub console_id: Option<LegacyIdentifier>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub schema_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub sql: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacySqlCompletionActiveSnippetSlot {
+    #[serde(
+        default,
+        rename = "type",
+        deserialize_with = "deserialize_string_or_default"
+    )]
+    pub slot_type: String,
+    #[serde(default)]
+    pub replace_start: Option<u32>,
+    #[serde(default)]
+    pub replace_end: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacySqlCompletionRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub console_id: Option<LegacyIdentifier>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub schema_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub sql: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub before_sql: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub after_sql: String,
+    #[serde(default)]
+    pub cursor: Option<u32>,
+    #[serde(default)]
+    pub need_full_name: bool,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub keyword_case: String,
+    #[serde(default)]
+    pub active_snippet_slot: Option<LegacySqlCompletionActiveSnippetSlot>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LegacySqlIdentifier {
+    pub name: String,
+    pub alias: String,
+    #[serde(rename = "type")]
+    pub identifier_type: String,
+    pub identifier_database: String,
+    pub identifier_schema: String,
+    pub identifier_table: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacySqlHoverRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub console_id: Option<LegacyIdentifier>,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub schema_name: String,
+    #[serde(default)]
+    pub hover_identifier: LegacySqlIdentifier,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1210,6 +1700,8 @@ pub struct LegacyRoutineInvocationRequest {
     pub routine_type: String,
     #[serde(default, deserialize_with = "deserialize_string_or_default")]
     pub routine_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub ddl: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1365,6 +1857,10 @@ fn default_page_size() -> u32 {
     DEFAULT_PAGE_SIZE
 }
 
+const fn default_true() -> bool {
+    true
+}
+
 fn default_preview_page_size() -> u32 {
     DEFAULT_PREVIEW_PAGE_SIZE
 }
@@ -1454,18 +1950,121 @@ pub fn drivers(application: &Application, requested_type: &str) -> LegacyDriverR
     }
 }
 
+pub(crate) async fn list_community_dashboards(
+    application: &Application,
+    query: CommunityDashboardListQuery,
+) -> LegacyResult<CommunityDashboardPage> {
+    application
+        .list_community_dashboards(query)
+        .await
+        .map_err(LegacyFailure::from)
+}
+
+pub(crate) async fn get_community_dashboard(
+    application: &Application,
+    id: i64,
+) -> LegacyResult<Option<CommunityDashboard>> {
+    application
+        .get_community_dashboard(id)
+        .await
+        .map_err(LegacyFailure::from)
+}
+
+pub(crate) async fn create_community_dashboard(
+    application: &Application,
+    request: CreateCommunityDashboardRequest,
+) -> LegacyResult<i64> {
+    application
+        .create_community_dashboard(request)
+        .await
+        .map_err(LegacyFailure::from)
+}
+
+pub(crate) async fn update_community_dashboard(
+    application: &Application,
+    request: LegacyCommunityDashboardUpdateRequest,
+) -> LegacyResult<()> {
+    application
+        .update_community_dashboard(request.id, request.update)
+        .await
+        .map_err(LegacyFailure::from)
+}
+
+pub(crate) async fn delete_community_dashboard(
+    application: &Application,
+    id: i64,
+) -> LegacyResult<String> {
+    application
+        .delete_community_dashboard(id)
+        .await
+        .map(|_| "success".to_owned())
+        .map_err(LegacyFailure::from)
+}
+
+pub(crate) async fn get_community_chart(
+    application: &Application,
+    id: i64,
+) -> LegacyResult<Option<CommunityChart>> {
+    application
+        .get_community_chart(id)
+        .await
+        .map_err(LegacyFailure::from)
+}
+
+pub(crate) async fn get_community_chart_detail(
+    application: &Application,
+    query: CommunityChartDetailQuery,
+) -> LegacyResult<Option<CommunityChart>> {
+    application
+        .get_community_chart_detail(query.chart_id, query.refresh)
+        .await
+        .map_err(LegacyFailure::from)
+}
+
+pub(crate) async fn create_community_chart(
+    application: &Application,
+    request: CreateCommunityChartRequest,
+) -> LegacyResult<i64> {
+    application
+        .create_community_chart(request)
+        .await
+        .map_err(LegacyFailure::from)
+}
+
+pub(crate) async fn update_community_chart(
+    application: &Application,
+    request: LegacyCommunityChartUpdateRequest,
+) -> LegacyResult<()> {
+    application
+        .update_community_chart(request.id, request.update)
+        .await
+        .map_err(LegacyFailure::from)
+}
+
+pub(crate) async fn delete_community_chart(
+    application: &Application,
+    id: i64,
+) -> LegacyResult<String> {
+    application
+        .delete_community_chart(id)
+        .await
+        .map(|_| "success".to_owned())
+        .map_err(LegacyFailure::from)
+}
+
 /// Lists and paginates datasource records using the old page DTO.
 pub(crate) async fn list_datasources(
     application: &Application,
     query: &LegacyPageQuery,
 ) -> LegacyResult<LegacyPage<LegacyDatasourceResponse>> {
-    let mut items: Vec<LegacyDatasourceResponse> = application
-        .list_datasources()
-        .await?
-        .items
-        .into_iter()
-        .map(|datasource| datasource_response(application, datasource))
-        .collect();
+    let datasources = application.list_datasources().await?;
+    let mut items = Vec::with_capacity(datasources.items.len());
+    for datasource in datasources.items {
+        let projection = application
+            .get_datasource_edit_projection(&datasource.id)
+            .await?;
+        items.push(datasource_response(application, projection));
+    }
     if !query.search_key.trim().is_empty() {
         let needle = query.search_key.to_lowercase();
         items.retain(|item| item.alias.to_lowercase().contains(&needle));
@@ -1478,8 +2077,10 @@ pub(crate) async fn get_datasource(
     application: &Application,
     id: &LegacyIdentifier,
 ) -> LegacyResult<LegacyDatasourceResponse> {
-    let datasource = application.get_datasource(&id.as_string()).await?;
-    Ok(datasource_response(application, datasource))
+    let projection = application
+        .get_datasource_edit_projection(&id.as_string())
+        .await?;
+    Ok(datasource_response(application, projection))
 }
 
 /// Creates a datasource while keeping JDBC material inside Core's vault path.
@@ -1497,7 +2098,17 @@ pub(crate) async fn create_datasource(
             connection: Some(connection),
         })
         .await?;
-    Ok(datasource_response(application, datasource))
+    let projection = application
+        .get_datasource_edit_projection(&datasource.id)
+        .await?;
+    let mut response = datasource_response(application, projection);
+    // Create responses never echo request connection material. The edit/list APIs provide the
+    // separately sanitized projection after the caller refreshes its datasource state.
+    response.url.clear();
+    response.user.clear();
+    response.extend_info.clear();
+    response.ssh = None;
+    Ok(response)
 }
 
 /// Tests a saved or unsaved datasource without persisting an unsaved request.
@@ -1557,7 +2168,7 @@ pub(crate) async fn update_datasource(
         request.alias.trim().to_owned()
     };
     let datasource = application
-        .update_datasource(
+        .update_datasource_preserving_secrets(
             &id,
             UpdateDatasourceRequest {
                 expected_revision: existing.revision,
@@ -1567,7 +2178,10 @@ pub(crate) async fn update_datasource(
             },
         )
         .await?;
-    Ok(datasource_response(application, datasource))
+    let projection = application
+        .get_datasource_edit_projection(&datasource.id)
+        .await?;
+    Ok(datasource_response(application, projection))
 }
 
 /// Deletes a datasource using the latest revision hidden by the old API.
@@ -1581,6 +2195,933 @@ pub(crate) async fn delete_datasource(
         .delete_datasource(&id, &existing.revision)
         .await?;
     Ok(())
+}
+
+pub(crate) async fn clone_datasource(
+    application: &Application,
+    request: &LegacyCloneDatasourceRequest,
+) -> LegacyResult<String> {
+    Ok(application
+        .clone_datasource(CloneDatasourceRequest {
+            id: request.id.as_string(),
+            name: request.name.clone(),
+        })
+        .await?
+        .id)
+}
+
+pub(crate) async fn connect_datasource(
+    application: &Application,
+    id: &LegacyIdentifier,
+) -> LegacyResult<Vec<LegacyDatabase>> {
+    Ok(application
+        .connect_datasource_compatibility(&id.as_string(), "")
+        .await?
+        .databases
+        .into_iter()
+        .map(|database| LegacyDatabase {
+            name: database.name,
+            description: database.comment,
+            count: 0,
+            system: database.system,
+        })
+        .collect())
+}
+
+pub(crate) async fn close_datasource(
+    application: &Application,
+    id: &LegacyIdentifier,
+) -> LegacyResult<()> {
+    application
+        .close_datasource_compatibility(&id.as_string())
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn connect_console(
+    application: &Application,
+    request: &LegacyConsoleConnectQuery,
+) -> LegacyResult<()> {
+    application
+        .connect_console_compatibility(&request.data_source_id.as_string())
+        .await?;
+    Ok(())
+}
+
+pub(crate) fn native_driver_action(
+    application: &Application,
+    database_type: &str,
+    action: NativeDriverAction,
+) -> LegacyResult<()> {
+    let database_type = if database_type.trim().is_empty() {
+        "MYSQL"
+    } else {
+        database_type
+    };
+    application.native_driver_compatibility(database_type, action)?;
+    Ok(())
+}
+
+pub(crate) async fn test_legacy_ssh(
+    application: &Application,
+    request: &LegacySshTestRequest,
+) -> LegacyResult<bool> {
+    application
+        .test_ssh_connection(legacy_ssh_config(request)?)
+        .await?;
+    Ok(true)
+}
+
+pub(crate) async fn export_legacy_datasources(
+    application: &Application,
+    request: &LegacyDatasourceExportRequest,
+) -> LegacyResult<LegacyProgressResponse> {
+    let document = application
+        .export_community_datasources(ExportCommunityDatasourcesRequest {
+            datasource_ids: request
+                .datasource_ids
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|id| id.as_string())
+                .collect(),
+        })
+        .await?;
+    Ok(LegacyProgressResponse {
+        count: document.datasources.len(),
+        message: serde_json::to_string(&document).map_err(|_| LegacyFailure {
+            code: "internal_error".to_owned(),
+            message: "The datasource export could not be encoded".to_owned(),
+        })?,
+    })
+}
+
+pub(crate) async fn import_legacy_datasources(
+    application: &Application,
+    document: CommunityDatasourceExport,
+) -> LegacyResult<LegacyProgressResponse> {
+    let imported = application.import_community_datasources(document).await?;
+    Ok(LegacyProgressResponse {
+        count: usize::try_from(imported.count).unwrap_or(usize::MAX),
+        message: "success".to_owned(),
+    })
+}
+
+pub(crate) async fn import_installed_legacy_datasources(
+    application: &Application,
+) -> LegacyResult<LegacyProgressResponse> {
+    let outcome = application.import_legacy_community_datasources().await?;
+    Ok(LegacyProgressResponse {
+        message: "success".to_owned(),
+        count: usize::try_from(outcome.imported).unwrap_or(usize::MAX),
+    })
+}
+
+pub(crate) async fn import_legacy_datasource_file_path(
+    application: &Application,
+    request: &LegacyDatasourceFileUploadRequest,
+    format: Option<CommunityDatasourceImportFormat>,
+) -> LegacyResult<LegacyDatasourceUploadResponse> {
+    let path = legacy_datasource_upload_path(&request.file)?;
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|_| invalid_legacy_datasource_upload())?;
+    if !metadata.is_file()
+        || metadata.len() > u64::try_from(MAX_LEGACY_DATASOURCE_IMPORT_BYTES).unwrap_or(u64::MAX)
+    {
+        return Err(invalid_legacy_datasource_upload());
+    }
+    let inferred = match format {
+        Some(format) => format,
+        None => legacy_datasource_import_format(
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or_default(),
+        )?,
+    };
+    let content = tokio::fs::read(path)
+        .await
+        .map_err(|_| invalid_legacy_datasource_upload())?;
+    import_legacy_datasource_content(application, inferred, content).await
+}
+
+pub(crate) async fn import_legacy_datagrip_text(
+    application: &Application,
+    request: &LegacyDatagripUploadRequest,
+) -> LegacyResult<LegacyDatasourceUploadResponse> {
+    import_legacy_datasource_content(
+        application,
+        CommunityDatasourceImportFormat::DatagripText,
+        request.text.as_bytes().to_vec(),
+    )
+    .await
+}
+
+async fn import_legacy_datasource_content(
+    application: &Application,
+    format: CommunityDatasourceImportFormat,
+    content: Vec<u8>,
+) -> LegacyResult<LegacyDatasourceUploadResponse> {
+    if content.len() > MAX_LEGACY_DATASOURCE_IMPORT_BYTES {
+        return Err(invalid_legacy_datasource_upload());
+    }
+    let result = application
+        .import_community_datasource_file(CommunityDatasourceFileImportRequest { format, content })
+        .await?;
+    Ok(legacy_datasource_upload_response(&result))
+}
+
+fn legacy_datasource_upload_response(
+    result: &CommunityDatasourceFileImportResult,
+) -> LegacyDatasourceUploadResponse {
+    LegacyDatasourceUploadResponse {
+        result: if result.skipped == 0 {
+            String::new()
+        } else {
+            format!(
+                "Imported {} MySQL connection(s); skipped {} unsupported connection(s).",
+                result.count, result.skipped
+            )
+        },
+        count: result.count,
+    }
+}
+
+fn legacy_datasource_upload_path(value: &serde_json::Value) -> LegacyResult<PathBuf> {
+    let path = match value {
+        serde_json::Value::String(path) => Some(path.as_str()),
+        serde_json::Value::Array(paths) => paths.iter().find_map(serde_json::Value::as_str),
+        serde_json::Value::Object(file) => file
+            .get("path")
+            .or_else(|| file.get("filePath"))
+            .and_then(serde_json::Value::as_str),
+        _ => None,
+    }
+    .filter(|path| !path.trim().is_empty())
+    .ok_or_else(invalid_legacy_datasource_upload)?;
+    Ok(PathBuf::from(path))
+}
+
+fn legacy_datasource_import_format(
+    extension: &str,
+) -> LegacyResult<CommunityDatasourceImportFormat> {
+    match extension.trim().to_ascii_lowercase().as_str() {
+        "ncx" => Ok(CommunityDatasourceImportFormat::NavicatNcx),
+        "dbp" => Ok(CommunityDatasourceImportFormat::DbeaverDbp),
+        "json" => Ok(CommunityDatasourceImportFormat::Chat2dbJson),
+        _ => Err(LegacyFailure::invalid(
+            "unsupported_datasource_import_format",
+            "The datasource import file type is not supported",
+        )),
+    }
+}
+
+fn invalid_legacy_datasource_upload() -> LegacyFailure {
+    LegacyFailure::invalid(
+        "invalid_datasource_import_file",
+        "The datasource import file is invalid",
+    )
+}
+
+async fn read_legacy_multipart_file(mut multipart: Multipart) -> LegacyResult<LegacyMultipartFile> {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| invalid_legacy_datasource_upload())?
+    {
+        if field.name() != Some("file") {
+            continue;
+        }
+        let file_name = field.file_name().unwrap_or_default().to_owned();
+        let content = field
+            .bytes()
+            .await
+            .map_err(|_| invalid_legacy_datasource_upload())?
+            .to_vec();
+        if content.len() > MAX_LEGACY_DATASOURCE_IMPORT_BYTES {
+            return Err(invalid_legacy_datasource_upload());
+        }
+        return Ok(LegacyMultipartFile { file_name, content });
+    }
+    Err(invalid_legacy_datasource_upload())
+}
+
+async fn import_legacy_multipart_datasource(
+    application: &Application,
+    multipart: Multipart,
+    format: Option<CommunityDatasourceImportFormat>,
+) -> LegacyResult<LegacyDatasourceUploadResponse> {
+    let upload = read_legacy_multipart_file(multipart).await?;
+    let format = match format {
+        Some(format) => format,
+        None => legacy_datasource_import_format(
+            PathBuf::from(upload.file_name)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or_default(),
+        )?,
+    };
+    import_legacy_datasource_content(application, format, upload.content).await
+}
+
+fn invalid_legacy_mysql_upload() -> LegacyFailure {
+    LegacyFailure::invalid(
+        "invalid_import_upload",
+        "The Web import file upload is invalid",
+    )
+}
+
+fn web_import_upload_required() -> LegacyFailure {
+    LegacyFailure::invalid(
+        "web_import_upload_required",
+        "Web imports require a multipart file upload",
+    )
+}
+
+fn desktop_file_operation_required() -> LegacyFailure {
+    LegacyFailure::invalid(
+        "desktop_file_operation_required",
+        "Local file paths are available only through the Desktop IPC adapter",
+    )
+}
+
+fn reject_web_export_path(path: &str) -> LegacyResult<()> {
+    if path.trim().is_empty() {
+        Ok(())
+    } else {
+        Err(desktop_file_operation_required())
+    }
+}
+
+async fn read_legacy_mysql_multipart(
+    mut multipart: Multipart,
+) -> LegacyResult<LegacyMysqlMultipartUpload> {
+    let mut data_source_id = None;
+    let mut database_name = String::new();
+    let mut schema_name = String::new();
+    let mut table_name = String::new();
+    let mut import_type = String::new();
+    let mut contains_header = true;
+    let mut tabular_encoding = TabularImportEncoding::Plain;
+    let mut upload = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| invalid_legacy_mysql_upload())?
+    {
+        let name = field.name().unwrap_or_default().to_owned();
+        if name == "file" {
+            if upload.is_some() {
+                return Err(invalid_legacy_mysql_upload());
+            }
+            let file_name = field.file_name().unwrap_or_default().to_owned();
+            let content = field
+                .bytes()
+                .await
+                .map_err(|_| invalid_legacy_mysql_upload())?
+                .to_vec();
+            if content.len() > MAX_LEGACY_DATASOURCE_IMPORT_BYTES {
+                return Err(invalid_legacy_mysql_upload());
+            }
+            upload = Some(LegacyMultipartFile { file_name, content });
+            continue;
+        }
+
+        let value = field
+            .text()
+            .await
+            .map_err(|_| invalid_legacy_mysql_upload())?;
+        match name.as_str() {
+            "dataSourceId" => data_source_id = non_blank(&value),
+            "databaseName" => database_name = value,
+            "schemaName" => schema_name = value,
+            "tableName" => table_name = value,
+            "importType" => import_type = value,
+            "tabularEncoding" => tabular_encoding = legacy_tabular_import_encoding(&value)?,
+            "containsHeader" => {
+                contains_header = match value.trim().to_ascii_lowercase().as_str() {
+                    "true" | "1" => true,
+                    "false" | "0" => false,
+                    _ => return Err(invalid_legacy_mysql_upload()),
+                };
+            }
+            _ => {}
+        }
+    }
+
+    let data_source_id = data_source_id.ok_or_else(invalid_legacy_mysql_upload)?;
+    let upload = upload.ok_or_else(invalid_legacy_mysql_upload)?;
+    Ok(LegacyMysqlMultipartUpload {
+        request: LegacyImportFileRequest {
+            data_source_id: LegacyIdentifier::Text(data_source_id),
+            database_name,
+            schema_name,
+            table_name,
+            file_name: upload.file_name.clone(),
+            import_type,
+            contains_header,
+            tabular_encoding,
+        },
+        upload,
+    })
+}
+
+async fn import_legacy_mysql_multipart(
+    application: &Application,
+    multipart: Multipart,
+    sql_file_route: bool,
+) -> LegacyResult<i64> {
+    let LegacyMysqlMultipartUpload { request, upload } =
+        read_legacy_mysql_multipart(multipart).await?;
+    let format = if sql_file_route {
+        TransferFileFormat::Sql
+    } else {
+        legacy_transfer_format(&request.import_type, "importType")?
+    };
+    let (media_type, format_name) = match format {
+        TransferFileFormat::Csv => ("text/csv", "CSV"),
+        TransferFileFormat::Xls => ("application/vnd.ms-excel", "XLS"),
+        TransferFileFormat::Xlsx => (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "XLSX",
+        ),
+        TransferFileFormat::Sql => ("application/sql; charset=utf-8", "SQL"),
+    };
+    let expires_at_ms = i64::try_from(unix_epoch_millis())
+        .unwrap_or(i64::MAX)
+        .saturating_add(LEGACY_IMPORT_UPLOAD_TTL_MS);
+    let storage = legacy_storage(application)?;
+    let cleanup_storage = storage.clone();
+    let file_name = upload.file_name;
+    let extension = format.extension().to_owned();
+    let staged = legacy_storage_call(move || {
+        let mut writer = storage.begin_transfer_artifact(
+            None,
+            &file_name,
+            media_type,
+            format_name,
+            &extension,
+            Some(expires_at_ms),
+        )?;
+        writer.write_all(&upload.content).map_err(|_| {
+            StorageError::InvalidTransfer("uploaded import file could not be stored")
+        })?;
+        let artifact = writer.finish()?;
+        let resolved = match storage.resolve_transfer_artifact(&artifact.id) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                let _ = storage.delete_temporary_transfer_artifact(&artifact.id);
+                return Err(error);
+            }
+        };
+        Ok((artifact.id, resolved))
+    })
+    .await?;
+    let (artifact_id, resolved) = staged;
+    let Some(file_path) = resolved.path.to_str().map(str::to_owned) else {
+        drop(resolved.file);
+        cleanup_legacy_import_upload(cleanup_storage, artifact_id).await;
+        return Err(invalid_legacy_mysql_upload());
+    };
+    drop(resolved.file);
+    let table_name = non_blank(&request.table_name);
+    let accepted = match application
+        .import_mysql_file(ImportFileRequest {
+            datasource_id: request.data_source_id.as_string(),
+            database_name: request.database_name,
+            schema_name: request.schema_name,
+            table_name: if format == TransferFileFormat::Sql {
+                None
+            } else {
+                table_name
+            },
+            file_path,
+            format,
+            contains_header: !sql_file_route && request.contains_header,
+            tabular_encoding: request.tabular_encoding,
+        })
+        .await
+    {
+        Ok(accepted) => accepted,
+        Err(error) => {
+            cleanup_legacy_import_upload(cleanup_storage, artifact_id).await;
+            return Err(error.into());
+        }
+    };
+    schedule_legacy_import_upload_cleanup(
+        application.clone(),
+        cleanup_storage,
+        accepted.task_id,
+        artifact_id,
+    );
+    Ok(accepted.task_id)
+}
+
+async fn cleanup_legacy_import_upload(storage: Storage, artifact_id: String) {
+    let cleanup = tokio::task::spawn_blocking(move || {
+        storage.delete_temporary_transfer_artifact(&artifact_id)
+    })
+    .await;
+    match cleanup {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => tracing::warn!(%error, "temporary Web import artifact cleanup failed"),
+        Err(error) => tracing::warn!(%error, "temporary Web import artifact cleanup task failed"),
+    }
+}
+
+fn schedule_legacy_import_upload_cleanup(
+    application: Application,
+    storage: Storage,
+    task_id: i64,
+    artifact_id: String,
+) {
+    tokio::spawn(async move {
+        loop {
+            match application.transfer_task(task_id).await {
+                Ok(task)
+                    if matches!(
+                        task.status,
+                        TransferTaskStatus::Succeeded
+                            | TransferTaskStatus::Failed
+                            | TransferTaskStatus::Cancelled
+                            | TransferTaskStatus::Interrupted
+                    ) =>
+                {
+                    break;
+                }
+                Ok(_) => tokio::time::sleep(LEGACY_IMPORT_CLEANUP_POLL).await,
+                Err(error) if error.kind() == AppErrorKind::NotFound => break,
+                Err(error) => {
+                    tracing::warn!(%error, task_id, "temporary Web import cleanup is waiting for task state");
+                    tokio::time::sleep(LEGACY_IMPORT_CLEANUP_POLL).await;
+                }
+            }
+        }
+        cleanup_legacy_import_upload(storage, artifact_id).await;
+    });
+}
+
+async fn import_legacy_mysql_http(
+    application: &Application,
+    request: axum::extract::Request,
+    sql_file_route: bool,
+) -> LegacyResult<i64> {
+    let is_multipart = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .to_ascii_lowercase()
+                .starts_with("multipart/form-data")
+        });
+    if !is_multipart {
+        return Err(web_import_upload_required());
+    }
+    let multipart = Multipart::from_request(request, application)
+        .await
+        .map_err(|_| invalid_legacy_mysql_upload())?;
+    import_legacy_mysql_multipart(application, multipart, sql_file_route).await
+}
+
+/// Starts a desktop-only import from a path returned by the platform file picker.
+/// HTTP handlers must stage uploaded bytes through [`import_legacy_mysql_multipart`].
+pub(crate) async fn import_legacy_mysql_desktop_file(
+    application: &Application,
+    request: &LegacyImportFileRequest,
+    sql_file_route: bool,
+) -> LegacyResult<i64> {
+    let format = if sql_file_route {
+        TransferFileFormat::Sql
+    } else {
+        legacy_transfer_format(&request.import_type, "importType")?
+    };
+    let table_name = non_blank(&request.table_name);
+    let accepted = application
+        .import_mysql_file(ImportFileRequest {
+            datasource_id: request.data_source_id.as_string(),
+            database_name: request.database_name.clone(),
+            schema_name: request.schema_name.clone(),
+            table_name: if format == TransferFileFormat::Sql {
+                None
+            } else {
+                table_name
+            },
+            file_path: request.file_name.clone(),
+            format,
+            contains_header: !sql_file_route && request.contains_header,
+            tabular_encoding: request.tabular_encoding,
+        })
+        .await?;
+    Ok(accepted.task_id)
+}
+
+pub(crate) async fn export_legacy_mysql_sql_file(
+    application: &Application,
+    request: &LegacySqlFileExportRequest,
+) -> LegacyResult<i64> {
+    let mut table_names: Vec<String> = request
+        .table_names
+        .iter()
+        .filter_map(|name| non_blank(name))
+        .collect();
+    if table_names.is_empty()
+        && let Some(table_name) = non_blank(&request.table_name)
+    {
+        table_names.push(table_name);
+    }
+    let scope = match request.scope.trim().to_ascii_uppercase().as_str() {
+        "" | "ALL" => TransferSqlScope::All,
+        "SCHEMA" => TransferSqlScope::Schema,
+        "TABLE" => TransferSqlScope::Table,
+        _ => {
+            return Err(LegacyFailure::invalid(
+                "invalid_export_scope",
+                "scope must be ALL, SCHEMA, or TABLE",
+            ));
+        }
+    };
+    let accepted = application
+        .export_mysql_sql_file(SqlFileExportRequest {
+            datasource_id: request.data_source_id.as_string(),
+            database_name: request.database_name.clone(),
+            schema_name: request.schema_name.clone(),
+            table_names,
+            scope,
+            export_path: non_blank(&request.export_path),
+        })
+        .await?;
+    Ok(accepted.task_id)
+}
+
+pub(crate) async fn export_legacy_mysql_other_file(
+    application: &Application,
+    request: &LegacyOtherFileExportRequest,
+) -> LegacyResult<i64> {
+    let mut table_names: Vec<String> = request
+        .table_names
+        .iter()
+        .filter_map(|name| non_blank(name))
+        .collect();
+    if table_names.is_empty()
+        && let Some(table_name) = non_blank(&request.table_name)
+    {
+        table_names.push(table_name);
+    }
+    let accepted = application
+        .export_mysql_other_file(OtherFileExportRequest {
+            datasource_id: request.data_source_id.as_string(),
+            database_name: request.database_name.clone(),
+            schema_name: request.schema_name.clone(),
+            table_names,
+            format: legacy_transfer_format(&request.export_type, "exportType")?,
+            contains_header: request.contains_header,
+            export_path: non_blank(&request.export_path),
+        })
+        .await?;
+    Ok(accepted.task_id)
+}
+
+pub(crate) async fn list_legacy_transfer_tasks(
+    application: &Application,
+    query: &LegacyTaskListQuery,
+) -> LegacyResult<LegacyPage<LegacyTransferTask>> {
+    let statuses = legacy_transfer_status_filter(&query.task_status)?;
+    let page = application
+        .list_transfer_tasks_by_statuses(query.page_no, query.page_size, &statuses)
+        .await?;
+    Ok(LegacyPage {
+        data: page
+            .items
+            .into_iter()
+            .map(legacy_transfer_task_for_web)
+            .collect(),
+        page_no: page.page_no,
+        page_size: page.page_size,
+        total: usize::try_from(page.total).unwrap_or(usize::MAX),
+        has_next_page: u64::from(page.page_no).saturating_mul(u64::from(page.page_size))
+            < page.total,
+    })
+}
+
+pub(crate) async fn get_legacy_transfer_task(
+    application: &Application,
+    id: &LegacyIdentifier,
+) -> LegacyResult<LegacyTransferTask> {
+    let task = application
+        .transfer_task(legacy_transfer_task_id(id)?)
+        .await?;
+    Ok(legacy_transfer_task_for_web(task))
+}
+
+async fn list_legacy_transfer_tasks_for_desktop(
+    application: &Application,
+    query: &LegacyTaskListQuery,
+) -> LegacyResult<LegacyPage<LegacyTransferTask>> {
+    let statuses = legacy_transfer_status_filter(&query.task_status)?;
+    let page = application
+        .list_transfer_tasks_by_statuses(query.page_no, query.page_size, &statuses)
+        .await?;
+    let mut data = Vec::with_capacity(page.items.len());
+    for task in page.items {
+        data.push(legacy_transfer_task_for_desktop(application, task).await?);
+    }
+    Ok(LegacyPage {
+        data,
+        page_no: page.page_no,
+        page_size: page.page_size,
+        total: usize::try_from(page.total).unwrap_or(usize::MAX),
+        has_next_page: u64::from(page.page_no).saturating_mul(u64::from(page.page_size))
+            < page.total,
+    })
+}
+
+async fn get_legacy_transfer_task_for_desktop(
+    application: &Application,
+    id: &LegacyIdentifier,
+) -> LegacyResult<LegacyTransferTask> {
+    let task = application
+        .transfer_task(legacy_transfer_task_id(id)?)
+        .await?;
+    legacy_transfer_task_for_desktop(application, task).await
+}
+
+pub(crate) async fn stop_legacy_transfer_task(
+    application: &Application,
+    id: &LegacyIdentifier,
+) -> LegacyResult<()> {
+    application
+        .stop_transfer_task(legacy_transfer_task_id(id)?)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn legacy_transfer_task_download(
+    application: &Application,
+    id: &LegacyIdentifier,
+) -> LegacyResult<TransferArtifactDownload> {
+    Ok(application
+        .transfer_task_artifact_download(legacy_transfer_task_id(id)?)
+        .await?)
+}
+
+pub(crate) async fn export_legacy_mysql_dml(
+    application: &Application,
+    request: &LegacyDmlExportRequest,
+) -> LegacyResult<TransferArtifactDownload> {
+    let export_size = match request.export_size.trim().to_ascii_uppercase().as_str() {
+        "CURRENT_PAGE" => DmlExportSize::CurrentPage,
+        "" | "ALL" => DmlExportSize::All,
+        _ => {
+            return Err(LegacyFailure::invalid(
+                "invalid_export_size",
+                "exportSize must be CURRENT_PAGE or ALL",
+            ));
+        }
+    };
+    let format = match request.export_type.trim().to_ascii_uppercase().as_str() {
+        "CSV" => DmlExportFormat::Csv,
+        "EXCEL" | "XLSX" => DmlExportFormat::Xlsx,
+        "INSERT" => DmlExportFormat::Insert,
+        _ => {
+            return Err(LegacyFailure::invalid(
+                "invalid_export_type",
+                "exportType must be CSV, EXCEL, XLSX, or INSERT",
+            ));
+        }
+    };
+    let original_sql = if request.original_sql.trim().is_empty() {
+        request.sql.clone()
+    } else {
+        request.original_sql.clone()
+    };
+    let artifact = application
+        .export_mysql_dml(DmlExportRequest {
+            datasource_id: request.data_source_id.as_string(),
+            database_name: request.database_name.clone(),
+            schema_name: request.schema_name.clone(),
+            sql: request.sql.clone(),
+            original_sql,
+            result_set_id: request.result_set_id,
+            export_size,
+            format,
+        })
+        .await?;
+    Ok(application.transfer_artifact_download(&artifact.id).await?)
+}
+
+pub(crate) async fn generate_legacy_mysql_classes(
+    application: &Application,
+    request: &LegacyGenerateClassRequest,
+) -> LegacyResult<()> {
+    application
+        .generate_mysql_classes(GenerateMysqlClassRequest {
+            datasource_id: request.data_source_id.as_string(),
+            database_name: request.database_name.clone(),
+            schema_name: request.schema_name.clone(),
+            table_name: request.table_name.clone(),
+            export_path: request.export_path.clone(),
+        })
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn generate_legacy_mysql_class_archive(
+    application: &Application,
+    request: &LegacyGenerateClassRequest,
+) -> LegacyResult<TransferArtifactDownload> {
+    reject_web_export_path(&request.export_path)?;
+    let artifact = application
+        .generate_mysql_class_archive(GenerateMysqlClassRequest {
+            datasource_id: request.data_source_id.as_string(),
+            database_name: request.database_name.clone(),
+            schema_name: request.schema_name.clone(),
+            table_name: request.table_name.clone(),
+            export_path: String::new(),
+        })
+        .await?;
+    Ok(application.transfer_artifact_download(&artifact.id).await?)
+}
+
+fn legacy_transfer_format(value: &str, field: &'static str) -> LegacyResult<TransferFileFormat> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "CSV" => Ok(TransferFileFormat::Csv),
+        "XLS" => Ok(TransferFileFormat::Xls),
+        "XLSX" | "EXCEL" => Ok(TransferFileFormat::Xlsx),
+        "SQL" => Ok(TransferFileFormat::Sql),
+        _ => Err(LegacyFailure {
+            code: "invalid_transfer_format".to_owned(),
+            message: format!("{field} must be CSV, XLS, XLSX, or SQL"),
+        }),
+    }
+}
+
+fn legacy_tabular_import_encoding(value: &str) -> LegacyResult<TabularImportEncoding> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "" | "PLAIN" => Ok(TabularImportEncoding::Plain),
+        "CHAT2DB_V1" => Ok(TabularImportEncoding::Chat2dbV1),
+        _ => Err(LegacyFailure::invalid(
+            "invalid_tabular_import_encoding",
+            "tabularEncoding must be PLAIN or CHAT2DB_V1",
+        )),
+    }
+}
+
+fn legacy_transfer_status_filter(value: &str) -> LegacyResult<Vec<TransferTaskStatus>> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "" => Ok(Vec::new()),
+        "INIT" => Ok(vec![TransferTaskStatus::Queued]),
+        "PROCESSING" | "RUNNING" => Ok(vec![TransferTaskStatus::Running]),
+        "FINISHED" => Ok(vec![TransferTaskStatus::Succeeded]),
+        "ERROR" => Ok(vec![
+            TransferTaskStatus::Failed,
+            TransferTaskStatus::Interrupted,
+        ]),
+        "STOP" => Ok(vec![TransferTaskStatus::Cancelled]),
+        _ => Err(LegacyFailure::invalid(
+            "invalid_task_status",
+            "taskStatus is not supported",
+        )),
+    }
+}
+
+fn legacy_transfer_task_id(id: &LegacyIdentifier) -> LegacyResult<i64> {
+    let id = id
+        .as_string()
+        .parse::<i64>()
+        .map_err(|_| LegacyFailure::invalid("invalid_task_id", "id must be a task number"))?;
+    if id <= 0 {
+        return Err(LegacyFailure::invalid(
+            "invalid_task_id",
+            "id must be a positive task number",
+        ));
+    }
+    Ok(id)
+}
+
+fn legacy_transfer_task_for_web(task: TransferTask) -> LegacyTransferTask {
+    let download_url = task.artifact_id.as_ref().map_or_else(String::new, |_| {
+        format!("/api/task/download?id={}", task.id)
+    });
+    legacy_transfer_task(task, download_url)
+}
+
+async fn legacy_transfer_task_for_desktop(
+    application: &Application,
+    task: TransferTask,
+) -> LegacyResult<LegacyTransferTask> {
+    let download_url = if task.artifact_id.is_some() {
+        application
+            .transfer_task_artifact_download(task.id)
+            .await?
+            .path
+            .to_str()
+            .map(str::to_owned)
+            .ok_or_else(|| LegacyFailure {
+                code: "invalid_transfer_artifact_path".to_owned(),
+                message: "The transfer artifact path cannot be represented as UTF-8".to_owned(),
+            })?
+    } else {
+        String::new()
+    };
+    Ok(legacy_transfer_task(task, download_url))
+}
+
+fn legacy_transfer_task(task: TransferTask, download_url: String) -> LegacyTransferTask {
+    let task_status = match task.status {
+        TransferTaskStatus::Queued => "INIT",
+        TransferTaskStatus::Running => "RUNNING",
+        TransferTaskStatus::Succeeded => "FINISHED",
+        TransferTaskStatus::Failed | TransferTaskStatus::Interrupted => "ERROR",
+        TransferTaskStatus::Cancelled => "STOP",
+    };
+    let task_type = match task.kind {
+        TransferTaskKind::ImportFile => "UPLOAD_TABLE_DATA",
+        TransferTaskKind::ExportSql | TransferTaskKind::ExportFile => "DOWNLOAD_TABLE_STRUCTURE",
+    };
+    let task_progress = transfer_progress_percent(&task);
+    LegacyTransferTask {
+        id: task.id,
+        gmt_create: task.created_at_ms.parse().unwrap_or_default(),
+        gmt_modified: task.updated_at_ms.parse().unwrap_or_default(),
+        data_source_id: task.datasource_id,
+        database_name: task.database_name,
+        schema_name: task.schema_name,
+        table_name: task.table_name,
+        task_type: task_type.to_owned(),
+        task_status: task_status.to_owned(),
+        task_progress,
+        progress: task.progress_current,
+        current_progress: task.progress_description.clone(),
+        progress_desc: task.progress_description,
+        task_name: task.task_name,
+        download_url,
+        info_log: task.info_log,
+        error_log: task.error_log,
+    }
+}
+
+fn transfer_progress_percent(task: &TransferTask) -> String {
+    if task.status == TransferTaskStatus::Succeeded {
+        return "100".to_owned();
+    }
+    let current = task.progress_current.parse::<u128>().unwrap_or_default();
+    task.progress_total
+        .as_deref()
+        .and_then(|total| total.parse::<u128>().ok())
+        .filter(|total| *total > 0)
+        .map_or_else(
+            || "0".to_owned(),
+            |total| {
+                current
+                    .saturating_mul(100)
+                    .checked_div(total)
+                    .unwrap_or_default()
+                    .min(100)
+                    .to_string()
+            },
+        )
 }
 
 pub(crate) async fn create_saved_console(
@@ -1805,26 +3346,745 @@ pub(crate) async fn list_operation_logs(
         })
 }
 
-/// Builds the flat namespace tree used when no custom grouping exists.
+/// Builds the persisted Community namespace tree without exposing connection secrets.
 pub(crate) async fn namespace_tree(
     application: &Application,
 ) -> LegacyResult<Vec<LegacyNamespaceNode>> {
-    Ok(application
-        .list_datasources()
-        .await?
+    let listed = application.list_datasources().await?;
+    let mut datasources = HashMap::with_capacity(listed.items.len());
+    for datasource in listed.items {
+        let projection = application
+            .get_datasource_edit_projection(&datasource.id)
+            .await?;
+        datasources.insert(datasource.id, projection);
+    }
+    let tree = application.workspace_tree().await?;
+    let nodes = tree
         .items
         .into_iter()
-        .map(|datasource| {
+        .map(|node| legacy_workspace_node(application, node, &mut datasources))
+        .collect::<LegacyResult<Vec<_>>>()?;
+    if !datasources.is_empty() {
+        return Err(LegacyFailure {
+            code: "workspace_tree_incomplete".to_owned(),
+            message: "The datasource workspace tree is incomplete".to_owned(),
+        });
+    }
+    Ok(nodes)
+}
+
+fn legacy_workspace_node(
+    application: &Application,
+    node: WorkspaceTreeNode,
+    datasources: &mut HashMap<String, DatasourceEditProjection>,
+) -> LegacyResult<LegacyNamespaceNode> {
+    let WorkspaceTreeNode {
+        id,
+        node_type,
+        name,
+        children,
+        ..
+    } = node;
+    let children = children
+        .into_iter()
+        .map(|child| legacy_workspace_node(application, child, datasources))
+        .collect::<LegacyResult<Vec<_>>>()?;
+    match node_type {
+        WorkspaceNodeKind::Namespace => Ok(LegacyNamespaceNode {
+            id: id.clone(),
+            node_type: "NAMESPACE".to_owned(),
+            name: name.clone(),
+            data: serde_json::json!({
+                "id": id,
+                "name": name,
+                "dataSources": []
+            }),
+            children,
+        }),
+        WorkspaceNodeKind::DataSource => {
+            let datasource = datasources.remove(&id).ok_or_else(|| LegacyFailure {
+                code: "workspace_datasource_not_found".to_owned(),
+                message: "A datasource referenced by the workspace tree does not exist".to_owned(),
+            })?;
             let response = datasource_response(application, datasource);
-            LegacyNamespaceNode {
-                id: response.id.clone(),
+            Ok(LegacyNamespaceNode {
+                id,
                 node_type: "DATA_SOURCE".to_owned(),
-                name: response.alias.clone(),
-                data: response,
-                children: Vec::new(),
-            }
+                name,
+                data: serialize_data(response)?,
+                children,
+            })
+        }
+    }
+}
+
+pub(crate) async fn create_namespace(
+    application: &Application,
+    request: &LegacyNamespaceRequest,
+) -> LegacyResult<String> {
+    Ok(application
+        .create_workspace_namespace(CreateWorkspaceNamespaceRequest {
+            name: request.name.clone(),
+            parent_id: request.parent_id.as_ref().map(LegacyIdentifier::as_string),
         })
-        .collect())
+        .await?
+        .id)
+}
+
+pub(crate) async fn update_namespace(
+    application: &Application,
+    request: &LegacyNamespaceRequest,
+) -> LegacyResult<()> {
+    let id = request
+        .id
+        .as_ref()
+        .ok_or_else(|| LegacyFailure::invalid("invalid_workspace_operation", "id is required"))?;
+    application
+        .update_workspace_namespace(UpdateWorkspaceNamespaceRequest {
+            id: id.as_string(),
+            name: request.name.clone(),
+        })
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn delete_namespace(
+    application: &Application,
+    request: &LegacyNamespaceRequest,
+) -> LegacyResult<()> {
+    let id = request
+        .id
+        .as_ref()
+        .ok_or_else(|| LegacyFailure::invalid("invalid_workspace_operation", "id is required"))?;
+    application
+        .delete_workspace_namespace(&id.as_string())
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn move_namespace_node(
+    application: &Application,
+    request: LegacyWorkspaceMoveRequest,
+) -> LegacyResult<()> {
+    application
+        .move_workspace_node(MoveWorkspaceNodeRequest {
+            drag_node: legacy_workspace_node_ref(&request.drag_node)?,
+            drop_to_node: legacy_workspace_node_ref(&request.drop_to_node)?,
+            drop_position: request.drop_position,
+        })
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn assign_datasource_namespace(
+    application: &Application,
+    request: &LegacyDatasourceAssignmentRequest,
+) -> LegacyResult<()> {
+    application
+        .assign_datasource_namespace(chat2db_contract::AssignDatasourceNamespaceRequest {
+            datasource_id: request.data_source_id.as_string(),
+            namespace_id: request
+                .namespace_id
+                .as_ref()
+                .map(LegacyIdentifier::as_string),
+        })
+        .await?;
+    Ok(())
+}
+
+fn legacy_workspace_node_ref(reference: &LegacyWorkspaceNodeRef) -> LegacyResult<WorkspaceNodeRef> {
+    let node_type = match reference.node_type.trim().to_ascii_uppercase().as_str() {
+        "NAMESPACE" => WorkspaceNodeKind::Namespace,
+        "DATA_SOURCE" | "DATASOURCE" => WorkspaceNodeKind::DataSource,
+        _ => {
+            return Err(LegacyFailure::invalid(
+                "invalid_workspace_operation",
+                "workspace node type must be NAMESPACE or DATA_SOURCE",
+            ));
+        }
+    };
+    Ok(WorkspaceNodeRef {
+        id: reference.id.as_string(),
+        node_type,
+    })
+}
+
+pub(crate) async fn format_legacy_sql(
+    application: &Application,
+    request: &LegacySqlUtilityRequest,
+) -> LegacyResult<String> {
+    let database_type = legacy_mysql_utility_database_type(&request.db_type)?;
+    Ok(application
+        .format_community_sql(FormatCommunitySqlRequest {
+            database_type,
+            sql: request.sql.clone(),
+        })
+        .await?
+        .sql)
+}
+
+pub(crate) async fn validate_legacy_select(
+    application: &Application,
+    request: &LegacySqlUtilityRequest,
+) -> LegacyResult<bool> {
+    let database_type = legacy_mysql_utility_database_type(&request.db_type)?;
+    Ok(application
+        .parse_community_sql(chat2db_contract::ParseCommunitySqlRequest {
+            database_type,
+            sql: request.sql.clone(),
+        })
+        .await?
+        .is_select)
+}
+
+pub(crate) async fn parse_legacy_sql(
+    application: &Application,
+    request: &LegacySqlParserRequest,
+) -> LegacyResult<serde_json::Value> {
+    let datasource_id = request.data_source_id.as_string();
+    let database_type = resolve_mysql_database_type(application, &datasource_id, "").await?;
+    let validation = application
+        .validate_community_sql(ValidateCommunitySqlRequest {
+            database_type,
+            sql: request.sql.clone(),
+        })
+        .await?;
+
+    let mut search_from = 0;
+    let statements = validation
+        .statements
+        .iter()
+        .map(|statement| {
+            let (start, end) = locate_statement(&request.sql, &statement.sql, search_from);
+            search_from = end;
+            let (start_row, start_column) = utf16_line_column(&request.sql, start);
+            let (end_row, end_column) = utf16_line_column(&request.sql, end);
+            serde_json::json!({
+                "sql": statement.sql,
+                "sqlStartRowNum": start_row,
+                "sqlStartColNum": start_column,
+                "sqlEndRowNum": end_row,
+                "sqlEndColNum": end_column,
+                "type": statement.kind,
+                "statementType": statement.statement_type,
+                "comment": "",
+                "identifiers": [],
+                "tableColumns": [],
+                "insertValueMappings": []
+            })
+        })
+        .collect::<Vec<_>>();
+    let marks = validation
+        .diagnostics
+        .into_iter()
+        .map(|diagnostic| {
+            serde_json::json!({
+                "endLineNum": diagnostic.end_line,
+                "startLineNum": diagnostic.start_line,
+                "startColNum": diagnostic.start_column,
+                "endColNum": diagnostic.end_column,
+                "message": diagnostic.message,
+                "type": "error"
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({
+        "sqlStatementList": statements,
+        "markMessageList": marks
+    }))
+}
+
+pub(crate) async fn complete_legacy_sql(
+    application: &Application,
+    request: &LegacySqlCompletionRequest,
+) -> LegacyResult<serde_json::Value> {
+    let datasource_id = request.data_source_id.as_string();
+    let database_type = resolve_mysql_database_type(application, &datasource_id, "").await?;
+    let sql = if request.sql.is_empty() {
+        format!("{}{}", request.before_sql, request.after_sql)
+    } else {
+        request.sql.clone()
+    };
+    let cursor_utf16 = request
+        .cursor
+        .unwrap_or_else(|| utf16_len(&request.before_sql));
+    let keyword_case = match request.keyword_case.trim().to_ascii_uppercase().as_str() {
+        "LOWER" => "LOWER",
+        _ => "UPPER",
+    }
+    .to_owned();
+    let active_snippet_slot = request.active_snippet_slot.as_ref().and_then(|slot| {
+        match (slot.replace_start, slot.replace_end) {
+            (Some(replace_start_utf16), Some(replace_end_utf16))
+                if !slot.slot_type.trim().is_empty() =>
+            {
+                Some(CommunitySqlCompletionActiveSnippetSlot {
+                    r#type: slot.slot_type.clone(),
+                    replace_start_utf16,
+                    replace_end_utf16,
+                })
+            }
+            _ => None,
+        }
+    });
+    let completion = application
+        .complete_community_sql(CompleteCommunitySqlRequest {
+            datasource_id,
+            database_type,
+            database_name: request.database_name.clone(),
+            schema_name: request.schema_name.clone(),
+            sql,
+            cursor_utf16,
+            min_prefix_length: 0,
+            need_full_name: request.need_full_name,
+            keyword_case,
+            active_snippet_slot,
+        })
+        .await?;
+    let mut value = serde_json::to_value(completion).map_err(|_| LegacyFailure {
+        code: "internal_error".to_owned(),
+        message: "The SQL completion response could not be encoded".to_owned(),
+    })?;
+    if let Some(response) = value.as_object_mut() {
+        rename_json_field(response, "replaceStartUtf16", "replaceStart");
+        rename_json_field(response, "replaceEndUtf16", "replaceEnd");
+        if let Some(candidates) = response
+            .get_mut("candidates")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for candidate in candidates {
+                if let Some(candidate) = candidate.as_object_mut() {
+                    rename_json_field(candidate, "replaceStartUtf16", "replaceStart");
+                    rename_json_field(candidate, "replaceEndUtf16", "replaceEnd");
+                }
+            }
+        }
+    }
+    Ok(value)
+}
+
+pub(crate) async fn legacy_sql_keywords(
+    application: &Application,
+    request: &LegacyMetadataQuery,
+) -> LegacyResult<serde_json::Value> {
+    let datasource_id = request.data_source_id.as_string();
+    let database_type =
+        resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
+    let datasource_name = application.get_datasource(&datasource_id).await?.name;
+    let databases = application
+        .list_community_databases(ListCommunityDatabasesRequest {
+            datasource_id: datasource_id.clone(),
+            database_type: database_type.clone(),
+        })
+        .await?
+        .items;
+
+    let database_name = request.database_name.trim();
+    if database_name.is_empty() {
+        return Ok(legacy_sql_keyword_payload(
+            &datasource_name,
+            databases,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ));
+    }
+
+    let schemas = application
+        .list_community_schemas(ListCommunitySchemasRequest {
+            datasource_id: datasource_id.clone(),
+            database_type: database_type.clone(),
+            database_name: database_name.to_owned(),
+        })
+        .await?
+        .items;
+    let tables = application
+        .list_community_tables(ListCommunityTablesRequest {
+            datasource_id: datasource_id.clone(),
+            database_type: database_type.clone(),
+            database_name: database_name.to_owned(),
+            schema_name: request.schema_name.clone(),
+            table_name_pattern: String::new(),
+        })
+        .await?
+        .items;
+    let views = application
+        .list_community_views(ListCommunityViewsRequest {
+            datasource_id: datasource_id.clone(),
+            database_type: database_type.clone(),
+            database_name: database_name.to_owned(),
+            schema_name: request.schema_name.clone(),
+            view_name_pattern: String::new(),
+        })
+        .await?
+        .items;
+    let functions = application
+        .list_community_functions(ListCommunityFunctionsRequest {
+            datasource_id: datasource_id.clone(),
+            database_type: database_type.clone(),
+            database_name: database_name.to_owned(),
+            schema_name: request.schema_name.clone(),
+        })
+        .await?
+        .items;
+    let procedures = application
+        .list_community_procedures(ListCommunityProceduresRequest {
+            datasource_id,
+            database_type,
+            database_name: database_name.to_owned(),
+            schema_name: request.schema_name.clone(),
+        })
+        .await?
+        .items;
+
+    Ok(legacy_sql_keyword_payload(
+        &datasource_name,
+        databases,
+        schemas,
+        tables,
+        views,
+        functions,
+        procedures,
+    ))
+}
+
+fn legacy_sql_keyword_payload(
+    datasource_name: &str,
+    databases: Vec<CommunityDatabase>,
+    schemas: Vec<CommunitySchema>,
+    tables: Vec<CommunityTable>,
+    views: Vec<CommunityTable>,
+    functions: Vec<CommunityFunction>,
+    procedures: Vec<CommunityProcedure>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "databases": databases.into_iter().map(|database| serde_json::json!({
+            "datasourceName": datasource_name,
+            "databaseName": database.name,
+            "insertText": database.name
+        })).collect::<Vec<_>>(),
+        "schemas": schemas.into_iter().map(|schema| serde_json::json!({
+            "datasourceName": datasource_name,
+            "databaseName": schema.database_name,
+            "schemaName": schema.name,
+            "insertText": schema.name
+        })).collect::<Vec<_>>(),
+        "tables": tables.into_iter().map(|table| serde_json::json!({
+            "datasourceName": datasource_name,
+            "databaseName": table.database_name,
+            "schemaName": table.schema_name,
+            "tableName": table.name,
+            "tableAlias": "",
+            "comment": table.comment,
+            "insertText": table.name
+        })).collect::<Vec<_>>(),
+        "views": views.into_iter().map(|view| serde_json::json!({
+            "datasourceName": datasource_name,
+            "databaseName": view.database_name,
+            "schemaName": view.schema_name,
+            "viewName": view.name,
+            "insertText": view.name
+        })).collect::<Vec<_>>(),
+        "functions": functions.into_iter().map(|function| serde_json::json!({
+            "datasourceName": datasource_name,
+            "databaseName": function.database_name,
+            "schemaName": function.schema_name,
+            "functionName": function.name,
+            "returnType": "",
+            "parameters": [],
+            "insertText": function.name
+        })).collect::<Vec<_>>(),
+        "procedures": procedures.into_iter().map(|procedure| serde_json::json!({
+            "datasourceName": datasource_name,
+            "databaseName": procedure.database_name,
+            "schemaName": procedure.schema_name,
+            "procedureName": procedure.name,
+            "returnType": "",
+            "parameters": [],
+            "insertText": procedure.name
+        })).collect::<Vec<_>>()
+    })
+}
+
+pub(crate) async fn legacy_sql_hover(
+    application: &Application,
+    request: &LegacySqlHoverRequest,
+) -> LegacyResult<Vec<serde_json::Value>> {
+    let datasource_id = request.data_source_id.as_string();
+    let database_type = resolve_mysql_database_type(application, &datasource_id, "").await?;
+    let datasource_name = application.get_datasource(&datasource_id).await?.name;
+    let database_name = if request
+        .hover_identifier
+        .identifier_database
+        .trim()
+        .is_empty()
+    {
+        request.database_name.clone()
+    } else {
+        request.hover_identifier.identifier_database.clone()
+    };
+    let schema_name = if request.hover_identifier.identifier_schema.trim().is_empty() {
+        request.schema_name.clone()
+    } else {
+        request.hover_identifier.identifier_schema.clone()
+    };
+    let table_name = if request.hover_identifier.identifier_table.trim().is_empty() {
+        request.hover_identifier.name.clone()
+    } else {
+        request.hover_identifier.identifier_table.clone()
+    };
+    if table_name.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let columns = application
+        .list_community_columns(ListCommunityColumnsRequest {
+            datasource_id: datasource_id.clone(),
+            database_type: database_type.clone(),
+            database_name: database_name.clone(),
+            schema_name: schema_name.clone(),
+            table_name: table_name.clone(),
+        })
+        .await?
+        .items;
+    if let Some(column) = columns.into_iter().find(|column| {
+        column
+            .name
+            .eq_ignore_ascii_case(&request.hover_identifier.name)
+    }) {
+        return Ok(vec![serde_json::json!({
+            "databaseName": database_name,
+            "schemaName": schema_name,
+            "tableName": table_name,
+            "datasourceName": datasource_name,
+            "viewName": "",
+            "triggerName": "",
+            "ddl": "",
+            "comment": column.comment,
+            "dataType": column.column_type,
+            "columnName": column.name
+        })]);
+    }
+
+    let tables = application
+        .list_community_tables(ListCommunityTablesRequest {
+            datasource_id: datasource_id.clone(),
+            database_type,
+            database_name: database_name.clone(),
+            schema_name: schema_name.clone(),
+            table_name_pattern: table_name.clone(),
+        })
+        .await?
+        .items;
+    let Some(table) = tables
+        .into_iter()
+        .find(|table| table.name.eq_ignore_ascii_case(&table_name))
+    else {
+        return Ok(Vec::new());
+    };
+    let ddl = application
+        .table_ddl(&datasource_id, &database_name, &schema_name, &table_name)
+        .await
+        .unwrap_or_default();
+    Ok(vec![serde_json::json!({
+        "databaseName": database_name,
+        "schemaName": schema_name,
+        "tableName": table.name,
+        "datasourceName": datasource_name,
+        "viewName": "",
+        "triggerName": "",
+        "ddl": ddl,
+        "comment": table.comment,
+        "dataType": "",
+        "columnName": ""
+    })])
+}
+
+fn legacy_mysql_utility_database_type(database_type: &str) -> LegacyResult<String> {
+    let database_type = normalize_database_type(database_type);
+    let database_type = if database_type.is_empty() {
+        "MYSQL".to_owned()
+    } else {
+        database_type
+    };
+    if database_type == "MYSQL" {
+        Ok(database_type)
+    } else {
+        Err(LegacyFailure {
+            code: "unsupported_database_type".to_owned(),
+            message: "This Community compatibility route currently supports MySQL only".to_owned(),
+        })
+    }
+}
+
+fn locate_statement(sql: &str, statement: &str, search_from: usize) -> (usize, usize) {
+    let needle = statement.trim();
+    if needle.is_empty() {
+        return (search_from.min(sql.len()), search_from.min(sql.len()));
+    }
+    let search_from = search_from.min(sql.len());
+    if let Some(relative) = sql[search_from..].find(needle) {
+        let start = search_from + relative;
+        return (start, start + needle.len());
+    }
+    if let Some(start) = sql.find(needle) {
+        return (start, start + needle.len());
+    }
+    (0, sql.len())
+}
+
+fn utf16_line_column(value: &str, byte_offset: usize) -> (u32, u32) {
+    let mut line = 1_u32;
+    let mut column = 1_u32;
+    for character in value[..byte_offset.min(value.len())].chars() {
+        if character == '\n' {
+            line = line.saturating_add(1);
+            column = 1;
+        } else {
+            column =
+                column.saturating_add(u32::try_from(character.len_utf16()).unwrap_or(u32::MAX));
+        }
+    }
+    (line, column)
+}
+
+fn utf16_len(value: &str) -> u32 {
+    u32::try_from(value.encode_utf16().count()).unwrap_or(u32::MAX)
+}
+
+fn rename_json_field(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    old: &str,
+    new: &str,
+) {
+    if let Some(value) = object.remove(old) {
+        object.insert(new.to_owned(), value);
+    }
+}
+
+fn pinned_table_request(query: &LegacyTableDetailQuery) -> CommunityPinnedTableRequest {
+    CommunityPinnedTableRequest {
+        data_source_id: query.data_source_id.as_string(),
+        database_name: query.database_name.clone(),
+        schema_name: query.schema_name.clone(),
+        table_name: query.table_name.clone(),
+    }
+}
+
+pub(crate) async fn add_table_pin(
+    application: &Application,
+    request: &LegacyTableDetailQuery,
+) -> LegacyResult<()> {
+    Ok(application
+        .pin_community_mysql_table(pinned_table_request(request))
+        .await?)
+}
+
+pub(crate) async fn delete_table_pin(
+    application: &Application,
+    request: &LegacyTableDetailQuery,
+) -> LegacyResult<()> {
+    Ok(application
+        .unpin_community_mysql_table(pinned_table_request(request))
+        .await?)
+}
+
+pub(crate) async fn list_table_pins(
+    application: &Application,
+    request: &LegacyTableDetailQuery,
+) -> LegacyResult<Vec<String>> {
+    Ok(application
+        .list_community_mysql_pinned_tables(pinned_table_request(request))
+        .await?
+        .items)
+}
+
+pub(crate) async fn get_er_info(
+    application: &Application,
+    query: &LegacyMetadataQuery,
+) -> LegacyResult<CommunityErModel> {
+    Ok(application
+        .community_mysql_er_model(CommunityErQueryRequest {
+            data_source_id: query.data_source_id.as_string(),
+            database_name: query.database_name.clone(),
+            schema_name: query.schema_name.clone(),
+        })
+        .await?)
+}
+
+pub(crate) async fn save_er_position(
+    application: &Application,
+    request: &LegacyErPositionRequest,
+) -> LegacyResult<()> {
+    Ok(application
+        .save_community_mysql_er_position(CommunityErPositionRequest {
+            data_source_id: request.data_source_id.as_string(),
+            database_name: request.database_name.clone(),
+            schema_name: request.schema_name.clone(),
+            position: request.position.clone(),
+        })
+        .await?)
+}
+
+pub(crate) async fn account_capability(
+    application: &Application,
+    query: &LegacyAccountQuery,
+) -> LegacyResult<CommunityAccountCapability> {
+    Ok(application
+        .mysql_account_capability(&query.data_source_id.as_string())
+        .await?)
+}
+
+pub(crate) async fn list_accounts(
+    application: &Application,
+    query: &LegacyAccountQuery,
+) -> LegacyResult<Vec<CommunityAccount>> {
+    Ok(application
+        .list_mysql_accounts(&query.data_source_id.as_string())
+        .await?
+        .items)
+}
+
+pub(crate) async fn account_grants(
+    application: &Application,
+    query: &LegacyAccountQuery,
+) -> LegacyResult<Vec<String>> {
+    Ok(application
+        .mysql_account_grants(&CommunityAccountGrantsRequest {
+            datasource_id: query.data_source_id.as_string(),
+            user: query.user.clone(),
+            host: query.host.clone(),
+        })
+        .await?
+        .items)
+}
+
+pub(crate) fn preview_account(
+    application: &Application,
+    request: &LegacyAccountCommandRequest,
+) -> LegacyResult<CommunityAccountPreview> {
+    Ok(application.preview_mysql_account(&request.core_request())?)
+}
+
+pub(crate) async fn execute_account(
+    application: &Application,
+    request: &LegacyAccountCommandRequest,
+) -> LegacyResult<CommunityAccountExecution> {
+    Ok(application
+        .execute_mysql_account(&request.core_request())
+        .await?)
+}
+
+pub(crate) async fn preview_schema_diff(
+    application: &Application,
+    request: &CommunitySchemaDiffRequest,
+) -> LegacyResult<String> {
+    Ok(application
+        .preview_mysql_schema_diff(request)
+        .await?
+        .into_inner())
 }
 
 /// Lists databases through the retained Community metadata implementation.
@@ -1876,6 +4136,25 @@ pub(crate) async fn list_schemas(
         .collect())
 }
 
+pub(crate) async fn database_schema_list(
+    application: &Application,
+    query: &LegacyMetadataQuery,
+) -> LegacyResult<LegacyMetaSchemaResponse> {
+    let databases = list_databases(application, query)
+        .await?
+        .into_iter()
+        .map(|database| LegacyMetaDatabase {
+            name: database.name,
+            // Native MySQL exposes databases as catalogs and has no second schema layer.
+            schemas: Vec::new(),
+        })
+        .collect();
+    Ok(LegacyMetaSchemaResponse {
+        databases,
+        schemas: Vec::new(),
+    })
+}
+
 /// Lists and paginates tables through Community metadata.
 pub(crate) async fn list_tables(
     application: &Application,
@@ -1885,6 +4164,17 @@ pub(crate) async fn list_tables(
     let datasource_id = query.data_source_id.as_string();
     let database_type =
         resolve_database_type(application, &datasource_id, &query.database_type).await?;
+    let pinned: HashSet<String> = application
+        .list_community_mysql_pinned_tables(CommunityPinnedTableRequest {
+            data_source_id: datasource_id.clone(),
+            database_name: query.database_name.clone(),
+            schema_name: query.schema_name.clone(),
+            table_name: String::new(),
+        })
+        .await?
+        .items
+        .into_iter()
+        .collect();
     let mut items: Vec<LegacyTable> = application
         .list_community_tables(ListCommunityTablesRequest {
             datasource_id,
@@ -1898,7 +4188,11 @@ pub(crate) async fn list_tables(
         .await?
         .items
         .into_iter()
-        .map(table_response)
+        .map(|table| {
+            let mut response = table_response(table);
+            response.pinned = pinned.contains(&response.name);
+            response
+        })
         .collect();
     items.retain(|item| table_matches_search(item, &query.search_key));
     Ok(paginate(items, query.page_no, query.page_size))
@@ -2364,14 +4658,14 @@ pub(crate) async fn execute_database_delete(
 ) -> LegacyResult<()> {
     let prepared = prepare_database_delete(application, request).await?;
     validate_delete_confirmation(&prepared.confirm_name, &request.confirm_name)?;
-    execute_generated_action(
+    Box::pin(execute_generated_action(
         application,
         request.data_source_id.clone(),
         &prepared.confirm_name,
         "",
         "",
         prepared.sql_preview,
-    )
+    ))
     .await
 }
 
@@ -2381,14 +4675,14 @@ pub(crate) async fn execute_schema_delete(
 ) -> LegacyResult<()> {
     let prepared = prepare_schema_delete(application, request).await?;
     validate_delete_confirmation(&prepared.confirm_name, &request.confirm_name)?;
-    execute_generated_action(
+    Box::pin(execute_generated_action(
         application,
         request.data_source_id.clone(),
         &prepared.confirm_name,
         "",
         "",
         prepared.sql_preview,
-    )
+    ))
     .await
 }
 
@@ -2406,14 +4700,14 @@ pub(crate) async fn drop_table(
         ),
         false,
     )?;
-    execute_generated_action(
+    Box::pin(execute_generated_action(
         application,
         request.data_source_id.clone(),
         &request.database_name,
         &request.schema_name,
         &request.table_name,
         sql,
-    )
+    ))
     .await
 }
 
@@ -2428,14 +4722,14 @@ pub(crate) async fn truncate_table(
         &request.schema_name,
         &request.table_name,
     ))?;
-    execute_generated_action(
+    Box::pin(execute_generated_action(
         application,
         request.data_source_id.clone(),
         &request.database_name,
         &request.schema_name,
         &request.table_name,
         sql,
-    )
+    ))
     .await
 }
 
@@ -2461,14 +4755,14 @@ pub(crate) async fn copy_table(
         copy_data: request.copy_data,
     })?;
     for sql in statements {
-        execute_generated_action(
+        Box::pin(execute_generated_action(
             application,
             request.data_source_id.clone(),
             &request.database_name,
             &request.schema_name,
             &new_name,
             sql,
-        )
+        ))
         .await?;
     }
     Ok(())
@@ -2494,14 +4788,14 @@ pub(crate) async fn drop_view(
         &mysql_qualified_name(&request.database_name, &request.schema_name, &view_name),
         false,
     )?;
-    execute_generated_action(
+    Box::pin(execute_generated_action(
         application,
         request.data_source_id.clone(),
         &request.database_name,
         &request.schema_name,
         &view_name,
         sql,
-    )
+    ))
     .await
 }
 
@@ -2711,6 +5005,42 @@ pub(crate) async fn preview_routine_invocation(
             routine_name: request.routine_name.clone(),
         })
         .await?)
+}
+
+pub(crate) async fn preview_routine_migration(
+    application: &Application,
+    request: &LegacyRoutineInvocationRequest,
+) -> LegacyResult<CommunityRoutineInvocationPreview> {
+    let migration = routine_migration_request(application, request).await?;
+    Ok(application.preview_community_routine_migration(&migration)?)
+}
+
+pub(crate) async fn execute_routine_migration(
+    application: &Application,
+    request: &LegacyRoutineInvocationRequest,
+) -> LegacyResult<CommunityRoutineMigrationExecution> {
+    let migration = routine_migration_request(application, request).await?;
+    Ok(application
+        .execute_community_routine_migration(migration)
+        .await?)
+}
+
+async fn routine_migration_request(
+    application: &Application,
+    request: &LegacyRoutineInvocationRequest,
+) -> LegacyResult<CommunityRoutineMigrationRequest> {
+    let datasource_id = request.data_source_id.as_string();
+    let database_type =
+        resolve_database_type(application, &datasource_id, &request.database_type).await?;
+    Ok(CommunityRoutineMigrationRequest {
+        datasource_id,
+        database_type,
+        database_name: request.database_name.clone(),
+        schema_name: request.schema_name.clone(),
+        routine_type: request.routine_type.clone(),
+        routine_name: request.routine_name.clone(),
+        ddl: request.ddl.clone(),
+    })
 }
 
 /// Lists triggers in the historical paged metadata shape.
@@ -3093,7 +5423,7 @@ pub async fn execute_ddl(
     application: &Application,
     request: &LegacySqlExecuteRequest,
 ) -> LegacyResult<LegacyManageResult> {
-    execute_sql(application, request)
+    Box::pin(execute_sql(application, request))
         .await?
         .into_iter()
         .next()
@@ -4045,7 +6375,7 @@ fn storage_failure(error: StorageError) -> LegacyFailure {
 
 fn datasource_response(
     application: &Application,
-    datasource: Datasource,
+    datasource: DatasourceEditProjection,
 ) -> LegacyDatasourceResponse {
     let driver = application
         .list_drivers()
@@ -4073,13 +6403,39 @@ fn datasource_response(
         id: datasource.id,
         alias: datasource.name,
         database_type,
-        // Core deliberately never exposes stored connection material.
-        url: String::new(),
-        user: String::new(),
+        url: datasource.jdbc_url,
+        user: datasource.username.unwrap_or_default(),
+        // Passwords and sensitive properties never leave Core's vault boundary.
         password: String::new(),
+        read_only: datasource.read_only,
+        ssh: datasource.ssh.map(|ssh| LegacySshTestRequest {
+            enabled: true,
+            host_name: ssh.host_name,
+            port: ssh.port.to_string(),
+            user_name: ssh.user_name,
+            local_port: ssh
+                .local_port
+                .map_or_else(String::new, |port| port.to_string()),
+            authentication_type: match ssh.authentication_type {
+                SshAuthenticationType::Password => "password".to_owned(),
+                SshAuthenticationType::PrivateKey => "keyFile".to_owned(),
+            },
+            password: String::new(),
+            key_file: ssh.key_file.unwrap_or_default(),
+            passphrase: String::new(),
+            r_host: String::new(),
+            r_port: String::new(),
+        }),
         environment: default_environment(),
         environment_id: 1,
-        extend_info: Vec::new(),
+        extend_info: datasource
+            .properties
+            .into_iter()
+            .map(|property| LegacyConnectionPropertyResponse {
+                key: property.key,
+                value: property.value,
+            })
+            .collect(),
         driver_config,
         storage_type: "LOCAL".to_owned(),
         space_id: 0,
@@ -4661,6 +7017,36 @@ fn datasource_connection(request: &LegacyDatasourceRequest) -> LegacyResult<Data
         jdbc_url: jdbc_url.to_owned(),
         properties,
         read_only: request.read_only,
+        ssh: request
+            .ssh
+            .as_ref()
+            .filter(|ssh| ssh.enabled)
+            .map(legacy_ssh_config)
+            .transpose()?,
+    })
+}
+
+fn legacy_ssh_config(request: &LegacySshTestRequest) -> LegacyResult<SshTunnelConfig> {
+    let authentication = if request.authentication_type.eq_ignore_ascii_case("keyFile")
+        || (!request.key_file.trim().is_empty()
+            && !request.authentication_type.eq_ignore_ascii_case("password"))
+    {
+        SshAuthentication::PrivateKey {
+            key_file: request.key_file.clone(),
+            passphrase: non_blank(&request.passphrase),
+        }
+    } else {
+        SshAuthentication::Password {
+            password: request.password.clone(),
+        }
+    };
+    Ok(SshTunnelConfig {
+        host_name: request.host_name.clone(),
+        port: parse_legacy_port(&request.port, 22, "SSH port")?,
+        user_name: request.user_name.clone(),
+        authentication,
+        host_key_verification: SshHostKeyVerification::KnownHosts,
+        local_port: optional_legacy_port(&request.local_port, "SSH local port")?,
     })
 }
 
@@ -5448,7 +7834,7 @@ async fn execute_generated_action(
     table_name: &str,
     sql: String,
 ) -> LegacyResult<()> {
-    let result = execute_ddl(
+    let result = Box::pin(execute_ddl(
         application,
         &LegacySqlExecuteRequest {
             data_source_id,
@@ -5468,7 +7854,7 @@ async fn execute_generated_action(
             error_continue: Some(false),
             explain: false,
         },
-    )
+    ))
     .await?;
     if result.success {
         Ok(())
@@ -5504,6 +7890,30 @@ fn required_name(value: &str, field: &'static str) -> LegacyResult<String> {
         })
     } else {
         Ok(value.to_owned())
+    }
+}
+
+fn parse_legacy_port(value: &str, default: u16, field: &'static str) -> LegacyResult<u16> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(default);
+    }
+    value
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port > 0)
+        .ok_or_else(|| LegacyFailure {
+            code: "invalid_legacy_request".to_owned(),
+            message: format!("{field} must be an integer between 1 and 65535"),
+        })
+}
+
+fn optional_legacy_port(value: &str, field: &'static str) -> LegacyResult<Option<u16>> {
+    let value = value.trim();
+    if value.is_empty() || value == "0" {
+        Ok(None)
+    } else {
+        parse_legacy_port(value, 0, field).map(Some)
     }
 }
 
@@ -5671,21 +8081,55 @@ fn full_page<T>(items: Vec<T>) -> LegacyPage<T> {
     }
 }
 
-/// Dispatches a historical Community request without depending on Axum.
-///
-/// Tauri IPC can pass its `requestUrl`, `method`, and `message` fields here and
-/// return the resulting JSON value unchanged.
+/// Dispatches a historical Community request without granting local-file access.
 pub fn dispatch(
     application: &Application,
     request: LegacyDispatchRequest,
 ) -> impl Future<Output = serde_json::Value> + Send + '_ {
-    Box::pin(dispatch_inner(application, request))
+    Box::pin(dispatch_inner(application, request, false))
+}
+
+/// Dispatches historical Community requests with desktop-specific file paths.
+pub fn dispatch_desktop(
+    application: &Application,
+    request: LegacyDispatchRequest,
+) -> impl Future<Output = serde_json::Value> + Send + '_ {
+    Box::pin(dispatch_desktop_inner(application, request))
+}
+
+async fn dispatch_desktop_inner(
+    application: &Application,
+    request: LegacyDispatchRequest,
+) -> serde_json::Value {
+    let path = request
+        .request_url
+        .split('?')
+        .next()
+        .unwrap_or(request.request_url.as_str());
+    let method = request.method.to_ascii_lowercase();
+    let result = match (method.as_str(), path) {
+        ("get", "/api/task/list") => match decode::<LegacyTaskListQuery>(request.message) {
+            Ok(query) => {
+                serialized(list_legacy_transfer_tasks_for_desktop(application, &query).await)
+            }
+            Err(error) => Err(error),
+        },
+        ("get", "/api/task/get") => match decode::<LegacyIdQuery>(request.message) {
+            Ok(query) => {
+                serialized(get_legacy_transfer_task_for_desktop(application, &query.id).await)
+            }
+            Err(error) => Err(error),
+        },
+        _ => return Box::pin(dispatch_inner(application, request, true)).await,
+    };
+    envelope_value(result)
 }
 
 #[allow(clippy::too_many_lines)]
 async fn dispatch_inner(
     application: &Application,
     request: LegacyDispatchRequest,
+    desktop_paths: bool,
 ) -> serde_json::Value {
     let path = request
         .request_url
@@ -5698,10 +8142,94 @@ async fn dispatch_inner(
         ("get", "/api/system") => Ok(serde_json::json!({
             "systemUuid": "chat2db-rust-community"
         })),
+        ("get", "/api/dashboard/list") => {
+            match decode::<CommunityDashboardListQuery>(request.message) {
+                Ok(query) => serialized(list_community_dashboards(application, query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/dashboard") => match decode::<LegacyCommunityEntityQuery>(request.message) {
+            Ok(query) => serialized(get_community_dashboard(application, query.id).await),
+            Err(error) => Err(error),
+        },
+        ("post", "/api/dashboard/create") => {
+            match decode::<CreateCommunityDashboardRequest>(request.message) {
+                Ok(body) => serialized(create_community_dashboard(application, body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/dashboard/update") => {
+            match decode::<LegacyCommunityDashboardUpdateRequest>(request.message) {
+                Ok(body) => serialized(update_community_dashboard(application, body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("delete", "/api/dashboard") => {
+            match decode::<LegacyCommunityEntityQuery>(request.message) {
+                Ok(query) => serialized(delete_community_dashboard(application, query.id).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/v1/chart") => match decode::<LegacyCommunityEntityQuery>(request.message) {
+            Ok(query) => serialized(get_community_chart(application, query.id).await),
+            Err(error) => Err(error),
+        },
+        ("get", "/api/chart/detail") => {
+            match decode::<CommunityChartDetailQuery>(request.message) {
+                Ok(query) => serialized(get_community_chart_detail(application, query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/v1/chart/create") => {
+            match decode::<CreateCommunityChartRequest>(request.message) {
+                Ok(body) => serialized(create_community_chart(application, body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/v1/chart/update") => {
+            match decode::<LegacyCommunityChartUpdateRequest>(request.message) {
+                Ok(body) => serialized(update_community_chart(application, body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("delete", "/api/chart") => match decode::<LegacyCommunityEntityQuery>(request.message) {
+            Ok(query) => serialized(delete_community_chart(application, query.id).await),
+            Err(error) => Err(error),
+        },
         ("get", "/api/common/environment/list_all") => serialized(Ok(environments())),
         ("get", "/api/jdbc/driver/list") => decode(request.message)
             .map(|query: LegacyDriverQuery| drivers(application, &query.db_type))
             .and_then(serialize_data),
+        ("get", "/api/jdbc/driver/download") => {
+            match decode::<LegacyDriverQuery>(request.message) {
+                Ok(query) => serialized(native_driver_action(
+                    application,
+                    &query.db_type,
+                    NativeDriverAction::Download,
+                )),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/jdbc/driver/save") => {
+            match decode::<LegacyDriverMutationRequest>(request.message) {
+                Ok(body) => serialized(native_driver_action(
+                    application,
+                    &body.db_type,
+                    NativeDriverAction::Save,
+                )),
+                Err(error) => Err(error),
+            }
+        }
+        ("delete", "/api/jdbc/driver/delete") => {
+            match decode::<LegacyDriverMutationRequest>(request.message) {
+                Ok(body) => serialized(native_driver_action(
+                    application,
+                    &body.db_type,
+                    NativeDriverAction::Delete,
+                )),
+                Err(error) => Err(error),
+            }
+        }
         ("get", "/api/connection/datasource/list") => {
             match decode::<LegacyPageQuery>(request.message) {
                 Ok(query) => serialized(list_datasources(application, &query).await),
@@ -5724,6 +8252,113 @@ async fn dispatch_inner(
                 Err(error) => Err(error),
             }
         }
+        ("post", "/api/connection/ssh/pre_connect") => {
+            match decode::<LegacySshTestRequest>(request.message) {
+                Ok(body) => serialized(test_legacy_ssh(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/connection/datasource/clone") => {
+            match decode::<LegacyCloneDatasourceRequest>(request.message) {
+                Ok(body) => serialized(clone_datasource(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/connection/datasource/connect") => {
+            match decode::<LegacyIdQuery>(request.message) {
+                Ok(query) => serialized(connect_datasource(application, &query.id).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get" | "post", "/api/connection/datasource/close") | ("get", "/api/connection/close") => {
+            match decode::<LegacyIdQuery>(request.message) {
+                Ok(query) => serialized(close_datasource(application, &query.id).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/connection/console/connect") => {
+            match decode::<LegacyConsoleConnectQuery>(request.message) {
+                Ok(query) => serialized(connect_console(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/connection/datasource/export") => {
+            match decode::<LegacyDatasourceExportRequest>(request.message) {
+                Ok(body) => serialized(export_legacy_datasources(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get" | "post", "/api/connection/datasource/import_community") => {
+            if request.message.get("schemaVersion").is_some() {
+                match decode::<CommunityDatasourceExport>(request.message) {
+                    Ok(document) => {
+                        serialized(import_legacy_datasources(application, document).await)
+                    }
+                    Err(error) => Err(error),
+                }
+            } else if desktop_paths {
+                serialized(import_installed_legacy_datasources(application).await)
+            } else {
+                Err(desktop_file_operation_required())
+            }
+        }
+        ("get" | "post", "/api/converter/upload") => {
+            match decode::<LegacyDatasourceFileUploadRequest>(request.message) {
+                Ok(body) if desktop_paths => {
+                    serialized(import_legacy_datasource_file_path(application, &body, None).await)
+                }
+                Ok(_) => Err(desktop_file_operation_required()),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/converter/ncx/upload") => {
+            match decode::<LegacyDatasourceFileUploadRequest>(request.message) {
+                Ok(body) if desktop_paths => serialized(
+                    import_legacy_datasource_file_path(
+                        application,
+                        &body,
+                        Some(CommunityDatasourceImportFormat::NavicatNcx),
+                    )
+                    .await,
+                ),
+                Ok(_) => Err(desktop_file_operation_required()),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/converter/dbp/upload") => {
+            match decode::<LegacyDatasourceFileUploadRequest>(request.message) {
+                Ok(body) if desktop_paths => serialized(
+                    import_legacy_datasource_file_path(
+                        application,
+                        &body,
+                        Some(CommunityDatasourceImportFormat::DbeaverDbp),
+                    )
+                    .await,
+                ),
+                Ok(_) => Err(desktop_file_operation_required()),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/converter/chat2db/upload") => {
+            match decode::<LegacyDatasourceFileUploadRequest>(request.message) {
+                Ok(body) if desktop_paths => serialized(
+                    import_legacy_datasource_file_path(
+                        application,
+                        &body,
+                        Some(CommunityDatasourceImportFormat::Chat2dbJson),
+                    )
+                    .await,
+                ),
+                Ok(_) => Err(desktop_file_operation_required()),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/converter/datagrip/upload") => {
+            match decode::<LegacyDatagripUploadRequest>(request.message) {
+                Ok(body) => serialized(import_legacy_datagrip_text(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
         ("post" | "put", "/api/connection/datasource/update") => {
             match decode::<LegacyDatasourceRequest>(request.message) {
                 Ok(body) => serialized(update_datasource(application, &body).await),
@@ -5733,6 +8368,97 @@ async fn dispatch_inner(
         ("delete", "/api/connection/datasource") => {
             match decode::<LegacyIdQuery>(request.message) {
                 Ok(query) => serialized(delete_datasource(application, &query.id).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/import/sql_file") => {
+            match decode::<LegacyImportFileRequest>(request.message) {
+                Ok(body) if desktop_paths => {
+                    serialized(import_legacy_mysql_desktop_file(application, &body, true).await)
+                }
+                Ok(_) => Err(desktop_file_operation_required()),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/import/other_file") => {
+            match decode::<LegacyImportFileRequest>(request.message) {
+                Ok(body) if desktop_paths => {
+                    serialized(import_legacy_mysql_desktop_file(application, &body, false).await)
+                }
+                Ok(_) => Err(desktop_file_operation_required()),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/export/sql_file") => {
+            match decode::<LegacySqlFileExportRequest>(request.message) {
+                Ok(body) if desktop_paths || body.export_path.trim().is_empty() => {
+                    serialized(export_legacy_mysql_sql_file(application, &body).await)
+                }
+                Ok(_) => Err(desktop_file_operation_required()),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/export/other_file") => {
+            match decode::<LegacyOtherFileExportRequest>(request.message) {
+                Ok(body) if desktop_paths || body.export_path.trim().is_empty() => {
+                    serialized(export_legacy_mysql_other_file(application, &body).await)
+                }
+                Ok(_) => Err(desktop_file_operation_required()),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/task/list") => match decode::<LegacyTaskListQuery>(request.message) {
+            Ok(query) => serialized(list_legacy_transfer_tasks(application, &query).await),
+            Err(error) => Err(error),
+        },
+        ("get", "/api/task/get") => match decode::<LegacyIdQuery>(request.message) {
+            Ok(query) => serialized(get_legacy_transfer_task(application, &query.id).await),
+            Err(error) => Err(error),
+        },
+        ("get", "/api/task/stop") => match decode::<LegacyIdQuery>(request.message) {
+            Ok(query) => serialized(stop_legacy_transfer_task(application, &query.id).await),
+            Err(error) => Err(error),
+        },
+        ("get", "/api/task/download") => match decode::<LegacyIdQuery>(request.message) {
+            Ok(query) if desktop_paths => serialized(
+                legacy_transfer_task_download(application, &query.id)
+                    .await
+                    .map(|download| download.path.to_string_lossy().into_owned()),
+            ),
+            Ok(_) => Err(desktop_file_operation_required()),
+            Err(error) => Err(error),
+        },
+        ("get", "/api/sql/format") => match decode::<LegacySqlUtilityRequest>(request.message) {
+            Ok(query) => serialized(format_legacy_sql(application, &query).await),
+            Err(error) => Err(error),
+        },
+        ("get", "/api/sql/valid_select") => {
+            match decode::<LegacySqlUtilityRequest>(request.message) {
+                Ok(query) => serialized(validate_legacy_select(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/sql_parser/get_keywords") => {
+            match decode::<LegacyMetadataQuery>(request.message) {
+                Ok(query) => serialized(legacy_sql_keywords(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/sql_parser/context/parser" | "/api/sql_parser/context/quick_parser") => {
+            match decode::<LegacySqlParserRequest>(request.message) {
+                Ok(body) => serialized(parse_legacy_sql(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/sql_parser/context/tip") => {
+            match decode::<LegacySqlCompletionRequest>(request.message) {
+                Ok(body) => serialized(complete_legacy_sql(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/sql_parser/context/hover") => {
+            match decode::<LegacySqlHoverRequest>(request.message) {
+                Ok(body) => serialized(legacy_sql_hover(application, &body).await),
                 Err(error) => Err(error),
             }
         }
@@ -5788,14 +8514,106 @@ async fn dispatch_inner(
             Err(error) => Err(error),
         },
         ("get", "/api/namespaces/tree_list") => serialized(namespace_tree(application).await),
+        ("post", "/api/namespaces/create") => {
+            match decode::<LegacyNamespaceRequest>(request.message) {
+                Ok(body) => serialized(create_namespace(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/namespaces/update") => {
+            match decode::<LegacyNamespaceRequest>(request.message) {
+                Ok(body) => serialized(update_namespace(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/namespaces/delete") => {
+            match decode::<LegacyNamespaceRequest>(request.message) {
+                Ok(body) => serialized(delete_namespace(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/namespaces/update_position") => {
+            match decode::<LegacyWorkspaceMoveRequest>(request.message) {
+                Ok(body) => serialized(move_namespace_node(application, body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/namespaces/update_data_source_position") => {
+            match decode::<LegacyDatasourceAssignmentRequest>(request.message) {
+                Ok(body) => serialized(assign_datasource_namespace(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/pin/table/add") => match decode::<LegacyTableDetailQuery>(request.message) {
+            Ok(body) => serialized(add_table_pin(application, &body).await),
+            Err(error) => Err(error),
+        },
+        ("post", "/api/pin/table/delete") => {
+            match decode::<LegacyTableDetailQuery>(request.message) {
+                Ok(body) => serialized(delete_table_pin(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/pin/table/list") => match decode::<LegacyTableDetailQuery>(request.message) {
+            Ok(query) => serialized(list_table_pins(application, &query).await),
+            Err(error) => Err(error),
+        },
+        ("get", "/api/er/get_info") => match decode::<LegacyMetadataQuery>(request.message) {
+            Ok(query) => serialized(get_er_info(application, &query).await),
+            Err(error) => Err(error),
+        },
+        ("post", "/api/er/save_position") => {
+            match decode::<LegacyErPositionRequest>(request.message) {
+                Ok(body) => serialized(save_er_position(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/rdb/account/capability") => {
+            match decode::<LegacyAccountQuery>(request.message) {
+                Ok(query) => serialized(account_capability(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/rdb/account/list") => match decode::<LegacyAccountQuery>(request.message) {
+            Ok(query) => serialized(list_accounts(application, &query).await),
+            Err(error) => Err(error),
+        },
+        ("get", "/api/rdb/account/grants") => match decode::<LegacyAccountQuery>(request.message) {
+            Ok(query) => serialized(account_grants(application, &query).await),
+            Err(error) => Err(error),
+        },
+        ("post", "/api/rdb/account/preview") => {
+            match decode::<LegacyAccountCommandRequest>(request.message) {
+                Ok(body) => serialized(preview_account(application, &body)),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/account/execute") => {
+            match decode::<LegacyAccountCommandRequest>(request.message) {
+                Ok(body) => serialized(execute_account(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/diff/sql") => match decode::<CommunitySchemaDiffRequest>(request.message) {
+            Ok(body) => serialized(preview_schema_diff(application, &body).await),
+            Err(error) => Err(error),
+        },
         ("get", "/api/rdb/database/list") => match decode::<LegacyMetadataQuery>(request.message) {
             Ok(query) => serialized(list_databases(application, &query).await),
             Err(error) => Err(error),
         },
-        ("get", "/api/rdb/schema/list") => match decode::<LegacyMetadataQuery>(request.message) {
-            Ok(query) => serialized(list_schemas(application, &query).await),
-            Err(error) => Err(error),
-        },
+        ("get", "/api/rdb/schema/list" | "/api/rdb/ddl/schema_list") => {
+            match decode::<LegacyMetadataQuery>(request.message) {
+                Ok(query) => serialized(list_schemas(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/rdb/ddl/database_schema_list") => {
+            match decode::<LegacyMetadataQuery>(request.message) {
+                Ok(query) => serialized(database_schema_list(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
         ("get", "/api/rdb/table/table_meta") => {
             match decode::<LegacyMetadataQuery>(request.message) {
                 Ok(query) => serialized(table_editor_meta(application, &query).await),
@@ -5903,6 +8721,18 @@ async fn dispatch_inner(
                 Err(error) => Err(error),
             }
         }
+        ("post", "/api/rdb/routine/preview_migration") => {
+            match decode::<LegacyRoutineInvocationRequest>(request.message) {
+                Ok(body) => serialized(preview_routine_migration(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/routine/execute_migration") => {
+            match decode::<LegacyRoutineInvocationRequest>(request.message) {
+                Ok(body) => serialized(execute_routine_migration(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
         ("get", "/api/rdb/trigger/list") => match decode::<LegacyTableListQuery>(request.message) {
             Ok(query) => serialized(list_triggers(application, &query).await),
             Err(error) => Err(error),
@@ -5921,16 +8751,17 @@ async fn dispatch_inner(
         }
         ("post" | "put", "/api/rdb/dml/execute") => {
             match decode::<LegacySqlExecuteRequest>(request.message) {
-                Ok(body) => serialized(execute_sql(application, &body).await),
+                Ok(body) => serialized(Box::pin(execute_sql(application, &body)).await),
                 Err(error) => Err(error),
             }
         }
-        ("post" | "put", "/api/rdb/dml/execute_ddl" | "/api/rdb/dml/execute_update") => {
-            match decode::<LegacySqlExecuteRequest>(request.message) {
-                Ok(body) => serialized(execute_ddl(application, &body).await),
-                Err(error) => Err(error),
-            }
-        }
+        (
+            "post" | "put",
+            "/api/rdb/dml/execute_ddl" | "/api/rdb/dml/execute_update" | "/api/rdb/ddl/execute",
+        ) => match decode::<LegacySqlExecuteRequest>(request.message) {
+            Ok(body) => serialized(Box::pin(execute_ddl(application, &body)).await),
+            Err(error) => Err(error),
+        },
         ("post" | "put", "/api/rdb/dml/get_update_sql") => {
             match decode::<LegacyGridUpdateRequest>(request.message) {
                 Ok(body) => serialized(build_grid_update_sql(application, &body).await),
@@ -5952,6 +8783,26 @@ async fn dispatch_inner(
         ("post" | "put", "/api/rdb/dml/count") => {
             match decode::<LegacySqlExecuteRequest>(request.message) {
                 Ok(body) => serialized(count_mysql_rows(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/dml/export") => {
+            match decode::<LegacyDmlExportRequest>(request.message) {
+                Ok(body) if desktop_paths => serialized(
+                    export_legacy_mysql_dml(application, &body)
+                        .await
+                        .map(|download| download.path.to_string_lossy().into_owned()),
+                ),
+                Ok(_) => Err(desktop_file_operation_required()),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/table/generate/class") => {
+            match decode::<LegacyGenerateClassRequest>(request.message) {
+                Ok(body) if desktop_paths => {
+                    serialized(generate_legacy_mysql_classes(application, &body).await)
+                }
+                Ok(_) => Err(desktop_file_operation_required()),
                 Err(error) => Err(error),
             }
         }
@@ -6033,9 +8884,12 @@ async fn dispatch_inner(
                 Err(error) => Err(error),
             }
         }
-        ("post", "/api/rdb/cell/download_path") => {
+        ("post", "/api/rdb/cell/download" | "/api/rdb/cell/download_path") => {
             match decode::<LegacyLargeCellDownloadRequest>(request.message) {
-                Ok(body) => serialized(download_large_cell_value_to_path(application, &body).await),
+                Ok(body) if desktop_paths => {
+                    serialized(download_large_cell_value_to_path(application, &body).await)
+                }
+                Ok(_) => Err(desktop_file_operation_required()),
                 Err(error) => Err(error),
             }
         }
@@ -6057,13 +8911,53 @@ async fn dispatch_inner(
 
 const LEGACY_PATHS: &[&str] = &[
     "/api/system",
+    "/api/dashboard/list",
+    "/api/dashboard",
+    "/api/dashboard/create",
+    "/api/dashboard/update",
+    "/api/v1/chart",
+    "/api/chart/detail",
+    "/api/v1/chart/create",
+    "/api/v1/chart/update",
+    "/api/chart",
     "/api/common/environment/list_all",
     "/api/jdbc/driver/list",
+    "/api/jdbc/driver/download",
+    "/api/jdbc/driver/save",
+    "/api/jdbc/driver/delete",
     "/api/connection/datasource/list",
     "/api/connection/datasource",
     "/api/connection/datasource/create",
     "/api/connection/datasource/pre_connect",
     "/api/connection/datasource/update",
+    "/api/connection/datasource/clone",
+    "/api/connection/datasource/connect",
+    "/api/connection/datasource/close",
+    "/api/connection/datasource/export",
+    "/api/connection/datasource/import_community",
+    "/api/converter/upload",
+    "/api/converter/ncx/upload",
+    "/api/converter/dbp/upload",
+    "/api/converter/chat2db/upload",
+    "/api/converter/datagrip/upload",
+    "/api/connection/ssh/pre_connect",
+    "/api/connection/close",
+    "/api/connection/console/connect",
+    "/api/import/sql_file",
+    "/api/import/other_file",
+    "/api/export/sql_file",
+    "/api/export/other_file",
+    "/api/task/list",
+    "/api/task/get",
+    "/api/task/stop",
+    "/api/task/download",
+    "/api/sql/format",
+    "/api/sql/valid_select",
+    "/api/sql_parser/get_keywords",
+    "/api/sql_parser/context/parser",
+    "/api/sql_parser/context/quick_parser",
+    "/api/sql_parser/context/tip",
+    "/api/sql_parser/context/hover",
     "/api/operation/saved/create",
     "/api/operation/saved/list",
     "/api/operation/saved",
@@ -6072,16 +8966,35 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/operation/log/list",
     "/api/operation/log",
     "/api/namespaces/tree_list",
+    "/api/namespaces/create",
+    "/api/namespaces/update",
+    "/api/namespaces/delete",
+    "/api/namespaces/update_position",
+    "/api/namespaces/update_data_source_position",
+    "/api/pin/table/add",
+    "/api/pin/table/delete",
+    "/api/pin/table/list",
+    "/api/er/get_info",
+    "/api/er/save_position",
+    "/api/rdb/account/capability",
+    "/api/rdb/account/list",
+    "/api/rdb/account/grants",
+    "/api/rdb/account/preview",
+    "/api/rdb/account/execute",
+    "/api/diff/sql",
     "/api/rdb/database/list",
     "/api/rdb/database/create_database_sql",
     "/api/rdb/schema/list",
     "/api/rdb/schema/create_schema_sql",
+    "/api/rdb/ddl/schema_list",
+    "/api/rdb/ddl/database_schema_list",
     "/api/rdb/table/list",
     "/api/rdb/table/table_meta",
     "/api/rdb/table/query",
     "/api/rdb/table/export",
     "/api/rdb/table/create/example",
     "/api/rdb/table/update/example",
+    "/api/rdb/table/generate/class",
     "/api/rdb/table/modify/sql",
     "/api/rdb/table/truncate",
     "/api/rdb/table/copy",
@@ -6112,15 +9025,19 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/rdb/procedure/list",
     "/api/rdb/procedure/detail",
     "/api/rdb/routine/preview_invocation",
+    "/api/rdb/routine/preview_migration",
+    "/api/rdb/routine/execute_migration",
     "/api/rdb/trigger/list",
     "/api/rdb/trigger/detail",
     "/api/rdb/dml/execute",
+    "/api/rdb/ddl/execute",
     "/api/rdb/dml/execute_ddl",
     "/api/rdb/dml/execute_update",
     "/api/rdb/dml/get_update_sql",
     "/api/rdb/dml/copy_update_sql",
     "/api/rdb/dml/copy_in_values_sql",
     "/api/rdb/dml/count",
+    "/api/rdb/dml/export",
     "/api/rdb/dml/execute_table",
     "/api/rdb/cell/value",
     "/api/rdb/cell/download",
@@ -6193,8 +9110,26 @@ fn counted_envelope_value(result: LegacyResult<serde_json::Value>) -> serde_json
 pub(crate) fn routes() -> Router<Application> {
     Router::new()
         .route("/api/system", get(system_handler))
+        .route("/api/dashboard/list", get(dashboard_list_handler))
+        .route(
+            "/api/dashboard",
+            get(dashboard_get_handler).delete(dashboard_delete_handler),
+        )
+        .route("/api/dashboard/create", post(dashboard_create_handler))
+        .route("/api/dashboard/update", post(dashboard_update_handler))
+        .route("/api/v1/chart", get(chart_get_handler))
+        .route("/api/chart/detail", get(chart_detail_handler))
+        .route("/api/v1/chart/create", post(chart_create_handler))
+        .route("/api/v1/chart/update", post(chart_update_handler))
+        .route("/api/chart", axum::routing::delete(chart_delete_handler))
         .route("/api/common/environment/list_all", get(environment_handler))
         .route("/api/jdbc/driver/list", get(driver_handler))
+        .route("/api/jdbc/driver/download", get(driver_download_handler))
+        .route("/api/jdbc/driver/save", post(driver_save_handler))
+        .route(
+            "/api/jdbc/driver/delete",
+            axum::routing::delete(driver_delete_handler),
+        )
         .route(
             "/api/connection/datasource/list",
             get(list_datasources_handler),
@@ -6212,8 +9147,96 @@ pub(crate) fn routes() -> Router<Application> {
             post(pre_connect_handler),
         )
         .route(
+            "/api/connection/ssh/pre_connect",
+            post(ssh_pre_connect_handler),
+        )
+        .route(
+            "/api/connection/datasource/clone",
+            post(clone_datasource_handler),
+        )
+        .route(
+            "/api/connection/datasource/connect",
+            get(connect_datasource_handler),
+        )
+        .route(
+            "/api/connection/datasource/close",
+            get(close_datasource_handler).post(close_datasource_body_handler),
+        )
+        .route("/api/connection/close", get(close_datasource_handler))
+        .route(
+            "/api/connection/console/connect",
+            get(connect_console_handler),
+        )
+        .route(
+            "/api/connection/datasource/export",
+            post(export_datasources_handler),
+        )
+        .route(
+            "/api/connection/datasource/import_community",
+            get(import_community_handler).post(import_community_handler),
+        )
+        .route(
+            "/api/converter/upload",
+            get(converter_upload_handler)
+                .post(converter_upload_handler)
+                .layer(DefaultBodyLimit::max(MAX_LEGACY_MULTIPART_BYTES)),
+        )
+        .route(
+            "/api/converter/ncx/upload",
+            post(converter_ncx_upload_handler)
+                .layer(DefaultBodyLimit::max(MAX_LEGACY_MULTIPART_BYTES)),
+        )
+        .route(
+            "/api/converter/dbp/upload",
+            post(converter_dbp_upload_handler)
+                .layer(DefaultBodyLimit::max(MAX_LEGACY_MULTIPART_BYTES)),
+        )
+        .route(
+            "/api/converter/chat2db/upload",
+            post(converter_chat2db_upload_handler)
+                .layer(DefaultBodyLimit::max(MAX_LEGACY_MULTIPART_BYTES)),
+        )
+        .route(
+            "/api/converter/datagrip/upload",
+            post(converter_datagrip_upload_handler),
+        )
+        .route(
             "/api/connection/datasource/update",
             post(update_datasource_handler).put(update_datasource_handler),
+        )
+        .route(
+            "/api/import/sql_file",
+            post(import_sql_file_handler).layer(DefaultBodyLimit::max(MAX_LEGACY_MULTIPART_BYTES)),
+        )
+        .route(
+            "/api/import/other_file",
+            post(import_other_file_handler)
+                .layer(DefaultBodyLimit::max(MAX_LEGACY_MULTIPART_BYTES)),
+        )
+        .route("/api/export/sql_file", post(export_sql_file_handler))
+        .route("/api/export/other_file", post(export_other_file_handler))
+        .route("/api/task/list", get(transfer_task_list_handler))
+        .route("/api/task/get", get(transfer_task_get_handler))
+        .route("/api/task/stop", get(transfer_task_stop_handler))
+        .route("/api/task/download", get(transfer_task_download_handler))
+        .route("/api/sql/format", get(sql_format_handler))
+        .route("/api/sql/valid_select", get(sql_valid_select_handler))
+        .route(
+            "/api/sql_parser/get_keywords",
+            get(sql_parser_keywords_handler),
+        )
+        .route(
+            "/api/sql_parser/context/parser",
+            post(sql_parser_context_handler),
+        )
+        .route(
+            "/api/sql_parser/context/quick_parser",
+            post(sql_parser_context_handler),
+        )
+        .route("/api/sql_parser/context/tip", post(sql_parser_tip_handler))
+        .route(
+            "/api/sql_parser/context/hover",
+            post(sql_parser_hover_handler),
         )
         .route(
             "/api/operation/saved/create",
@@ -6238,12 +9261,42 @@ pub(crate) fn routes() -> Router<Application> {
         .route("/api/operation/log/list", get(list_operation_logs_handler))
         .route("/api/operation/log", get(get_operation_log_handler))
         .route("/api/namespaces/tree_list", get(namespace_tree_handler))
+        .route("/api/namespaces/create", post(namespace_create_handler))
+        .route("/api/namespaces/update", post(namespace_update_handler))
+        .route("/api/namespaces/delete", post(namespace_delete_handler))
+        .route(
+            "/api/namespaces/update_position",
+            post(namespace_move_handler),
+        )
+        .route(
+            "/api/namespaces/update_data_source_position",
+            post(datasource_namespace_assignment_handler),
+        )
+        .route("/api/pin/table/add", post(table_pin_add_handler))
+        .route("/api/pin/table/delete", post(table_pin_delete_handler))
+        .route("/api/pin/table/list", get(table_pin_list_handler))
+        .route("/api/er/get_info", get(er_info_handler))
+        .route("/api/er/save_position", post(er_position_save_handler))
+        .route(
+            "/api/rdb/account/capability",
+            get(account_capability_handler),
+        )
+        .route("/api/rdb/account/list", get(account_list_handler))
+        .route("/api/rdb/account/grants", get(account_grants_handler))
+        .route("/api/rdb/account/preview", post(account_preview_handler))
+        .route("/api/rdb/account/execute", post(account_execute_handler))
+        .route("/api/diff/sql", post(schema_diff_handler))
         .route("/api/rdb/database/list", get(database_list_handler))
         .route(
             "/api/rdb/database/create_database_sql",
             post(create_database_sql_handler),
         )
         .route("/api/rdb/schema/list", get(schema_list_handler))
+        .route("/api/rdb/ddl/schema_list", get(schema_list_handler))
+        .route(
+            "/api/rdb/ddl/database_schema_list",
+            get(database_schema_list_handler),
+        )
         .route(
             "/api/rdb/schema/create_schema_sql",
             post(create_schema_sql_handler),
@@ -6252,6 +9305,10 @@ pub(crate) fn routes() -> Router<Application> {
         .route("/api/rdb/table/table_meta", get(table_meta_handler))
         .route("/api/rdb/table/query", get(table_query_handler))
         .route("/api/rdb/table/export", get(table_ddl_export_handler))
+        .route(
+            "/api/rdb/table/generate/class",
+            post(generate_class_handler),
+        )
         .route(
             "/api/rdb/table/create/example",
             get(table_ddl_example_handler),
@@ -6311,6 +9368,14 @@ pub(crate) fn routes() -> Router<Application> {
             "/api/rdb/routine/preview_invocation",
             post(routine_invocation_preview_handler),
         )
+        .route(
+            "/api/rdb/routine/preview_migration",
+            post(routine_migration_preview_handler),
+        )
+        .route(
+            "/api/rdb/routine/execute_migration",
+            post(routine_migration_execute_handler),
+        )
         .route("/api/rdb/trigger/list", get(trigger_list_handler))
         .route("/api/rdb/trigger/detail", get(trigger_detail_handler))
         .route(
@@ -6321,6 +9386,7 @@ pub(crate) fn routes() -> Router<Application> {
             "/api/rdb/dml/execute_ddl",
             post(sql_execute_ddl_handler).put(sql_execute_ddl_handler),
         )
+        .route("/api/rdb/ddl/execute", post(sql_execute_ddl_handler))
         .route(
             "/api/rdb/dml/execute_update",
             post(sql_execute_ddl_handler).put(sql_execute_ddl_handler),
@@ -6341,16 +9407,13 @@ pub(crate) fn routes() -> Router<Application> {
             "/api/rdb/dml/count",
             post(sql_count_handler).put(sql_count_handler),
         )
+        .route("/api/rdb/dml/export", post(dml_export_handler))
         .route(
             "/api/rdb/dml/execute_table",
             post(table_preview_handler).put(table_preview_handler),
         )
         .route("/api/rdb/cell/value", post(large_cell_value_handler))
         .route("/api/rdb/cell/download", post(large_cell_download_handler))
-        .route(
-            "/api/rdb/cell/download_path",
-            post(large_cell_download_path_handler),
-        )
         .layer(middleware::map_response(legacy_bad_request_envelope))
 }
 
@@ -6364,7 +9427,7 @@ fn envelope<T>(result: LegacyResult<T>) -> Json<LegacyEnvelope<T>> {
 async fn legacy_bad_request_envelope(response: Response) -> Response {
     if !matches!(
         response.status(),
-        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+        StatusCode::BAD_REQUEST | StatusCode::PAYLOAD_TOO_LARGE | StatusCode::UNPROCESSABLE_ENTITY
     ) {
         return response;
     }
@@ -6391,6 +9454,76 @@ async fn system_handler() -> Json<LegacyEnvelope<serde_json::Value>> {
     })))
 }
 
+async fn dashboard_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<CommunityDashboardListQuery>,
+) -> Json<LegacyEnvelope<CommunityDashboardPage>> {
+    envelope(list_community_dashboards(&application, query).await)
+}
+
+async fn dashboard_get_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyCommunityEntityQuery>,
+) -> Json<LegacyEnvelope<Option<CommunityDashboard>>> {
+    envelope(get_community_dashboard(&application, query.id).await)
+}
+
+async fn dashboard_create_handler(
+    State(application): State<Application>,
+    Json(request): Json<CreateCommunityDashboardRequest>,
+) -> Json<LegacyEnvelope<i64>> {
+    envelope(create_community_dashboard(&application, request).await)
+}
+
+async fn dashboard_update_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyCommunityDashboardUpdateRequest>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(update_community_dashboard(&application, request).await)
+}
+
+async fn dashboard_delete_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyCommunityEntityQuery>,
+) -> Json<LegacyEnvelope<String>> {
+    envelope(delete_community_dashboard(&application, query.id).await)
+}
+
+async fn chart_get_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyCommunityEntityQuery>,
+) -> Json<LegacyEnvelope<Option<CommunityChart>>> {
+    envelope(get_community_chart(&application, query.id).await)
+}
+
+async fn chart_detail_handler(
+    State(application): State<Application>,
+    Query(query): Query<CommunityChartDetailQuery>,
+) -> Json<LegacyEnvelope<Option<CommunityChart>>> {
+    envelope(get_community_chart_detail(&application, query).await)
+}
+
+async fn chart_create_handler(
+    State(application): State<Application>,
+    Json(request): Json<CreateCommunityChartRequest>,
+) -> Json<LegacyEnvelope<i64>> {
+    envelope(create_community_chart(&application, request).await)
+}
+
+async fn chart_update_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyCommunityChartUpdateRequest>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(update_community_chart(&application, request).await)
+}
+
+async fn chart_delete_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyCommunityEntityQuery>,
+) -> Json<LegacyEnvelope<String>> {
+    envelope(delete_community_chart(&application, query.id).await)
+}
+
 async fn environment_handler() -> Json<LegacyEnvelope<Vec<LegacyEnvironment>>> {
     envelope(Ok(environments()))
 }
@@ -6400,6 +9533,39 @@ async fn driver_handler(
     Query(query): Query<LegacyDriverQuery>,
 ) -> Json<LegacyEnvelope<LegacyDriverResponse>> {
     envelope(Ok(drivers(&application, &query.db_type)))
+}
+
+async fn driver_download_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyDriverQuery>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(native_driver_action(
+        &application,
+        &query.db_type,
+        NativeDriverAction::Download,
+    ))
+}
+
+async fn driver_save_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyDriverMutationRequest>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(native_driver_action(
+        &application,
+        &request.db_type,
+        NativeDriverAction::Save,
+    ))
+}
+
+async fn driver_delete_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyDriverMutationRequest>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(native_driver_action(
+        &application,
+        &request.db_type,
+        NativeDriverAction::Delete,
+    ))
 }
 
 async fn list_datasources_handler(
@@ -6430,6 +9596,127 @@ async fn pre_connect_handler(
     envelope(pre_connect(&application, &request).await)
 }
 
+async fn ssh_pre_connect_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacySshTestRequest>,
+) -> Json<LegacyEnvelope<bool>> {
+    envelope(test_legacy_ssh(&application, &request).await)
+}
+
+async fn clone_datasource_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyCloneDatasourceRequest>,
+) -> Json<LegacyEnvelope<String>> {
+    envelope(clone_datasource(&application, &request).await)
+}
+
+async fn connect_datasource_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyIdQuery>,
+) -> Json<LegacyEnvelope<Vec<LegacyDatabase>>> {
+    envelope(connect_datasource(&application, &query.id).await)
+}
+
+async fn close_datasource_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyIdQuery>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(close_datasource(&application, &query.id).await)
+}
+
+async fn close_datasource_body_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyIdQuery>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(close_datasource(&application, &request.id).await)
+}
+
+async fn connect_console_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyConsoleConnectQuery>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(connect_console(&application, &query).await)
+}
+
+async fn export_datasources_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyDatasourceExportRequest>,
+) -> Json<LegacyEnvelope<LegacyProgressResponse>> {
+    envelope(export_legacy_datasources(&application, &request).await)
+}
+
+async fn import_community_handler(
+    State(application): State<Application>,
+    body: Bytes,
+) -> Json<LegacyEnvelope<LegacyProgressResponse>> {
+    if body.is_empty() {
+        return envelope(Err(desktop_file_operation_required()));
+    }
+    let Ok(document) = serde_json::from_slice::<CommunityDatasourceExport>(&body) else {
+        return envelope(Err(LegacyFailure::invalid(
+            "invalid_legacy_request",
+            "The Community datasource import document is invalid",
+        )));
+    };
+    envelope(import_legacy_datasources(&application, document).await)
+}
+
+async fn converter_upload_handler(
+    State(application): State<Application>,
+    multipart: Multipart,
+) -> Json<LegacyEnvelope<LegacyDatasourceUploadResponse>> {
+    envelope(import_legacy_multipart_datasource(&application, multipart, None).await)
+}
+
+async fn converter_ncx_upload_handler(
+    State(application): State<Application>,
+    multipart: Multipart,
+) -> Json<LegacyEnvelope<LegacyDatasourceUploadResponse>> {
+    envelope(
+        import_legacy_multipart_datasource(
+            &application,
+            multipart,
+            Some(CommunityDatasourceImportFormat::NavicatNcx),
+        )
+        .await,
+    )
+}
+
+async fn converter_dbp_upload_handler(
+    State(application): State<Application>,
+    multipart: Multipart,
+) -> Json<LegacyEnvelope<LegacyDatasourceUploadResponse>> {
+    envelope(
+        import_legacy_multipart_datasource(
+            &application,
+            multipart,
+            Some(CommunityDatasourceImportFormat::DbeaverDbp),
+        )
+        .await,
+    )
+}
+
+async fn converter_chat2db_upload_handler(
+    State(application): State<Application>,
+    multipart: Multipart,
+) -> Json<LegacyEnvelope<LegacyDatasourceUploadResponse>> {
+    envelope(
+        import_legacy_multipart_datasource(
+            &application,
+            multipart,
+            Some(CommunityDatasourceImportFormat::Chat2dbJson),
+        )
+        .await,
+    )
+}
+
+async fn converter_datagrip_upload_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyDatagripUploadRequest>,
+) -> Json<LegacyEnvelope<LegacyDatasourceUploadResponse>> {
+    envelope(import_legacy_datagrip_text(&application, &request).await)
+}
+
 async fn update_datasource_handler(
     State(application): State<Application>,
     Json(request): Json<LegacyDatasourceRequest>,
@@ -6442,6 +9729,161 @@ async fn delete_datasource_handler(
     Query(query): Query<LegacyIdQuery>,
 ) -> Json<LegacyEnvelope<()>> {
     envelope(delete_datasource(&application, &query.id).await)
+}
+
+async fn import_sql_file_handler(
+    State(application): State<Application>,
+    request: axum::extract::Request,
+) -> Json<LegacyEnvelope<i64>> {
+    envelope(import_legacy_mysql_http(&application, request, true).await)
+}
+
+async fn import_other_file_handler(
+    State(application): State<Application>,
+    request: axum::extract::Request,
+) -> Json<LegacyEnvelope<i64>> {
+    envelope(import_legacy_mysql_http(&application, request, false).await)
+}
+
+async fn export_sql_file_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacySqlFileExportRequest>,
+) -> Json<LegacyEnvelope<i64>> {
+    if let Err(error) = reject_web_export_path(&request.export_path) {
+        return envelope(Err(error));
+    }
+    envelope(export_legacy_mysql_sql_file(&application, &request).await)
+}
+
+async fn export_other_file_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyOtherFileExportRequest>,
+) -> Json<LegacyEnvelope<i64>> {
+    if let Err(error) = reject_web_export_path(&request.export_path) {
+        return envelope(Err(error));
+    }
+    envelope(export_legacy_mysql_other_file(&application, &request).await)
+}
+
+async fn transfer_task_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTaskListQuery>,
+) -> Json<LegacyEnvelope<LegacyPage<LegacyTransferTask>>> {
+    envelope(list_legacy_transfer_tasks(&application, &query).await)
+}
+
+async fn transfer_task_get_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyIdQuery>,
+) -> Json<LegacyEnvelope<LegacyTransferTask>> {
+    envelope(get_legacy_transfer_task(&application, &query.id).await)
+}
+
+async fn transfer_task_stop_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyIdQuery>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(stop_legacy_transfer_task(&application, &query.id).await)
+}
+
+async fn transfer_task_download_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyIdQuery>,
+) -> Response {
+    transfer_attachment_response(legacy_transfer_task_download(&application, &query.id).await)
+}
+
+async fn dml_export_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyDmlExportRequest>,
+) -> Response {
+    transfer_attachment_response(export_legacy_mysql_dml(&application, &request).await)
+}
+
+async fn generate_class_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyGenerateClassRequest>,
+) -> Response {
+    transfer_attachment_response(generate_legacy_mysql_class_archive(&application, &request).await)
+}
+
+fn transfer_attachment_response(result: LegacyResult<TransferArtifactDownload>) -> Response {
+    let download = match result {
+        Ok(download) => download,
+        Err(error) => return Json(LegacyEnvelope::<()>::failure(error)).into_response(),
+    };
+    let file = tokio::fs::File::from_std(download.file);
+    let file_name = safe_attachment_filename(&download.artifact.file_name);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, download.artifact.media_type)
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{file_name}\""),
+        )
+        .header(header::CONTENT_LENGTH, download.artifact.byte_count)
+        .body(Body::from_stream(ReaderStream::new(file)))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+fn safe_attachment_filename(value: &str) -> String {
+    let value: String = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if value.is_empty() {
+        "chat2db-export".to_owned()
+    } else {
+        value
+    }
+}
+
+async fn sql_format_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacySqlUtilityRequest>,
+) -> Json<LegacyEnvelope<String>> {
+    envelope(format_legacy_sql(&application, &query).await)
+}
+
+async fn sql_valid_select_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacySqlUtilityRequest>,
+) -> Json<LegacyEnvelope<bool>> {
+    envelope(validate_legacy_select(&application, &query).await)
+}
+
+async fn sql_parser_keywords_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyMetadataQuery>,
+) -> Json<LegacyEnvelope<serde_json::Value>> {
+    envelope(legacy_sql_keywords(&application, &query).await)
+}
+
+async fn sql_parser_context_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacySqlParserRequest>,
+) -> Json<LegacyEnvelope<serde_json::Value>> {
+    envelope(parse_legacy_sql(&application, &request).await)
+}
+
+async fn sql_parser_tip_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacySqlCompletionRequest>,
+) -> Json<LegacyEnvelope<serde_json::Value>> {
+    envelope(complete_legacy_sql(&application, &request).await)
+}
+
+async fn sql_parser_hover_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacySqlHoverRequest>,
+) -> Json<LegacyEnvelope<Vec<serde_json::Value>>> {
+    envelope(legacy_sql_hover(&application, &request).await)
 }
 
 async fn create_saved_console_handler(
@@ -6515,6 +9957,118 @@ async fn namespace_tree_handler(
     envelope(namespace_tree(&application).await)
 }
 
+async fn namespace_create_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyNamespaceRequest>,
+) -> Json<LegacyEnvelope<String>> {
+    envelope(create_namespace(&application, &request).await)
+}
+
+async fn namespace_update_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyNamespaceRequest>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(update_namespace(&application, &request).await)
+}
+
+async fn namespace_delete_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyNamespaceRequest>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(delete_namespace(&application, &request).await)
+}
+
+async fn namespace_move_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyWorkspaceMoveRequest>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(move_namespace_node(&application, request).await)
+}
+
+async fn datasource_namespace_assignment_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyDatasourceAssignmentRequest>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(assign_datasource_namespace(&application, &request).await)
+}
+
+async fn table_pin_add_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyTableDetailQuery>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(add_table_pin(&application, &request).await)
+}
+
+async fn table_pin_delete_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyTableDetailQuery>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(delete_table_pin(&application, &request).await)
+}
+
+async fn table_pin_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableDetailQuery>,
+) -> Json<LegacyEnvelope<Vec<String>>> {
+    envelope(list_table_pins(&application, &query).await)
+}
+
+async fn er_info_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyMetadataQuery>,
+) -> Json<LegacyEnvelope<CommunityErModel>> {
+    envelope(get_er_info(&application, &query).await)
+}
+
+async fn er_position_save_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyErPositionRequest>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(save_er_position(&application, &request).await)
+}
+
+async fn account_capability_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyAccountQuery>,
+) -> Json<LegacyEnvelope<CommunityAccountCapability>> {
+    envelope(account_capability(&application, &query).await)
+}
+
+async fn account_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyAccountQuery>,
+) -> Json<LegacyEnvelope<Vec<CommunityAccount>>> {
+    envelope(list_accounts(&application, &query).await)
+}
+
+async fn account_grants_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyAccountQuery>,
+) -> Json<LegacyEnvelope<Vec<String>>> {
+    envelope(account_grants(&application, &query).await)
+}
+
+async fn account_preview_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyAccountCommandRequest>,
+) -> Json<LegacyEnvelope<CommunityAccountPreview>> {
+    envelope(preview_account(&application, &request))
+}
+
+async fn account_execute_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyAccountCommandRequest>,
+) -> Json<LegacyEnvelope<CommunityAccountExecution>> {
+    envelope(execute_account(&application, &request).await)
+}
+
+async fn schema_diff_handler(
+    State(application): State<Application>,
+    Json(request): Json<CommunitySchemaDiffRequest>,
+) -> Json<LegacyEnvelope<String>> {
+    envelope(preview_schema_diff(&application, &request).await)
+}
+
 async fn database_list_handler(
     State(application): State<Application>,
     Query(query): Query<LegacyMetadataQuery>,
@@ -6534,6 +10088,13 @@ async fn schema_list_handler(
     Query(query): Query<LegacyMetadataQuery>,
 ) -> Json<LegacyEnvelope<Vec<LegacySchema>>> {
     envelope(list_schemas(&application, &query).await)
+}
+
+async fn database_schema_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyMetadataQuery>,
+) -> Json<LegacyEnvelope<LegacyMetaSchemaResponse>> {
+    envelope(database_schema_list(&application, &query).await)
 }
 
 async fn create_schema_sql_handler(
@@ -6766,6 +10327,20 @@ async fn routine_invocation_preview_handler(
     envelope(preview_routine_invocation(&application, &request).await)
 }
 
+async fn routine_migration_preview_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyRoutineInvocationRequest>,
+) -> Json<LegacyEnvelope<CommunityRoutineInvocationPreview>> {
+    envelope(preview_routine_migration(&application, &request).await)
+}
+
+async fn routine_migration_execute_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyRoutineInvocationRequest>,
+) -> Json<LegacyEnvelope<CommunityRoutineMigrationExecution>> {
+    envelope(execute_routine_migration(&application, &request).await)
+}
+
 async fn trigger_list_handler(
     State(application): State<Application>,
     Query(query): Query<LegacyTableListQuery>,
@@ -6791,14 +10366,14 @@ async fn sql_execute_handler(
     State(application): State<Application>,
     Json(request): Json<LegacySqlExecuteRequest>,
 ) -> Json<LegacyEnvelope<Vec<LegacyManageResult>>> {
-    envelope(execute_sql(&application, &request).await)
+    envelope(Box::pin(execute_sql(&application, &request)).await)
 }
 
 async fn sql_execute_ddl_handler(
     State(application): State<Application>,
     Json(request): Json<LegacySqlExecuteRequest>,
 ) -> Json<LegacyEnvelope<LegacyManageResult>> {
-    envelope(execute_ddl(&application, &request).await)
+    envelope(Box::pin(execute_ddl(&application, &request)).await)
 }
 
 async fn grid_update_sql_handler(
@@ -6836,13 +10411,6 @@ async fn large_cell_value_handler(
     envelope(read_large_cell_value(&application, &request))
 }
 
-async fn large_cell_download_path_handler(
-    State(application): State<Application>,
-    Json(request): Json<LegacyLargeCellDownloadRequest>,
-) -> Json<LegacyEnvelope<String>> {
-    envelope(download_large_cell_value_to_path(&application, &request).await)
-}
-
 async fn large_cell_download_handler(
     State(application): State<Application>,
     Json(request): Json<LegacyLargeCellDownloadRequest>,
@@ -6874,14 +10442,129 @@ async fn large_cell_download_handler(
 
 #[cfg(test)]
 mod tests {
+    use std::{io::Write as _, sync::Arc};
+
     use axum::{
         body::Body,
         http::{Request, StatusCode},
+    };
+    use chat2db_storage::{
+        CreateTransferTask, SecretRef, SecretValue, SecretVault, SecretVaultError,
+        StoredTransferTaskKind,
     };
     use http_body_util::BodyExt as _;
     use tower::ServiceExt as _;
 
     use super::*;
+
+    #[derive(Debug)]
+    struct EmptyVault;
+
+    impl SecretVault for EmptyVault {
+        fn probe(&self) -> Result<(), SecretVaultError> {
+            Ok(())
+        }
+
+        fn create(
+            &self,
+            _reference: &SecretRef,
+            _value: &SecretValue,
+        ) -> Result<(), SecretVaultError> {
+            Ok(())
+        }
+
+        fn get(&self, _reference: &SecretRef) -> Result<Option<SecretValue>, SecretVaultError> {
+            Ok(None)
+        }
+
+        fn delete(&self, _reference: &SecretRef) -> Result<(), SecretVaultError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn community_ssh_payload_maps_both_auth_modes_and_never_projects_secrets() {
+        let password_request: LegacyDatasourceRequest = serde_json::from_value(serde_json::json!({
+            "alias": "MySQL SSH",
+            "url": "jdbc:mysql://db.internal:3306/app",
+            "type": "MYSQL",
+            "ssh": {
+                "use": true,
+                "hostName": "bastion.internal",
+                "port": "22",
+                "userName": "developer",
+                "localPort": "33060",
+                "authenticationType": "password",
+                "password": "sentinel-ssh-password"
+            }
+        }))
+        .expect("Community SSH request decodes");
+        let password = datasource_connection(&password_request)
+            .expect("password SSH connection maps")
+            .ssh
+            .expect("SSH enabled");
+        assert!(matches!(
+            password.authentication,
+            SshAuthentication::Password { password } if password == "sentinel-ssh-password"
+        ));
+        assert_eq!(password.local_port, Some(33060));
+
+        let private_key_request: LegacyDatasourceRequest =
+            serde_json::from_value(serde_json::json!({
+                "alias": "MySQL SSH key",
+                "url": "jdbc:mysql://db.internal:3306/app",
+                "type": "MYSQL",
+                "ssh": {
+                    "use": true,
+                    "hostName": "bastion.internal",
+                    "port": "2222",
+                    "userName": "developer",
+                    "authenticationType": "keyFile",
+                    "keyFile": "/keys/id_ed25519",
+                    "passphrase": "sentinel-passphrase"
+                }
+            }))
+            .expect("Community key request decodes");
+        let private_key = datasource_connection(&private_key_request)
+            .expect("private-key SSH connection maps")
+            .ssh
+            .expect("SSH enabled");
+        assert!(matches!(
+            private_key.authentication,
+            SshAuthentication::PrivateKey { key_file, passphrase: Some(passphrase) }
+                if key_file == "/keys/id_ed25519" && passphrase == "sentinel-passphrase"
+        ));
+
+        let response = datasource_response(
+            &Application::new(),
+            DatasourceEditProjection {
+                id: "datasource-1".to_owned(),
+                name: "MySQL SSH".to_owned(),
+                driver_id: "mysql".to_owned(),
+                jdbc_url: "jdbc:mysql://db.internal:3306/app".to_owned(),
+                username: Some("db-user".to_owned()),
+                properties: Vec::new(),
+                read_only: false,
+                ssh: Some(chat2db_contract::SshTunnelEditProjection {
+                    host_name: "bastion.internal".to_owned(),
+                    port: 2222,
+                    user_name: "developer".to_owned(),
+                    local_port: None,
+                    authentication_type: SshAuthenticationType::PrivateKey,
+                    key_file: Some("/keys/id_ed25519".to_owned()),
+                    host_key_verification: SshHostKeyVerification::KnownHosts,
+                }),
+                has_secret: true,
+                revision: "1".to_owned(),
+            },
+        );
+        let json = serde_json::to_string(&response).expect("response serializes");
+        assert!(json.contains("bastion.internal"));
+        assert!(json.contains("keyFile"));
+        assert!(!json.contains("sentinel-ssh-password"));
+        assert!(!json.contains("sentinel-passphrase"));
+        assert_eq!(response.ssh.expect("SSH projection exists").password, "");
+    }
 
     const REQUIRED_METADATA_PATHS: &[&str] = &[
         "/api/rdb/table/table_list",
@@ -6902,7 +10585,34 @@ mod tests {
         "/api/rdb/trigger/detail",
     ];
 
+    const REQUIRED_DASHBOARD_PATHS: &[(&str, &str)] = &[
+        ("get", "/api/dashboard/list"),
+        ("get", "/api/dashboard"),
+        ("post", "/api/dashboard/create"),
+        ("post", "/api/dashboard/update"),
+        ("delete", "/api/dashboard"),
+        ("get", "/api/v1/chart"),
+        ("get", "/api/chart/detail"),
+        ("post", "/api/v1/chart/create"),
+        ("post", "/api/v1/chart/update"),
+        ("delete", "/api/chart"),
+    ];
+
     const REQUIRED_EDITABLE_PATHS: &[(&str, &str)] = &[
+        ("post", "/api/pin/table/add"),
+        ("post", "/api/pin/table/delete"),
+        ("get", "/api/pin/table/list"),
+        ("get", "/api/er/get_info"),
+        ("post", "/api/er/save_position"),
+        ("get", "/api/rdb/account/capability"),
+        ("get", "/api/rdb/account/list"),
+        ("get", "/api/rdb/account/grants"),
+        ("post", "/api/rdb/account/preview"),
+        ("post", "/api/rdb/account/execute"),
+        ("post", "/api/diff/sql"),
+        ("get", "/api/rdb/ddl/schema_list"),
+        ("get", "/api/rdb/ddl/database_schema_list"),
+        ("post", "/api/rdb/ddl/execute"),
         ("get", "/api/rdb/table/table_meta"),
         ("get", "/api/rdb/table/query"),
         ("get", "/api/rdb/table/export"),
@@ -6926,6 +10636,8 @@ mod tests {
         ("post", "/api/rdb/view/modify/sql"),
         ("post", "/api/rdb/view/drop"),
         ("post", "/api/rdb/routine/preview_invocation"),
+        ("post", "/api/rdb/routine/preview_migration"),
+        ("post", "/api/rdb/routine/execute_migration"),
         ("post", "/api/rdb/dml/get_update_sql"),
         ("put", "/api/rdb/dml/get_update_sql"),
         ("post", "/api/rdb/dml/copy_update_sql"),
@@ -6936,6 +10648,55 @@ mod tests {
         ("put", "/api/rdb/dml/count"),
         ("post", "/api/rdb/dml/execute_update"),
         ("put", "/api/rdb/dml/execute_update"),
+        ("post", "/api/rdb/cell/download"),
+    ];
+
+    const REQUIRED_SQL_COMPATIBILITY_PATHS: &[(&str, &str)] = &[
+        ("get", "/api/sql/format"),
+        ("get", "/api/sql/valid_select"),
+        ("get", "/api/sql_parser/get_keywords"),
+        ("post", "/api/sql_parser/context/parser"),
+        ("post", "/api/sql_parser/context/quick_parser"),
+        ("post", "/api/sql_parser/context/tip"),
+        ("post", "/api/sql_parser/context/hover"),
+    ];
+
+    const REQUIRED_WORKSPACE_PATHS: &[(&str, &str)] = &[
+        ("get", "/api/jdbc/driver/download"),
+        ("post", "/api/jdbc/driver/save"),
+        ("delete", "/api/jdbc/driver/delete"),
+        ("post", "/api/connection/ssh/pre_connect"),
+        ("post", "/api/connection/datasource/clone"),
+        ("get", "/api/connection/datasource/connect"),
+        ("post", "/api/connection/datasource/close"),
+        ("get", "/api/connection/close"),
+        ("get", "/api/connection/console/connect"),
+        ("post", "/api/connection/datasource/export"),
+        ("get", "/api/connection/datasource/import_community"),
+        ("get", "/api/converter/upload"),
+        ("post", "/api/converter/upload"),
+        ("post", "/api/converter/ncx/upload"),
+        ("post", "/api/converter/dbp/upload"),
+        ("post", "/api/converter/chat2db/upload"),
+        ("post", "/api/converter/datagrip/upload"),
+        ("post", "/api/namespaces/create"),
+        ("post", "/api/namespaces/update"),
+        ("post", "/api/namespaces/delete"),
+        ("post", "/api/namespaces/update_position"),
+        ("post", "/api/namespaces/update_data_source_position"),
+    ];
+
+    const REQUIRED_TRANSFER_PATHS: &[(&str, &str)] = &[
+        ("post", "/api/import/sql_file"),
+        ("post", "/api/import/other_file"),
+        ("post", "/api/export/sql_file"),
+        ("post", "/api/export/other_file"),
+        ("get", "/api/task/list"),
+        ("get", "/api/task/get"),
+        ("get", "/api/task/stop"),
+        ("get", "/api/task/download"),
+        ("post", "/api/rdb/dml/export"),
+        ("post", "/api/rdb/table/generate/class"),
     ];
 
     fn metadata_message(path: &str) -> serde_json::Value {
@@ -7554,6 +11315,248 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dashboard_paths_are_registered_for_dispatch_and_axum() {
+        let application = Application::new();
+        let router = routes().with_state(application.clone());
+        for (method, path) in REQUIRED_DASHBOARD_PATHS {
+            assert!(LEGACY_PATHS.contains(path), "missing dispatch path: {path}");
+            let response = dispatch(
+                &application,
+                LegacyDispatchRequest {
+                    request_url: (*path).to_owned(),
+                    method: (*method).to_owned(),
+                    message: serde_json::Value::Null,
+                },
+            )
+            .await;
+            assert_ne!(
+                response["errorCode"], "route_not_found",
+                "missing desktop dispatch branch: {method} {path}"
+            );
+
+            let http_method = method
+                .to_ascii_uppercase()
+                .parse::<axum::http::Method>()
+                .expect("method must be valid");
+            let mut builder = Request::builder().method(http_method).uri(*path);
+            let body = if matches!(*method, "get" | "delete") {
+                Body::empty()
+            } else {
+                builder = builder.header("content-type", "application/json");
+                Body::from("null")
+            };
+            let response = router
+                .clone()
+                .oneshot(builder.body(body).expect("request must build"))
+                .await
+                .expect("router must respond");
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "missing Axum route: {method} {path}"
+            );
+        }
+    }
+
+    async fn dashboard_http_json(
+        router: &Router,
+        method: &str,
+        uri: &str,
+        payload: Option<serde_json::Value>,
+    ) -> serde_json::Value {
+        let method = method
+            .parse::<axum::http::Method>()
+            .expect("HTTP method must parse");
+        let mut builder = Request::builder().method(method).uri(uri);
+        let body = match payload {
+            Some(payload) => {
+                builder = builder.header("content-type", "application/json");
+                Body::from(serde_json::to_vec(&payload).expect("payload must encode"))
+            }
+            None => Body::empty(),
+        };
+        let response = router
+            .clone()
+            .oneshot(builder.body(body).expect("request must build"))
+            .await
+            .expect("router must respond");
+        assert_eq!(response.status(), StatusCode::OK, "{uri} must use HTTP 200");
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("response body must collect")
+            .to_bytes();
+        serde_json::from_slice(&body).expect("response body must be JSON")
+    }
+
+    #[tokio::test]
+    async fn dashboard_http_routes_preserve_community_crud_and_envelopes() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let storage = Storage::open(directory.path(), Arc::new(EmptyVault)).expect("storage opens");
+        let router = routes().with_state(Application::with_storage(storage));
+
+        let created = dashboard_http_json(
+            &router,
+            "POST",
+            "/api/dashboard/create",
+            Some(serde_json::json!({
+                "name": "Operations Board",
+                "description": "before update",
+                "chartIds": []
+            })),
+        )
+        .await;
+        assert_eq!(created["success"], true);
+        assert!(created["errorCode"].is_null());
+        assert!(created["errorMessage"].is_null());
+        let dashboard_id = created["data"]
+            .as_i64()
+            .expect("dashboard id must be numeric");
+
+        let updated = dashboard_http_json(
+            &router,
+            "POST",
+            "/api/dashboard/update",
+            Some(serde_json::json!({
+                "id": dashboard_id,
+                "description": "after update",
+                "chartIds": [17]
+            })),
+        )
+        .await;
+        assert_eq!(updated["success"], true);
+        assert!(updated["data"].is_null());
+
+        let dashboard = dashboard_http_json(
+            &router,
+            "GET",
+            &format!("/api/dashboard?id={dashboard_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(dashboard["data"]["description"], "after update");
+        assert_eq!(dashboard["data"]["chartIds"][0], 17);
+
+        let list = dashboard_http_json(
+            &router,
+            "GET",
+            "/api/dashboard/list?pageNo=1&pageSize=20&searchKey=operations",
+            None,
+        )
+        .await;
+        assert_eq!(list["success"], true);
+        assert_eq!(list["data"]["total"], 1);
+        assert_eq!(list["data"]["data"][0]["id"], dashboard_id);
+        assert_eq!(list["data"]["hasNextPage"], false);
+
+        let deleted = dashboard_http_json(
+            &router,
+            "DELETE",
+            &format!("/api/dashboard?id={dashboard_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(deleted["success"], true);
+        assert_eq!(deleted["data"], "success");
+        let missing = dashboard_http_json(
+            &router,
+            "GET",
+            &format!("/api/dashboard?id={dashboard_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(missing["success"], true);
+        assert!(missing["data"].is_null());
+    }
+
+    #[tokio::test]
+    async fn chart_http_routes_preserve_community_crud_and_envelopes() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let storage = Storage::open(directory.path(), Arc::new(EmptyVault)).expect("storage opens");
+        let router = routes().with_state(Application::with_storage(storage));
+
+        let created = dashboard_http_json(
+            &router,
+            "POST",
+            "/api/v1/chart/create",
+            Some(serde_json::json!({
+                "name": "Revenue",
+                "chartSchema": {"type": "bar", "title": "Revenue"},
+                "metaData": {"dataList": [["42"]]},
+                "databaseInfo": {"sql": "SELECT 42"},
+                "refreshType": "MANUAL"
+            })),
+        )
+        .await;
+        assert_eq!(created["success"], true);
+        assert!(created["errorCode"].is_null());
+        let chart_id = created["data"].as_i64().expect("chart id must be numeric");
+
+        let chart = dashboard_http_json(
+            &router,
+            "GET",
+            &format!("/api/v1/chart?id={chart_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(chart["data"]["name"], "Revenue");
+        assert_eq!(chart["data"]["chartSchema"]["type"], "bar");
+
+        let detail = dashboard_http_json(
+            &router,
+            "GET",
+            &format!("/api/chart/detail?chartId={chart_id}&refresh=false"),
+            None,
+        )
+        .await;
+        assert_eq!(detail["success"], true);
+        assert_eq!(detail["data"]["metaData"]["dataList"][0][0], "42");
+
+        let updated = dashboard_http_json(
+            &router,
+            "POST",
+            "/api/v1/chart/update",
+            Some(serde_json::json!({
+                "id": chart_id,
+                "name": "Revenue Updated",
+                "description": "after update"
+            })),
+        )
+        .await;
+        assert_eq!(updated["success"], true);
+        assert!(updated["data"].is_null());
+
+        let updated_chart = dashboard_http_json(
+            &router,
+            "GET",
+            &format!("/api/v1/chart?id={chart_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(updated_chart["data"]["name"], "Revenue Updated");
+
+        let deleted = dashboard_http_json(
+            &router,
+            "DELETE",
+            &format!("/api/chart?id={chart_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(deleted["success"], true);
+        assert_eq!(deleted["data"], "success");
+        let missing = dashboard_http_json(
+            &router,
+            "GET",
+            &format!("/api/v1/chart?id={chart_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(missing["success"], true);
+        assert!(missing["data"].is_null());
+    }
+
+    #[tokio::test]
     async fn editable_paths_are_registered_for_dispatch_and_axum() {
         let router = routes().with_state(Application::new());
         for (method, path) in REQUIRED_EDITABLE_PATHS {
@@ -7594,6 +11597,569 @@ mod tests {
                 "missing Axum route: {method} {path}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn transfer_paths_are_registered_for_dispatch_and_axum() {
+        let application = Application::new();
+        let router = routes().with_state(application.clone());
+        for (method, path) in REQUIRED_TRANSFER_PATHS {
+            assert!(LEGACY_PATHS.contains(path), "missing dispatch path: {path}");
+            let response = dispatch(
+                &application,
+                LegacyDispatchRequest {
+                    request_url: (*path).to_owned(),
+                    method: (*method).to_owned(),
+                    message: serde_json::Value::Null,
+                },
+            )
+            .await;
+            assert_ne!(
+                response["errorCode"], "route_not_found",
+                "missing desktop dispatch branch: {method} {path}"
+            );
+
+            let http_method = method
+                .to_ascii_uppercase()
+                .parse::<axum::http::Method>()
+                .expect("method must be valid");
+            let mut builder = Request::builder().method(http_method).uri(*path);
+            let body = if *method == "get" {
+                Body::empty()
+            } else {
+                builder = builder.header("content-type", "application/json");
+                Body::from("null")
+            };
+            let response = router
+                .clone()
+                .oneshot(builder.body(body).expect("request must build"))
+                .await
+                .expect("router must respond");
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "missing Axum route: {method} {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn transfer_projection_matches_the_retained_task_drawer() {
+        let task = TransferTask {
+            id: 42,
+            datasource_id: "mysql-local".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: String::new(),
+            table_name: Some("items".to_owned()),
+            kind: TransferTaskKind::ExportFile,
+            status: TransferTaskStatus::Succeeded,
+            task_name: "Export items".to_owned(),
+            progress_current: "9".to_owned(),
+            progress_total: Some("10".to_owned()),
+            progress_description: "Completed".to_owned(),
+            info_log: "done".to_owned(),
+            error_log: String::new(),
+            artifact_id: Some("artifact-42".to_owned()),
+            cancel_requested: false,
+            created_at_ms: "1700000000000".to_owned(),
+            updated_at_ms: "1700000000100".to_owned(),
+            finished_at_ms: Some("1700000000100".to_owned()),
+        };
+
+        let projected = legacy_transfer_task_for_web(task.clone());
+        assert_eq!(projected.task_type, "DOWNLOAD_TABLE_STRUCTURE");
+        assert_eq!(projected.task_status, "FINISHED");
+        assert_eq!(projected.task_progress, "100");
+        assert_eq!(projected.progress, "9");
+        assert_eq!(projected.download_url, "/api/task/download?id=42");
+        assert_eq!(projected.gmt_create, 1_700_000_000_000);
+
+        let projected = legacy_transfer_task(task, "/tmp/export-items.csv".to_owned());
+        assert_eq!(projected.download_url, "/tmp/export-items.csv");
+    }
+
+    #[test]
+    fn transfer_compatibility_parses_frontend_aliases_and_filters() {
+        assert_eq!(
+            legacy_transfer_format("EXCEL", "exportType").expect("Excel must map"),
+            TransferFileFormat::Xlsx
+        );
+        assert_eq!(
+            legacy_transfer_status_filter("ERROR").expect("ERROR must map"),
+            vec![TransferTaskStatus::Failed, TransferTaskStatus::Interrupted]
+        );
+        assert_eq!(safe_attachment_filename("report\r\n.csv"), "report__.csv");
+
+        let request: LegacyImportFileRequest = serde_json::from_value(serde_json::json!({
+            "dataSourceId": 7,
+            "databaseName": "inventory",
+            "tableName": "items",
+            "fileName": "/tmp/items.csv",
+            "importType": "CSV"
+        }))
+        .expect("numeric datasource ids must remain compatible");
+        assert_eq!(request.data_source_id.as_string(), "7");
+        assert!(request.contains_header);
+        assert_eq!(request.tabular_encoding, TabularImportEncoding::Plain);
+        assert_eq!(
+            legacy_tabular_import_encoding("CHAT2DB_V1").expect("v1 encoding maps"),
+            TabularImportEncoding::Chat2dbV1
+        );
+    }
+
+    #[tokio::test]
+    async fn http_import_rejects_server_paths_without_disclosing_them() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let secret_path = directory.path().join("server-secret.sql");
+        let secret = "sentinel-server-only-secret";
+        fs::write(&secret_path, secret).expect("secret fixture writes");
+        let payload = serde_json::json!({
+            "dataSourceId": "mysql-local",
+            "databaseName": "inventory",
+            "tableName": "items",
+            "fileName": secret_path.to_string_lossy(),
+            "importType": "CSV"
+        });
+        for path in ["/api/import/sql_file", "/api/import/other_file"] {
+            let response = routes()
+                .with_state(Application::new())
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::to_vec(&payload).expect("request encodes"),
+                        ))
+                        .expect("request builds"),
+                )
+                .await
+                .expect("router responds");
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .expect("response collects")
+                .to_bytes();
+            let rendered = String::from_utf8(body.to_vec()).expect("response is UTF-8");
+            let envelope: serde_json::Value =
+                serde_json::from_slice(&body).expect("response is JSON");
+            assert_eq!(envelope["success"], false);
+            assert_eq!(envelope["errorCode"], "web_import_upload_required");
+            assert!(!rendered.contains(secret));
+            assert!(!rendered.contains(&secret_path.to_string_lossy().into_owned()));
+        }
+        assert_eq!(
+            fs::read_to_string(secret_path).expect("secret reads"),
+            secret
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_http_multipart_import_removes_the_staged_artifact() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let storage = Storage::open(directory.path(), Arc::new(EmptyVault)).expect("storage opens");
+        let application = Application::with_storage(storage);
+        let boundary = "chat2db-failed-import-cleanup";
+        let multipart = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"dataSourceId\"\r\n\r\nmissing\r\n\
+             --{boundary}\r\nContent-Disposition: form-data; name=\"databaseName\"\r\n\r\ninventory\r\n\
+             --{boundary}\r\nContent-Disposition: form-data; name=\"tableName\"\r\n\r\nitems\r\n\
+             --{boundary}\r\nContent-Disposition: form-data; name=\"importType\"\r\n\r\nCSV\r\n\
+             --{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"upload.csv\"\r\n\
+             Content-Type: text/csv\r\n\r\nid,name\n1,alpha\n\r\n--{boundary}--\r\n"
+        );
+        let response = routes()
+            .with_state(application)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import/other_file")
+                    .header(
+                        "content-type",
+                        format!("multipart/form-data; boundary={boundary}"),
+                    )
+                    .body(Body::from(multipart))
+                    .expect("request builds"),
+            )
+            .await
+            .expect("router responds");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("response collects")
+            .to_bytes();
+        let envelope: serde_json::Value = serde_json::from_slice(&body).expect("response is JSON");
+        assert_eq!(envelope["success"], false);
+        assert_eq!(
+            fs::read_dir(directory.path().join("artifacts"))
+                .expect("artifact directory reads")
+                .count(),
+            0,
+            "a rejected upload must not leave a managed artifact"
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_import_task_removes_its_staged_artifact() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let storage = Storage::open(directory.path(), Arc::new(EmptyVault)).expect("storage opens");
+        let application = Application::with_storage(storage.clone());
+        let mut writer = storage
+            .begin_transfer_artifact(None, "upload.csv", "text/csv", "CSV", "csv", None)
+            .expect("artifact begins");
+        writer.write_all(b"id\n1\n").expect("artifact writes");
+        let artifact = writer.finish().expect("artifact finishes");
+        let path = storage
+            .resolve_transfer_artifact(&artifact.id)
+            .expect("artifact resolves")
+            .path;
+        let task = storage
+            .create_transfer_task(&CreateTransferTask {
+                datasource_id: "mysql-local".to_owned(),
+                database_name: "inventory".to_owned(),
+                schema_name: String::new(),
+                table_name: Some("items".to_owned()),
+                kind: StoredTransferTaskKind::ImportFile,
+                task_name: "Import upload.csv".to_owned(),
+            })
+            .expect("task creates");
+        storage.start_transfer_task(task.id).expect("task starts");
+        schedule_legacy_import_upload_cleanup(application, storage.clone(), task.id, artifact.id);
+        storage
+            .complete_transfer_task(task.id, "done")
+            .expect("task completes");
+
+        for _ in 0..40 {
+            if !path.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(!path.exists(), "terminal imports must release staged files");
+    }
+
+    #[tokio::test]
+    async fn managed_zip_attachment_streams_exact_download_headers() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let storage = Storage::open(directory.path(), Arc::new(EmptyVault)).expect("storage opens");
+        let application = Application::with_storage(storage.clone());
+        let archive = b"PK\x03\x04generated-class-archive";
+        let mut writer = storage
+            .begin_transfer_artifact(
+                None,
+                "items mybatis.zip",
+                "application/zip",
+                "ZIP",
+                "zip",
+                None,
+            )
+            .expect("artifact begins");
+        writer.write_all(archive).expect("artifact writes");
+        let artifact = writer.finish().expect("artifact finishes");
+        let download = application
+            .transfer_artifact_download(&artifact.id)
+            .await
+            .expect("artifact resolves");
+
+        let response = transfer_attachment_response(Ok(download));
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/zip");
+        assert_eq!(
+            response.headers()[header::CONTENT_DISPOSITION],
+            "attachment; filename=\"items_mybatis.zip\""
+        );
+        assert_eq!(
+            response.headers()[header::CONTENT_LENGTH],
+            archive.len().to_string()
+        );
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("response streams")
+            .to_bytes();
+        assert_eq!(body.as_ref(), archive);
+    }
+
+    #[tokio::test]
+    async fn http_never_accepts_or_returns_server_local_paths() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let export_path = directory.path().join("server-output");
+        let router = routes().with_state(Application::new());
+        for (path, payload) in [
+            (
+                "/api/export/sql_file",
+                serde_json::json!({
+                    "dataSourceId": "mysql-local",
+                    "databaseName": "inventory",
+                    "exportPath": export_path
+                }),
+            ),
+            (
+                "/api/export/other_file",
+                serde_json::json!({
+                    "dataSourceId": "mysql-local",
+                    "databaseName": "inventory",
+                    "tableNames": ["items"],
+                    "exportType": "CSV",
+                    "exportPath": export_path
+                }),
+            ),
+            (
+                "/api/rdb/table/generate/class",
+                serde_json::json!({
+                    "dataSourceId": "mysql-local",
+                    "databaseName": "inventory",
+                    "tableName": "items",
+                    "exportPath": export_path
+                }),
+            ),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::to_vec(&payload).expect("payload encodes"),
+                        ))
+                        .expect("request builds"),
+                )
+                .await
+                .expect("router responds");
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .expect("response collects")
+                .to_bytes();
+            let envelope: serde_json::Value =
+                serde_json::from_slice(&body).expect("response is JSON");
+            assert_eq!(envelope["errorCode"], "desktop_file_operation_required");
+        }
+        assert!(!export_path.exists());
+
+        let local_export = LegacyDispatchRequest {
+            request_url: "/api/export/sql_file".to_owned(),
+            method: "post".to_owned(),
+            message: serde_json::json!({
+                "dataSourceId": "mysql-local",
+                "databaseName": "inventory",
+                "exportPath": export_path
+            }),
+        };
+        let generic = dispatch(&Application::new(), local_export.clone()).await;
+        assert_eq!(generic["errorCode"], "desktop_file_operation_required");
+        let desktop = dispatch_desktop(&Application::new(), local_export).await;
+        assert_ne!(
+            desktop["errorCode"], "desktop_file_operation_required",
+            "Desktop IPC must retain local-path behavior"
+        );
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/rdb/cell/download_path")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .expect("request builds"),
+            )
+            .await
+            .expect("router responds");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn sql_compatibility_paths_are_registered_for_dispatch_and_axum() {
+        let router = routes().with_state(Application::new());
+        for (method, path) in REQUIRED_SQL_COMPATIBILITY_PATHS {
+            assert!(LEGACY_PATHS.contains(path), "missing dispatch path: {path}");
+            let response = dispatch(
+                &Application::new(),
+                LegacyDispatchRequest {
+                    request_url: (*path).to_owned(),
+                    method: (*method).to_owned(),
+                    message: serde_json::Value::Null,
+                },
+            )
+            .await;
+            assert_eq!(
+                response["errorCode"], "invalid_legacy_request",
+                "missing desktop dispatch branch: {method} {path}"
+            );
+
+            let http_method = method
+                .to_ascii_uppercase()
+                .parse::<axum::http::Method>()
+                .expect("method must be valid");
+            let mut builder = Request::builder().method(http_method).uri(*path);
+            let body = if *method == "get" {
+                Body::empty()
+            } else {
+                builder = builder.header("content-type", "application/json");
+                Body::from("null")
+            };
+            let response = router
+                .clone()
+                .oneshot(builder.body(body).expect("request must build"))
+                .await
+                .expect("router must respond");
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "missing Axum route: {method} {path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_paths_are_registered_for_dispatch_and_axum() {
+        let application = Application::new();
+        let router = routes().with_state(application.clone());
+        for (method, path) in REQUIRED_WORKSPACE_PATHS {
+            assert!(LEGACY_PATHS.contains(path), "missing dispatch path: {path}");
+            let desktop = dispatch(
+                &application,
+                LegacyDispatchRequest {
+                    request_url: (*path).to_owned(),
+                    method: (*method).to_owned(),
+                    message: serde_json::Value::Null,
+                },
+            )
+            .await;
+            assert_ne!(
+                desktop["errorCode"], "route_not_found",
+                "missing desktop dispatch branch: {method} {path}"
+            );
+
+            let http_method = method
+                .to_ascii_uppercase()
+                .parse::<axum::http::Method>()
+                .expect("method must be valid");
+            let mut builder = Request::builder().method(http_method).uri(*path);
+            let body = if *method == "get" {
+                Body::empty()
+            } else {
+                builder = builder.header("content-type", "application/json");
+                Body::from("null")
+            };
+            let response = router
+                .clone()
+                .oneshot(builder.body(body).expect("request must build"))
+                .await
+                .expect("router must respond");
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "missing Axum route: {method} {path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn parameterless_community_import_is_desktop_only_but_documents_remain_portable() {
+        let directory = tempfile::tempdir().expect("temporary storage");
+        let storage = Storage::open(directory.path(), Arc::new(EmptyVault)).expect("storage opens");
+        let application = Application::with_storage(storage);
+
+        let dispatched = dispatch(
+            &application,
+            LegacyDispatchRequest {
+                request_url: "/api/connection/datasource/import_community".to_owned(),
+                method: "get".to_owned(),
+                message: serde_json::Value::Null,
+            },
+        )
+        .await;
+        assert_eq!(dispatched["success"], false, "{dispatched}");
+        assert_eq!(
+            dispatched["errorCode"], "desktop_file_operation_required",
+            "{dispatched}"
+        );
+
+        let router = routes().with_state(application);
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/connection/datasource/import_community")
+                    .body(Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("route responds");
+        let body: serde_json::Value = serde_json::from_slice(
+            &response
+                .into_body()
+                .collect()
+                .await
+                .expect("body collects")
+                .to_bytes(),
+        )
+        .expect("response decodes");
+        assert_eq!(body["success"], false, "{body}");
+        assert_eq!(body["errorCode"], "desktop_file_operation_required");
+
+        let document = serde_json::json!({
+            "schemaVersion": 1,
+            "exportedAtMs": "0",
+            "datasources": []
+        });
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connection/datasource/import_community")
+                    .header("content-type", "application/json")
+                    .body(Body::from(document.to_string()))
+                    .expect("request builds"),
+            )
+            .await
+            .expect("route responds");
+        let body: serde_json::Value = serde_json::from_slice(
+            &response
+                .into_body()
+                .collect()
+                .await
+                .expect("body collects")
+                .to_bytes(),
+        )
+        .expect("response decodes");
+        assert_eq!(body["success"], true, "{body}");
+        assert_eq!(body["data"]["count"], 0, "{body}");
+    }
+
+    #[test]
+    fn legacy_sql_helpers_preserve_utf16_positions_and_frontend_field_names() {
+        assert_eq!(
+            legacy_mysql_utility_database_type("mysql"),
+            Ok("MYSQL".to_owned())
+        );
+        assert!(legacy_mysql_utility_database_type("postgresql").is_err());
+
+        let sql = "SELECT '🙂';\nSELECT 2";
+        let second = sql.find("SELECT 2").expect("second statement must exist");
+        assert_eq!(utf16_line_column(sql, second), (2, 1));
+        assert_eq!(utf16_len("a🙂"), 3);
+        assert_eq!(locate_statement(sql, "SELECT 2", 0), (second, sql.len()));
+
+        let mut candidate = serde_json::Map::from_iter([
+            ("replaceStartUtf16".to_owned(), serde_json::json!(2)),
+            ("replaceEndUtf16".to_owned(), serde_json::json!(4)),
+        ]);
+        rename_json_field(&mut candidate, "replaceStartUtf16", "replaceStart");
+        rename_json_field(&mut candidate, "replaceEndUtf16", "replaceEnd");
+        assert_eq!(candidate["replaceStart"], 2);
+        assert_eq!(candidate["replaceEnd"], 4);
+        assert!(!candidate.contains_key("replaceStartUtf16"));
+        assert!(!candidate.contains_key("replaceEndUtf16"));
     }
 
     #[test]

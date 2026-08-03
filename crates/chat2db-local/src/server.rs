@@ -243,6 +243,11 @@ async fn dispatch(application: Application, command: AttachmentCommand) -> Attac
             .start_read_query(request)
             .await
             .map(|value| AttachmentPayload::QueryAccepted(Box::new(value))),
+        AttachmentCommand::ExecuteDatabaseWrite { request } => {
+            Ok(AttachmentPayload::DatabaseWrite(Box::new(
+                application.execute_confirmed_database_write(request).await,
+            )))
+        }
         AttachmentCommand::OperationSnapshot { operation_id } => application
             .operation_snapshot(&operation_id)
             .await

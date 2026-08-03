@@ -4,6 +4,7 @@ mod api;
 mod error;
 mod extract;
 pub mod legacy;
+pub mod legacy_ai;
 
 use std::{
     error::Error,
@@ -173,9 +174,10 @@ async fn authorize(State(policy): State<AccessPolicy>, request: Request, next: N
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashMap,
         fs,
         net::{IpAddr, Ipv4Addr, SocketAddr},
-        sync::Arc,
+        sync::{Arc, Mutex},
         time::Duration,
     };
 
@@ -236,7 +238,11 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let inventory: JdbcDriverList = response_json(response).await;
-        assert!(inventory.items.is_empty());
+        assert_eq!(inventory.items.len(), 1);
+        let mysql = &inventory.items[0];
+        assert_eq!(mysql.driver_id, "mysql");
+        assert_eq!(mysql.driver_class, "rust:mysql_async");
+        assert_eq!(mysql.artifact_count, 0);
     }
 
     #[tokio::test]
@@ -296,8 +302,8 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     async fn legacy_datasource_routes_cover_crud_without_echoing_connection_secrets() {
         let directory = TempDir::new().expect("temp directory");
-        let storage =
-            Storage::open(directory.path(), Arc::new(TestVault)).expect("test storage must open");
+        let storage = Storage::open(directory.path(), Arc::new(TestVault::default()))
+            .expect("test storage must open");
         let application = router(Application::with_storage(storage));
 
         let create_response = application
@@ -411,8 +417,8 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     async fn legacy_saved_console_routes_cover_create_list_get_update_and_delete() {
         let directory = TempDir::new().expect("temp directory");
-        let storage =
-            Storage::open(directory.path(), Arc::new(TestVault)).expect("test storage must open");
+        let storage = Storage::open(directory.path(), Arc::new(TestVault::default()))
+            .expect("test storage must open");
         let application = router(Application::with_storage(storage));
 
         let created_response = application
@@ -551,8 +557,8 @@ mod tests {
         assert_eq!(empty["errorCode"], "invalid_sql_execute_request");
 
         let directory = TempDir::new().expect("temp directory");
-        let storage =
-            Storage::open(directory.path(), Arc::new(TestVault)).expect("test storage must open");
+        let storage = Storage::open(directory.path(), Arc::new(TestVault::default()))
+            .expect("test storage must open");
         let unavailable_response = router(Application::with_storage(storage.clone()))
             .oneshot(json_request(
                 Method::POST,
@@ -1398,8 +1404,8 @@ mod tests {
         const API_KEY: &str = "provider-secret-sentinel";
 
         let directory = TempDir::new().expect("temp directory");
-        let storage =
-            Storage::open(directory.path(), Arc::new(TestVault)).expect("test storage must open");
+        let storage = Storage::open(directory.path(), Arc::new(TestVault::default()))
+            .expect("test storage must open");
         let application = router(Application::with_storage(storage));
 
         let create_response = application
@@ -1530,8 +1536,8 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     async fn agent_session_routes_cover_lifecycle_and_message_pagination() {
         let directory = TempDir::new().expect("temp directory");
-        let storage =
-            Storage::open(directory.path(), Arc::new(TestVault)).expect("test storage must open");
+        let storage = Storage::open(directory.path(), Arc::new(TestVault::default()))
+            .expect("test storage must open");
         let application = router(Application::with_storage(storage.clone()));
 
         let provider_response = application
@@ -1718,8 +1724,8 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     async fn agent_run_routes_cover_acceptance_snapshot_replay_and_cancellation() {
         let directory = TempDir::new().expect("temp directory");
-        let storage =
-            Storage::open(directory.path(), Arc::new(TestVault)).expect("test storage must open");
+        let storage = Storage::open(directory.path(), Arc::new(TestVault::default()))
+            .expect("test storage must open");
         let application = router(Application::with_storage(storage));
 
         let provider_response = application
@@ -1872,8 +1878,8 @@ mod tests {
     #[tokio::test]
     async fn datasource_routes_cover_the_storage_lifecycle_without_echoing_secrets() {
         let directory = TempDir::new().expect("temp directory");
-        let storage =
-            Storage::open(directory.path(), Arc::new(TestVault)).expect("test storage must open");
+        let storage = Storage::open(directory.path(), Arc::new(TestVault::default()))
+            .expect("test storage must open");
         let application = router(Application::with_storage(storage));
 
         let create_response = application
@@ -2171,8 +2177,10 @@ mod tests {
         String::from_utf8(body.to_vec()).expect("response body must be UTF-8")
     }
 
-    #[derive(Debug)]
-    struct TestVault;
+    #[derive(Debug, Default)]
+    struct TestVault {
+        values: Mutex<HashMap<String, Vec<u8>>>,
+    }
 
     impl SecretVault for TestVault {
         fn probe(&self) -> Result<(), SecretVaultError> {
@@ -2181,17 +2189,31 @@ mod tests {
 
         fn create(
             &self,
-            _reference: &SecretRef,
-            _value: &SecretValue,
+            reference: &SecretRef,
+            value: &SecretValue,
         ) -> Result<(), SecretVaultError> {
+            self.values.lock().expect("test vault lock").insert(
+                reference.as_str().to_owned(),
+                value.expose_secret().to_vec(),
+            );
             Ok(())
         }
 
-        fn get(&self, _reference: &SecretRef) -> Result<Option<SecretValue>, SecretVaultError> {
-            Ok(None)
+        fn get(&self, reference: &SecretRef) -> Result<Option<SecretValue>, SecretVaultError> {
+            Ok(self
+                .values
+                .lock()
+                .expect("test vault lock")
+                .get(reference.as_str())
+                .cloned()
+                .map(SecretValue::new))
         }
 
-        fn delete(&self, _reference: &SecretRef) -> Result<(), SecretVaultError> {
+        fn delete(&self, reference: &SecretRef) -> Result<(), SecretVaultError> {
+            self.values
+                .lock()
+                .expect("test vault lock")
+                .remove(reference.as_str());
             Ok(())
         }
     }

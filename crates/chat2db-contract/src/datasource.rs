@@ -3,6 +3,8 @@ use std::fmt::{Debug, Formatter};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::SshTunnelConfig;
+
 /// Complete connection descriptor accepted only at a secret-handling boundary.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -13,6 +15,9 @@ pub struct DatasourceConnection {
     pub properties: Vec<DatasourceConnectionProperty>,
     /// Whether sessions opened from this descriptor must be read-only.
     pub read_only: bool,
+    /// Optional SSH local-forward settings stored with the encrypted connection descriptor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<SshTunnelConfig>,
 }
 
 impl Debug for DatasourceConnection {
@@ -22,6 +27,7 @@ impl Debug for DatasourceConnection {
             .field("jdbc_url", &"[REDACTED]")
             .field("properties", &self.properties)
             .field("read_only", &self.read_only)
+            .field("ssh_configured", &self.ssh.is_some())
             .finish()
     }
 }
@@ -161,6 +167,7 @@ mod tests {
                     sensitive: true,
                 }],
                 read_only: true,
+                ssh: None,
             },
         };
 
@@ -186,6 +193,7 @@ mod tests {
                     sensitive: true,
                 }],
                 read_only: false,
+                ssh: None,
             }),
         };
 

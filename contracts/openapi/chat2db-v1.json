@@ -7247,6 +7247,17 @@
           "readOnly": {
             "type": "boolean",
             "description": "Whether sessions opened from this descriptor must be read-only."
+          },
+          "ssh": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SshTunnelConfig",
+                "description": "Optional SSH local-forward settings stored with the encrypted connection descriptor."
+              }
+            ]
           }
         }
       },
@@ -8956,6 +8967,108 @@
           "read_only",
           "ask_before_write"
         ]
+      },
+      "SshAuthentication": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Password authentication.",
+            "required": [
+              "password",
+              "type"
+            ],
+            "properties": {
+              "password": {
+                "type": "string",
+                "description": "SSH password, never returned or logged."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "password"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "OpenSSH-compatible private-key authentication.",
+            "required": [
+              "key_file",
+              "type"
+            ],
+            "properties": {
+              "key_file": {
+                "type": "string",
+                "description": "User-selected local private-key path."
+              },
+              "passphrase": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Optional encrypted-key passphrase, never returned or logged."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "private_key"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "SSH user authentication material accepted only at a connection boundary."
+      },
+      "SshHostKeyVerification": {
+        "type": "string",
+        "description": "SSH server host-key verification policy.",
+        "enum": [
+          "known_hosts"
+        ]
+      },
+      "SshTunnelConfig": {
+        "type": "object",
+        "description": "Complete ephemeral SSH connection descriptor.",
+        "required": [
+          "hostName",
+          "port",
+          "userName",
+          "authentication"
+        ],
+        "properties": {
+          "authentication": {
+            "$ref": "#/components/schemas/SshAuthentication",
+            "description": "Password or private-key authentication."
+          },
+          "hostKeyVerification": {
+            "$ref": "#/components/schemas/SshHostKeyVerification",
+            "description": "Server host-key verification policy."
+          },
+          "hostName": {
+            "type": "string",
+            "description": "SSH server hostname or IP address."
+          },
+          "localPort": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Preferred loopback listener port, or an OS-assigned port when absent/zero.",
+            "minimum": 0
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "description": "SSH server port.",
+            "minimum": 0
+          },
+          "userName": {
+            "type": "string",
+            "description": "SSH username."
+          }
+        }
       },
       "StartAgentRunRequest": {
         "type": "object",

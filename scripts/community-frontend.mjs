@@ -193,8 +193,10 @@ function test() {
   setupUmi(worktree);
   runYarn(['test:chat-answer-update'], worktree);
   runYarn(['test:tree-title-highlight'], worktree);
+  runYarn(['test:deep-clone'], worktree);
   runYarn(['test:ai-model-select'], worktree);
   runYarn(['test:export-connections'], worktree);
+  runYarn(['test:host-file-transfer'], worktree);
 }
 
 function build() {

@@ -2,15 +2,17 @@ use std::{panic::AssertUnwindSafe, time::Duration};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chat2db_contract::{
-    CancelDisposition, ComponentState, CreateDatasourceRequest, DatasourceConnection,
-    DatasourceConnectionProperty, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
-    GetCommunityTriggerRequest, JdbcValue, ListCommunityColumnsRequest,
-    ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
-    ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
-    ListCommunityTablesRequest, ListCommunityTriggersRequest, ListCommunityViewsRequest,
-    OperationEvent, OperationStatus, PreviewCommunityRoutineInvocationRequest, QueryLimits,
-    QueryParameter, ResultMetadata, ResultPageRequest, StartCommunityTablePreviewRequest,
-    StartQueryRequest,
+    ApiError, CancelDisposition, CommunityErPositionRequest, CommunityErQueryRequest,
+    CommunityPinnedTableRequest, CommunityRoutineMigrationRequest, ComponentState,
+    CreateDatasourceRequest, DatabaseWriteState, DatasourceConnection,
+    DatasourceConnectionProperty, ExecuteDatabaseWriteRequest, GetCommunityFunctionRequest,
+    GetCommunityProcedureRequest, GetCommunityTriggerRequest, JdbcValue,
+    ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityFunctionsRequest,
+    ListCommunityIndexesRequest, ListCommunityProceduresRequest, ListCommunitySchemasRequest,
+    ListCommunityTableKeysRequest, ListCommunityTablesRequest, ListCommunityTriggersRequest,
+    ListCommunityViewsRequest, OperationEvent, OperationStatus,
+    PreviewCommunityRoutineInvocationRequest, QueryLimits, QueryParameter, ResultMetadata,
+    ResultPageRequest, StartCommunityTablePreviewRequest, StartQueryRequest,
 };
 use chat2db_core::{
     Application, MysqlConsoleCancellation, MysqlConsoleRequest, RuntimeConfig, RuntimeHost,
@@ -115,6 +117,7 @@ impl MysqlTestConfig {
                 },
             ],
             read_only: false,
+            ssh: None,
         }
     }
 }
@@ -151,7 +154,14 @@ async fn verify_native_product(config: &MysqlTestConfig, database_name: &str) {
         .expect("native MySQL runtime must open without Java");
     let application = host.application();
     assert_java_dormant(&application);
-    assert!(application.list_drivers().items.is_empty());
+    let drivers = application.list_drivers();
+    let mysql_driver = drivers
+        .items
+        .iter()
+        .find(|driver| driver.driver_id == "mysql")
+        .expect("native MySQL driver must be present in the driver inventory");
+    assert_eq!(mysql_driver.driver_class, "rust:mysql_async");
+    assert_eq!(mysql_driver.artifact_count, 0);
 
     let unknown_driver = application
         .test_datasource_connection("notmysql", config.connection(None))
@@ -177,9 +187,13 @@ async fn verify_native_product(config: &MysqlTestConfig, database_name: &str) {
 
     verify_native_metadata(&application, &datasource.id, database_name).await;
     verify_native_object_metadata(&application, &datasource.id, database_name).await;
+    verify_native_workspace_metadata(&application, &datasource.id, database_name).await;
     verify_native_routine_invocation(&application, &datasource.id, database_name).await;
+    verify_native_routine_migration(&application, &datasource.id, database_name).await;
     verify_native_preview(&application, &datasource.id, database_name).await;
     verify_native_console(&application, &datasource.id).await;
+    verify_native_bind_parameters(&application, &datasource.id, config, database_name).await;
+    verify_native_confirmed_writes(&application, &datasource.id, config, database_name).await;
     verify_rejected_native_selects(&application, &datasource.id).await;
     verify_native_truncation(&application, &datasource.id).await;
     verify_native_cancellation(&application, &datasource.id, config, database_name).await;
@@ -187,6 +201,298 @@ async fn verify_native_product(config: &MysqlTestConfig, database_name: &str) {
     host.shutdown()
         .await
         .expect("native-only runtime must shut down cleanly");
+}
+
+async fn verify_confirmed_write_execution(
+    application: &Application,
+    datasource_id: &str,
+    table_name: &str,
+) {
+    let create_sql = format!(
+        "CREATE TABLE `{table_name}` (`id` BIGINT PRIMARY KEY, `label` VARCHAR(64) NOT NULL)"
+    );
+    let unconfirmed = application
+        .execute_confirmed_database_write(ExecuteDatabaseWriteRequest {
+            datasource_id: datasource_id.to_owned(),
+            sql: create_sql.clone(),
+            confirmed: false,
+        })
+        .await;
+    assert_eq!(unconfirmed.state, DatabaseWriteState::NotStarted);
+    assert_eq!(
+        unconfirmed.error.as_ref().map(|error| error.code.as_str()),
+        Some("database_write_confirmation_required")
+    );
+
+    let created = application
+        .execute_confirmed_database_write(ExecuteDatabaseWriteRequest {
+            datasource_id: datasource_id.to_owned(),
+            sql: create_sql,
+            confirmed: true,
+        })
+        .await;
+    assert_eq!(created.state, DatabaseWriteState::Succeeded);
+    assert_eq!(created.affected_rows.as_deref(), Some("0"));
+
+    let inserted = application
+        .execute_confirmed_database_write(ExecuteDatabaseWriteRequest {
+            datasource_id: datasource_id.to_owned(),
+            sql: format!("INSERT INTO `{table_name}` VALUES (1, 'created by automation')"),
+            confirmed: true,
+        })
+        .await;
+    assert_eq!(inserted.state, DatabaseWriteState::Succeeded);
+    assert_eq!(inserted.affected_rows.as_deref(), Some("1"));
+}
+
+async fn verify_read_only_write_and_drop(
+    application: &Application,
+    datasource_id: &str,
+    config: &MysqlTestConfig,
+    database_name: &str,
+    table_name: &str,
+) {
+    let mut read_only_connection = config.connection(Some(database_name));
+    read_only_connection.read_only = true;
+    let read_only = application
+        .create_datasource(CreateDatasourceRequest {
+            name: "Native MySQL read-only automation".to_owned(),
+            driver_id: "mysql".to_owned(),
+            connection: Some(read_only_connection),
+        })
+        .await
+        .expect("read-only native MySQL datasource must persist");
+    let rejected = application
+        .execute_confirmed_database_write(ExecuteDatabaseWriteRequest {
+            datasource_id: read_only.id,
+            sql: format!("UPDATE `{table_name}` SET `label` = 'blocked' WHERE `id` = 1"),
+            confirmed: true,
+        })
+        .await;
+    assert_eq!(rejected.state, DatabaseWriteState::NotStarted);
+    assert_eq!(
+        rejected.error.as_ref().map(|error| error.code.as_str()),
+        Some("datasource_read_only")
+    );
+
+    let dropped = application
+        .execute_confirmed_database_write(ExecuteDatabaseWriteRequest {
+            datasource_id: datasource_id.to_owned(),
+            sql: format!("DROP TABLE `{table_name}`"),
+            confirmed: true,
+        })
+        .await;
+    assert_eq!(dropped.state, DatabaseWriteState::Succeeded);
+}
+
+async fn verify_native_confirmed_writes(
+    application: &Application,
+    datasource_id: &str,
+    config: &MysqlTestConfig,
+    database_name: &str,
+) {
+    let table_name = "automation_write_probe";
+    verify_confirmed_write_execution(application, datasource_id, table_name).await;
+
+    let mut probe = Conn::new(config.native_options())
+        .await
+        .expect("write safety probe must connect");
+    probe
+        .query_drop(format!("USE `{database_name}`"))
+        .await
+        .expect("write safety probe must select the fixture database");
+    probe
+        .exec_drop(
+            format!("UPDATE `{table_name}` SET `label` = 'unsafe'; DELETE FROM `{table_name}`"),
+            (),
+        )
+        .await
+        .expect_err("the prepared protocol must reject a multi-statement payload as one unit");
+    let unchanged = probe
+        .query_first::<(u64, String), _>(format!(
+            "SELECT COUNT(*), MIN(`label`) FROM `{table_name}`"
+        ))
+        .await
+        .expect("write safety probe must inspect the table")
+        .expect("aggregate query always returns one row");
+    assert_eq!(
+        unchanged,
+        (1, "created by automation".to_owned()),
+        "prepared multi-statement rejection must execute neither statement"
+    );
+
+    let known_failure = application
+        .execute_confirmed_database_write(ExecuteDatabaseWriteRequest {
+            datasource_id: datasource_id.to_owned(),
+            sql: format!("INSERT INTO `{table_name}` VALUES (1, 'duplicate')"),
+            confirmed: true,
+        })
+        .await;
+    assert_eq!(known_failure.state, DatabaseWriteState::Unknown);
+    assert_eq!(
+        known_failure
+            .error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("database_write_outcome_unknown")
+    );
+
+    let delimiter_script = application
+        .execute_confirmed_database_write(ExecuteDatabaseWriteRequest {
+            datasource_id: datasource_id.to_owned(),
+            sql: format!(
+                "DELIMITER $$\nUPDATE `{table_name}` SET `label` = 'unsafe'; DELETE FROM `{table_name}`$$\nDELIMITER ;"
+            ),
+            confirmed: true,
+        })
+        .await;
+    assert_eq!(delimiter_script.state, DatabaseWriteState::NotStarted);
+    assert_eq!(
+        delimiter_script
+            .error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("invalid_database_write")
+    );
+
+    let retained_rows = probe
+        .query_first::<u64, _>(format!("SELECT COUNT(*) FROM `{table_name}`"))
+        .await
+        .expect("write safety probe must query retained rows")
+        .expect("COUNT always returns one row");
+    probe
+        .disconnect()
+        .await
+        .expect("write safety probe must disconnect");
+    assert_eq!(
+        retained_rows, 1,
+        "rejected scripts must dispatch no statement"
+    );
+
+    let script = application
+        .execute_confirmed_database_write(ExecuteDatabaseWriteRequest {
+            datasource_id: datasource_id.to_owned(),
+            sql: format!("UPDATE `{table_name}` SET `label` = 'one'; DELETE FROM `{table_name}`"),
+            confirmed: true,
+        })
+        .await;
+    assert_eq!(script.state, DatabaseWriteState::NotStarted);
+    assert_eq!(
+        script.error.as_ref().map(|error| error.code.as_str()),
+        Some("invalid_database_write")
+    );
+
+    verify_read_only_write_and_drop(
+        application,
+        datasource_id,
+        config,
+        database_name,
+        table_name,
+    )
+    .await;
+    assert_java_dormant(application);
+}
+
+async fn verify_native_workspace_metadata(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+) {
+    let pin = CommunityPinnedTableRequest {
+        data_source_id: datasource_id.to_owned(),
+        database_name: database_name.to_owned(),
+        schema_name: String::new(),
+        table_name: "items".to_owned(),
+    };
+    application
+        .pin_community_mysql_table(pin.clone())
+        .await
+        .expect("table pin must persist");
+    application
+        .pin_community_mysql_table(pin.clone())
+        .await
+        .expect("duplicate table pin must be idempotent");
+    assert_eq!(
+        application
+            .list_community_mysql_pinned_tables(pin.clone())
+            .await
+            .expect("table pins must list")
+            .items,
+        vec!["items"]
+    );
+
+    let er_request = CommunityErQueryRequest {
+        data_source_id: datasource_id.to_owned(),
+        database_name: database_name.to_owned(),
+        schema_name: String::new(),
+    };
+    let model = application
+        .community_mysql_er_model(er_request.clone())
+        .await
+        .expect("native MySQL ER metadata must load");
+    assert!(model.position.is_none());
+    let categories = model
+        .tables
+        .iter()
+        .find(|table| table.name == "categories")
+        .expect("category table must be present in ER metadata");
+    assert!(
+        categories
+            .column_list
+            .iter()
+            .any(|column| column.name == "id" && column.primary_key)
+    );
+    let items = model
+        .tables
+        .iter()
+        .find(|table| table.name == "items")
+        .expect("items table must be present in ER metadata");
+    assert!(
+        items
+            .column_list
+            .iter()
+            .any(|column| column.name == "amount" && column.column_type == "DECIMAL")
+    );
+    assert!(items.foreign_key_list.iter().any(|key| {
+        key.pk_table_name == "categories"
+            && key.pk_column_name == "id"
+            && key.fk_table_name == "items"
+            && key.fk_column_name == "category_id"
+    }));
+
+    for position in [r#"{"version":1}"#, r#"{"version":2}"#] {
+        application
+            .save_community_mysql_er_position(CommunityErPositionRequest {
+                data_source_id: datasource_id.to_owned(),
+                database_name: database_name.to_owned(),
+                schema_name: String::new(),
+                position: position.to_owned(),
+            })
+            .await
+            .expect("ER layout must upsert");
+    }
+    assert_eq!(
+        application
+            .community_mysql_er_model(er_request)
+            .await
+            .expect("native MySQL ER metadata must reload")
+            .position
+            .as_deref(),
+        Some(r#"{"version":2}"#)
+    );
+    application
+        .unpin_community_mysql_table(pin.clone())
+        .await
+        .expect("table pin must delete");
+    assert!(
+        application
+            .list_community_mysql_pinned_tables(pin)
+            .await
+            .expect("table pins must relist")
+            .items
+            .is_empty()
+    );
+    assert_java_dormant(application);
 }
 
 async fn verify_native_metadata(
@@ -366,6 +672,90 @@ async fn verify_native_routine_invocation(
         non_mysql.api_error().code,
         "invalid_community_routine_invocation_request"
     );
+    assert_java_dormant(application);
+}
+
+async fn verify_native_routine_migration(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+) {
+    let request = CommunityRoutineMigrationRequest {
+        datasource_id: datasource_id.to_owned(),
+        database_type: MYSQL_DATABASE_TYPE.to_owned(),
+        database_name: database_name.to_owned(),
+        schema_name: String::new(),
+        routine_type: "FUNCTION".to_owned(),
+        routine_name: "double_amount".to_owned(),
+        ddl: format!(
+            "CREATE FUNCTION `{database_name}`.`double_amount`(input_value DECIMAL(12,2)) \
+             RETURNS DECIMAL(12,2) DETERMINISTIC RETURN input_value * 3"
+        ),
+    };
+    let preview = application
+        .preview_community_routine_migration(&request)
+        .expect("native MySQL routine migration must preview");
+    assert!(preview.sql.starts_with(&format!(
+        "DROP FUNCTION IF EXISTS `{database_name}`.`double_amount`;"
+    )));
+    assert!(preview.sql.ends_with("RETURN input_value * 3;"));
+
+    let migrated = application
+        .execute_community_routine_migration(request.clone())
+        .await
+        .expect("native MySQL routine migration must return a product result");
+    assert!(migrated.success, "migration failed: {}", migrated.message);
+    assert_eq!(migrated.failure_stage, None);
+    assert!(!migrated.restore_attempted);
+    let results = execute_console_preview(
+        application,
+        datasource_id,
+        database_name,
+        "SELECT double_amount(4)".to_owned(),
+    )
+    .await;
+    assert!(matches!(
+        results
+            .iter()
+            .find(|result| !result.rows.is_empty())
+            .expect("migrated function must return a row")
+            .rows[0]
+            .values
+            .as_slice(),
+        [JdbcValue::Decimal { value }] if value == "12.00"
+    ));
+
+    let failed = application
+        .execute_community_routine_migration(CommunityRoutineMigrationRequest {
+            ddl: format!(
+                "CREATE FUNCTION `{database_name}`.`double_amount`(input_value DECIMAL(12,2)) \
+                 RETURNS DECIMAL(12,2) RETURN"
+            ),
+            ..request
+        })
+        .await
+        .expect("failed migration must return its compensation result");
+    assert!(!failed.success);
+    assert_eq!(failed.failure_stage.as_deref(), Some("APPLY"));
+    assert!(failed.restore_attempted);
+    assert!(failed.restore_succeeded);
+    let restored = execute_console_preview(
+        application,
+        datasource_id,
+        database_name,
+        "SELECT double_amount(4)".to_owned(),
+    )
+    .await;
+    assert!(matches!(
+        restored
+            .iter()
+            .find(|result| !result.rows.is_empty())
+            .expect("restored function must return a row")
+            .rows[0]
+            .values
+            .as_slice(),
+        [JdbcValue::Decimal { value }] if value == "12.00"
+    ));
     assert_java_dormant(application);
 }
 
@@ -722,11 +1112,146 @@ async fn verify_native_console(application: &Application, datasource_id: &str) {
     assert_java_dormant(application);
 }
 
-async fn verify_rejected_native_selects(application: &Application, datasource_id: &str) {
-    let parameterized = application
+#[allow(clippy::too_many_lines)]
+async fn verify_native_bind_parameters(
+    application: &Application,
+    datasource_id: &str,
+    config: &MysqlTestConfig,
+    database_name: &str,
+) {
+    let mut parameters = vec![
+        QueryParameter {
+            position: 1,
+            value: JdbcValue::Null,
+        },
+        QueryParameter {
+            position: 2,
+            value: JdbcValue::SignedInteger {
+                value: "-42".to_owned(),
+            },
+        },
+        QueryParameter {
+            position: 3,
+            value: JdbcValue::UnsignedInteger {
+                value: "18446744073709551615".to_owned(),
+            },
+        },
+        QueryParameter {
+            position: 4,
+            value: JdbcValue::Decimal {
+                value: "12345678901234.123456".to_owned(),
+            },
+        },
+        QueryParameter {
+            position: 5,
+            value: JdbcValue::Boolean { value: true },
+        },
+        QueryParameter {
+            position: 6,
+            value: JdbcValue::Text {
+                value: "你好，Chat2DB".to_owned(),
+            },
+        },
+        QueryParameter {
+            position: 7,
+            value: JdbcValue::Binary {
+                value: "AAH/".to_owned(),
+            },
+        },
+        QueryParameter {
+            position: 8,
+            value: JdbcValue::Date {
+                value: "2026-08-03".to_owned(),
+            },
+        },
+        QueryParameter {
+            position: 9,
+            value: JdbcValue::Time {
+                value: "12:34:56.123456".to_owned(),
+            },
+        },
+        QueryParameter {
+            position: 10,
+            value: JdbcValue::Timestamp {
+                value: "2026-08-03T12:34:56.654321".to_owned(),
+            },
+        },
+        QueryParameter {
+            position: 11,
+            value: JdbcValue::TimestampWithTimeZone {
+                value: "2026-08-03T12:34:56+08:00".to_owned(),
+            },
+        },
+    ];
+    parameters.reverse();
+    let query = application
         .start_query(StartQueryRequest {
             datasource_id: datasource_id.to_owned(),
-            sql: "SELECT ?".to_owned(),
+            sql: "SELECT ?, CAST(? AS SIGNED), CAST(? AS UNSIGNED), \
+                  CAST(? AS DECIMAL(20, 6)), IF(?, 1, 0), \
+                  CAST(? AS CHAR CHARACTER SET utf8mb4), HEX(?), \
+                  CAST(? AS DATE), CAST(? AS TIME(6)), \
+                  CAST(? AS DATETIME(6)), CAST(? AS DATETIME(6))"
+                .to_owned(),
+            parameters,
+            limits: query_limits("10"),
+        })
+        .await
+        .expect("typed native MySQL bind parameters must be accepted");
+    let result = wait_for_result(application, &query.operation_id).await;
+    let page = result_page(application, &result).await;
+    assert_eq!(page.rows.len(), 1);
+    assert_eq!(
+        page.rows[0].values,
+        vec![
+            JdbcValue::Null,
+            JdbcValue::SignedInteger {
+                value: "-42".to_owned(),
+            },
+            JdbcValue::UnsignedInteger {
+                value: "18446744073709551615".to_owned(),
+            },
+            JdbcValue::Decimal {
+                value: "12345678901234.123456".to_owned(),
+            },
+            JdbcValue::SignedInteger {
+                value: "1".to_owned(),
+            },
+            JdbcValue::Text {
+                value: "你好，Chat2DB".to_owned(),
+            },
+            JdbcValue::Text {
+                value: "0001FF".to_owned(),
+            },
+            JdbcValue::Date {
+                value: "2026-08-03".to_owned(),
+            },
+            JdbcValue::Time {
+                value: "12:34:56.123456".to_owned(),
+            },
+            JdbcValue::Timestamp {
+                value: "2026-08-03T12:34:56.654321".to_owned(),
+            },
+            JdbcValue::Timestamp {
+                value: "2026-08-03T04:34:56".to_owned(),
+            },
+        ]
+    );
+
+    let mut read_only_connection = config.connection(Some(database_name));
+    read_only_connection.read_only = true;
+    let read_only = application
+        .create_datasource(CreateDatasourceRequest {
+            name: "Read-only native MySQL binds".to_owned(),
+            driver_id: "mysql".to_owned(),
+            connection: Some(read_only_connection),
+        })
+        .await
+        .expect("read-only native MySQL datasource must persist");
+    let read_only_query = application
+        .start_query(StartQueryRequest {
+            datasource_id: read_only.id,
+            sql: "SELECT label FROM items WHERE id = ?".to_owned(),
             parameters: vec![QueryParameter {
                 position: 1,
                 value: JdbcValue::SignedInteger {
@@ -736,8 +1261,74 @@ async fn verify_rejected_native_selects(application: &Application, datasource_id
             limits: query_limits("10"),
         })
         .await
-        .expect_err("parameterized native SELECT must fail without starting Java");
-    assert_eq!(parameterized.api_error().code, "invalid_query_request");
+        .expect("read-only native MySQL bind query must be accepted");
+    let read_only_result = wait_for_result(application, &read_only_query.operation_id).await;
+    assert_eq!(
+        result_page(application, &read_only_result).await.rows[0].values,
+        vec![JdbcValue::Text {
+            value: "mysql-ready".to_owned(),
+        }]
+    );
+
+    for (sql, parameters, expected_required, expected_supplied) in [
+        (
+            "SELECT ?, ?",
+            vec![QueryParameter {
+                position: 1,
+                value: JdbcValue::Null,
+            }],
+            "2",
+            "1",
+        ),
+        (
+            "SELECT ?",
+            vec![
+                QueryParameter {
+                    position: 1,
+                    value: JdbcValue::Null,
+                },
+                QueryParameter {
+                    position: 2,
+                    value: JdbcValue::Null,
+                },
+            ],
+            "1",
+            "2",
+        ),
+    ] {
+        let accepted = application
+            .start_query(StartQueryRequest {
+                datasource_id: datasource_id.to_owned(),
+                sql: sql.to_owned(),
+                parameters,
+                limits: query_limits("10"),
+            })
+            .await
+            .expect("parameter-count validation occurs after MySQL prepares the statement");
+        let error = wait_for_failure(application, &accepted.operation_id).await;
+        assert_eq!(error.code, "invalid_query_parameter_count");
+        assert!(error.message.contains(expected_required));
+        assert!(error.message.contains(expected_supplied));
+    }
+    assert_java_dormant(application);
+}
+
+async fn verify_rejected_native_selects(application: &Application, datasource_id: &str) {
+    let invalid_position = application
+        .start_query(StartQueryRequest {
+            datasource_id: datasource_id.to_owned(),
+            sql: "SELECT ?".to_owned(),
+            parameters: vec![QueryParameter {
+                position: 2,
+                value: JdbcValue::SignedInteger {
+                    value: "1".to_owned(),
+                },
+            }],
+            limits: query_limits("10"),
+        })
+        .await
+        .expect_err("non-contiguous native parameter positions must fail before execution");
+    assert_eq!(invalid_position.api_error().code, "invalid_query_parameter");
 
     let cte = application
         .start_query(StartQueryRequest {
@@ -877,6 +1468,34 @@ async fn wait_for_result(application: &Application, operation_id: &str) -> Resul
     })
     .await
     .expect("native MySQL query must finish before timeout")
+}
+
+async fn wait_for_failure(application: &Application, operation_id: &str) -> ApiError {
+    let mut subscription = application
+        .subscribe_operation(operation_id, None)
+        .await
+        .expect("failed query operation must be subscribable");
+    tokio::time::timeout(EVENT_TIMEOUT, async {
+        while let Some(envelope) = subscription
+            .next_event()
+            .await
+            .expect("operation event must decode")
+        {
+            match envelope.event {
+                OperationEvent::Failed { error } => return error,
+                OperationEvent::Completed { result } => {
+                    panic!("native MySQL query unexpectedly completed: {result:?}")
+                }
+                OperationEvent::Cancelled { reason } => {
+                    panic!("native MySQL query was cancelled: {reason:?}")
+                }
+                OperationEvent::Started | OperationEvent::Progress { .. } => {}
+            }
+        }
+        panic!("native MySQL operation ended without a failure event")
+    })
+    .await
+    .expect("native MySQL query must fail before timeout")
 }
 
 async fn result_page(

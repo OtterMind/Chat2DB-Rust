@@ -3,15 +3,26 @@
 mod agent;
 mod community;
 mod convert;
+mod datasource_compatibility;
+mod datasource_converter;
+mod datasource_edit;
 mod datasource_session;
 mod driver_pack;
 mod engine_manager;
 mod error;
 mod large_value;
+mod legacy_community_import;
+mod mysql_account;
+mod mysql_dashboard;
 pub mod mysql_ddl;
+mod mysql_schema_diff;
+mod mysql_workspace;
 mod native_mysql;
 mod operation;
 mod query;
+mod ssh;
+mod transfer;
+mod workspace;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -47,8 +58,10 @@ pub use large_value::{
     LargeValueChunk, LargeValueEncoding, LargeValueError, LargeValuePreview, LargeValueStoreStats,
     LargeValueType,
 };
+pub use legacy_community_import::LegacyCommunityImportOutcome;
 pub use operation::OperationSubscription;
 pub use query::{MysqlConsoleCancellation, MysqlConsoleRequest, MysqlConsoleResult};
+pub use transfer::TransferArtifactDownload;
 
 use engine_manager::{
     DEFAULT_ENGINE_IDLE_TIMEOUT, EngineManagerOwner, EngineManagerStatus, EngineProvider,
@@ -74,6 +87,8 @@ pub(crate) struct ApplicationInner {
     large_values: large_value::LargeValueStore,
     agent_runs: AgentRunHub,
     operations: OperationHub,
+    transfer_tasks: transfer::TransferTaskHub,
+    account_previews: mysql_account::AccountPreviewRegistry,
     accepting_work: Mutex<bool>,
     shutdown_agent_run_ids: Mutex<Vec<String>>,
     tasks: Mutex<HashMap<String, JoinHandle<()>>>,
@@ -250,6 +265,8 @@ impl Application {
                 large_values: large_value::LargeValueStore::default(),
                 agent_runs: AgentRunHub::new(),
                 operations: OperationHub::new(),
+                transfer_tasks: transfer::TransferTaskHub::new(),
+                account_previews: mysql_account::AccountPreviewRegistry::default(),
                 accepting_work: Mutex::new(true),
                 shutdown_agent_run_ids: Mutex::new(Vec::new()),
                 tasks: Mutex::new(HashMap::new()),
@@ -465,9 +482,14 @@ impl Application {
     /// Returns the immutable driver inventory loaded during host startup.
     #[must_use]
     pub fn list_drivers(&self) -> JdbcDriverList {
-        JdbcDriverList {
-            items: self.inner.drivers.clone(),
+        let mut items = self.inner.drivers.clone();
+        if !items
+            .iter()
+            .any(|driver| driver.driver_id.eq_ignore_ascii_case("mysql"))
+        {
+            items.push(datasource_compatibility::native_mysql_driver());
         }
+        JdbcDriverList { items }
     }
 
     /// Opens and immediately closes an ephemeral JDBC session without
@@ -496,6 +518,8 @@ impl Application {
         let session = datasource_session::open_datasource_session(
             &engine,
             datasource_session::ResolvedDatasourceConnection {
+                datasource_id: "connection-test".to_owned(),
+                datasource_revision: 0,
                 driver_id: driver_id.to_owned(),
                 datasource_name: "Connection test".to_owned(),
                 connection,
@@ -733,12 +757,14 @@ impl Application {
         self.persist_agent_shutdown_cancellations(&agent_run_ids)
             .await;
         self.inner.agent_runs.cancel_all().await;
+        self.begin_transfer_shutdown().await;
     }
 
     async fn join_tasks(&self) {
         let query_tasks = self.join_query_tasks();
         let agent_tasks = self.inner.agent_runs.join_tasks(TASK_SHUTDOWN_TIMEOUT);
-        let ((), mut agent_run_ids) = tokio::join!(query_tasks, agent_tasks);
+        let transfer_tasks = self.join_transfer_tasks(TASK_SHUTDOWN_TIMEOUT);
+        let ((), mut agent_run_ids, ()) = tokio::join!(query_tasks, agent_tasks, transfer_tasks);
         agent_run_ids.extend(std::mem::take(
             &mut *self.inner.shutdown_agent_run_ids.lock().await,
         ));
@@ -1119,11 +1145,15 @@ pub(crate) fn now_millis() -> Result<i64, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex},
+    };
 
     use chat2db_contract::{
-        ComponentState, CreateDatasourceRequest, DatasourceSecretChange, RuntimeStatus,
-        UpdateDatasourceRequest,
+        ComponentState, CreateDatasourceRequest, DatabaseWriteState, DatasourceConnection,
+        DatasourceConnectionProperty, DatasourceSecretChange, ExecuteDatabaseWriteRequest,
+        RuntimeStatus, UpdateDatasourceRequest,
     };
     use chat2db_storage::{SecretRef, SecretValue, SecretVault, SecretVaultError, Storage};
     use tempfile::TempDir;
@@ -1176,6 +1206,48 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Default)]
+    struct RoundTripVault(Mutex<HashMap<String, Vec<u8>>>);
+
+    impl SecretVault for RoundTripVault {
+        fn probe(&self) -> Result<(), SecretVaultError> {
+            Ok(())
+        }
+
+        fn create(
+            &self,
+            reference: &SecretRef,
+            value: &SecretValue,
+        ) -> Result<(), SecretVaultError> {
+            self.0
+                .lock()
+                .map_err(|_| SecretVaultError::Backend)?
+                .insert(
+                    reference.as_str().to_owned(),
+                    value.expose_secret().to_vec(),
+                );
+            Ok(())
+        }
+
+        fn get(&self, reference: &SecretRef) -> Result<Option<SecretValue>, SecretVaultError> {
+            Ok(self
+                .0
+                .lock()
+                .map_err(|_| SecretVaultError::Backend)?
+                .get(reference.as_str())
+                .cloned()
+                .map(SecretValue::new))
+        }
+
+        fn delete(&self, reference: &SecretRef) -> Result<(), SecretVaultError> {
+            self.0
+                .lock()
+                .map_err(|_| SecretVaultError::Backend)?
+                .remove(reference.as_str());
+            Ok(())
+        }
+    }
+
     #[test]
     fn composed_storage_is_ready_without_enabling_the_database_engine() {
         let directory = TempDir::new().expect("temp dir");
@@ -1203,6 +1275,55 @@ mod tests {
             ComponentState::Disabled
         );
         assert!(application.storage().is_some());
+    }
+
+    #[tokio::test]
+    async fn confirmed_write_rejects_non_mysql_before_engine_start() {
+        let directory = TempDir::new().expect("temp dir");
+        let storage = Storage::open(directory.path(), Arc::new(RoundTripVault::default()))
+            .expect("local storage must open");
+        let application = Application::with_storage(storage);
+        let datasource = application
+            .create_datasource(CreateDatasourceRequest {
+                name: "Local H2".to_owned(),
+                driver_id: "h2".to_owned(),
+                connection: Some(DatasourceConnection {
+                    jdbc_url: "jdbc:h2:mem:write-boundary".to_owned(),
+                    properties: vec![DatasourceConnectionProperty {
+                        key: "user".to_owned(),
+                        value: "sa".to_owned(),
+                        sensitive: false,
+                    }],
+                    read_only: false,
+                    ssh: None,
+                }),
+            })
+            .await
+            .expect("unmanaged storage accepts a legacy H2 datasource");
+
+        let result = application
+            .execute_confirmed_database_write(ExecuteDatabaseWriteRequest {
+                datasource_id: datasource.id,
+                sql: "UPDATE items SET label = 'blocked'".to_owned(),
+                confirmed: true,
+            })
+            .await;
+
+        assert_eq!(result.state, DatabaseWriteState::NotStarted);
+        assert_eq!(
+            result.error.as_ref().map(|error| error.code.as_str()),
+            Some("mysql_driver_mismatch")
+        );
+        assert_eq!(
+            application
+                .health()
+                .components
+                .iter()
+                .find(|component| component.id == "database-engine")
+                .expect("database engine health")
+                .state,
+            ComponentState::Disabled
+        );
     }
 
     #[tokio::test]

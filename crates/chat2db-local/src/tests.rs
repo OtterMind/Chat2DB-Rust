@@ -2,8 +2,8 @@ use std::{fs, sync::Arc, time::Duration};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chat2db_contract::{
-    ApiError, CreateDatasourceRequest, JdbcValue, QueryLimits, ResultMetadata, ResultPage,
-    ResultPageRequest, ResultRow, StartQueryRequest,
+    ApiError, CreateDatasourceRequest, DatabaseWriteState, ExecuteDatabaseWriteRequest, JdbcValue,
+    QueryLimits, ResultMetadata, ResultPage, ResultPageRequest, ResultRow, StartQueryRequest,
 };
 use chat2db_core::Application;
 use chat2db_storage::{SecretRef, SecretValue, SecretVault, SecretVaultError, Storage};
@@ -137,6 +137,26 @@ async fn serves_real_application_state_and_cleans_discovery_files() {
     assert!(!directory.path().join(METADATA_FILE).exists());
     #[cfg(unix)]
     assert!(!directory.path().join(SOCKET_FILE).exists());
+}
+
+#[tokio::test]
+async fn local_runtime_enforces_database_write_confirmation() {
+    let (directory, application) = setup();
+    let mut server = LocalServer::start(application).expect("server starts");
+    let result = LocalClient::new(directory.path())
+        .execute_database_write(ExecuteDatabaseWriteRequest {
+            datasource_id: "missing-datasource".to_owned(),
+            sql: "UPDATE items SET label = 'changed'".to_owned(),
+            confirmed: false,
+        })
+        .await;
+
+    assert_eq!(result.state, DatabaseWriteState::NotStarted);
+    assert_eq!(
+        result.error.as_ref().map(|error| error.code.as_str()),
+        Some("database_write_confirmation_required")
+    );
+    server.shutdown().await.expect("server shuts down");
 }
 
 #[tokio::test]

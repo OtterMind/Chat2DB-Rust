@@ -19,8 +19,15 @@ if [[ ! -e "${community_root}/.git" ]]; then
 fi
 
 actual_commit="$(git -C "${community_root}" rev-parse HEAD)"
-if [[ "${actual_commit}" != "${expected_commit}" ]]; then
-  echo "Community source must be pinned to ${expected_commit}; found ${actual_commit}" >&2
+if ! git -C "${community_root}" merge-base --is-ancestor "${expected_commit}" "${actual_commit}"; then
+  echo "Community source ${actual_commit} must descend from compatibility baseline ${expected_commit}" >&2
+  exit 1
+fi
+
+expected_server_tree="$(git -C "${community_root}" rev-parse "${expected_commit}:chat2db-community-server")"
+actual_server_tree="$(git -C "${community_root}" rev-parse "${actual_commit}:chat2db-community-server")"
+if [[ "${actual_server_tree}" != "${expected_server_tree}" ]]; then
+  echo "Community server tree must match compatibility baseline ${expected_commit}" >&2
   exit 1
 fi
 

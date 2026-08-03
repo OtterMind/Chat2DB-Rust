@@ -269,6 +269,42 @@ impl From<StorageError> for AppError {
             StorageError::InvalidDatasource(message) => {
                 Self::invalid("invalid_datasource", message)
             }
+            StorageError::WorkspaceNamespaceNotFound(id) => Self::not_found(
+                "workspace_namespace_not_found",
+                format!("Workspace namespace {id} does not exist"),
+            ),
+            StorageError::WorkspaceNodeNotFound(id) => Self::not_found(
+                "workspace_node_not_found",
+                format!("Workspace node {id} does not exist"),
+            ),
+            StorageError::InvalidWorkspace(message) => {
+                Self::invalid("invalid_workspace_operation", message)
+            }
+            StorageError::CommunityDashboardNotFound(id) => Self::not_found(
+                "community_dashboard_not_found",
+                format!("Community dashboard {id} does not exist"),
+            ),
+            StorageError::InvalidCommunityDashboard(message) => {
+                Self::invalid("invalid_community_dashboard", message)
+            }
+            StorageError::CommunityChartNotFound(id) => Self::not_found(
+                "community_chart_not_found",
+                format!("Community chart {id} does not exist"),
+            ),
+            StorageError::InvalidCommunityChart(message) => {
+                Self::invalid("invalid_community_chart", message)
+            }
+            StorageError::TransferTaskNotFound(id) => Self::not_found(
+                "transfer_task_not_found",
+                format!("Transfer task {id} does not exist"),
+            ),
+            StorageError::TransferArtifactNotFound(id) => Self::not_found(
+                "transfer_artifact_not_found",
+                format!("Transfer artifact {id} does not exist or expired"),
+            ),
+            StorageError::InvalidTransfer(message) => {
+                Self::invalid("invalid_transfer_operation", message)
+            }
             StorageError::SavedConsoleNotFound(id) => Self::not_found(
                 "saved_console_not_found",
                 format!("Saved Console {id} does not exist"),
