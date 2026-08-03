@@ -159,6 +159,7 @@ async fn verify_product_vertical(config: &MysqlTestConfig, database_name: &str) 
 
     let datasource =
         create_datasource(&application, config, Some(database_name), "MySQL editable").await;
+    verify_routine_invocation_preview(&router, &application, &datasource, database_name).await;
     let editor_meta = get(
         &router,
         &format!("/api/rdb/table/table_meta?dataSourceId={datasource}&databaseType=MYSQL"),
@@ -963,6 +964,164 @@ async fn verify_product_vertical(config: &MysqlTestConfig, database_name: &str) 
     host.shutdown()
         .await
         .expect("native-only Web runtime must shut down");
+}
+
+async fn verify_routine_invocation_preview(
+    router: &Router,
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+) {
+    execute_ddl(
+        router,
+        datasource_id,
+        database_name,
+        "",
+        "CREATE FUNCTION `routine``add`(input_value INT) RETURNS INT \
+         DETERMINISTIC NO SQL RETURN input_value + 1;",
+    )
+    .await;
+    execute_ddl(
+        router,
+        datasource_id,
+        database_name,
+        "",
+        "CREATE PROCEDURE routine_mix(\
+             IN input_value INT, OUT output_text VARCHAR(32), INOUT running_total BIGINT\
+         ) BEGIN \
+             SET output_text = CONCAT('v', input_value); \
+             SET running_total = running_total + input_value + 7; \
+         END;",
+    )
+    .await;
+
+    let function_request = json!({
+        "dataSourceId": datasource_id,
+        "databaseName": database_name,
+        "schemaName": null,
+        "routineType": "FUNCTION",
+        "routineName": "`routine``add`"
+    });
+    let function_preview = post(
+        router,
+        "/api/rdb/routine/preview_invocation",
+        function_request.clone(),
+    )
+    .await;
+    assert_eq!(
+        function_preview["sql"],
+        "set @input_value = 0;\n\nselect `routine``add`(\n    @input_value\n);"
+    );
+    assert_desktop_routine_preview_matches(application, function_request, &function_preview).await;
+    let function_results = execute_console_sql(
+        router,
+        datasource_id,
+        database_name,
+        function_preview["sql"]
+            .as_str()
+            .expect("function preview SQL"),
+    )
+    .await;
+    assert_eq!(last_console_values(&function_results), json!(["1"]));
+
+    let procedure_request = json!({
+        "dataSourceId": datasource_id,
+        "databaseType": "MYSQL",
+        "databaseName": database_name,
+        "schemaName": "",
+        "routineType": "PROCEDURE",
+        "routineName": "routine_mix"
+    });
+    let procedure_preview = post(
+        router,
+        "/api/rdb/routine/preview_invocation",
+        procedure_request.clone(),
+    )
+    .await;
+    assert_eq!(
+        procedure_preview["sql"],
+        "set @input_value = 0;\nset @running_total = 0;\n\n\
+         call routine_mix(\n    @input_value,\n    @output_text,\n    @running_total\n);\n\
+         select @output_text, @running_total;"
+    );
+    assert_desktop_routine_preview_matches(application, procedure_request, &procedure_preview)
+        .await;
+    let procedure_results = execute_console_sql(
+        router,
+        datasource_id,
+        database_name,
+        procedure_preview["sql"]
+            .as_str()
+            .expect("procedure preview SQL"),
+    )
+    .await;
+    assert_eq!(last_console_values(&procedure_results), json!(["v0", "7"]));
+    assert_java_dormant(application);
+}
+
+async fn assert_desktop_routine_preview_matches(
+    application: &Application,
+    message: Value,
+    http_preview: &Value,
+) {
+    let desktop = chat2db_web::legacy::dispatch(
+        application,
+        chat2db_web::legacy::LegacyDispatchRequest {
+            request_url: "/api/rdb/routine/preview_invocation".to_owned(),
+            method: "post".to_owned(),
+            message,
+        },
+    )
+    .await;
+    assert_eq!(desktop["success"], true, "desktop routine preview failed");
+    assert_eq!(desktop["data"], *http_preview, "HTTP/desktop SQL diverged");
+}
+
+async fn execute_console_sql(
+    router: &Router,
+    datasource_id: &str,
+    database_name: &str,
+    sql: &str,
+) -> Value {
+    let results = post(
+        router,
+        "/api/rdb/dml/execute",
+        json!({
+            "dataSourceId": datasource_id,
+            "databaseType": "MYSQL",
+            "databaseName": database_name,
+            "schemaName": "",
+            "tableName": "",
+            "sql": sql,
+            "single": false,
+            "pageNo": 1,
+            "pageSize": 20,
+            "errorContinue": false
+        }),
+    )
+    .await;
+    let items = results.as_array().expect("console result list");
+    assert!(!items.is_empty(), "console must return at least one result");
+    assert!(
+        items.iter().all(|item| item["success"] == true),
+        "console execution failed: {results}"
+    );
+    results
+}
+
+fn last_console_values(results: &Value) -> Value {
+    let result = results
+        .as_array()
+        .expect("console result list")
+        .iter()
+        .rev()
+        .find(|result| {
+            result["dataList"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty())
+        })
+        .expect("console must return a row-bearing result");
+    cell_values(&result["dataList"][0])
 }
 
 async fn create_datasource(

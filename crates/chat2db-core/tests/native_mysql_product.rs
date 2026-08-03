@@ -8,10 +8,13 @@ use chat2db_contract::{
     ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
     ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
     ListCommunityTablesRequest, ListCommunityTriggersRequest, ListCommunityViewsRequest,
-    OperationEvent, OperationStatus, QueryLimits, QueryParameter, ResultMetadata,
-    ResultPageRequest, StartCommunityTablePreviewRequest, StartQueryRequest,
+    OperationEvent, OperationStatus, PreviewCommunityRoutineInvocationRequest, QueryLimits,
+    QueryParameter, ResultMetadata, ResultPageRequest, StartCommunityTablePreviewRequest,
+    StartQueryRequest,
 };
-use chat2db_core::{Application, RuntimeConfig, RuntimeHost};
+use chat2db_core::{
+    Application, MysqlConsoleCancellation, MysqlConsoleRequest, RuntimeConfig, RuntimeHost,
+};
 use chat2db_java_bridge::{EngineCommand, EngineConfig};
 use futures_util::FutureExt as _;
 use mysql_async::{Conn, Opts, OptsBuilder, prelude::Queryable};
@@ -174,6 +177,7 @@ async fn verify_native_product(config: &MysqlTestConfig, database_name: &str) {
 
     verify_native_metadata(&application, &datasource.id, database_name).await;
     verify_native_object_metadata(&application, &datasource.id, database_name).await;
+    verify_native_routine_invocation(&application, &datasource.id, database_name).await;
     verify_native_preview(&application, &datasource.id, database_name).await;
     verify_native_console(&application, &datasource.id).await;
     verify_rejected_native_selects(&application, &datasource.id).await;
@@ -264,6 +268,152 @@ async fn verify_native_metadata(
         .expect_err("an empty MySQL table identifier must be rejected");
     assert_eq!(invalid.api_error().code, "invalid_mysql_metadata_request");
     assert_java_dormant(application);
+}
+
+async fn verify_native_routine_invocation(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+) {
+    let function = application
+        .preview_community_routine_invocation(PreviewCommunityRoutineInvocationRequest {
+            datasource_id: datasource_id.to_owned(),
+            database_type: MYSQL_DATABASE_TYPE.to_owned(),
+            database_name: format!(" {database_name} "),
+            schema_name: String::new(),
+            routine_type: " function ".to_owned(),
+            routine_name: " double_amount ".to_owned(),
+        })
+        .await
+        .expect("native MySQL FUNCTION invocation must preview");
+    assert_eq!(
+        function.sql,
+        "set @input_value = 0;\n\nselect double_amount(\n    @input_value\n);"
+    );
+    let function_results =
+        execute_console_preview(application, datasource_id, database_name, function.sql).await;
+    let function_result = function_results
+        .iter()
+        .rev()
+        .find(|result| !result.columns.is_empty())
+        .expect("FUNCTION preview execution must return one result set");
+    assert_eq!(function_result.columns.len(), 1);
+    assert!(matches!(
+        function_result.rows[0].values.as_slice(),
+        [JdbcValue::Decimal { value }] if value == "0.00"
+    ));
+
+    let procedure = application
+        .preview_community_routine_invocation(routine_preview_request(
+            datasource_id,
+            database_name,
+            "PROCEDURE",
+            "count_items",
+        ))
+        .await
+        .expect("native MySQL PROCEDURE invocation must preview");
+    assert_eq!(
+        procedure.sql,
+        "set @multiplier = 0;\nset @running_total = 0;\n\n\
+         call count_items(\n    @multiplier,\n    @running_total,\n    @item_count\n);\n\
+         select @running_total, @item_count;"
+    );
+    let procedure_results =
+        execute_console_preview(application, datasource_id, database_name, procedure.sql).await;
+    let output_result = procedure_results
+        .iter()
+        .rev()
+        .find(|result| result.columns.len() == 2)
+        .expect("PROCEDURE preview execution must select OUT and INOUT variables");
+    assert!(matches!(
+        output_result.rows[0].values.as_slice(),
+        [JdbcValue::SignedInteger { value: running_total }
+            | JdbcValue::UnsignedInteger { value: running_total },
+         JdbcValue::SignedInteger { value: item_count }
+            | JdbcValue::UnsignedInteger { value: item_count }]
+            if running_total == "0" && item_count == "3"
+    ));
+
+    let zero_parameter = application
+        .preview_community_routine_invocation(routine_preview_request(
+            datasource_id,
+            database_name,
+            "PROCEDURE",
+            "zero_parameters",
+        ))
+        .await
+        .expect("a zero-parameter routine must preview");
+    assert_eq!(zero_parameter.sql, "call zero_parameters();");
+    let unknown = application
+        .preview_community_routine_invocation(routine_preview_request(
+            datasource_id,
+            database_name,
+            "PROCEDURE",
+            "unknown_routine",
+        ))
+        .await
+        .expect("an unknown routine must retain Community preview behavior");
+    assert_eq!(unknown.sql, "call unknown_routine();");
+
+    let non_mysql = application
+        .preview_community_routine_invocation(PreviewCommunityRoutineInvocationRequest {
+            database_type: "H2".to_owned(),
+            ..routine_preview_request(datasource_id, database_name, "PROCEDURE", "count_items")
+        })
+        .await
+        .expect_err("non-MySQL invocation preview must fail before datasource access");
+    assert_eq!(
+        non_mysql.api_error().code,
+        "invalid_community_routine_invocation_request"
+    );
+    assert_java_dormant(application);
+}
+
+fn routine_preview_request(
+    datasource_id: &str,
+    database_name: &str,
+    routine_type: &str,
+    routine_name: &str,
+) -> PreviewCommunityRoutineInvocationRequest {
+    PreviewCommunityRoutineInvocationRequest {
+        datasource_id: datasource_id.to_owned(),
+        database_type: MYSQL_DATABASE_TYPE.to_owned(),
+        database_name: database_name.to_owned(),
+        schema_name: String::new(),
+        routine_type: routine_type.to_owned(),
+        routine_name: routine_name.to_owned(),
+    }
+}
+
+async fn execute_console_preview(
+    application: &Application,
+    datasource_id: &str,
+    database_name: &str,
+    sql: String,
+) -> Vec<chat2db_core::MysqlConsoleResult> {
+    let results = application
+        .execute_mysql_console(
+            MysqlConsoleRequest {
+                datasource_id: datasource_id.to_owned(),
+                database_name: database_name.to_owned(),
+                sql,
+                page_no: 1,
+                page_size: 100,
+                result_set_id: None,
+                single: false,
+                page_size_all: false,
+                explain: false,
+                error_continue: false,
+            },
+            MysqlConsoleCancellation::new(),
+        )
+        .await
+        .expect("generated routine invocation SQL must execute through Console");
+    assert!(
+        results.iter().all(|result| result.success),
+        "generated routine invocation SQL must succeed: {results:?}"
+    );
+    results
 }
 
 #[allow(clippy::too_many_lines)]
@@ -801,11 +951,18 @@ async fn provision_database(config: &MysqlTestConfig, database_name: &str) {
     .await
     .expect("native MySQL fixture function must create");
     conn.query_drop(format!(
-        "CREATE PROCEDURE `{database_name}`.`count_items`(OUT item_count INT) \
-         SELECT COUNT(*) INTO item_count FROM `{database_name}`.`items`"
+        "CREATE PROCEDURE `{database_name}`.`count_items`(\
+         IN multiplier INT, INOUT running_total INT, OUT item_count INT) \
+         SELECT running_total + multiplier, COUNT(*) INTO running_total, item_count \
+         FROM `{database_name}`.`items`"
     ))
     .await
     .expect("native MySQL fixture procedure must create");
+    conn.query_drop(format!(
+        "CREATE PROCEDURE `{database_name}`.`zero_parameters`() SELECT 1"
+    ))
+    .await
+    .expect("native MySQL zero-parameter fixture procedure must create");
     conn.query_drop(format!(
         "CREATE TRIGGER `{database_name}`.`items_trim_label` BEFORE INSERT \
          ON `{database_name}`.`items` FOR EACH ROW SET NEW.`label` = TRIM(NEW.`label`)"

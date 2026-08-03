@@ -11,18 +11,19 @@ use chat2db_contract::{
     CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
     CommunityPluginServices, CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure,
     CommunityProcedureList, CommunityProcedureParameter, CommunityProcedureParameterList,
-    CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlCompletion,
-    CommunitySqlCompletionActiveSnippetSlot, CommunitySqlCompletionCandidate,
-    CommunitySqlCompletionEditorHint, CommunitySqlCompletionEditorHintItem,
-    CommunitySqlCompletionRange, CommunitySqlDiagnostic, CommunitySqlValidation, CommunityTable,
-    CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
-    CommunityTableIndexList, CommunityTableList, CommunityTablePreviewAccepted, CommunityTrigger,
-    CommunityTriggerList, CommunityViewList, CompleteCommunitySqlRequest,
-    FormatCommunitySqlRequest, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
-    GetCommunityTriggerRequest, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
-    ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
-    ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
-    ListCommunityTriggersRequest, ListCommunityViewsRequest, ParseCommunitySqlRequest, QueryLimits,
+    CommunityRoutineInvocationPreview, CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis,
+    CommunitySqlCompletion, CommunitySqlCompletionActiveSnippetSlot,
+    CommunitySqlCompletionCandidate, CommunitySqlCompletionEditorHint,
+    CommunitySqlCompletionEditorHintItem, CommunitySqlCompletionRange, CommunitySqlDiagnostic,
+    CommunitySqlValidation, CommunityTable, CommunityTableColumn, CommunityTableColumnList,
+    CommunityTableIndex, CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList,
+    CommunityTablePreviewAccepted, CommunityTrigger, CommunityTriggerList, CommunityViewList,
+    CompleteCommunitySqlRequest, FormatCommunitySqlRequest, GetCommunityFunctionRequest,
+    GetCommunityProcedureRequest, GetCommunityTriggerRequest, ListCommunityColumnsRequest,
+    ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
+    ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
+    ListCommunityTablesRequest, ListCommunityTriggersRequest, ListCommunityViewsRequest,
+    ParseCommunitySqlRequest, PreviewCommunityRoutineInvocationRequest, QueryLimits,
     StartCommunityTablePreviewRequest, StartQueryRequest, ValidateCommunitySqlRequest,
 };
 use chat2db_java_bridge::{
@@ -937,6 +938,24 @@ impl Application {
             },
         )
         .await
+    }
+
+    /// Renders a `MySQL` routine invocation using native parameter metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, datasource, connection, metadata, or cleanup errors.
+    pub async fn preview_community_routine_invocation(
+        &self,
+        request: PreviewCommunityRoutineInvocationRequest,
+    ) -> Result<CommunityRoutineInvocationPreview, AppError> {
+        if !native_mysql::is_mysql_database_type(&request.database_type) {
+            return Err(AppError::invalid(
+                "invalid_community_routine_invocation_request",
+                "routine invocation preview supports only MySQL",
+            ));
+        }
+        native_mysql::preview_routine_invocation(self, request).await
     }
 
     /// Lists triggers through Community metadata using a forced read-only session.
