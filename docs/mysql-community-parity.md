@@ -3,9 +3,19 @@
 ## Status
 
 - Community baseline: `OtterMind/Chat2DB` `main@3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c`.
-- Rust baseline: `OtterMind/Chat2DB-Rust` `main@fb042aa056a7dbc18969f1bc191d2b771fea787d`.
-- Current Issue `#10` branch: commits `1e52a69` and `21947cb` add native
-  table-DDL retrieval plus the original Web and Tauri route aliases.
+- Rust baseline: `OtterMind/Chat2DB-Rust`
+  `main@0d39236b724efdf4fd2c74a0d57f96579745e7d9`; PR `#11` merged the
+  three-stage Issue `#10` table-DDL retrieval work and closed that issue.
+- Current Issue `#12` branch: MySQL `FUNCTION` and `PROCEDURE`
+  `preview_invocation` is implemented with native `mysql_async` parameter
+  metadata and Community-compatible invocation SQL. The original POST route is
+  registered for both Axum HTTP and desktop `legacy_request`, using the same
+  handler and envelope. `preview_migration` and `execute_migration` remain not
+  implemented. Focused unit tests cover function return-row filtering,
+  parameter modes, type-based defaults, identifier quoting, and zero-parameter
+  or unknown-routine preview rendering. The real-MySQL product test provisions
+  a function plus `IN`/`OUT`/`INOUT` and zero-parameter procedures, executes the
+  generated SQL through the native Console path, and asserts Java dormancy.
 - Product target: the original Community React frontend running against the Rust Web or Tauri host.
 - Runtime-tested now: datasource CRUD/test; database, schema, table, column,
   index, foreign-key, primary-key, view, function, procedure, trigger, and
@@ -74,7 +84,7 @@ route reaches it and a real MySQL product test covers the behavior.
 | Table data operations | `/api/rdb/dml/execute_table`, `/execute_update`, `/get_update_sql`, `/copy_update_sql`, `/copy_in_values_sql`, `/count` | Editable previews, PK-first optimistic insert/update/delete SQL, bounded native execution, copy-as-INSERT/UPDATE/WHERE, frontend `IN_VALUES`, and protected count queries are implemented and real-MySQL tested | Close remaining clipboard and uncommon result-type differences. |
 | Table DDL | `/api/rdb/ddl/*`, `/api/rdb/table/modify/sql`, `/delete`, `/truncate`, `/copy`, create/update examples, DDL export | Create/alter/drop/truncate/copy previews and execution are implemented for columns, indexes, engine, charset, collation, comments, auto-increment, and MySQL editor types; explicit-null editor rows and drag-only `FIRST`/`AFTER` reordering are real-MySQL tested, while live metadata rejects generated, invisible, `ZEROFILL`, and other unmodeled columns before a lossy reorder. Native `SHOW CREATE TABLE` backs both export aliases with the Community trailing semicolon; all four MySQL example aliases preserve Community's null response. Foreign keys are implemented as read-only metadata; pinned Community `MysqlSqlBuilder` and `MysqlIndexTypeEnum` do not generate or modify `foreignKeyList`, and the Community MySQL editor exposes no foreign-key mutation contract. | Add remaining table options and close field-level edge cases; foreign-key mutation is not a current Community parity requirement, while foreign-key metadata remains available to read-only metadata and future ER flows. |
 | Views | `/api/rdb/view/list`, `/column_list`, `/detail`, `/query`, `/view_meta`, `/modify/sql`, `/delete`, `/drop` | Native list/detail plus historical query, the six-option Community `view_meta` creation template, create-or-replace preview/execution, and drop are implemented and real-MySQL tested | Add any remaining delete alias and uncommon definer/security projection differences. |
-| Functions, procedures, and triggers | `/api/rdb/{function,procedure,trigger}/{list,detail}`, `/api/rdb/routine/{preview_invocation,preview_migration,execute_migration}` | Native list/detail and routine-parameter projections are implemented; every original list/detail route is mapped | Add invocation and migration preview/execution flows. |
+| Functions, procedures, and triggers | `/api/rdb/{function,procedure,trigger}/{list,detail}`, `/api/rdb/routine/{preview_invocation,preview_migration,execute_migration}` | Native list/detail and routine-parameter projections are implemented; every original list/detail route is mapped. The current Issue `#12` slice implements MySQL `FUNCTION` and `PROCEDURE` invocation previews from `information_schema.PARAMETERS`, preserving parameter order, `IN`/`OUT`/`INOUT` handling, type-based input defaults, quoted routine names, and trailing separators. Function previews use `SELECT`; procedure previews emit the required `SET`, `CALL`, and output `SELECT` statements. | `preview_migration` and `execute_migration` are not implemented; add migration preview and replacement execution with compensating restore semantics. |
 | Console SELECT | `/api/rdb/dml/execute`, desktop `sql-execute`/`sql-cancel` | Native unparameterized MySQL reads, CTEs, normal/all-row paging, preserved-single dispatch, `EXPLAIN`, limits, multiple result sets, affected-row counts, datasource read-only enforcement, and cancellation implemented | Add JDBC-style bind parameters and close remaining warning/error/result-shape differences. |
 | Console scripts and writes | `/api/rdb/dml/execute`, `/execute_ddl` | Native unparameterized DDL/DML, semicolon and `DELIMITER` scripts, explicit transactions, error-continue policy, cancellation, and per-statement results implemented | Add bind parameters and complete exact Community conformance for unsupported edge-case scripts. |
 | Large cell values | `/api/rdb/cell/value`, `/download`, `/download_path` | Bounded UTF-8/Base64 previews, owner-scoped expiring tokens, byte-oriented Base64/hex chunk reads, character-oriented text reads, and full-value downloads implemented | Add long-running export/task integration and close remaining content-type/display-mode differences. |
@@ -101,8 +111,10 @@ route reaches it and a real MySQL product test covers the behavior.
    Foreign-key mutation is not a current Community MySQL editor requirement;
    foreign keys remain read-only metadata for metadata and future ER flows.
    Remaining exact Community edge cases are still required for complete parity.
-4. Import/export/tasks, datasource lifecycle/SSH/import, account administration,
-   routines, structure comparison, pins, and ER metadata.
+4. Current slice: native MySQL `FUNCTION` and `PROCEDURE` invocation preview.
+   `preview_migration` and `execute_migration` remain not implemented. Also add
+   import/export/tasks, datasource lifecycle/SSH/import, account
+   administration, structure comparison, pins, and ER metadata.
 5. Original AI mapping and MySQL conformance for Agent, CLI, and MCP.
 
 Each stage requires focused unit tests, a real MySQL product vertical with Java
@@ -120,6 +132,7 @@ the complete repository verification gate, and all GitHub Actions jobs.
 - `third_party/chat2db-community/chat2db-community-server/chat2db-community-web/src/main/java/ai/chat2db/community/web/api/controller/`
 - `third_party/chat2db-community/chat2db-community-server/chat2db-community-plugins/chat2db-community-mysql/src/main/java/ai/chat2db/plugin/mysql/`
 - `crates/chat2db-core/src/native_mysql.rs`
+- `crates/chat2db-contract/src/community.rs`
 - `crates/chat2db-core/src/mysql_ddl.rs`
 - `crates/chat2db-core/src/large_value.rs`
 - `crates/chat2db-core/tests/native_mysql_console_docker.rs`
