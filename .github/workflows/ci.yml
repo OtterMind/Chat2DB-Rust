@@ -456,7 +456,7 @@ jobs:
           CHAT2DB_H2_DRIVER_JAR: "${{ github.workspace }}/java/compat-runtime/target/test-drivers/h2-2.3.232.jar"
         run: >-
           cargo test -p chat2db-core --features java-integration
-          --test java_h2_product --locked
+          --test java_h2_product --locked -- --test-threads=1
       - name: Build fixed Community H2 compatibility classpath on Windows
         if: runner.os == 'Windows'
         shell: bash

@@ -459,10 +459,13 @@ async fn provision(config: &MysqlTestConfig, source_database: &str, target_datab
     let mut conn = Conn::new(config.native_options())
         .await
         .expect("schema diff fixture connection");
+    // MySQL images ship different server collations, so pin the fixture metadata explicitly.
     for database_name in [source_database, target_database] {
-        conn.query_drop(format!("CREATE DATABASE `{database_name}`"))
-            .await
-            .expect("schema diff fixture database must be created");
+        conn.query_drop(format!(
+            "CREATE DATABASE `{database_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+        ))
+        .await
+        .expect("schema diff fixture database must be created");
     }
     conn.query_drop(format!(
         "CREATE TABLE `{source_database}`.`added_only` (\
