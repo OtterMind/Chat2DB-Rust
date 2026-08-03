@@ -283,7 +283,7 @@ jobs:
             echo 'AllowTcpForwarding yes'
             echo 'PermitOpen 127.0.0.1:3306'
             echo 'StrictModes no'
-            echo 'UsePAM no'
+            echo 'UsePAM yes'
           } > "$RUNNER_TEMP/chat2db-sshd/sshd_config"
           sudo install -d -m 755 /run/sshd
           sudo /usr/sbin/sshd -f "$RUNNER_TEMP/chat2db-sshd/sshd_config" -E "$RUNNER_TEMP/chat2db-sshd/sshd.log"
