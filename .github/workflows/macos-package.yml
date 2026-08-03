@@ -24,6 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
         with:
+          fetch-depth: 0
           submodules: recursive
       - name: Enforce Object-form artifact authorization
         if: ${{ inputs.publish_authorized_artifact && vars.CHAT2DB_OBJECT_DISTRIBUTION_AUTHORIZED != 'true' }}
