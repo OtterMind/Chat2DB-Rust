@@ -23,16 +23,17 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chat2db_contract::{
-    ApiError, ColumnNullability, CommunityFunction, CommunityProcedure, CommunityTable,
-    CommunityTableColumn, CommunityTableIndex, CommunityTableIndexColumn, CommunityTrigger,
-    Datasource, DatasourceConnection, DatasourceConnectionProperty, DatasourceSecretChange,
-    GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
-    JdbcDriver, JdbcValue, JdbcValueType, ListCommunityColumnsRequest,
-    ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
-    ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTablesRequest,
-    ListCommunityTriggersRequest, ListCommunityViewsRequest, OperationEvent, QueryAccepted,
-    QueryLimits, ResultColumn, ResultMetadata, ResultPageRequest,
-    StartCommunityTablePreviewRequest, StartQueryRequest, UpdateDatasourceRequest,
+    ApiError, ColumnNullability, CommunityFunction, CommunityProcedure,
+    CommunityRoutineInvocationPreview, CommunityTable, CommunityTableColumn, CommunityTableIndex,
+    CommunityTableIndexColumn, CommunityTrigger, Datasource, DatasourceConnection,
+    DatasourceConnectionProperty, DatasourceSecretChange, GetCommunityFunctionRequest,
+    GetCommunityProcedureRequest, GetCommunityTriggerRequest, JdbcDriver, JdbcValue, JdbcValueType,
+    ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityFunctionsRequest,
+    ListCommunityIndexesRequest, ListCommunityProceduresRequest, ListCommunitySchemasRequest,
+    ListCommunityTablesRequest, ListCommunityTriggersRequest, ListCommunityViewsRequest,
+    OperationEvent, PreviewCommunityRoutineInvocationRequest, QueryAccepted, QueryLimits,
+    ResultColumn, ResultMetadata, ResultPageRequest, StartCommunityTablePreviewRequest,
+    StartQueryRequest, UpdateDatasourceRequest,
 };
 use chat2db_core::{
     AppError, Application, LargeValueChunk, LargeValueEncoding, LargeValuePreview, LargeValueType,
@@ -1192,6 +1193,23 @@ pub struct LegacyProcedureDetailQuery {
     pub database_type: String,
     #[serde(default)]
     pub procedure_name: String,
+}
+
+/// Invocation-preview payload used by Community's routine dialog.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyRoutineInvocationRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub schema_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_type: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub routine_type: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub routine_name: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2673,6 +2691,26 @@ pub(crate) async fn get_procedure(
             })
             .await?,
     ))
+}
+
+/// Renders the SQL shown by Community's routine invocation dialog.
+pub(crate) async fn preview_routine_invocation(
+    application: &Application,
+    request: &LegacyRoutineInvocationRequest,
+) -> LegacyResult<CommunityRoutineInvocationPreview> {
+    let datasource_id = request.data_source_id.as_string();
+    let database_type =
+        resolve_database_type(application, &datasource_id, &request.database_type).await?;
+    Ok(application
+        .preview_community_routine_invocation(PreviewCommunityRoutineInvocationRequest {
+            datasource_id,
+            database_type,
+            database_name: request.database_name.clone(),
+            schema_name: request.schema_name.clone(),
+            routine_type: request.routine_type.clone(),
+            routine_name: request.routine_name.clone(),
+        })
+        .await?)
 }
 
 /// Lists triggers in the historical paged metadata shape.
@@ -5859,6 +5897,12 @@ async fn dispatch_inner(
                 Err(error) => Err(error),
             }
         }
+        ("post", "/api/rdb/routine/preview_invocation") => {
+            match decode::<LegacyRoutineInvocationRequest>(request.message) {
+                Ok(body) => serialized(preview_routine_invocation(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
         ("get", "/api/rdb/trigger/list") => match decode::<LegacyTableListQuery>(request.message) {
             Ok(query) => serialized(list_triggers(application, &query).await),
             Err(error) => Err(error),
@@ -6067,6 +6111,7 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/rdb/function/detail",
     "/api/rdb/procedure/list",
     "/api/rdb/procedure/detail",
+    "/api/rdb/routine/preview_invocation",
     "/api/rdb/trigger/list",
     "/api/rdb/trigger/detail",
     "/api/rdb/dml/execute",
@@ -6262,6 +6307,10 @@ pub(crate) fn routes() -> Router<Application> {
         .route("/api/rdb/function/detail", get(function_detail_handler))
         .route("/api/rdb/procedure/list", get(procedure_list_handler))
         .route("/api/rdb/procedure/detail", get(procedure_detail_handler))
+        .route(
+            "/api/rdb/routine/preview_invocation",
+            post(routine_invocation_preview_handler),
+        )
         .route("/api/rdb/trigger/list", get(trigger_list_handler))
         .route("/api/rdb/trigger/detail", get(trigger_detail_handler))
         .route(
@@ -6710,6 +6759,13 @@ async fn procedure_detail_handler(
     envelope(get_procedure(&application, &query).await)
 }
 
+async fn routine_invocation_preview_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyRoutineInvocationRequest>,
+) -> Json<LegacyEnvelope<CommunityRoutineInvocationPreview>> {
+    envelope(preview_routine_invocation(&application, &request).await)
+}
+
 async fn trigger_list_handler(
     State(application): State<Application>,
     Query(query): Query<LegacyTableListQuery>,
@@ -6869,6 +6925,7 @@ mod tests {
         ("get", "/api/rdb/view/view_meta"),
         ("post", "/api/rdb/view/modify/sql"),
         ("post", "/api/rdb/view/drop"),
+        ("post", "/api/rdb/routine/preview_invocation"),
         ("post", "/api/rdb/dml/get_update_sql"),
         ("put", "/api/rdb/dml/get_update_sql"),
         ("post", "/api/rdb/dml/copy_update_sql"),
@@ -7537,6 +7594,32 @@ mod tests {
                 "missing Axum route: {method} {path}"
             );
         }
+    }
+
+    #[test]
+    fn routine_invocation_payload_accepts_numeric_and_text_datasource_ids() {
+        let numeric: LegacyRoutineInvocationRequest = serde_json::from_value(serde_json::json!({
+            "dataSourceId": 42,
+            "databaseName": "inventory",
+            "routineType": "FUNCTION",
+            "routineName": "next_value"
+        }))
+        .expect("numeric Community datasource id must deserialize");
+        assert_eq!(numeric.data_source_id.as_string(), "42");
+        assert_eq!(numeric.database_type, "");
+
+        let text: LegacyRoutineInvocationRequest = serde_json::from_value(serde_json::json!({
+            "dataSourceId": "mysql-local",
+            "databaseType": "MYSQL",
+            "databaseName": "inventory",
+            "schemaName": null,
+            "routineType": "PROCEDURE",
+            "routineName": "refresh_items"
+        }))
+        .expect("opaque Rust datasource id must deserialize");
+        assert_eq!(text.data_source_id.as_string(), "mysql-local");
+        assert_eq!(text.database_type, "MYSQL");
+        assert_eq!(text.schema_name, "");
     }
 
     #[tokio::test]
