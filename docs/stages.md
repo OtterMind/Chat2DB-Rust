@@ -31,9 +31,9 @@ new generation on later use. Host health reports a dormant configured engine as
 ready and available on demand rather than disabled or degraded.
 
 Frontend checkpoints `928e62c` and `cf9ab8a` supersede the repository-owned
-Stage 5/7G replacement workbench. Current builds export the pinned Community
-Umi frontend without local page or style patches; the pinned source includes a
-CSP-safe utility fix that preserves callback references without `new Function`.
+Stage 5/7G replacement workbench. Current builds export a locked Community Umi
+frontend that retains the original pages, components, and styles. A reviewable
+host-adapter patch provides CSP-safe callbacks and Web/Desktop file transport.
 Web uses historical `/api`
 compatibility routes; desktop preserves `window.javaQuery` through one Tauri
 command; both converge on the same Rust dispatcher. Earlier stage descriptions
@@ -74,13 +74,17 @@ channels; the frontend has matching HTTP/Tauri observers with bounded recovery.
 
 Web and desktop start the same owner-only local attachment around their shared
 `Application`. The JSON CLI exposes health, datasource listing,
-forced-read-only query start/status/cancel, and bounded retained-result pages.
-The `rmcp` stdio server exposes the matching five datasource/query lifecycle
-tools, returns only an operation id from query start, and requires result
-polling and paging. MCP retention is capped at 10,000 rows, 16 MiB, and 900
-seconds; pages are capped at 1,000 rows and 512 KiB. The current MCP contract is
-read-only and accepts no JDBC bind parameters; it does not claim the built-in
-Agent's write tool.
+forced-read-only query start/status/cancel, bounded retained-result pages, and
+one MySQL write command gated by `--confirm-write`. The `rmcp` stdio server
+exposes the matching five datasource/query lifecycle tools plus
+`execute_database_write`. It requires protocol-level Form elicitation from the
+trusted client, bound to the exact datasource and SQL; model arguments expose
+neither `confirm` nor an approval token, approval is single-use, and clients
+without Form elicitation fail closed. Query start still
+returns only an operation id and requires polling and paging. MCP retention is
+capped at 10,000 rows, 16 MiB, and 900 seconds; pages are capped at 1,000 rows
+and 512 KiB. MCP accepts no JDBC bind-parameter input and exposes no Agent-run
+tool.
 
 Stage 7A implements strict local JDBC driver-pack discovery, bounded artifact
 hashing, immutable inventory through Core, Axum, Tauri, and generated frontend
@@ -333,9 +337,10 @@ metadata page-size validation, HTTP 200 error envelopes, and the distinction
 between a null and empty-string column default.
 The original asynchronous SELECT path still emits typed retained-result wire
 messages from a read-only transaction. The native Console path owns broader
-unparameterized statements and scripts on one session. Bind parameters remain
-unsupported. Cancellation terminates the active MySQL connection through a
-separate bounded control connection. The
+unparameterized statements and scripts on one session. The pinned Community
+write request has no bind field; the native API additionally supports ordered
+single-statement SELECT binds. Cancellation terminates the active MySQL
+connection through a separate bounded control connection. The
 explicit `native-mysql-integration` target and MySQL CI job use a deliberately
 missing Java executable and verify connection, first-stage object metadata, two-row
 preview, typed three-row Console output, one-row truncation, active
@@ -352,8 +357,8 @@ The editable-grid and DDL follow-up adds structured MySQL insert/update/delete
 generation and native execution, copy-as-SQL and bounded count helpers, table
 editor metadata, database/schema create and confirmed delete, table
 create/alter/drop/truncate/copy, and view query/create-or-replace/drop. Axum and
-desktop `legacy_request` use the same historical dispatcher, so the unchanged
-Community frontend reaches one Rust implementation on both transports. The SQL
+desktop `legacy_request` use the same historical dispatcher, so the retained
+Community UI reaches one Rust implementation on both transports. The SQL
 builders validate identifier segments, closed type/options, values, and view
 bodies; updates prefer primary keys and otherwise match the complete old row
 with `LIMIT 1`.
@@ -366,11 +371,13 @@ fixture cleanup, and a dormant Java assertion after every product operation.
 Core and Web focused tests, strict workspace Clippy, formatting, whitespace,
 and the complete repository `make verify` gate passed.
 
-Stage 7 remains incomplete. Complete MySQL type conformance, native bind
-parameters, remaining exact Community Console edge cases, data import/export,
-non-relational behavior, remaining builder operations and plugin inventory,
-driver distribution, and per-dialect conformance are not
-implemented.
+The Issue `#14` Community MySQL milestone is complete: native type handling,
+ordered SELECT binds, exact Console edge cases, import/export and durable tasks,
+Rust MyBatis Plus class generation, SSH, routines, accounts, schema diff,
+workspace state, and Agent/CLI/MCP safety boundaries are implemented. Stage 7
+as a multi-database program remains in progress for non-MySQL and non-relational
+behavior, remaining plugin inventory, driver distribution, and per-dialect
+conformance.
 
 Before Stage 8 may produce any Object-form distribution containing Community
 5.3.0 code, the release must record written commercial authorization compatible
