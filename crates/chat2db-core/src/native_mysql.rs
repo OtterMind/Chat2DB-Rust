@@ -4,10 +4,11 @@ use chat2db_contract::{
     CommunityForeignKeyList, CommunityFunction, CommunityFunctionList, CommunityFunctionParameter,
     CommunityFunctionParameterList, CommunityPrimaryKey, CommunityPrimaryKeyList,
     CommunityProcedure, CommunityProcedureList, CommunityProcedureParameter,
-    CommunityProcedureParameterList, CommunitySchemaList, CommunityTable, CommunityTableColumn,
-    CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
-    CommunityTableIndexList, CommunityTableList, CommunityTablePreviewAccepted, CommunityTrigger,
-    CommunityTriggerList, CommunityViewList, DatasourceConnection, JdbcValue, JdbcValueType,
+    CommunityProcedureParameterList, CommunityRoutineInvocationPreview, CommunitySchemaList,
+    CommunityTable, CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex,
+    CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList,
+    CommunityTablePreviewAccepted, CommunityTrigger, CommunityTriggerList, CommunityViewList,
+    DatasourceConnection, JdbcValue, JdbcValueType, PreviewCommunityRoutineInvocationRequest,
     QueryLimits, ResultColumn, ResultMetadata, ResultRow, StartCommunityTablePreviewRequest,
     StartQueryRequest,
 };
@@ -21,6 +22,7 @@ use mysql_async::{
 };
 use prost::Message;
 use std::{
+    collections::HashMap,
     future::Future,
     mem::size_of,
     time::{Duration, Instant},
@@ -128,6 +130,37 @@ type RoutineParameterRow = (
     Option<u32>,
     Option<u32>,
 );
+type RoutineInvocationParameterRow = (i32, Option<String>, Option<String>, String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MysqlRoutineType {
+    Function,
+    Procedure,
+}
+
+impl MysqlRoutineType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Function => "FUNCTION",
+            Self::Procedure => "PROCEDURE",
+        }
+    }
+
+    fn command(self) -> &'static str {
+        match self {
+            Self::Function => "select",
+            Self::Procedure => "call",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RoutineInvocationParameter {
+    name: String,
+    mode: String,
+    data_type: String,
+    ordinal_position: i32,
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum SqlToken {
@@ -776,6 +809,40 @@ pub(crate) async fn list_procedure_parameters(
             .into_iter()
             .map(|row| community_procedure_parameter(row, schema_name))
             .collect(),
+    });
+    finish_connection(conn, result).await
+}
+
+pub(crate) async fn preview_routine_invocation(
+    application: &Application,
+    request: PreviewCommunityRoutineInvocationRequest,
+) -> Result<CommunityRoutineInvocationPreview, AppError> {
+    let routine_type = normalize_mysql_routine_type(&request.routine_type)?;
+    let routine_name = request.routine_name.trim().to_owned();
+    let routine_lookup_name = mysql_routine_lookup_name(&routine_name);
+    let database_name = request.database_name.trim().to_owned();
+    validate_metadata_identifier(&routine_name, "routineName")?;
+    validate_metadata_identifier(&database_name, "databaseName")?;
+    let resolved = resolve_native_connection(application, &request.datasource_id).await?;
+    let mut conn = open_connection(&resolved.connection).await?;
+    let query = "SELECT ORDINAL_POSITION, PARAMETER_MODE, PARAMETER_NAME, DATA_TYPE \
+                 FROM information_schema.PARAMETERS \
+                 WHERE SPECIFIC_SCHEMA = ? AND SPECIFIC_NAME = ? AND ROUTINE_TYPE = ? \
+                 ORDER BY ORDINAL_POSITION";
+    let result = metadata_query(conn.exec::<RoutineInvocationParameterRow, _, _>(
+        query,
+        (database_name, routine_lookup_name, routine_type.as_str()),
+    ))
+    .await
+    .map(|rows| {
+        let mut parameters = rows
+            .into_iter()
+            .filter_map(|row| routine_invocation_parameter(routine_type, row))
+            .collect::<Vec<_>>();
+        parameters.sort_by_key(|parameter| parameter.ordinal_position);
+        CommunityRoutineInvocationPreview {
+            sql: render_routine_invocation_preview(routine_type, &routine_name, &parameters),
+        }
     });
     finish_connection(conn, result).await
 }
@@ -2899,6 +2966,216 @@ fn mysql_referential_rule(rule: &str) -> i32 {
     }
 }
 
+fn normalize_mysql_routine_type(routine_type: &str) -> Result<MysqlRoutineType, AppError> {
+    match routine_type.trim().to_ascii_uppercase().as_str() {
+        "FUNCTION" => Ok(MysqlRoutineType::Function),
+        "PROCEDURE" => Ok(MysqlRoutineType::Procedure),
+        _ => Err(AppError::invalid(
+            "invalid_community_routine_invocation_request",
+            "routineType must be FUNCTION or PROCEDURE",
+        )),
+    }
+}
+
+fn routine_invocation_parameter(
+    routine_type: MysqlRoutineType,
+    (ordinal_position, mode, name, data_type): RoutineInvocationParameterRow,
+) -> Option<RoutineInvocationParameter> {
+    if routine_type == MysqlRoutineType::Function && ordinal_position == 0 {
+        return None;
+    }
+    let name = name?;
+    if name.trim().is_empty() {
+        return None;
+    }
+    let mode = match mode.as_deref().map(str::trim) {
+        Some(value) if value.eq_ignore_ascii_case("OUT") => "OUT",
+        Some(value) if value.eq_ignore_ascii_case("INOUT") => "INOUT",
+        _ => "IN",
+    };
+    Some(RoutineInvocationParameter {
+        name,
+        mode: mode.to_owned(),
+        data_type: data_type.trim().to_ascii_uppercase(),
+        ordinal_position,
+    })
+}
+
+fn render_routine_invocation_preview(
+    routine_type: MysqlRoutineType,
+    routine_name: &str,
+    parameters: &[RoutineInvocationParameter],
+) -> String {
+    let mut setup_sql = Vec::new();
+    let mut argument_sql = Vec::new();
+    let mut output_variables = Vec::new();
+    let mut variable_name_counts = HashMap::new();
+
+    for parameter in parameters {
+        let variable = format!(
+            "@{}",
+            mysql_routine_variable_name(
+                &parameter.name,
+                argument_sql.len() + 1,
+                &mut variable_name_counts,
+            )
+        );
+        argument_sql.push(variable.clone());
+        if routine_parameter_is_input(&parameter.mode) {
+            setup_sql.push(format!(
+                "set {variable} = {};",
+                mysql_routine_default_value(&parameter.data_type)
+            ));
+        }
+        if routine_parameter_is_output(&parameter.mode) {
+            output_variables.push(variable);
+        }
+    }
+
+    let mut sql = String::new();
+    if !setup_sql.is_empty() {
+        sql.push_str(&setup_sql.join("\n"));
+        sql.push_str("\n\n");
+    }
+    sql.push_str(&render_routine_invocation(
+        routine_type.command(),
+        &mysql_routine_invocation_name(routine_name),
+        &argument_sql,
+    ));
+    if routine_type == MysqlRoutineType::Procedure && !output_variables.is_empty() {
+        sql.push_str("\nselect ");
+        sql.push_str(&output_variables.join(", "));
+        sql.push(';');
+    }
+    sql
+}
+
+fn render_routine_invocation(command: &str, routine_name: &str, arguments: &[String]) -> String {
+    if arguments.is_empty() {
+        return format!("{command} {routine_name}();");
+    }
+
+    let mut sql = format!("{command} {routine_name}(\n");
+    for (index, argument) in arguments.iter().enumerate() {
+        sql.push_str("    ");
+        sql.push_str(argument);
+        if index + 1 < arguments.len() {
+            sql.push(',');
+        }
+        sql.push('\n');
+    }
+    sql.push_str(");");
+    sql
+}
+
+fn mysql_routine_invocation_name(name: &str) -> String {
+    let trimmed = name.trim();
+    let mut characters = trimmed.chars();
+    let simple = characters
+        .next()
+        .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
+        && characters
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '$'));
+    if simple || mysql_identifier_is_backtick_quoted(trimmed) {
+        trimmed.to_owned()
+    } else {
+        format!("`{}`", trimmed.replace('`', "``"))
+    }
+}
+
+fn mysql_routine_lookup_name(name: &str) -> String {
+    let trimmed = name.trim();
+    match trimmed
+        .strip_prefix('`')
+        .and_then(|value| value.strip_suffix('`'))
+    {
+        Some(inner) if mysql_identifier_is_backtick_quoted(trimmed) => inner.replace("``", "`"),
+        _ => trimmed.to_owned(),
+    }
+}
+
+fn mysql_identifier_is_backtick_quoted(identifier: &str) -> bool {
+    let Some(inner) = identifier
+        .strip_prefix('`')
+        .and_then(|value| value.strip_suffix('`'))
+    else {
+        return false;
+    };
+    if inner.is_empty() {
+        return false;
+    }
+
+    let mut characters = inner.chars();
+    while let Some(character) = characters.next() {
+        if character == '`' && characters.next() != Some('`') {
+            return false;
+        }
+    }
+    true
+}
+
+fn mysql_routine_variable_name(
+    parameter_name: &str,
+    index: usize,
+    variable_name_counts: &mut HashMap<String, usize>,
+) -> String {
+    let parameter_name = if parameter_name.trim().is_empty() {
+        format!("p{index}")
+    } else {
+        parameter_name.to_owned()
+    };
+    let mut normalized = parameter_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if normalized.is_empty()
+        || !normalized
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_alphabetic())
+    {
+        normalized = format!("p_{index}");
+    }
+    let count = variable_name_counts.entry(normalized.clone()).or_default();
+    *count += 1;
+    if *count == 1 {
+        normalized
+    } else {
+        format!("{normalized}_{count}")
+    }
+}
+
+fn routine_parameter_is_input(mode: &str) -> bool {
+    mode.eq_ignore_ascii_case("IN") || mode.eq_ignore_ascii_case("INOUT")
+}
+
+fn routine_parameter_is_output(mode: &str) -> bool {
+    mode.eq_ignore_ascii_case("OUT") || mode.eq_ignore_ascii_case("INOUT")
+}
+
+fn mysql_routine_default_value(data_type: &str) -> &'static str {
+    match data_type.trim().to_ascii_uppercase().as_str() {
+        "TINYINT" | "SMALLINT" | "MEDIUMINT" | "INT" | "INTEGER" | "BIGINT" | "DECIMAL"
+        | "NUMERIC" | "FLOAT" | "DOUBLE" | "REAL" | "BIT" | "BOOL" | "BOOLEAN" => "0",
+        "CHAR" | "VARCHAR" | "TINYTEXT" | "TEXT" | "MEDIUMTEXT" | "LONGTEXT" | "ENUM" | "SET" => {
+            "''"
+        }
+        "DATE" => "CURRENT_DATE",
+        "TIME" => "CURRENT_TIME",
+        "DATETIME" | "TIMESTAMP" => "CURRENT_TIMESTAMP",
+        "YEAR" => "YEAR(CURRENT_DATE)",
+        "JSON" => "'{}'",
+        "BINARY" | "VARBINARY" | "TINYBLOB" | "BLOB" | "MEDIUMBLOB" | "LONGBLOB" => "X''",
+        _ => "NULL",
+    }
+}
+
 fn community_function_parameter(
     row: RoutineParameterRow,
     schema_name: &str,
@@ -3506,11 +3783,15 @@ mod tests {
         MAX_CONSOLE_RESULT_BYTES, community_column, community_foreign_key,
         community_function_parameter, community_indexes, community_procedure_parameter,
         connection_opts, execute_console_statement, is_mysql_database_type,
-        is_native_read_candidate, mysql_column_reorder_hazard, mysql_metadata_column_type,
-        normalize_table_type, open_connection_with_opts, qualified_identifier, quote_identifier,
-        reserve_console_result_bytes, split_mysql_script, validate_console_request,
+        is_native_read_candidate, mysql_column_reorder_hazard, mysql_identifier_is_backtick_quoted,
+        mysql_metadata_column_type, mysql_routine_default_value, mysql_routine_invocation_name,
+        mysql_routine_lookup_name, normalize_mysql_routine_type, normalize_table_type,
+        open_connection_with_opts, qualified_identifier, quote_identifier,
+        render_routine_invocation_preview, reserve_console_result_bytes,
+        routine_invocation_parameter, split_mysql_script, validate_console_request,
         validate_read_only_console, validate_read_sql,
     };
+    use super::{MysqlRoutineType, RoutineInvocationParameter};
     use crate::{MysqlConsoleRequest, operation::CancellationRequest};
 
     #[test]
@@ -3862,6 +4143,133 @@ mod tests {
         assert!(!is_mysql_database_type("mariadb"));
         assert_eq!(normalize_table_type("VIEW"), "VIEW");
         assert_eq!(normalize_table_type("BASE TABLE"), "TABLE");
+    }
+
+    #[test]
+    fn mysql_routine_preview_filters_returns_and_maps_modes() {
+        assert_eq!(
+            normalize_mysql_routine_type(" function ").expect("FUNCTION must normalize"),
+            MysqlRoutineType::Function
+        );
+        let unsupported = normalize_mysql_routine_type("TRIGGER")
+            .expect_err("unsupported routine types must fail closed");
+        assert_eq!(
+            unsupported.api_error().code,
+            "invalid_community_routine_invocation_request"
+        );
+        assert!(
+            routine_invocation_parameter(
+                MysqlRoutineType::Function,
+                (
+                    0,
+                    None,
+                    Some("RETURN_VALUE".to_owned()),
+                    "decimal".to_owned(),
+                ),
+            )
+            .is_none(),
+            "a named FUNCTION return row must not become an invocation argument"
+        );
+        assert!(
+            routine_invocation_parameter(
+                MysqlRoutineType::Function,
+                (1, Some("IN".to_owned()), None, "int".to_owned()),
+            )
+            .is_none(),
+            "unnamed metadata rows must not become invocation arguments"
+        );
+
+        for (mode, expected) in [
+            (Some("IN"), "IN"),
+            (Some("out"), "OUT"),
+            (Some(" InOut "), "INOUT"),
+            (Some("UNKNOWN"), "IN"),
+            (None, "IN"),
+        ] {
+            let parameter = routine_invocation_parameter(
+                MysqlRoutineType::Procedure,
+                (
+                    1,
+                    mode.map(str::to_owned),
+                    Some("value".to_owned()),
+                    "varchar".to_owned(),
+                ),
+            )
+            .expect("named procedure parameter must map");
+            assert_eq!(parameter.mode, expected);
+            assert_eq!(parameter.data_type, "VARCHAR");
+        }
+    }
+
+    #[test]
+    fn mysql_routine_preview_matches_community_sql_rendering() {
+        let parameters = vec![
+            RoutineInvocationParameter {
+                name: "input-value".to_owned(),
+                mode: "IN".to_owned(),
+                data_type: "INT".to_owned(),
+                ordinal_position: 1,
+            },
+            RoutineInvocationParameter {
+                name: "input value".to_owned(),
+                mode: "INOUT".to_owned(),
+                data_type: "JSON".to_owned(),
+                ordinal_position: 2,
+            },
+            RoutineInvocationParameter {
+                name: "2result".to_owned(),
+                mode: "OUT".to_owned(),
+                data_type: "BLOB".to_owned(),
+                ordinal_position: 3,
+            },
+        ];
+        assert_eq!(
+            render_routine_invocation_preview(
+                MysqlRoutineType::Procedure,
+                "`odd``routine`",
+                &parameters,
+            ),
+            "set @input_value = 0;\nset @input_value_2 = '{}';\n\n\
+             call `odd``routine`(\n    @input_value,\n    @input_value_2,\n    @p_3\n);\n\
+             select @input_value_2, @p_3;"
+        );
+        assert_eq!(
+            render_routine_invocation_preview(MysqlRoutineType::Function, "zero_arg", &[]),
+            "select zero_arg();"
+        );
+        assert_eq!(
+            render_routine_invocation_preview(MysqlRoutineType::Procedure, "unknown_proc", &[]),
+            "call unknown_proc();"
+        );
+    }
+
+    #[test]
+    fn mysql_routine_preview_quotes_identifiers_and_defaults_like_community() {
+        assert!(mysql_identifier_is_backtick_quoted("`odd``name`"));
+        assert!(!mysql_identifier_is_backtick_quoted("``"));
+        assert!(!mysql_identifier_is_backtick_quoted("`odd`name`"));
+        assert_eq!(
+            mysql_routine_invocation_name(" `odd``name` "),
+            "`odd``name`"
+        );
+        assert_eq!(mysql_routine_invocation_name("odd`name"), "`odd``name`");
+        assert_eq!(mysql_routine_invocation_name("simple$name"), "simple$name");
+        assert_eq!(mysql_routine_lookup_name(" `odd``name` "), "odd`name");
+        assert_eq!(mysql_routine_lookup_name("odd`name"), "odd`name");
+
+        for (data_type, expected) in [
+            ("decimal", "0"),
+            ("varchar", "''"),
+            ("date", "CURRENT_DATE"),
+            ("time", "CURRENT_TIME"),
+            ("timestamp", "CURRENT_TIMESTAMP"),
+            ("year", "YEAR(CURRENT_DATE)"),
+            ("json", "'{}'"),
+            ("longblob", "X''"),
+            ("geometry", "NULL"),
+        ] {
+            assert_eq!(mysql_routine_default_value(data_type), expected);
+        }
     }
 
     #[test]

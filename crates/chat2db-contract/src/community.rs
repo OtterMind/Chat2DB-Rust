@@ -524,6 +524,25 @@ pub struct CommunityProcedureParameterList {
     pub items: Vec<CommunityProcedureParameter>,
 }
 
+/// Request to preview one Community routine invocation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewCommunityRoutineInvocationRequest {
+    pub datasource_id: String,
+    pub database_type: String,
+    pub database_name: String,
+    pub schema_name: String,
+    pub routine_type: String,
+    pub routine_name: String,
+}
+
+/// SQL rendered for the retained Community routine invocation dialog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityRoutineInvocationPreview {
+    pub sql: String,
+}
+
 /// Secret-free Community trigger metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -988,18 +1007,19 @@ mod tests {
         CommunityNamespaceSqlOperation, CommunityParsedStatement, CommunityPlugin,
         CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
         CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
-        CommunityProcedureParameter, CommunityProcedureParameterList, CommunitySchema,
-        CommunitySchemaList, CommunitySqlAnalysis, CommunitySqlCompletion,
-        CommunitySqlCompletionActiveSnippetSlot, CommunitySqlCompletionCandidate,
-        CommunitySqlDiagnostic, CommunitySqlValidation, CommunityTable, CommunityTableColumn,
-        CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
-        CommunityTableIndexList, CommunityTableList, CommunityTrigger, CommunityTriggerList,
-        CommunityViewList, CompleteCommunitySqlRequest, FormatCommunitySqlRequest,
-        GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
-        ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityFunctionsRequest,
-        ListCommunityIndexesRequest, ListCommunityProceduresRequest, ListCommunitySchemasRequest,
-        ListCommunityTableKeysRequest, ListCommunityTablesRequest, ListCommunityTriggersRequest,
-        ListCommunityViewsRequest, ParseCommunitySqlRequest, ValidateCommunitySqlRequest,
+        CommunityProcedureParameter, CommunityProcedureParameterList,
+        CommunityRoutineInvocationPreview, CommunitySchema, CommunitySchemaList,
+        CommunitySqlAnalysis, CommunitySqlCompletion, CommunitySqlCompletionActiveSnippetSlot,
+        CommunitySqlCompletionCandidate, CommunitySqlDiagnostic, CommunitySqlValidation,
+        CommunityTable, CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex,
+        CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList, CommunityTrigger,
+        CommunityTriggerList, CommunityViewList, CompleteCommunitySqlRequest,
+        FormatCommunitySqlRequest, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
+        GetCommunityTriggerRequest, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
+        ListCommunityFunctionsRequest, ListCommunityIndexesRequest, ListCommunityProceduresRequest,
+        ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
+        ListCommunityTriggersRequest, ListCommunityViewsRequest, ParseCommunitySqlRequest,
+        PreviewCommunityRoutineInvocationRequest, ValidateCommunitySqlRequest,
     };
 
     #[test]
@@ -1710,6 +1730,17 @@ mod tests {
                 specific_name: "refresh_items_1".to_owned(),
             }],
         };
+        let routine_preview_request = PreviewCommunityRoutineInvocationRequest {
+            datasource_id: "datasource-1".to_owned(),
+            database_type: "MYSQL".to_owned(),
+            database_name: "inventory".to_owned(),
+            schema_name: String::new(),
+            routine_type: "PROCEDURE".to_owned(),
+            routine_name: "refresh_items".to_owned(),
+        };
+        let routine_preview = CommunityRoutineInvocationPreview {
+            sql: "call refresh_items();".to_owned(),
+        };
         let list_triggers = ListCommunityTriggersRequest {
             datasource_id: "datasource-1".to_owned(),
             database_type: "H2".to_owned(),
@@ -1758,6 +1789,20 @@ mod tests {
         });
         assert_round_trip(&procedure);
         assert_round_trip(&procedure_parameters);
+        assert_eq!(
+            serde_json::to_value(&routine_preview_request)
+                .expect("routine preview request must serialize"),
+            json!({
+                "datasourceId": "datasource-1",
+                "databaseType": "MYSQL",
+                "databaseName": "inventory",
+                "schemaName": "",
+                "routineType": "PROCEDURE",
+                "routineName": "refresh_items"
+            })
+        );
+        assert_round_trip(&routine_preview_request);
+        assert_round_trip(&routine_preview);
         assert_round_trip(&list_triggers);
         assert_round_trip(&get_trigger);
         assert_round_trip(&CommunityTriggerList {
