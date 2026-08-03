@@ -9,7 +9,7 @@ use chat2db_java_bridge::{
     Session, SessionConfig, SessionState, TransactionOptions, UpdateRequest,
 };
 
-const COMMUNITY_COMMIT: &str = "37a34be858f2566b6b7fcf6c3f64183c1f560853";
+const COMMUNITY_COMMIT: &str = "3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c";
 
 fn fixture_command(arguments: &[&str]) -> EngineCommand {
     arguments.iter().fold(

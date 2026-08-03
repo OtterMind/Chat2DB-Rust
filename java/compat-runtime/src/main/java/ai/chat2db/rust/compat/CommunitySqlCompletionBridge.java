@@ -75,6 +75,7 @@ final class CommunitySqlCompletionBridge {
     private final Class<?> requestType;
     private final Class<?> activeSnippetSlotType;
     private final Object service;
+    private final CommunityH2IdentifierCompatibility h2IdentifierCompatibility;
 
     private CommunitySqlCompletionBridge(
             ClassLoader loader,
@@ -82,13 +83,15 @@ final class CommunitySqlCompletionBridge {
             Class<?> contextType,
             Class<?> requestType,
             Class<?> activeSnippetSlotType,
-            Object service) {
+            Object service,
+            CommunityH2IdentifierCompatibility h2IdentifierCompatibility) {
         this.loader = loader;
         this.connectInfoType = connectInfoType;
         this.contextType = contextType;
         this.requestType = requestType;
         this.activeSnippetSlotType = activeSnippetSlotType;
         this.service = service;
+        this.h2IdentifierCompatibility = h2IdentifierCompatibility;
     }
 
     static CommunitySqlCompletionBridge open(ClassLoader loader) throws ReflectiveOperationException {
@@ -114,13 +117,15 @@ final class CommunitySqlCompletionBridge {
                     new Class<?>[] {converterType, genericEngine.getClass()},
                     converter,
                     genericEngine);
+            Class<?> contextType = Class.forName(CONTEXT_CLASS, true, loader);
             return new CommunitySqlCompletionBridge(
                     loader,
                     Class.forName(CONNECT_INFO_CLASS, true, loader),
-                    Class.forName(CONTEXT_CLASS, true, loader),
+                    contextType,
                     Class.forName(COMPLETION_REQUEST_CLASS, true, loader),
                     Class.forName(ACTIVE_SNIPPET_SLOT_CLASS, true, loader),
-                    service);
+                    service,
+                    CommunityH2IdentifierCompatibility.install(loader, contextType));
         } finally {
             thread.setContextClassLoader(previous);
         }
@@ -190,8 +195,11 @@ final class CommunitySqlCompletionBridge {
         ClassLoader previous = thread.getContextClassLoader();
         Object connectInfo = null;
         RuntimeFailure operationFailure = null;
+        CommunityH2IdentifierCompatibility.DriverBinding driverBinding =
+                CommunityH2IdentifierCompatibility.DriverBinding.NOOP;
         thread.setContextClassLoader(loader);
         try {
+            driverBinding = h2IdentifierCompatibility.bind(canonicalDatabaseType, connection);
             connectInfo = connectInfo(canonicalDatabaseType, connection, request);
             contextType.getMethod("putContext", connectInfoType).invoke(null, connectInfo);
             Object response = service.getClass().getMethod("complete", requestType)
@@ -221,6 +229,7 @@ final class CommunitySqlCompletionBridge {
             operationFailure = translated;
             throw translated;
         } finally {
+            driverBinding.close();
             RuntimeFailure connectionFailure = connectionOwnershipFailure(connection);
             Throwable cleanupFailure = clearCompletionState(request.getDatasourceScope());
             thread.setContextClassLoader(previous);

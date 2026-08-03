@@ -49,7 +49,7 @@ fi
 "${repository_root}/scripts/community-classpath-lock.sh" verify \
   "${community_classpath}" \
   "${repository_root}/third_party/community-h2-classpath.lock" \
-  "37a34be858f2566b6b7fcf6c3f64183c1f560853"
+  "3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c"
 
 driver_manifest="${driver_root}/01-mysql/driver-pack.json"
 driver_jar="${driver_root}/01-mysql/mysql-connector-java-8.0.30.jar"

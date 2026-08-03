@@ -89,7 +89,7 @@ Host-owned staging remains valid across idle restarts. Downloading, signing,
 installation, update, rollback, and hot reload remain incomplete.
 
 Stage 7B fixes the Community source at commit
-`37a34be858f2566b6b7fcf6c3f64183c1f560853`, builds its H2 compatibility
+`3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c`, builds its H2 compatibility
 classpath reproducibly, and initially locks 148 JAR filenames, lengths, and
 SHA-256 digests. Before lock verification, the fixed build strips dependency-manifest
 `Class-Path` entries deterministically, rounds the commit timestamp down to ZIP's

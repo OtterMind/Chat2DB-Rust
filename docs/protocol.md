@@ -33,7 +33,7 @@ not committed.
 
 The retained Community SPI and its implementations come from the Community
 5.3.0 submodule fixed at commit
-`37a34be858f2566b6b7fcf6c3f64183c1f560853`. The Protobuf messages are
+`3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c`. The Protobuf messages are
 compatibility-layer-owned DTOs, not serialized Community Java types; Community
 plugin, JDBC, parser, and exception objects remain inside Java. The catalog's
 `source_commit` is provenance that Rust checks against the configured commit.
@@ -407,6 +407,14 @@ each bounded session operation alive if its transport waiter is cancelled so it
 can consume the response and close the session. These product rules sit above
 the compatibility wire contract. Typed-DML, namespace, and DQL generation
 remain datasource-free.
+
+The fixed H2 plugin's identifier processor calls H2 `ParserUtil` while building
+completion candidates. The compatibility bridge wraps only the H2 plugin's
+metadata and identifier interfaces, binds the active connection's external
+driver classloader for that completion call, and invokes `ParserUtil`
+reflectively from that loader. The binding is thread-local and restored after
+the call, so the Community loader does not gain the H2 driver and the bridge
+does not retain a driver loader after session cleanup.
 
 For table preview, Core applies a default of 200 and a maximum of 1,000 rows,
 parses the generated SQL, requires `is_select`, at most one projected SELECT

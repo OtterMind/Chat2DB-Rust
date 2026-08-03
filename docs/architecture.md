@@ -191,7 +191,7 @@ The JDBC baseline implements:
 Stage 7B additionally implements:
 
 - a Git submodule fixed at Community commit
-  `37a34be858f2566b6b7fcf6c3f64183c1f560853`;
+  `3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c`;
 - a reproducible H2 compatibility classpath, established with 148 JARs and
   extended in Stage 7J to 149 JARs for the retained Community domain-core
   completion implementation, whose filenames, byte lengths, and SHA-256
@@ -213,6 +213,12 @@ Community plugin objects, JDBC objects, parser objects, and exceptions remain
 inside Java. The Community classpath and each JDBC driver classloader are
 separate; JDBC driver JARs are not added to the Community classpath. Only
 bounded, process-neutral DTOs cross Protobuf.
+
+For H2 completion, a compatibility proxy resolves the pinned plugin's
+`ParserUtil` call from the active external JDBC driver classloader. Its
+thread-local binding is removed after each completion, preserving classloader
+isolation and driver unload while matching the pinned Community identifier
+quoting behavior.
 
 Stage 7C composes that boundary into the product runtime. The Web and desktop
 bootstrap paths accept `CHAT2DB_COMMUNITY_CLASSPATH_DIR`, but the source commit
