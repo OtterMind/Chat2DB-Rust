@@ -11,7 +11,7 @@ use chat2db_core::{
 };
 use chat2db_java_bridge::{EngineCommand, EngineConfig};
 use tempfile::TempDir;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 const PORT_STATE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -186,12 +186,14 @@ async fn assert_port_available(port: u16) {
 async fn wait_for_port_bound(port: u16) {
     tokio::time::timeout(PORT_STATE_TIMEOUT, async move {
         loop {
-            match TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
-                Ok(listener) => {
-                    drop(listener);
-                    tokio::task::yield_now().await;
+            match TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await {
+                Ok(stream) => {
+                    drop(stream);
+                    break;
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => break,
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
                 Err(error) => panic!("could not inspect SSH tunnel port {port}: {error}"),
             }
         }
