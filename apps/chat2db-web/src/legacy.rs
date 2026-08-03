@@ -5378,13 +5378,13 @@ pub async fn execute_sql(
     let _ = validate_sql_execute_request(request)?;
     if uses_native_mysql_console(application, request).await? {
         let execution_id = application.create_large_value_owner();
-        return execute_mysql_sql(
+        return Box::pin(execute_mysql_sql(
             application,
             request,
             MysqlConsoleCancellation::new(),
             &execution_id,
             "SQL_EDITOR_HTTP",
-        )
+        ))
         .await;
     }
     let started_at = Instant::now();

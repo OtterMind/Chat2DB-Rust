@@ -1152,13 +1152,13 @@ async fn forward_native_mysql_sql_execution(
         return;
     }
 
-    let results = chat2db_web::legacy::execute_mysql_sql(
+    let results = Box::pin(chat2db_web::legacy::execute_mysql_sql(
         &state.application,
         &request,
         cancellation.clone(),
         &execution_id,
         "SQL_EDITOR_JCEF",
-    )
+    ))
     .await;
     if cancellation.is_cancelled() {
         let _ = emit_legacy_sql_event(
