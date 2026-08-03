@@ -1,6 +1,9 @@
 use std::{env, ffi::OsString, path::PathBuf};
 
-use chat2db_contract::{QueryLimits, ResultPageRequest, StartQueryRequest};
+use chat2db_contract::{
+    DatabaseWriteState, ExecuteDatabaseWriteRequest, QueryLimits, ResultPageRequest,
+    StartQueryRequest,
+};
 use chat2db_local::LocalClient;
 use clap::{Parser, Subcommand};
 
@@ -26,6 +29,11 @@ enum Command {
     Query {
         #[command(subcommand)]
         command: QueryCommand,
+    },
+    /// Execute one explicitly confirmed `MySQL` write statement.
+    Write {
+        #[command(subcommand)]
+        command: WriteCommand,
     },
     /// Read one bounded page from a retained query result.
     Result {
@@ -60,10 +68,25 @@ enum QueryCommand {
     Cancel { operation_id: String },
 }
 
+#[derive(Debug, Subcommand)]
+enum WriteCommand {
+    /// Execute exactly one write. Only `not_started` is safe to retry after correction.
+    Execute {
+        #[arg(long)]
+        datasource_id: String,
+        #[arg(long)]
+        sql: String,
+        /// Explicitly confirm that this statement may change the database.
+        #[arg(long)]
+        confirm_write: bool,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let client = local_client(cli.data_dir)?;
+    let mut command_succeeded = true;
 
     let output = match cli.command {
         Command::Status => serde_json::to_value(client.health().await?)?,
@@ -98,6 +121,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 serde_json::to_value(client.cancel_operation(operation_id).await?)?
             }
         },
+        Command::Write { command } => match command {
+            WriteCommand::Execute {
+                datasource_id,
+                sql,
+                confirm_write,
+            } => {
+                let result = client
+                    .execute_database_write(ExecuteDatabaseWriteRequest {
+                        datasource_id,
+                        sql,
+                        confirmed: confirm_write,
+                    })
+                    .await;
+                command_succeeded = result.state == DatabaseWriteState::Succeeded;
+                serde_json::to_value(result)?
+            }
+        },
         Command::Result {
             result_id,
             offset,
@@ -117,6 +157,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?,
     };
     println!("{}", serde_json::to_string_pretty(&output)?);
+    if !command_succeeded {
+        return Err(std::io::Error::other("database write did not succeed").into());
+    }
     Ok(())
 }
 
@@ -147,7 +190,7 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Cli, Command, QueryCommand, attachment_data_dir};
+    use super::{Cli, Command, QueryCommand, WriteCommand, attachment_data_dir};
 
     #[test]
     fn parses_status_command() {
@@ -199,6 +242,50 @@ mod tests {
         ])
         .expect("result page must parse");
         assert!(matches!(cli.command, Command::Result { .. }));
+    }
+
+    #[test]
+    fn database_write_requires_an_explicit_confirmation_flag_value() {
+        let confirmed = Cli::try_parse_from([
+            "chat2db",
+            "write",
+            "execute",
+            "--datasource-id",
+            "datasource-1",
+            "--sql",
+            "UPDATE items SET label = 'changed' WHERE id = 1",
+            "--confirm-write",
+        ])
+        .expect("confirmed write must parse");
+        assert!(matches!(
+            confirmed.command,
+            Command::Write {
+                command: WriteCommand::Execute {
+                    confirm_write: true,
+                    ..
+                }
+            }
+        ));
+
+        let unconfirmed = Cli::try_parse_from([
+            "chat2db",
+            "write",
+            "execute",
+            "--datasource-id",
+            "datasource-1",
+            "--sql",
+            "DELETE FROM items WHERE id = 1",
+        ])
+        .expect("unconfirmed write parses so the runtime can fail closed");
+        assert!(matches!(
+            unconfirmed.command,
+            Command::Write {
+                command: WriteCommand::Execute {
+                    confirm_write: false,
+                    ..
+                }
+            }
+        ));
     }
 
     #[test]

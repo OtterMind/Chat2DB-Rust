@@ -10,7 +10,7 @@ maven_repository="${repository_root}/target/community-m2"
 classpath_lock="${repository_root}/third_party/community-h2-classpath.lock"
 classpath_lock_tool="${repository_root}/scripts/community-classpath-lock.sh"
 classpath_sanitizer="${repository_root}/scripts/CommunityClasspathSanitizer.java"
-expected_commit="37a34be858f2566b6b7fcf6c3f64183c1f560853"
+expected_commit="3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c"
 community_version="5.3.0"
 
 if [[ ! -e "${community_root}/.git" ]]; then
@@ -19,8 +19,15 @@ if [[ ! -e "${community_root}/.git" ]]; then
 fi
 
 actual_commit="$(git -C "${community_root}" rev-parse HEAD)"
-if [[ "${actual_commit}" != "${expected_commit}" ]]; then
-  echo "Community source must be pinned to ${expected_commit}; found ${actual_commit}" >&2
+if ! git -C "${community_root}" merge-base --is-ancestor "${expected_commit}" "${actual_commit}"; then
+  echo "Community source ${actual_commit} must descend from compatibility baseline ${expected_commit}" >&2
+  exit 1
+fi
+
+expected_server_tree="$(git -C "${community_root}" rev-parse "${expected_commit}:chat2db-community-server")"
+actual_server_tree="$(git -C "${community_root}" rev-parse "${actual_commit}:chat2db-community-server")"
+if [[ "${actual_server_tree}" != "${expected_server_tree}" ]]; then
+  echo "Community server tree must match compatibility baseline ${expected_commit}" >&2
   exit 1
 fi
 

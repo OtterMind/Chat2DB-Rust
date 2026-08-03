@@ -762,7 +762,6 @@ fn tool_error(error: ApiError, outcome: ExecutionOutcome) -> ToolExecutionError 
 fn database_write_error(error: &DatabaseWriteError) -> ToolExecutionError {
     let outcome = match error.outcome {
         DatabaseWriteOutcome::NotStarted => ExecutionOutcome::NotStarted,
-        DatabaseWriteOutcome::Failed => ExecutionOutcome::Failed,
         DatabaseWriteOutcome::Unknown => ExecutionOutcome::Unknown,
     };
     tool_error(error.error.api_error(), outcome)
@@ -1366,7 +1365,6 @@ mod tests {
                 DatabaseWriteOutcome::NotStarted,
                 ExecutionOutcome::NotStarted,
             ),
-            (DatabaseWriteOutcome::Failed, ExecutionOutcome::Failed),
             (DatabaseWriteOutcome::Unknown, ExecutionOutcome::Unknown),
         ] {
             let error = DatabaseWriteError {

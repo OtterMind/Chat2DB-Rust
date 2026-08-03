@@ -29,7 +29,7 @@ use chat2db_java_bridge::{
 use chat2db_storage::{EncryptedFileVault, Storage};
 use tempfile::TempDir;
 
-const COMMUNITY_COMMIT: &str = "37a34be858f2566b6b7fcf6c3f64183c1f560853";
+const COMMUNITY_COMMIT: &str = "3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c";
 const H2_DRIVER_CLASS: &str = "org.h2.Driver";
 const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -67,6 +67,7 @@ async fn product_services_invoke_the_fixed_community_h2_compatibility_slice() {
                 jdbc_url: jdbc_url.to_owned(),
                 properties: Vec::new(),
                 read_only: false,
+                ssh: None,
             }),
         })
         .await
@@ -184,7 +185,7 @@ async fn verify_namespace_builder(
         })
         .await
         .expect("Core must invoke the H2 namespace DROP SCHEMA builder");
-    assert_eq!(drop.sql, "DROP SCHEMA PRODUCT_NAMESPACE_ONLY");
+    assert_eq!(drop.sql, "DROP SCHEMA \"PRODUCT_NAMESPACE_ONLY\"");
     assert_eq!(
         query_values(
             &session,

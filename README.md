@@ -27,8 +27,8 @@ git submodule update --init --recursive
 ## Current state
 
 The repository has completed Stages 1 through 6, the first thirteen
-independently buildable Stage 7 slices, and a native end-user Community
-Console compatibility slice:
+independently buildable Stage 7 slices, and the complete MySQL workbench
+surface reached by the pinned Community frontend:
 
 - canonical Rust API contracts;
 - a transport-neutral Rust application service root;
@@ -61,10 +61,11 @@ Console compatibility slice:
   Tauri 2 commands/channels;
 - a checked-in OpenAPI contract with generated TypeScript types and drift
   verification; and
-- the pinned original Community Umi/React layout and components, served by
+- the original Community Umi/React layout, components, and styles, served by
   Axum over historical HTTP routes on Web and bridged from `window.javaQuery`
-  to Tauri IPC on desktop without a replacement UI or style fork; the pinned
-  source carries one CSP-safe callback-cloning compatibility fix;
+  to Tauri IPC on desktop without a replacement UI or style fork; a locked,
+  reviewable host-adapter patch supplies CSP-safe callbacks plus Web/Desktop
+  file upload and download transport compatibility;
 - a provider-neutral bounded agent loop with direct OpenAI, Anthropic, and
   Gemini adapters, durable sessions/messages/runs/permissions, and atomic
   context compaction;
@@ -77,9 +78,12 @@ Console compatibility slice:
   frontend HTTP/Tauri observers;
 - an authenticated owner-only local attachment started by both product hosts,
   plus a JSON CLI for datasource discovery, forced-read-only query lifecycle,
-  cancellation, and retained-result paging; and
-- an `rmcp` 2.2 stdio server with five bounded datasource/query tools backed by
-  that same running `Application`;
+  cancellation, retained-result paging, and explicitly confirmed MySQL writes;
+  and
+- an `rmcp` 2.2 stdio server with six bounded datasource/query tools, including
+  a MySQL write tool backed by that same running `Application`; writes require
+  protocol-level Form elicitation from the trusted client, while model-visible
+  tool arguments expose neither `confirm` nor an approval token;
 - strict local JDBC driver-pack discovery, hash verification, immutable
   Core/Axum/Tauri inventory, and repeatable per-generation preload; and
 - a fixed Community 5.3.0 compatibility classpath that discovers real
@@ -111,7 +115,14 @@ Console compatibility slice:
   while desktop preserves the original JCEF correlation envelope through one
   `legacy_request` Tauri command; and
 - forced-read-only table preview that ignores caller SQL, generates a bounded
-  SELECT through the selected Community plugin, and pages retained results.
+  SELECT through the selected Community plugin, and pages retained results;
+- complete native MySQL datasource lifecycle, SSH tunneling, portability,
+  metadata, editable DML and DDL, views and routines, transfer tasks, account
+  administration, schema diff, pins, ER layout, workspace persistence, and
+  SQLite-backed Dashboard/Chart CRUD with native read-only chart refresh; and
+- the pinned Community AI workspace routes plus confirmed Agent, CLI, and MCP
+  writes, with explicit approval, read-only enforcement, single-statement
+  validation, and conservative unknown-outcome handling.
 
 Runtime-tested: yes. The Stage 7M product vertical passed against a real local
 MySQL 8.4 server on 2026-07-27, including plugin-built qualified table SQL,
@@ -129,8 +140,8 @@ the restored SQL successfully. On 2026-07-29 commits `81301c3`, `4199862`, and
 vertical covering native connection, database/schema/table discovery, preview,
 typed Console SELECT, row truncation, active-query cancellation, retained
 paging, and proof after every operation that Java remained dormant.
-The complete repository `make verify` gate and the explicit real-MySQL
-`native-mysql-integration` target also passed after the final compatibility fix.
+The complete repository `make verify` gate and the explicit real-MySQL direct
+and SSH integration targets also passed after the final compatibility fix.
 The metadata parity increment adds a real MySQL fixture with a foreign key,
 composite index, view, function, procedure, and trigger; its Core product test,
 Axum queries, and desktop dispatch contracts pass while Java remains dormant.
@@ -142,64 +153,43 @@ default. The native Console integration additionally passes against MySQL 8.4
 for DDL/DML, `DELIMITER` procedures, multi-results, transactions, error
 continuation, cancellation, a 6 MiB `LONGTEXT`, `single`, `EXPLAIN`,
 `pageSizeAll`, and datasource read-only protection while Java remains dormant.
+The Dashboard/Chart integration additionally passed against MySQL 8.4 with a
+selected database, a 200-row response cap, SELECT CTE support, response-only
+refreshed metadata with Community primary-key/auto-increment/nullability/default
+and comment headers, rejected writes/multi-statements/locking reads/server-file
+output, `CHART` operation history, fixture cleanup, and Java dormant.
+The complete `rtk make verify` gate then passed with the Dashboard/Chart
+increment included.
 
-Stage 6 is complete. Web and desktop own the product runtime and publish its
-owner-only local endpoint; CLI and MCP attach to that host and never contact
-Java directly. The current MCP surface is deliberately read-only and does not
-accept JDBC bind parameters. A complete end-user Agent workspace and
-CLI-started headless host remain follow-on product work. Stage 7A implements
-strict local driver packs. Stage 7B pins Community source, loads its runtime in
-an isolated Java classloader, and proves one real H2 SPI/ANTLR vertical slice.
-Stage 7C composes those four operations into the product Core and both delivery
-transports. Stage 7D adds database, table, column, and index metadata through a
-separate capability. Stage 7E adds views, imported and exported foreign keys,
-and primary keys through another capability. Stage 7F adds functions,
-function parameters, procedures, procedure parameters, and triggers through the
-same Core/Axum/Tauri/frontend boundary. Stage 7G connects all 20 fixed Community
-operations to the shared React workbench through a three-pane object explorer,
-partial long-tail metadata, lazy detail views, schema SQL generation, and
-explicit SQL analysis. Stage 7H adds a separately negotiated SQL-validation
-capability and an explicit editor Validate action without opening a JDBC
-session. Stage 7I adds separately negotiated SQL formatting through the retained
-Community formatter dependency, preserves Community's dialect mapping and
-fallback behavior, and replaces editor SQL only while the originating SQL,
-datasource, and database type are still current. Stage 7J adds the separately
-negotiated `community.sql-completion.v1` capability, calls the real Community
-completion service against the existing read-only JDBC session, and exposes
-bounded suggestions through Core, Axum, Tauri, and the shared React editor.
-Stage 7K adds the separately negotiated `community.dml-builder.v1` capability,
-calls the selected plugin's real DML, value, and identifier processors without
-opening a JDBC session, and exposes typed INSERT/UPDATE generation through the
-same product boundary and table detail UI.
-Stage 7L adds `community.namespace-builder.v1`, retains the old CREATE SCHEMA
-contract, and exposes a closed database/schema DDL union through Core, Axum,
-Tauri, and the shared frontend. Stage 7M adds `community.dql-builder.v1` at tag
-`225`: Java uses the selected plugin to quote the database/schema/table name and
-build a row-limited SELECT without opening JDBC, then Rust validates that SQL and
-executes it through the existing forced-read-only query and retained-result
-path. The fixed 149-JAR classpath keeps H2 and MySQL; PostgreSQL and other
-dialects do not block the MySQL preview. Agent, CLI, and MCP MySQL conformance
-remain outside this milestone. The current MySQL connection, object metadata,
-preview, and Console data plane dispatch to `mysql_async` before Java lease
-acquisition; Community parser, formatter, completion, and builders remain
-Java-backed.
+Stage 6 and the Stage 7A-7M foundations are complete. Web and desktop own the
+product runtime and publish its owner-only local endpoint; CLI and MCP attach to
+that host and never contact Java directly. The pinned Community frontend's
+complete MySQL workbench surface is mapped through the shared Axum/Tauri legacy
+dispatcher. Native MySQL connections, metadata, Console, mutations, transfer,
+class generation, accounts, schema diff, chart refresh, and workspace operations
+remain in Rust and do not acquire a Java lease. Dashboard and chart documents
+remain in SQLite. Community parser, formatter, completion, SQL-builder, and
+exact plugin compatibility operations remain Java-backed and start the
+supervised process only on demand.
 
 The Console compatibility path uses SQLite migrations 3 and 4 for saved
 Consoles and durable execution history. Historical `/api/operation/saved/*`,
 `/api/operation/log/*`, `/api/rdb/dml/execute`, `/execute_ddl`, and large-cell
 routes share the same native Core execution. Desktop `sql-execute` and
 `sql-cancel` keep active cancellation handles and emit row payloads exactly once
-through Tauri. Native bind parameters and remaining edge-case Community result
-shapes are not implemented.
+through Tauri. Native typed SELECT bind parameters use the MySQL prepared
+protocol; the pinned Community write request has no bind-parameter field.
 
 The Stage 5 and Stage 7G through Stage 7M custom React workbench was an
 intermediate implementation and is no longer the product frontend. Commit
 `928e62c5d775d0e81d95db7fee186db756834a72` deletes that replacement UI and
 its styles. Current builds export the original Community frontend from the
-pinned submodule; backend capabilities not yet mapped to its historical API
-remain internal rather than requiring a redesigned page.
-Signing, downloading, updating, rollback, the remaining compatibility estate,
-and full per-dialect compatibility remain Stage 7 work.
+pinned submodule plus the locked host-transport compatibility patch. Every
+historical API used by its MySQL workbench is mapped;
+cloud account, login, payment, subscription, invitation, notification, and
+Enterprise-only features are outside this database milestone. Signing,
+downloading, updating, rollback, and full compatibility for other database
+dialects remain follow-on work.
 
 ## Architecture
 

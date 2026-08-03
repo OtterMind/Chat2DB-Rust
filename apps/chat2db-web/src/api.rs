@@ -310,6 +310,7 @@ pub(crate) fn router(application: Application) -> Router {
 
     router
         .merge(crate::legacy::routes())
+        .merge(crate::legacy_ai::routes())
         .layer(Extension(Arc::new(document)))
         .with_state(application)
 }

@@ -2,13 +2,23 @@
 
 pub mod agent;
 pub mod community;
+pub mod community_account;
+pub mod community_dashboard;
+pub mod community_diff;
 pub mod datasource;
+pub mod datasource_compatibility;
+pub mod datasource_converter;
+pub mod datasource_edit;
 pub mod driver;
 pub mod error;
+pub mod mysql_workspace;
 pub mod operation;
 pub mod query;
 pub mod result;
+pub mod ssh;
 pub mod system;
+pub mod transfer;
+pub mod workspace;
 
 pub use agent::{
     AgentEvent, AgentEventEnvelope, AgentMessage, AgentMessageContent, AgentMessageList,
@@ -31,7 +41,8 @@ pub use community::{
     CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
     CommunityPluginServices, CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure,
     CommunityProcedureList, CommunityProcedureParameter, CommunityProcedureParameterList,
-    CommunityRoutineInvocationPreview, CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis,
+    CommunityRoutineInvocationPreview, CommunityRoutineMigrationExecution,
+    CommunityRoutineMigrationRequest, CommunitySchema, CommunitySchemaList, CommunitySqlAnalysis,
     CommunitySqlCompletion, CommunitySqlCompletionActiveSnippetSlot,
     CommunitySqlCompletionCandidate, CommunitySqlCompletionEditorHint,
     CommunitySqlCompletionEditorHintItem, CommunitySqlCompletionRange, CommunitySqlDiagnostic,
@@ -46,22 +57,71 @@ pub use community::{
     ParseCommunitySqlRequest, PreviewCommunityRoutineInvocationRequest,
     StartCommunityTablePreviewRequest, ValidateCommunitySqlRequest,
 };
+pub use community_account::{
+    CommunityAccount, CommunityAccountAction, CommunityAccountCapability,
+    CommunityAccountCommandRequest, CommunityAccountExecution, CommunityAccountGrantList,
+    CommunityAccountGrantsRequest, CommunityAccountList, CommunityAccountPreview,
+    CommunityAccountPrivilegeScope, CommunityMysqlPrivilege,
+};
+pub use community_dashboard::{
+    CommunityChart, CommunityChartDetailQuery, CommunityDashboard, CommunityDashboardListQuery,
+    CommunityDashboardPage, CreateCommunityChartRequest, CreateCommunityDashboardRequest,
+    UpdateCommunityChartRequest, UpdateCommunityDashboardRequest,
+};
+pub use community_diff::{
+    CommunitySchemaDiffEndpoint, CommunitySchemaDiffRequest, CommunitySchemaDiffSql,
+};
 pub use datasource::{
     CreateDatasourceRequest, Datasource, DatasourceConnection, DatasourceConnectionProperty,
     DatasourceList, DatasourceSecretChange, UpdateDatasourceRequest,
 };
+pub use datasource_compatibility::{
+    CloneDatasourceRequest, CommunityDatasourceExport, CommunityDatasourceImportResult,
+    ConsoleConnectResult, DatasourceCloseResult, DatasourceConnectResult, DatasourceSessionMode,
+    ExportCommunityDatasourcesRequest, NativeDriverAction, NativeDriverCompatibility,
+    PortableCommunityDatasource, PortableDatasourceConnection, PortableDatasourceProperty,
+};
+pub use datasource_converter::{
+    CommunityDatasourceFileImportRequest, CommunityDatasourceFileImportResult,
+    CommunityDatasourceImportFormat,
+};
+pub use datasource_edit::DatasourceEditProjection;
 pub use driver::{JdbcDriver, JdbcDriverList};
 pub use error::{ApiError, ApiErrorDetails};
+pub use mysql_workspace::{
+    CommunityErColumn, CommunityErForeignKey, CommunityErModel, CommunityErPositionRequest,
+    CommunityErQueryRequest, CommunityErTable, CommunityPinnedTableList,
+    CommunityPinnedTableRequest,
+};
 pub use operation::{
     CancelDisposition, CancelOperationResponse, OperationEvent, OperationEventEnvelope,
     OperationSnapshot, OperationStatus, OperationStreamMessage, OperationSubscriptionAccepted,
 };
-pub use query::{JdbcValue, QueryAccepted, QueryLimits, QueryParameter, StartQueryRequest};
+pub use query::{
+    DatabaseWriteResult, DatabaseWriteState, ExecuteDatabaseWriteRequest, JdbcValue, QueryAccepted,
+    QueryLimits, QueryParameter, StartQueryRequest,
+};
 pub use result::{
     ColumnNullability, JdbcValueType, ResultColumn, ResultMetadata, ResultPage, ResultPageRequest,
     ResultRow,
 };
+pub use ssh::{
+    SshAuthentication, SshAuthenticationType, SshConnectionTestResult,
+    SshDatasourcePreConnectRequest, SshDatasourcePreConnectResult, SshHostKeyVerification,
+    SshTunnelConfig, SshTunnelEditProjection,
+};
 pub use system::{ComponentHealth, ComponentState, HealthResponse, ProductInfo, RuntimeStatus};
+pub use transfer::{
+    DmlExportFormat, DmlExportRequest, DmlExportSize, GenerateMysqlClassRequest,
+    GeneratedMysqlClassSet, ImportFileRequest, OtherFileExportRequest, SqlFileExportRequest,
+    TabularImportEncoding, TransferArtifact, TransferFileFormat, TransferSqlScope, TransferTask,
+    TransferTaskAccepted, TransferTaskKind, TransferTaskPage, TransferTaskStatus,
+};
+pub use workspace::{
+    AssignDatasourceNamespaceRequest, CreateWorkspaceNamespaceRequest, MoveWorkspaceNodeRequest,
+    UpdateWorkspaceNamespaceRequest, WorkspaceDatasourceGroup, WorkspaceDatasourceList,
+    WorkspaceNamespace, WorkspaceNodeKind, WorkspaceNodeRef, WorkspaceTree, WorkspaceTreeNode,
+};
 
 #[cfg(test)]
 mod tests {
@@ -88,8 +148,9 @@ mod tests {
         CommunityTableList, CommunityTablePreviewAccepted, CommunityViewList,
         CompleteCommunitySqlRequest, ComponentHealth, ComponentState, ContextCompactionStrategy,
         CreateAgentSessionRequest, CreateDatasourceRequest, CreateProviderProfileRequest,
-        Datasource, DatasourceConnection, DatasourceConnectionProperty, DatasourceList,
-        DatasourceSecretChange, DecideAgentPermissionRequest, FormatCommunitySqlRequest,
+        DatabaseWriteResult, DatabaseWriteState, Datasource, DatasourceConnection,
+        DatasourceConnectionProperty, DatasourceList, DatasourceSecretChange,
+        DecideAgentPermissionRequest, ExecuteDatabaseWriteRequest, FormatCommunitySqlRequest,
         HealthResponse, JdbcDriver, JdbcDriverList, JdbcValue, JdbcValueType,
         ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityIndexesRequest,
         ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
@@ -208,6 +269,9 @@ mod tests {
         ProviderProfileList,
         ProviderSecretChange,
         QueryAccepted,
+        DatabaseWriteResult,
+        DatabaseWriteState,
+        ExecuteDatabaseWriteRequest,
         QueryLimits,
         QueryParameter,
         ResultColumn,
@@ -266,6 +330,9 @@ mod tests {
             "OperationEventEnvelope",
             "OperationStreamMessage",
             "ResultPage",
+            "DatabaseWriteResult",
+            "DatabaseWriteState",
+            "ExecuteDatabaseWriteRequest",
             "StartQueryRequest",
             "StartCommunityTablePreviewRequest",
         ] {

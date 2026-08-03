@@ -24,7 +24,7 @@ use futures_util::FutureExt as _;
 use tempfile::TempDir;
 use uuid::Uuid;
 
-const COMMUNITY_COMMIT: &str = "37a34be858f2566b6b7fcf6c3f64183c1f560853";
+const COMMUNITY_COMMIT: &str = "3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c";
 const MYSQL_DATABASE_TYPE: &str = "MYSQL";
 const MYSQL_DRIVER_CLASS: &str = "com.mysql.cj.jdbc.Driver";
 const MYSQL_DRIVER_VERSION: &str = "8.0.30";
@@ -213,11 +213,25 @@ impl MysqlProductHarness {
 
         let drivers = application.list_drivers();
         assert_eq!(
-            drivers.items.len(),
+            drivers
+                .items
+                .iter()
+                .filter(|driver| driver.pack_id == "native:mysql_async")
+                .count(),
             1,
-            "test pack root must contain only MySQL"
+            "inventory must contain exactly one native MySQL driver"
         );
-        let installed = &drivers.items[0];
+        let mut managed_mysql = drivers
+            .items
+            .iter()
+            .filter(|driver| driver.pack_id == "mysql");
+        let installed = managed_mysql
+            .next()
+            .expect("managed Connector/J pack must be discovered beside native MySQL");
+        assert!(
+            managed_mysql.next().is_none(),
+            "inventory must contain exactly one managed Connector/J pack"
+        );
         assert_eq!(installed.pack_id, "mysql");
         assert_eq!(installed.version, MYSQL_DRIVER_VERSION);
         assert_eq!(installed.driver_class, MYSQL_DRIVER_CLASS);
@@ -275,6 +289,7 @@ async fn provision_mysql_database(
                 jdbc_url: server_url.clone(),
                 properties: config.product_properties(),
                 read_only: false,
+                ssh: None,
             }),
         })
         .await
@@ -395,6 +410,7 @@ async fn verify_database_vertical(
                         jdbc_url: database_url.clone(),
                         properties: config.product_properties(),
                         read_only: false,
+                        ssh: None,
                     },
                 },
             },

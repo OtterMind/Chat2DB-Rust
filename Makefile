@@ -1,8 +1,9 @@
 .PHONY: verify rust rust-process-tests java ipc-integration jdbc-h2-integration \
 	community-h2-classpath community-h2-reproducibility community-java-h2-integration \
 	community-h2-integration \
-	community-product-h2-integration product-h2-integration mysql-driver-pack \
-	native-mysql-integration community-product-mysql-integration \
+	community-product-h2-integration product-h2-integration mysql-driver-pack h2-driver-pack \
+	native-mysql-integration native-mysql-direct-integration native-mysql-ssh-integration \
+	community-product-mysql-integration \
 	frontend-deps frontend-source frontend desktop generate-contracts check-contracts \
 	macos-runtime macos-package-java macos-package macos-package-verify
 
@@ -44,7 +45,7 @@ community-h2-reproducibility:
 community-java-h2-integration: java community-h2-classpath
 	cd java && \
 	CHAT2DB_COMMUNITY_CLASSPATH_DIR="$(COMMUNITY_CLASSPATH_DIR)" \
-	CHAT2DB_COMMUNITY_SOURCE_COMMIT="37a34be858f2566b6b7fcf6c3f64183c1f560853" \
+	CHAT2DB_COMMUNITY_SOURCE_COMMIT="3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c" \
 	./mvnw -B -pl compat-runtime \
 	-Dtest='CommunityPluginRegistryTest#realCommunityH2BuildsAndExecutesBoundedDml,CommunityPluginRegistryTest#realCommunityMysqlRejectsBackslashCrossColumnInjection,CommunityPluginRegistryTest#realCommunityMysqlNormalizesBooleanAliasesAndBits,CommunityPluginRegistryTest#realCommunityH2BuildsNamespaceSqlWithoutOpeningJdbc,CommunityPluginRegistryTest#realCommunityMysqlBuildsDatabaseNamespaceSql,CommunityPluginRegistryTest#realCommunityMysqlBuildsBoundedTablePreviewSqlWithoutOpeningJdbc,CommunityPluginRegistryTest#realCommunityNamespaceMapsUnsupportedAndRejectsOversizedInput,JdbcProtocolLoopTest#communityDmlDispatchDoesNotRequireAJdbcSession,JdbcProtocolLoopTest#communityNamespaceDispatchDoesNotRequireAJdbcSession' \
 	test
@@ -61,9 +62,21 @@ product-h2-integration: java
 mysql-driver-pack:
 	./scripts/prepare-mysql-driver-pack.sh "$(MYSQL_DRIVER_PACK_DIR)"
 
-native-mysql-integration:
+h2-driver-pack:
+	./scripts/prepare-h2-driver-pack.sh "$(MYSQL_DRIVER_PACK_DIR)"
+
+native-mysql-integration: native-mysql-direct-integration native-mysql-ssh-integration
+
+native-mysql-direct-integration:
 	@test -n "$(MYSQL_TEST_USER)" || (echo "MYSQL_TEST_USER is required" >&2; exit 1)
 	@test -n "$(MYSQL_TEST_PASSWORD)" || (echo "MYSQL_TEST_PASSWORD is required" >&2; exit 1)
+	@MYSQL_TEST_HOST="$(MYSQL_TEST_HOST)" \
+	MYSQL_TEST_PORT="$(MYSQL_TEST_PORT)" \
+	MYSQL_TEST_USER="$(MYSQL_TEST_USER)" \
+	MYSQL_TEST_PASSWORD="$(MYSQL_TEST_PASSWORD)" \
+	MYSQL_TEST_REQUIRED="1" \
+	cargo test -p chat2db-core --lib --locked \
+	live_mysql_console_kernel_preserves_session_results_and_cancellation -- --ignored
 	@MYSQL_TEST_HOST="$(MYSQL_TEST_HOST)" \
 	MYSQL_TEST_PORT="$(MYSQL_TEST_PORT)" \
 	MYSQL_TEST_USER="$(MYSQL_TEST_USER)" \
@@ -74,12 +87,64 @@ native-mysql-integration:
 	MYSQL_TEST_PORT="$(MYSQL_TEST_PORT)" \
 	MYSQL_TEST_USER="$(MYSQL_TEST_USER)" \
 	MYSQL_TEST_PASSWORD="$(MYSQL_TEST_PASSWORD)" \
+	MYSQL_TEST_REQUIRED="1" \
+	cargo test -p chat2db-local --test native_mysql_write_docker --locked
+	@MYSQL_TEST_HOST="$(MYSQL_TEST_HOST)" \
+	MYSQL_TEST_PORT="$(MYSQL_TEST_PORT)" \
+	MYSQL_TEST_USER="$(MYSQL_TEST_USER)" \
+	MYSQL_TEST_PASSWORD="$(MYSQL_TEST_PASSWORD)" \
 	cargo test -p chat2db-core --test native_mysql_console_docker --locked -- --ignored
 	@MYSQL_TEST_HOST="$(MYSQL_TEST_HOST)" \
 	MYSQL_TEST_PORT="$(MYSQL_TEST_PORT)" \
 	MYSQL_TEST_USER="$(MYSQL_TEST_USER)" \
 	MYSQL_TEST_PASSWORD="$(MYSQL_TEST_PASSWORD)" \
+	MYSQL_TEST_REQUIRED="1" \
+	cargo test -p chat2db-core --test native_mysql_account_docker --locked
+	@MYSQL_TEST_HOST="$(MYSQL_TEST_HOST)" \
+	MYSQL_TEST_PORT="$(MYSQL_TEST_PORT)" \
+	MYSQL_TEST_USER="$(MYSQL_TEST_USER)" \
+	MYSQL_TEST_PASSWORD="$(MYSQL_TEST_PASSWORD)" \
+	MYSQL_TEST_REQUIRED="1" \
+	cargo test -p chat2db-core --test native_mysql_schema_diff_docker --locked
+	@MYSQL_TEST_HOST="$(MYSQL_TEST_HOST)" \
+	MYSQL_TEST_PORT="$(MYSQL_TEST_PORT)" \
+	MYSQL_TEST_USER="$(MYSQL_TEST_USER)" \
+	MYSQL_TEST_PASSWORD="$(MYSQL_TEST_PASSWORD)" \
+	MYSQL_TEST_REQUIRED="1" \
+	cargo test -p chat2db-core --test native_mysql_transfer_docker --locked
+	@MYSQL_TEST_HOST="$(MYSQL_TEST_HOST)" \
+	MYSQL_TEST_PORT="$(MYSQL_TEST_PORT)" \
+	MYSQL_TEST_USER="$(MYSQL_TEST_USER)" \
+	MYSQL_TEST_PASSWORD="$(MYSQL_TEST_PASSWORD)" \
+	MYSQL_TEST_REQUIRED="1" \
+	cargo test -p chat2db-core --test native_mysql_dashboard_docker --locked
+	@MYSQL_TEST_HOST="$(MYSQL_TEST_HOST)" \
+	MYSQL_TEST_PORT="$(MYSQL_TEST_PORT)" \
+	MYSQL_TEST_USER="$(MYSQL_TEST_USER)" \
+	MYSQL_TEST_PASSWORD="$(MYSQL_TEST_PASSWORD)" \
+	MYSQL_TEST_REQUIRED="1" \
 	cargo test -p chat2db-web --test native_mysql_editable_ddl_docker --locked -- --ignored
+
+native-mysql-ssh-integration:
+	@test -n "$(CHAT2DB_TEST_SSH_HOST)" || (echo "CHAT2DB_TEST_SSH_HOST is required" >&2; exit 1)
+	@test -n "$(CHAT2DB_TEST_SSH_PORT)" || (echo "CHAT2DB_TEST_SSH_PORT is required" >&2; exit 1)
+	@test -n "$(CHAT2DB_TEST_SSH_USER)" || (echo "CHAT2DB_TEST_SSH_USER is required" >&2; exit 1)
+	@test -n "$(CHAT2DB_TEST_SSH_LOCAL_PORT)" || (echo "CHAT2DB_TEST_SSH_LOCAL_PORT is required" >&2; exit 1)
+	@test -n "$(CHAT2DB_TEST_SSH_PASSWORD)$(CHAT2DB_TEST_SSH_PRIVATE_KEY)" || (echo "CHAT2DB_TEST_SSH_PASSWORD or CHAT2DB_TEST_SSH_PRIVATE_KEY is required" >&2; exit 1)
+	@test -n "$(MYSQL_TEST_USER)" || (echo "MYSQL_TEST_USER is required" >&2; exit 1)
+	@test -n "$(MYSQL_TEST_PASSWORD)" || (echo "MYSQL_TEST_PASSWORD is required" >&2; exit 1)
+	@CHAT2DB_TEST_MYSQL_HOST="$(MYSQL_TEST_HOST)" \
+	CHAT2DB_TEST_MYSQL_PORT="$(MYSQL_TEST_PORT)" \
+	CHAT2DB_TEST_MYSQL_USER="$(MYSQL_TEST_USER)" \
+	CHAT2DB_TEST_MYSQL_PASSWORD="$(MYSQL_TEST_PASSWORD)" \
+	CHAT2DB_TEST_SSH_HOST="$(CHAT2DB_TEST_SSH_HOST)" \
+	CHAT2DB_TEST_SSH_PORT="$(CHAT2DB_TEST_SSH_PORT)" \
+	CHAT2DB_TEST_SSH_USER="$(CHAT2DB_TEST_SSH_USER)" \
+	CHAT2DB_TEST_SSH_PASSWORD="$(CHAT2DB_TEST_SSH_PASSWORD)" \
+	CHAT2DB_TEST_SSH_PRIVATE_KEY="$(CHAT2DB_TEST_SSH_PRIVATE_KEY)" \
+	CHAT2DB_TEST_SSH_PRIVATE_KEY_PASSPHRASE="$(CHAT2DB_TEST_SSH_PRIVATE_KEY_PASSPHRASE)" \
+	CHAT2DB_TEST_SSH_LOCAL_PORT="$(CHAT2DB_TEST_SSH_LOCAL_PORT)" \
+	cargo test -p chat2db-core --test native_mysql_ssh_tunnel_docker --locked -- --ignored
 
 community-product-mysql-integration: java community-h2-classpath mysql-driver-pack
 	@test -n "$(MYSQL_TEST_USER)" || (echo "MYSQL_TEST_USER is required" >&2; exit 1)
@@ -120,7 +185,7 @@ macos-runtime:
 macos-package-java: community-h2-classpath
 	$(MAKE) java
 
-macos-package: macos-package-java mysql-driver-pack frontend macos-runtime
+macos-package: macos-package-java mysql-driver-pack h2-driver-pack frontend macos-runtime
 	./scripts/build-macos-package.sh
 
 macos-package-verify:

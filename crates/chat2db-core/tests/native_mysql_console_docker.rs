@@ -84,6 +84,7 @@ impl MysqlTestConfig {
                 },
             ],
             read_only: false,
+            ssh: None,
         }
     }
 }

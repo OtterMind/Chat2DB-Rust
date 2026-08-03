@@ -23,7 +23,7 @@ use chat2db_java_bridge::{
 };
 use tempfile::TempDir;
 
-const COMMUNITY_COMMIT: &str = "37a34be858f2566b6b7fcf6c3f64183c1f560853";
+const COMMUNITY_COMMIT: &str = "3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c";
 const H2_DRIVER_CLASS: &str = "org.h2.Driver";
 const COMMUNITY_CLASSPATH_LOCK: &str =
     include_str!("../../../third_party/community-h2-classpath.lock");
@@ -174,7 +174,7 @@ async fn verify_namespace_builder(community: &CommunityClient, session: &Session
         })
         .await
         .expect("real H2 plugin must build namespace DROP SCHEMA SQL");
-    assert_eq!(drop, "DROP SCHEMA NAMESPACE_ONLY");
+    assert_eq!(drop, "DROP SCHEMA \"NAMESPACE_ONLY\"");
     assert_eq!(
         query_values(
             session,

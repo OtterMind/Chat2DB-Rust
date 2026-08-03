@@ -1,5 +1,7 @@
 //! Tauri IPC delivery adapter for the `Chat2DB` desktop product.
 
+mod legacy_files;
+
 use std::{
     collections::HashMap,
     env,
@@ -44,7 +46,15 @@ use chat2db_core::{
 };
 use chat2db_java_bridge::{BridgeError, EngineCommand, EngineConfig};
 use chat2db_local::{LocalError, LocalServer};
+use legacy_files::{
+    LegacyCreateSqlDirectoryChildRequest, LegacyOpenSqlDirectoryRequest, LegacyReadFileRequest,
+    LegacyRenameSqlDirectoryChildRequest, LegacySaveFileRequest, LegacySaveSqlDirectoryFileRequest,
+    LegacySqlDirectoryPathRequest, LegacySqlDirectoryRegistry, LegacyUpdateFileRequest,
+    open_terminal, read_text_file, save_dialog_file_name, save_dialog_file_type, save_text_file,
+    update_text_file,
+};
 use tauri::{Emitter, State, WebviewWindow, ipc::Channel};
+use tauri_plugin_dialog::{DialogExt, FilePath};
 use tokio::sync::{Mutex, oneshot};
 
 const DATA_DIR_ENV: &str = "CHAT2DB_DATA_DIR";
@@ -115,6 +125,7 @@ struct DesktopState {
     application: Application,
     local_server: Mutex<Option<LocalServer>>,
     runtime_host: Mutex<Option<RuntimeHost>>,
+    legacy_sql_directories: LegacySqlDirectoryRegistry,
     legacy_sql_cancellations: LegacySqlCancellationRegistry,
     subscriptions: SubscriptionRegistry,
     next_legacy_execution_id: AtomicU64,
@@ -243,6 +254,7 @@ impl DesktopState {
             application,
             local_server: Mutex::new(Some(local_server)),
             runtime_host: Mutex::new(Some(runtime_host)),
+            legacy_sql_directories: LegacySqlDirectoryRegistry::default(),
             legacy_sql_cancellations: LegacySqlCancellationRegistry::default(),
             subscriptions: SubscriptionRegistry::default(),
             next_legacy_execution_id: AtomicU64::new(1),
@@ -384,6 +396,7 @@ pub fn run() -> Result<i32, DesktopError> {
     )?);
     let managed_state = Arc::clone(&state);
     let application = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(managed_state)
         .invoke_handler(tauri::generate_handler![
             health,
@@ -617,10 +630,120 @@ async fn legacy_request(
     window: WebviewWindow,
     request: String,
 ) -> Result<String, String> {
+    if let Some(response) = legacy_ai_stream_request_for(state.inner(), &window, &request).await? {
+        return Ok(response);
+    }
     if let Some(response) = legacy_client_command_for(state.inner(), &window, &request).await? {
         return Ok(response);
     }
     legacy_request_for(&state.application, &request).await
+}
+
+async fn legacy_ai_stream_request_for(
+    state: &Arc<DesktopState>,
+    window: &WebviewWindow,
+    request: &str,
+) -> Result<Option<String>, String> {
+    let value: serde_json::Value = serde_json::from_str(request)
+        .map_err(|_| "Community desktop request must be valid JSON".to_owned())?;
+    let request = value
+        .as_object()
+        .ok_or_else(|| "Community desktop request must be a JSON object".to_owned())?;
+    let method = legacy_request_string(request, "method")?;
+    let request_url = legacy_request_string(request, "requestUrl")?;
+    let path = request_url
+        .split('?')
+        .next()
+        .unwrap_or(request_url.as_str());
+    if !method.eq_ignore_ascii_case("post") || path != "/api/v3/ai/chat/stream" {
+        return Ok(None);
+    }
+    let request_uuid = legacy_request_string(request, "uuid")?;
+    let chat_request = decode_client_message::<chat2db_web::legacy_ai::LegacyAiChatRequest>(
+        request.get("message"),
+    )?;
+    let started = chat2db_web::legacy_ai::start_chat_run(&state.application, chat_request)
+        .await
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let run_id = started.run_id.clone();
+    let session_id = started.session_id.clone();
+    let application = state.application.clone();
+    let task_window = window.clone();
+    tauri::async_runtime::spawn(async move {
+        forward_legacy_ai_stream(application, task_window, request_uuid, started).await;
+    });
+    Ok(Some(client_command_response(&serde_json::json!({
+        "runId": run_id,
+        "sessionId": session_id,
+    }))))
+}
+
+async fn forward_legacy_ai_stream(
+    application: Application,
+    window: WebviewWindow,
+    request_uuid: String,
+    mut started: chat2db_web::legacy_ai::LegacyAiStartedRun,
+) {
+    let session_chunk = chat2db_web::legacy_ai::LegacyAiStreamChunk {
+        event_type: "session".to_owned(),
+        message_type: "session".to_owned(),
+        content: None,
+        name: None,
+        arguments: None,
+        session_id: Some(started.session_id.clone()),
+        ts: Some(unix_epoch_millis()),
+        id: None,
+        error_code: None,
+        error_message: None,
+    };
+    if emit_legacy_ai_event(&window, &request_uuid, &session_chunk).is_err() {
+        let _ = application.cancel_agent_run(&started.run_id).await;
+        return;
+    }
+    while let Some((chunk, terminal)) = chat2db_web::legacy_ai::next_stream_chunk(
+        &application,
+        &mut started.subscription,
+        &started.session_id,
+    )
+    .await
+    {
+        if emit_legacy_ai_event(&window, &request_uuid, &chunk).is_err() {
+            let _ = application.cancel_agent_run(&started.run_id).await;
+            return;
+        }
+        if terminal {
+            return;
+        }
+    }
+}
+
+fn emit_legacy_ai_event(
+    window: &WebviewWindow,
+    request_uuid: &str,
+    chunk: &chat2db_web::legacy_ai::LegacyAiStreamChunk,
+) -> Result<(), tauri::Error> {
+    window.emit(
+        COMMUNITY_JAVA_MESSAGE_EVENT,
+        legacy_ai_push_message(request_uuid, chunk),
+    )
+}
+
+fn legacy_ai_push_message(
+    request_uuid: &str,
+    chunk: &chat2db_web::legacy_ai::LegacyAiStreamChunk,
+) -> serde_json::Value {
+    let data = serde_json::to_string(chunk).unwrap_or_else(|_| {
+        r#"{"type":"error","messageType":"error","content":"AI event serialization failed"}"#
+            .to_owned()
+    });
+    serde_json::json!({
+        "uuid": request_uuid,
+        "actionType": "ai_sse_message",
+        "message": {
+            "event": chunk.event_name(),
+            "data": data,
+        },
+    })
 }
 
 #[allow(clippy::too_many_lines)]
@@ -641,6 +764,132 @@ async fn legacy_client_command_for(
     let request_url = legacy_request_string(request, "requestUrl")?;
     match request_url.as_str() {
         "handle-java-message-is-ready" => {
+            Ok(Some(client_command_response(&serde_json::json!(true))))
+        }
+        "select-directory" => {
+            let selected = window
+                .dialog()
+                .file()
+                .set_parent(window)
+                .set_title("Select Directory")
+                .blocking_pick_folder()
+                .map(legacy_file_path)
+                .transpose()?;
+            Ok(Some(client_command_response(&serde_json::json!(selected))))
+        }
+        "select-file" => {
+            let selection =
+                decode_client_message::<LegacySelectFileRequest>(request.get("message"))?;
+            let selected = select_legacy_files(window, &selection)?;
+            Ok(Some(client_command_response(&serde_json::json!(selected))))
+        }
+        "reveal-in-explorer" => {
+            let reveal =
+                decode_client_message::<LegacyRevealInExplorerRequest>(request.get("message"))?;
+            let path = PathBuf::from(reveal.path.trim());
+            if reveal.path.trim().is_empty() {
+                return Err("reveal-in-explorer requires a non-empty path".to_owned());
+            }
+            tauri_plugin_opener::reveal_item_in_dir(path)
+                .map_err(|_| "The selected path could not be revealed".to_owned())?;
+            Ok(Some(serde_json::json!({ "success": true }).to_string()))
+        }
+        "save-file" => {
+            let save = decode_client_message::<LegacySaveFileRequest>(request.get("message"))?;
+            let file_name = save_dialog_file_name(&save)?;
+            let file_type = save_dialog_file_type(&save)?;
+            let selected = window
+                .dialog()
+                .file()
+                .set_parent(window)
+                .set_title("Save File")
+                .set_file_name(&file_name)
+                .add_filter("Selected File", &[file_type.as_str()])
+                .blocking_save_file()
+                .map(legacy_file_path)
+                .transpose()?;
+            let saved = selected
+                .as_deref()
+                .map(|path| save_text_file(path, &save))
+                .transpose()?;
+            Ok(Some(client_command_response(&serde_json::json!(saved))))
+        }
+        "update-file-content" => {
+            let update = decode_client_message::<LegacyUpdateFileRequest>(request.get("message"))?;
+            let updated = update_text_file(&update)?;
+            Ok(Some(client_command_response(&serde_json::json!(updated))))
+        }
+        "read-file" => {
+            let read = decode_client_message::<LegacyReadFileRequest>(request.get("message"))?;
+            let content = read_text_file(&read)?;
+            Ok(Some(client_command_response(&serde_json::json!(content))))
+        }
+        "select-sql-directory" => {
+            let selected = window
+                .dialog()
+                .file()
+                .set_parent(window)
+                .set_title("Select SQL Directory")
+                .blocking_pick_folder()
+                .map(legacy_file_path)
+                .transpose()?;
+            let root = selected
+                .as_deref()
+                .map(|path| state.legacy_sql_directories.register_root(path))
+                .transpose()?;
+            Ok(Some(client_command_response(&serde_json::json!(root))))
+        }
+        "open-sql-directory" => {
+            let open =
+                decode_client_message::<LegacyOpenSqlDirectoryRequest>(request.get("message"))?;
+            let root = if open.path.trim().is_empty() {
+                None
+            } else {
+                Some(
+                    state
+                        .legacy_sql_directories
+                        .register_root(Path::new(open.path.trim()))?,
+                )
+            };
+            Ok(Some(client_command_response(&serde_json::json!(root))))
+        }
+        "get-sql-directory-children" => {
+            let path =
+                decode_client_message::<LegacySqlDirectoryPathRequest>(request.get("message"))?;
+            let children = state.legacy_sql_directories.list_children(&path)?;
+            Ok(Some(client_command_response(&serde_json::json!(children))))
+        }
+        "create-sql-directory-child" => {
+            let create = decode_client_message::<LegacyCreateSqlDirectoryChildRequest>(
+                request.get("message"),
+            )?;
+            let response = state.legacy_sql_directories.create_child(&create)?;
+            Ok(Some(client_command_response(&serde_json::json!(response))))
+        }
+        "save-sql-directory-file" => {
+            let save =
+                decode_client_message::<LegacySaveSqlDirectoryFileRequest>(request.get("message"))?;
+            let response = state.legacy_sql_directories.save_file(&save)?;
+            Ok(Some(client_command_response(&serde_json::json!(response))))
+        }
+        "rename-sql-directory-child" => {
+            let rename = decode_client_message::<LegacyRenameSqlDirectoryChildRequest>(
+                request.get("message"),
+            )?;
+            let response = state.legacy_sql_directories.rename_child(&rename)?;
+            Ok(Some(client_command_response(&serde_json::json!(response))))
+        }
+        "delete-sql-directory-child" => {
+            let path =
+                decode_client_message::<LegacySqlDirectoryPathRequest>(request.get("message"))?;
+            let response = state.legacy_sql_directories.delete_child(&path)?;
+            Ok(Some(client_command_response(&serde_json::json!(response))))
+        }
+        "open-sql-directory-terminal" => {
+            let path =
+                decode_client_message::<LegacySqlDirectoryPathRequest>(request.get("message"))?;
+            let directory = state.legacy_sql_directories.terminal_directory(&path)?;
+            open_terminal(&directory)?;
             Ok(Some(client_command_response(&serde_json::json!(true))))
         }
         "sql-execute" => {
@@ -668,14 +917,14 @@ async fn legacy_client_command_for(
                 let task_window = window.clone();
                 let task_execution_id = execution_id.clone();
                 tauri::async_runtime::spawn(async move {
-                    forward_native_mysql_sql_execution(
+                    Box::pin(forward_native_mysql_sql_execution(
                         Arc::clone(&task_state),
                         task_window,
                         request_uuid,
                         task_execution_id.clone(),
                         sql_request,
                         cancellation,
-                    )
+                    ))
                     .await;
                     task_state
                         .legacy_sql_cancellations
@@ -739,6 +988,124 @@ async fn legacy_client_command_for(
     }
 }
 
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacySelectFileRequest {
+    #[serde(default)]
+    file_type_list: Vec<String>,
+    #[serde(default)]
+    file_size: Option<u64>,
+    #[serde(default)]
+    multiple: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct LegacyRevealInExplorerRequest {
+    path: String,
+}
+
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacySelectedFile {
+    file_name: String,
+    file_path: String,
+}
+
+fn select_legacy_files(
+    window: &WebviewWindow,
+    request: &LegacySelectFileRequest,
+) -> Result<Option<Vec<LegacySelectedFile>>, String> {
+    let mut dialog = window
+        .dialog()
+        .file()
+        .set_parent(window)
+        .set_title("Select File");
+    let extensions = legacy_file_extensions(&request.file_type_list)?;
+    if !extensions.is_empty() {
+        let extensions = extensions.iter().map(String::as_str).collect::<Vec<_>>();
+        dialog = dialog.add_filter("Selected Files", &extensions);
+    }
+
+    let selected = if request.multiple {
+        dialog.blocking_pick_files()
+    } else {
+        dialog.blocking_pick_file().map(|path| vec![path])
+    };
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+
+    selected
+        .into_iter()
+        .map(|path| legacy_selected_file(path, request.file_size))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+fn legacy_file_extensions(file_types: &[String]) -> Result<Vec<String>, String> {
+    if file_types.len() > 64 {
+        return Err("select-file accepts at most 64 file extensions".to_owned());
+    }
+    let mut extensions = Vec::with_capacity(file_types.len());
+    for file_type in file_types {
+        let extension = file_type
+            .trim()
+            .trim_start_matches('*')
+            .trim_start_matches('.');
+        if extension.is_empty()
+            || extension.len() > 64
+            || !extension
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
+            return Err("select-file contains an invalid file extension".to_owned());
+        }
+        if !extensions.iter().any(|existing| existing == extension) {
+            extensions.push(extension.to_owned());
+        }
+    }
+    Ok(extensions)
+}
+
+fn legacy_selected_file(
+    path: FilePath,
+    maximum_size_mb: Option<u64>,
+) -> Result<LegacySelectedFile, String> {
+    let path = legacy_file_path(path)?;
+    let metadata =
+        fs::metadata(&path).map_err(|_| "The selected file is no longer available".to_owned())?;
+    if !metadata.is_file() {
+        return Err("The selected path is not a regular file".to_owned());
+    }
+    if let Some(maximum_size_mb) = maximum_size_mb.filter(|value| *value > 0) {
+        let maximum_size = maximum_size_mb
+            .checked_mul(1024 * 1024)
+            .ok_or_else(|| "select-file contains an invalid file size limit".to_owned())?;
+        if metadata.len() > maximum_size {
+            return Err(format!(
+                "The selected file exceeds the {maximum_size_mb} MB size limit"
+            ));
+        }
+    }
+    let file_name = path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "The selected file name cannot be represented as UTF-8".to_owned())?;
+    let file_path = path
+        .to_str()
+        .ok_or_else(|| "The selected file path cannot be represented as UTF-8".to_owned())?;
+    Ok(LegacySelectedFile {
+        file_name: file_name.to_owned(),
+        file_path: file_path.to_owned(),
+    })
+}
+
+fn legacy_file_path(path: FilePath) -> Result<PathBuf, String> {
+    path.into_path()
+        .map_err(|_| "Community desktop file commands require a local filesystem path".to_owned())
+}
+
 fn decode_client_message<T: serde::de::DeserializeOwned>(
     message: Option<&serde_json::Value>,
 ) -> Result<T, String> {
@@ -785,13 +1152,13 @@ async fn forward_native_mysql_sql_execution(
         return;
     }
 
-    let results = chat2db_web::legacy::execute_mysql_sql(
+    let results = Box::pin(chat2db_web::legacy::execute_mysql_sql(
         &state.application,
         &request,
         cancellation.clone(),
         &execution_id,
         "SQL_EDITOR_JCEF",
-    )
+    ))
     .await;
     if cancellation.is_cancelled() {
         let _ = emit_legacy_sql_event(
@@ -1290,15 +1657,23 @@ async fn legacy_request_for(application: &Application, request: &str) -> Result<
         .cloned()
         .unwrap_or(serde_json::Value::Null);
 
-    let response = chat2db_web::legacy::dispatch(
-        application,
-        chat2db_web::legacy::LegacyDispatchRequest {
-            request_url: request_url.clone(),
-            method: method.clone(),
-            message,
-        },
-    )
-    .await;
+    let response =
+        match chat2db_web::legacy_ai::dispatch(application, &method, &request_url, message.clone())
+            .await
+        {
+            Some(response) => response,
+            None => {
+                chat2db_web::legacy::dispatch_desktop(
+                    application,
+                    chat2db_web::legacy::LegacyDispatchRequest {
+                        request_url: request_url.clone(),
+                        method: method.clone(),
+                        message,
+                    },
+                )
+                .await
+            }
+        };
 
     Ok(serde_json::json!({
         "uuid": uuid,
@@ -2194,11 +2569,12 @@ mod tests {
 
     use super::{
         BUNDLED_COMMUNITY_CLASSPATH, BUNDLED_DRIVER_PACKS, BUNDLED_JAVA_BIN,
-        BUNDLED_JAVA_ENGINE_JAR, BundledRuntimeResources, DesktopError,
+        BUNDLED_JAVA_ENGINE_JAR, BundledRuntimeResources, DesktopError, FilePath,
         LegacySqlCancellationRegistry, RuntimeResourceOverrides, SubscriptionRegistry,
         agent_stream_message, build_community_dml_for, build_community_namespace_sql_for,
         client_command_response, complete_community_sql_for, decode_client_message,
-        format_community_sql_for, legacy_request_for, legacy_sql_push_message,
+        format_community_sql_for, legacy_ai_push_message, legacy_file_extensions,
+        legacy_request_for, legacy_selected_file, legacy_sql_push_message,
         legacy_sql_rowless_payload, operation_stream_message, parse_after_sequence,
         resolve_runtime_resource_paths, start_community_table_preview_for,
         validate_community_sql_for, validate_java_engine_jar, validate_optional_os_env,
@@ -2251,6 +2627,86 @@ mod tests {
         ))
         .expect("client-command response must serialize");
         assert_eq!(response["data"]["executionId"], "operation-1");
+    }
+
+    #[test]
+    fn community_file_command_extensions_are_bounded_and_normalized() {
+        assert_eq!(
+            legacy_file_extensions(&[
+                ".sql".to_owned(),
+                "*.csv".to_owned(),
+                "sql".to_owned(),
+                "tar.gz".to_owned(),
+            ])
+            .expect("supported extensions must normalize"),
+            ["sql", "csv", "tar.gz"]
+        );
+        assert!(legacy_file_extensions(&["../pem".to_owned()]).is_err());
+        assert!(legacy_file_extensions(&[String::new()]).is_err());
+        assert!(legacy_file_extensions(&vec!["sql".to_owned(); 65]).is_err());
+    }
+
+    #[test]
+    fn community_selected_files_match_the_jcef_shape_and_enforce_size() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let selected_path = directory.path().join("inventory.sql");
+        fs::write(&selected_path, "SELECT 1;").expect("selected file fixture");
+
+        let selected = legacy_selected_file(FilePath::from(selected_path.clone()), Some(1))
+            .expect("small selected file must pass");
+        assert_eq!(selected.file_name, "inventory.sql");
+        assert_eq!(selected.file_path, selected_path.to_string_lossy());
+
+        let response: serde_json::Value = serde_json::from_str(&client_command_response(
+            &serde_json::to_value([selected]).expect("selected file must serialize"),
+        ))
+        .expect("client-command response must serialize");
+        assert_eq!(response["data"][0]["fileName"], "inventory.sql");
+        assert_eq!(
+            response["data"][0]["filePath"].as_str(),
+            selected_path.to_str()
+        );
+
+        let oversized_path = directory.path().join("oversized.csv");
+        let oversized = File::create(&oversized_path).expect("oversized fixture");
+        oversized
+            .set_len(1024 * 1024 + 1)
+            .expect("oversized fixture length");
+        let error = legacy_selected_file(FilePath::from(oversized_path), Some(1))
+            .expect_err("oversized selected file must fail");
+        assert!(error.contains("exceeds the 1 MB size limit"));
+
+        let error = legacy_selected_file(FilePath::from(directory.path().to_path_buf()), None)
+            .expect_err("directories must not pass as files");
+        assert_eq!(error, "The selected path is not a regular file");
+    }
+
+    #[test]
+    fn legacy_ai_push_message_matches_the_retained_desktop_event_shape() {
+        let envelope = AgentEventEnvelope {
+            run_id: "run-1".to_owned(),
+            sequence: "2".to_owned(),
+            occurred_at_ms: "1700000000000".to_owned(),
+            event: AgentEvent::TextDelta {
+                delta: "hello".to_owned(),
+            },
+        };
+        let chunk = chat2db_web::legacy_ai::project_agent_event(&envelope, "session-1")
+            .expect("text delta must project");
+        let payload = legacy_ai_push_message("request-1", &chunk);
+
+        assert_eq!(payload["uuid"], "request-1");
+        assert_eq!(payload["actionType"], "ai_sse_message");
+        assert_eq!(payload["message"]["event"], "answer");
+        let data: serde_json::Value = serde_json::from_str(
+            payload["message"]["data"]
+                .as_str()
+                .expect("desktop SSE data must be a JSON string"),
+        )
+        .expect("desktop SSE data must decode");
+        assert_eq!(data["type"], "answer");
+        assert_eq!(data["messageType"], "answer");
+        assert_eq!(data["content"], "hello");
     }
 
     #[test]
@@ -2345,6 +2801,36 @@ mod tests {
         );
         assert!(response["message"]["errorCode"].is_null());
         assert!(response["message"]["errorMessage"].is_null());
+    }
+
+    #[tokio::test]
+    async fn legacy_request_dispatches_dashboard_routes_through_the_generic_envelope() {
+        let response = legacy_request_for(
+            &Application::new(),
+            r#"{
+                "actionType":"execute",
+                "uuid":"dashboard-request-1",
+                "requestUrl":"/api/dashboard/list?pageNo=1&pageSize=20",
+                "method":"get",
+                "message":{"pageNo":1,"pageSize":20,"searchKey":""}
+            }"#,
+        )
+        .await
+        .expect("dashboard request must be serialized");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("legacy response must be JSON");
+
+        assert_eq!(response["uuid"], "dashboard-request-1");
+        assert_eq!(response["actionType"], "execute");
+        assert_eq!(
+            response["requestUrl"],
+            "/api/dashboard/list?pageNo=1&pageSize=20"
+        );
+        assert_eq!(response["method"], "get");
+        assert!(response["param"].is_null());
+        assert_eq!(response["message"]["success"], false);
+        assert_eq!(response["message"]["errorCode"], "storage_unavailable");
+        assert!(response["message"]["data"].is_null());
     }
 
     #[tokio::test]

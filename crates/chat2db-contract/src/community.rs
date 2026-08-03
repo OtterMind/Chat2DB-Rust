@@ -543,6 +543,32 @@ pub struct CommunityRoutineInvocationPreview {
     pub sql: String,
 }
 
+/// Request to preview or execute replacement of one Community routine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityRoutineMigrationRequest {
+    pub datasource_id: String,
+    pub database_type: String,
+    pub database_name: String,
+    pub schema_name: String,
+    pub routine_type: String,
+    pub routine_name: String,
+    pub ddl: String,
+}
+
+/// Result of a compensating `MySQL` routine replacement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityRoutineMigrationExecution {
+    pub success: bool,
+    pub message: String,
+    pub sql: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_stage: Option<String>,
+    pub restore_attempted: bool,
+    pub restore_succeeded: bool,
+}
+
 /// Secret-free Community trigger metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]

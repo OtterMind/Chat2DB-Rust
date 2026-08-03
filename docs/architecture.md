@@ -17,8 +17,9 @@ without embedding H2 in the compatibility-engine JAR.
 The Web and Tauri hosts open the production vault, SQLite storage, and verified
 driver catalog before exposing a shared `Application`; they do not start Java
 during host bootstrap. Native MySQL connection, object metadata, editable
-result-grid operations, database/table/view DDL, preview, and Console
-reads/writes/scripts do not acquire a Java lease. The Core
+result-grid operations, database/table/view DDL, preview, Console
+reads/writes/scripts, and Dashboard/Chart refresh do not acquire a Java lease.
+The Core
 `EngineManager` starts one Java generation on the first JDBC-only database,
 parser, formatter, completion, builder, or advanced metadata request. It shares
 that single-flight startup across concurrent callers and issues generation-scoped
@@ -41,8 +42,10 @@ building, parsing, syntax validation, formatting, and datasource-aware SQL
 completion plus datasource-free typed DML, namespace SQL, and bounded
 table-preview SQL generation when the exact locked classpath is configured.
 The current product frontend is not the former repository-owned replacement
-workbench. The build exports the unmodified Community frontend tree pinned by
-`scripts/community-frontend.lock.json`. Web maps its historical `/api`
+workbench. The build exports a locked Community frontend commit that retains
+the original pages, components, interactions, and styles while applying a
+reviewable host-transport patch for CSP-safe callbacks and Web/Desktop file
+flows. `scripts/community-frontend.lock.json` binds both commit and tree. Web maps its historical `/api`
 contract through Axum; desktop maps the existing `window.javaQuery` contract
 through one Tauri `legacy_request` command. Both paths call the same Rust
 legacy dispatcher. The implemented product slice covers native MySQL connection
@@ -74,8 +77,11 @@ drag-only column reordering, type-preserving ENUM/SET and `UNSIGNED` ALTERs,
 composite primary-key ordering, and fail-closed generated/invisible-column
 reorders that retained their live definitions. View metadata and full
 database/table/view cleanup also passed while Java remained dormant. The
-complete repository `make verify` gate and an explicit real-MySQL rerun passed
-after the final implementation.
+Dashboard/Chart integration separately passed selected-database refresh,
+200-row bounding, SELECT CTEs, response-only metadata with Community column
+attributes, unsafe-SQL rejection, `CHART` history, cleanup, and dormant Java
+against MySQL 8.4. The complete repository `make verify` gate and an explicit
+real-MySQL rerun pass with this Dashboard/Chart increment included.
 
 ## Ownership
 
@@ -88,8 +94,8 @@ after the final implementation.
 | Durable state | Rust | SQLite, retained-result files, and a mandatory injected secret-vault contract |
 | AI agent | Rust | Provider adapters, tool loop, limits, compaction, and cancellation |
 | MCP and CLI | Rust | Adapters around the same product services and policy |
-| Native MySQL product slice | Rust / `mysql_async` | Connection, object metadata, Community-compatible routes/envelopes, editable result-grid DML, database/table/view DDL, preview, unparameterized Console reads/writes/scripts, transactions, paging, limits, cancellation, large values, and durable history |
-| Compatibility databases and remaining MySQL operations | Java 17 | Existing SPI/plugins, JDBC bind parameters, SQL builders, parsing, formatting, completion, unmapped MySQL features, and non-MySQL metadata |
+| Native MySQL product slice | Rust / `mysql_async` | Connection and SSH, datasource lifecycle/portability, object metadata, typed SELECT binds, editable DML/DDL, Console, Dashboard/Chart refresh, routines/migration, transfer and class generation, accounts, schema diff, workspace state, Agent/CLI/MCP writes, cancellation, large values, and historical HTTP/IPC envelopes |
+| Compatibility databases and exact Community helpers | Java 17 | Existing SPI/plugins for non-MySQL databases plus Community parsing, formatting, completion, SQL builders, and plugin-specific behavior |
 | SQL parsing, formatting, and completion | Java 17 | Existing Java ANTLR grammars, parser behavior, formatter behavior, and completion |
 | Rust-to-Java IPC | Shared Protobuf contract | Length-prefixed frames over private stdin/stdout |
 
@@ -104,9 +110,9 @@ React in system WebView         React in browser
            -> Rust application services
               <- owner-only local attachment <- CLI
               <- owner-only local attachment <- rmcp stdio server <- MCP client
-              -> SQLite and result store
+              -> SQLite dashboard/chart/workspace state and result store
               -> AI agent runtime
-              -> native MySQL connection / metadata / editable DDL / Console
+              -> native MySQL connection / metadata / editable DDL / Console / chart refresh
               -> Java process supervisor
                  -> Protobuf stdin/stdout
                  -> Java database compatibility engine
@@ -145,12 +151,17 @@ cross-language acceptance gates pass.
 ## Database boundary
 
 Java/JDBC remains the compatibility implementation for other databases and for
-unmigrated MySQL operations. The native route uses upstream
-`mysql_async 0.37.0` for MySQL connection testing, object metadata, editable
-result-grid execution, database/table/view DDL, preview, and unparameterized
-Console execution. Core selects this backend before requesting an
-`EngineLease`; unrecognized drivers cannot enter it. Console bind parameters
-remain unsupported rather than silently starting Java.
+fixed Community parser, formatter, completion, builder, and plugin behavior.
+The native route uses upstream `mysql_async 0.37.0` for the complete MySQL
+product data plane: connection and SSH, metadata, editable DML and DDL,
+Console, typed SELECT bind parameters, Dashboard/Chart refresh, routines,
+migration, transfer, accounts, schema diff, workspace state, and approved
+automation writes. Rust also renders
+MyBatis Plus entity, Mapper, and Mapper XML files from native MySQL metadata,
+writing local files for Desktop or a bounded ZIP artifact for Web. Core selects
+the native backend before requesting an `EngineLease`; unrecognized drivers
+cannot enter it. The pinned Community write/script contract has no bind field,
+so only ordered single-statement SELECT binds are exposed.
 
 The native MySQL baseline implements:
 
@@ -178,7 +189,12 @@ The native MySQL baseline implements:
 - active-query cancellation through a second bounded connection issuing
   `KILL CONNECTION`, followed by deterministic cleanup; and
 - SQLite-backed saved Consoles and per-statement execution history exposed by
-  the original Web and desktop contracts.
+  the original Web and desktop contracts; and
+- SQLite-backed Dashboard/Chart CRUD through all ten historical Web/Tauri
+  routes. Chart detail refresh executes only one SELECT or SELECT CTE through a
+  forced native MySQL read-only transaction, caps page 1 at 200 rows, returns
+  Community-shaped response-only metadata, records `CHART` history, and rejects
+  writes, multiple statements, locking reads, and server-file output.
 
 The JDBC baseline implements:
 
@@ -191,7 +207,7 @@ The JDBC baseline implements:
 Stage 7B additionally implements:
 
 - a Git submodule fixed at Community commit
-  `37a34be858f2566b6b7fcf6c3f64183c1f560853`;
+  `3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c`;
 - a reproducible H2 compatibility classpath, established with 148 JARs and
   extended in Stage 7J to 149 JARs for the retained Community domain-core
   completion implementation, whose filenames, byte lengths, and SHA-256
@@ -213,6 +229,12 @@ Community plugin objects, JDBC objects, parser objects, and exceptions remain
 inside Java. The Community classpath and each JDBC driver classloader are
 separate; JDBC driver JARs are not added to the Community classpath. Only
 bounded, process-neutral DTOs cross Protobuf.
+
+For H2 completion, a compatibility proxy resolves the pinned plugin's
+`ParserUtil` call from the active external JDBC driver classloader. Its
+thread-local binding is removed after each completion, preserving classloader
+isolation and driver unload while matching the pinned Community identifier
+quoting behavior.
 
 Stage 7C composes that boundary into the product runtime. The Web and desktop
 bootstrap paths accept `CHAT2DB_COMMUNITY_CLASSPATH_DIR`, but the source commit
@@ -407,14 +429,10 @@ SQL into the editor and observes the accepted operation in the existing result
 surface. A table/scope change aborts the pending request, and a late accepted
 operation is cancelled instead of replacing newer state. The Core path is
 runtime-tested against MySQL 8.4 through both the historical Connector/J gate
-and the native `mysql_async` gate. Product writes
-and Agent, CLI, and MCP MySQL conformance remain outside Stage 7M; PostgreSQL and
-long-tail plugin conformance do not block this MySQL milestone.
-
-Remaining builder operations, complete MySQL type conformance, native bind
-parameters and CTE-first SELECT, non-relational
-operations, script execution, import/export, and per-dialect conformance are not
-implemented yet.
+and the native `mysql_async` gate. The complete Issue `#14` MySQL milestone
+additionally covers product writes, CTE-first and typed SELECT binds, scripts,
+import/export, Agent, CLI, and MCP. PostgreSQL, non-relational, and long-tail
+plugin conformance remain separate work and do not block this MySQL milestone.
 
 Spring Boot, Spring Web, Spring AI, MCP, JCEF, product storage, and updater logic
 do not belong in the final Java engine.
@@ -556,7 +574,7 @@ product UI from those intermediate slices with the exact original Community
 frontend while retaining the Rust capabilities behind explicit historical API
 adapters. Signing,
 installation, hot reload, downloading, compatibility selection, updates,
-rollback, and the remaining compatibility operations are not implemented.
+rollback, and non-MySQL compatibility operations are not implemented.
 
 ## Local attachment and MCP boundary
 
@@ -569,23 +587,28 @@ authenticate each request with a random 32-byte token, and enforce bounded
 length-prefixed JSON frames and I/O deadlines.
 
 The local protocol exposes health, secret-free datasource listing,
-forced-read-only query start, operation snapshot, idempotent cancellation, and
-row/byte-bounded result paging. The CLI maps these operations to structured JSON
-commands. It does not start another product runtime or contact Java directly.
+forced-read-only query start, operation snapshot, idempotent cancellation,
+row/byte-bounded result paging, and one explicitly confirmed MySQL write. The
+CLI maps these operations to structured JSON commands and requires
+`--confirm-write` for the write command. It does not start another product
+runtime or contact Java directly.
 
-`chat2db-mcp` uses `rmcp` 2.2 over standard stdio and maps five tools onto the
+`chat2db-mcp` uses `rmcp` 2.2 over standard stdio and maps six tools onto the
 same `LocalClient`: `list_datasources`, `query_database`,
-`inspect_query_operation`, `cancel_database_query`, and
-`inspect_query_result`. Query start returns only an operation id. Query
+`inspect_query_operation`, `cancel_database_query`, `inspect_query_result`, and
+`execute_database_write`. Query start returns only an operation id. Query
 retention is capped at 10,000 rows, 16 MiB, and 900 seconds; each result page is
 capped at 1,000 rows and 512 KiB. Product `ApiError` values retain their stable
 codes, while local paths and transport details are redacted. Stdout is
 protocol-only, and dependency logging cannot be raised above `WARN` through the
 MCP log setting.
 
-This MCP slice has no write tool, Agent-run tool, or JDBC bind-parameter input.
-Those capabilities are not implied by the built-in Agent's broader SQL tool
-set.
+The write tool accepts only datasource identity and SQL from the model. It asks
+the trusted MCP client for form elicitation that displays the datasource, exact
+SQL SHA-256, and bounded SQL preview; approval is bound to those exact values
+and consumed once. A model cannot approve itself with `confirm` or an approval
+token, and clients without form elicitation fail closed. MCP does not expose an
+Agent-run tool or JDBC bind-parameter input.
 
 ## Security baseline
 

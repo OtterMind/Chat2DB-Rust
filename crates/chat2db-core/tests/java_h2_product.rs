@@ -2,16 +2,17 @@ use std::{
     fmt::Write as _,
     fs,
     path::{Path, PathBuf},
+    process::Command,
     sync::Arc,
     time::Duration,
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chat2db_contract::{
-    CancelDisposition, ComponentState, CreateDatasourceRequest, DatasourceConnection, JdbcValue,
-    ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityIndexesRequest,
-    ListCommunityTablesRequest, OperationEvent, OperationStatus, QueryLimits, ResultPageRequest,
-    StartQueryRequest,
+    CancelDisposition, ComponentState, CreateDatasourceRequest, DatasourceConnection, JdbcDriver,
+    JdbcValue, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
+    ListCommunityIndexesRequest, ListCommunityTablesRequest, OperationEvent, OperationStatus,
+    QueryLimits, ResultPageRequest, StartQueryRequest,
 };
 use chat2db_core::{Application, RuntimeConfig, RuntimeHost};
 use chat2db_java_bridge::{
@@ -23,6 +24,24 @@ use tempfile::TempDir;
 
 const H2_DRIVER_CLASS: &str = "org.h2.Driver";
 const EVENT_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn assert_native_mysql_driver(drivers: &[JdbcDriver]) {
+    assert!(
+        drivers
+            .iter()
+            .any(|driver| driver.pack_id == "native:mysql_async"),
+        "the native MySQL driver must be discoverable without starting Java"
+    );
+}
+
+fn managed_driver<'a>(drivers: &'a [JdbcDriver], pack_id: &str) -> &'a JdbcDriver {
+    drivers
+        .iter()
+        .find(|driver| driver.pack_id == pack_id)
+        .unwrap_or_else(|| {
+            panic!("managed {pack_id} driver must be discovered beside native MySQL")
+        })
+}
 
 struct H2ProductHarness {
     _directory: TempDir,
@@ -178,7 +197,9 @@ async fn runtime_host_open_keeps_java_dormant() {
         .await
         .expect("opening storage must not spawn the missing Java executable");
     assert_engine_available_on_demand(&host.application());
-    assert!(host.application().list_drivers().items.is_empty());
+    let inventory = host.application().list_drivers();
+    assert_eq!(inventory.items.len(), 1);
+    assert_native_mysql_driver(&inventory.items);
     host.shutdown()
         .await
         .expect("a dormant runtime must shut down cleanly");
@@ -212,8 +233,9 @@ async fn managed_h2_starts_on_demand_and_reloads_after_idle_shutdown() {
     let application = host.application();
     assert_engine_available_on_demand(&application);
     let inventory = application.list_drivers();
-    assert_eq!(inventory.items.len(), 1);
-    let installed = &inventory.items[0];
+    assert_eq!(inventory.items.len(), 2);
+    assert_native_mysql_driver(&inventory.items);
+    let installed = managed_driver(&inventory.items, "h2");
     assert_eq!(installed.pack_id, "h2");
     assert_eq!(installed.version, "test");
     assert_eq!(installed.driver_class, H2_DRIVER_CLASS);
@@ -235,6 +257,7 @@ async fn managed_h2_starts_on_demand_and_reloads_after_idle_shutdown() {
                     .to_owned(),
                 properties: Vec::new(),
                 read_only: true,
+                ssh: None,
             }),
         })
         .await
@@ -290,6 +313,97 @@ async fn managed_h2_starts_on_demand_and_reloads_after_idle_shutdown() {
 }
 
 #[tokio::test]
+async fn imports_legacy_community_mysql_from_a_read_only_h2_snapshot() {
+    let engine_jar = required_jar("CHAT2DB_JAVA_ENGINE_JAR");
+    let h2_jar = required_jar("CHAT2DB_H2_DRIVER_JAR");
+    let directory = TempDir::new().expect("temporary migration directory");
+    let legacy_base = directory.path().join("legacy/chat2db");
+    fs::create_dir_all(legacy_base.parent().expect("legacy parent"))
+        .expect("legacy directory creates");
+    let legacy_url = format!("jdbc:h2:file:{};MODE=MYSQL", legacy_base.to_string_lossy());
+    let sql = "CREATE TABLE DATA_SOURCE (\
+        ID BIGINT PRIMARY KEY, ALIAS VARCHAR, TYPE VARCHAR, URL VARCHAR, \
+        USER_NAME VARCHAR, \"PASSWORD\" VARCHAR, SSH VARCHAR, SSL VARCHAR, \
+        DRIVER_CONFIG VARCHAR, EXTEND_INFO VARCHAR, HOST VARCHAR, PORT VARCHAR, \
+        JDBC VARCHAR, SERVICE_NAME VARCHAR); \
+        INSERT INTO DATA_SOURCE VALUES \
+        (1, 'Legacy MySQL', 'MYSQL', 'jdbc:mysql://127.0.0.1:3306/demo', \
+         'developer', 'must-not-migrate', NULL, NULL, NULL, NULL, \
+         '127.0.0.1', '3306', NULL, 'demo'), \
+        (2, 'Legacy PostgreSQL', 'POSTGRESQL', 'jdbc:postgresql://127.0.0.1/demo', \
+         'developer', 'ignored', NULL, NULL, NULL, NULL, \
+         '127.0.0.1', '5432', NULL, 'demo');";
+    let output = Command::new("java")
+        .args(["-cp"])
+        .arg(&h2_jar)
+        .arg("org.h2.tools.Shell")
+        .args(["-url", &legacy_url, "-user", "sa", "-sql", sql])
+        .output()
+        .expect("H2 fixture command starts");
+    assert!(
+        output.status.success(),
+        "H2 fixture failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let legacy_file = legacy_base.with_extension("mv.db");
+    assert!(legacy_file.is_file(), "legacy H2 fixture must exist");
+
+    let driver_pack_root = directory.path().join("driver-packs");
+    write_driver_pack(
+        &driver_pack_root,
+        "02-h2-migration",
+        "h2-legacy-migration",
+        H2_DRIVER_CLASS,
+        &h2_jar,
+    );
+    let config = managed_runtime_config(
+        &engine_jar,
+        &directory.path().join("data"),
+        &driver_pack_root,
+        &STANDARD.encode([0x5a; 32]),
+    );
+    let mut host = RuntimeHost::open(config)
+        .await
+        .expect("managed migration runtime opens");
+    let application = host.application();
+    let imported = application
+        .import_legacy_community_datasources_from_file(&legacy_file)
+        .await
+        .expect("legacy MySQL datasource imports");
+    assert!(imported.database_found);
+    assert_eq!(imported.imported, 1);
+    assert_eq!(imported.skipped_unsupported, 1);
+    assert_eq!(imported.password_fields_omitted, 1);
+
+    let datasources = application
+        .list_datasources()
+        .await
+        .expect("imported datasource lists");
+    assert_eq!(datasources.items.len(), 1);
+    assert_eq!(datasources.items[0].name, "Legacy MySQL");
+    let storage = application.storage().expect("storage configured");
+    let (_, secret) = storage
+        .get_datasource_with_secret(&datasources.items[0].id)
+        .expect("imported connection reads");
+    let connection: DatasourceConnection =
+        serde_json::from_slice(secret.expect("imported connection exists").expose_secret())
+            .expect("imported connection decodes");
+    assert!(
+        connection
+            .properties
+            .iter()
+            .any(|property| property.key == "user" && property.value == "developer")
+    );
+    assert!(
+        connection
+            .properties
+            .iter()
+            .all(|property| !property.key.eq_ignore_ascii_case("password"))
+    );
+    host.shutdown().await.expect("migration runtime shuts down");
+}
+
+#[tokio::test]
 async fn partial_managed_driver_preload_cleans_generation_and_releases_storage() {
     let engine_jar = required_jar("CHAT2DB_JAVA_ENGINE_JAR");
     let h2_jar = required_jar("CHAT2DB_H2_DRIVER_JAR");
@@ -315,7 +429,7 @@ async fn partial_managed_driver_preload_cleans_generation_and_releases_storage()
     ))
     .await
     .expect("driver discovery must not start Java");
-    assert_eq!(host.application().list_drivers().items.len(), 2);
+    assert_eq!(host.application().list_drivers().items.len(), 3);
     let error = host
         .acquire_engine()
         .await
@@ -337,7 +451,7 @@ async fn partial_managed_driver_preload_cleans_generation_and_releases_storage()
     ))
     .await
     .expect("storage and driver discovery must reopen immediately");
-    assert_eq!(host.application().list_drivers().items.len(), 1);
+    assert_eq!(host.application().list_drivers().items.len(), 2);
     let lease = host
         .acquire_engine()
         .await
@@ -363,6 +477,7 @@ async fn jdbc_stream_is_retained_and_read_through_product_services() {
                     .to_owned(),
                 properties: Vec::new(),
                 read_only: true,
+                ssh: None,
             }),
         })
         .await
@@ -412,6 +527,7 @@ async fn active_jdbc_query_is_explicitly_cancelled_through_product_services() {
                 jdbc_url: "jdbc:h2:mem:stage5_cancel;DB_CLOSE_DELAY=-1".to_owned(),
                 properties: Vec::new(),
                 read_only: true,
+                ssh: None,
             }),
         })
         .await
@@ -465,6 +581,7 @@ async fn local_result_failure_settles_query_before_releasing_session_and_driver(
                 jdbc_url: "jdbc:h2:mem:stage5_cleanup;DB_CLOSE_DELAY=-1".to_owned(),
                 properties: Vec::new(),
                 read_only: true,
+                ssh: None,
             }),
         })
         .await

@@ -71,6 +71,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
         with:
+          fetch-depth: 0
           submodules: recursive
       - name: Install Linux keyring dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
@@ -111,10 +112,10 @@ jobs:
         working-directory: java
         env:
           CHAT2DB_COMMUNITY_CLASSPATH_DIR: "${{ github.workspace }}/target/community-h2-classpath"
-          CHAT2DB_COMMUNITY_SOURCE_COMMIT: "37a34be858f2566b6b7fcf6c3f64183c1f560853"
+          CHAT2DB_COMMUNITY_SOURCE_COMMIT: "3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c"
         run: >-
           ./mvnw -B -pl compat-runtime
-          -Dtest='CommunityPluginRegistryTest#realCommunityH2BuildsAndExecutesBoundedDml,CommunityPluginRegistryTest#realCommunityMysqlRejectsBackslashCrossColumnInjection,CommunityPluginRegistryTest#realCommunityMysqlNormalizesBooleanAliasesAndBits,CommunityPluginRegistryTest#realCommunityH2BuildsNamespaceSqlWithoutOpeningJdbc,CommunityPluginRegistryTest#realCommunityMysqlBuildsDatabaseNamespaceSql,CommunityPluginRegistryTest#realCommunityNamespaceMapsUnsupportedAndRejectsOversizedInput,JdbcProtocolLoopTest#communityDmlDispatchDoesNotRequireAJdbcSession,JdbcProtocolLoopTest#communityNamespaceDispatchDoesNotRequireAJdbcSession'
+          -Dtest='CommunityPluginRegistryTest#realCommunityH2BuildsAndExecutesBoundedDml,CommunityPluginRegistryTest#realCommunityMysqlRejectsBackslashCrossColumnInjection,CommunityPluginRegistryTest#realCommunityMysqlNormalizesBooleanAliasesAndBits,CommunityPluginRegistryTest#realCommunityH2BuildsNamespaceSqlWithoutOpeningJdbc,CommunityPluginRegistryTest#realCommunityMysqlBuildsDatabaseNamespaceSql,CommunityPluginRegistryTest#realCommunityMysqlBuildsBoundedTablePreviewSqlWithoutOpeningJdbc,CommunityPluginRegistryTest#realCommunityNamespaceMapsUnsupportedAndRejectsOversizedInput,JdbcProtocolLoopTest#communityDmlDispatchDoesNotRequireAJdbcSession,JdbcProtocolLoopTest#communityNamespaceDispatchDoesNotRequireAJdbcSession'
           test
       - name: Verify real Community H2 SPI vertical slice
         env:
@@ -163,7 +164,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       mysql:
-        image: mysql:8.0.30
+        image: mysql:8.4.6@sha256:869218921e61d6c3c89820955d63cca42971f0e3e6c1e2792247bbd944ebc6e9
         env:
           MYSQL_ROOT_HOST: "%"
           MYSQL_ROOT_PASSWORD: chat2db-ci-root
@@ -177,15 +178,29 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
         with:
+          fetch-depth: 0
           submodules: recursive
-      - name: Install Linux keyring dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: Install Linux keyring and SSH dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          libdbus-1-dev pkg-config openssh-server
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
         with:
           shared-key: mysql-integration
+      - name: Verify native MySQL driver kernel without Java
+        env:
+          MYSQL_TEST_HOST: 127.0.0.1
+          MYSQL_TEST_PORT: "3306"
+          MYSQL_TEST_USER: root
+          MYSQL_TEST_PASSWORD: chat2db-ci-root
+          MYSQL_TEST_REQUIRED: "1"
+        run: >-
+          cargo test -p chat2db-core --lib --locked
+          live_mysql_console_kernel_preserves_session_results_and_cancellation
+          -- --ignored
       - name: Verify native MySQL product vertical without Java
         env:
           MYSQL_TEST_HOST: 127.0.0.1
@@ -194,21 +209,120 @@ jobs:
           MYSQL_TEST_PASSWORD: chat2db-ci-root
           MYSQL_TEST_REQUIRED: "1"
         run: cargo test -p chat2db-core --test native_mysql_product --locked
+      - name: Verify confirmed MySQL writes through the local runtime
+        env:
+          MYSQL_TEST_HOST: 127.0.0.1
+          MYSQL_TEST_PORT: "3306"
+          MYSQL_TEST_USER: root
+          MYSQL_TEST_PASSWORD: chat2db-ci-root
+          MYSQL_TEST_REQUIRED: "1"
+        run: >-
+          cargo test -p chat2db-local --test native_mysql_write_docker
+          --locked
       - name: Verify native MySQL Console without Java
         env:
           MYSQL_TEST_HOST: 127.0.0.1
           MYSQL_TEST_PORT: "3306"
           MYSQL_TEST_USER: root
           MYSQL_TEST_PASSWORD: chat2db-ci-root
+          MYSQL_TEST_REQUIRED: "1"
         run: >-
           cargo test -p chat2db-core --test native_mysql_console_docker --locked
           -- --ignored
+      - name: Verify native MySQL account lifecycle without Java
+        env:
+          MYSQL_TEST_HOST: 127.0.0.1
+          MYSQL_TEST_PORT: "3306"
+          MYSQL_TEST_USER: root
+          MYSQL_TEST_PASSWORD: chat2db-ci-root
+          MYSQL_TEST_REQUIRED: "1"
+        run: cargo test -p chat2db-core --test native_mysql_account_docker --locked
+      - name: Verify native MySQL schema diff without Java
+        env:
+          MYSQL_TEST_HOST: 127.0.0.1
+          MYSQL_TEST_PORT: "3306"
+          MYSQL_TEST_USER: root
+          MYSQL_TEST_PASSWORD: chat2db-ci-root
+          MYSQL_TEST_REQUIRED: "1"
+        run: >-
+          cargo test -p chat2db-core --test native_mysql_schema_diff_docker
+          --locked
+      - name: Verify native MySQL transfer without Java
+        env:
+          MYSQL_TEST_HOST: 127.0.0.1
+          MYSQL_TEST_PORT: "3306"
+          MYSQL_TEST_USER: root
+          MYSQL_TEST_PASSWORD: chat2db-ci-root
+          MYSQL_TEST_REQUIRED: "1"
+        run: cargo test -p chat2db-core --test native_mysql_transfer_docker --locked
+      - name: Verify native MySQL Dashboard refresh without Java
+        env:
+          MYSQL_TEST_HOST: 127.0.0.1
+          MYSQL_TEST_PORT: "3306"
+          MYSQL_TEST_USER: root
+          MYSQL_TEST_PASSWORD: chat2db-ci-root
+          MYSQL_TEST_REQUIRED: "1"
+        run: cargo test -p chat2db-core --test native_mysql_dashboard_docker --locked
+      - name: Start isolated SSH forwarding fixture
+        run: |
+          install -d -m 700 "$HOME/.ssh" "$RUNNER_TEMP/chat2db-sshd"
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/chat2db-sshd/client-key"
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/chat2db-sshd/host-key"
+          install -m 600 "$RUNNER_TEMP/chat2db-sshd/client-key.pub" "$RUNNER_TEMP/chat2db-sshd/authorized_keys"
+          {
+            echo 'Port 2222'
+            echo 'ListenAddress 127.0.0.1'
+            echo "HostKey $RUNNER_TEMP/chat2db-sshd/host-key"
+            echo "PidFile $RUNNER_TEMP/chat2db-sshd/sshd.pid"
+            echo "AuthorizedKeysFile $RUNNER_TEMP/chat2db-sshd/authorized_keys"
+            echo "AllowUsers $(id -un)"
+            echo 'AuthenticationMethods publickey'
+            echo 'PasswordAuthentication no'
+            echo 'PubkeyAuthentication yes'
+            echo 'PermitRootLogin no'
+            echo 'AllowTcpForwarding yes'
+            echo 'PermitOpen 127.0.0.1:3306'
+            echo 'StrictModes no'
+            echo 'UsePAM yes'
+          } > "$RUNNER_TEMP/chat2db-sshd/sshd_config"
+          sudo install -d -m 755 /run/sshd
+          sudo /usr/sbin/sshd -f "$RUNNER_TEMP/chat2db-sshd/sshd_config" -E "$RUNNER_TEMP/chat2db-sshd/sshd.log"
+          for attempt in {1..20}; do
+            if ssh-keyscan -p 2222 127.0.0.1 > "$RUNNER_TEMP/chat2db-sshd/known_hosts" 2>/dev/null; then
+              break
+            fi
+            if (( attempt == 20 )); then
+              cat "$RUNNER_TEMP/chat2db-sshd/sshd.log" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          test -s "$RUNNER_TEMP/chat2db-sshd/known_hosts"
+          install -m 600 "$RUNNER_TEMP/chat2db-sshd/known_hosts" "$HOME/.ssh/known_hosts"
+          ssh -i "$RUNNER_TEMP/chat2db-sshd/client-key" -p 2222 \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$(id -un)@127.0.0.1" true
+      - name: Verify native MySQL SSH tunnel without Java
+        env:
+          CHAT2DB_TEST_MYSQL_HOST: 127.0.0.1
+          CHAT2DB_TEST_MYSQL_PORT: "3306"
+          CHAT2DB_TEST_MYSQL_USER: root
+          CHAT2DB_TEST_MYSQL_PASSWORD: chat2db-ci-root
+          CHAT2DB_TEST_SSH_HOST: 127.0.0.1
+          CHAT2DB_TEST_SSH_PORT: "2222"
+          CHAT2DB_TEST_SSH_USER: runner
+          CHAT2DB_TEST_SSH_PRIVATE_KEY: "${{ runner.temp }}/chat2db-sshd/client-key"
+          CHAT2DB_TEST_SSH_LOCAL_PORT: "23306"
+        run: >-
+          cargo test -p chat2db-core --test native_mysql_ssh_tunnel_docker
+          --locked -- --ignored
       - name: Verify native MySQL editable grid and DDL without Java
         env:
           MYSQL_TEST_HOST: 127.0.0.1
           MYSQL_TEST_PORT: "3306"
           MYSQL_TEST_USER: root
           MYSQL_TEST_PASSWORD: chat2db-ci-root
+          MYSQL_TEST_REQUIRED: "1"
         run: >-
           cargo test -p chat2db-web --test native_mysql_editable_ddl_docker --locked
           -- --ignored
@@ -342,7 +456,7 @@ jobs:
           CHAT2DB_H2_DRIVER_JAR: "${{ github.workspace }}/java/compat-runtime/target/test-drivers/h2-2.3.232.jar"
         run: >-
           cargo test -p chat2db-core --features java-integration
-          --test java_h2_product --locked
+          --test java_h2_product --locked -- --test-threads=1
       - name: Build fixed Community H2 compatibility classpath on Windows
         if: runner.os == 'Windows'
         shell: bash

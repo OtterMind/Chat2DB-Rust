@@ -49,7 +49,7 @@ fi
 "${repository_root}/scripts/community-classpath-lock.sh" verify \
   "${community_classpath}" \
   "${repository_root}/third_party/community-h2-classpath.lock" \
-  "37a34be858f2566b6b7fcf6c3f64183c1f560853"
+  "3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c"
 
 driver_manifest="${driver_root}/01-mysql/driver-pack.json"
 driver_jar="${driver_root}/01-mysql/mysql-connector-java-8.0.30.jar"
@@ -59,6 +59,17 @@ expected_driver_sha="$(awk -F '"' '/"sha256"/ { print $4; exit }' "${driver_mani
 actual_driver_sha="$(shasum -a 256 -- "${driver_jar}" | awk '{ print $1 }')"
 if [[ -z "${expected_driver_sha}" || "${actual_driver_sha}" != "${expected_driver_sha}" ]]; then
   echo "packaged MySQL driver digest does not match its manifest" >&2
+  exit 1
+fi
+
+h2_manifest="${driver_root}/02-h2-migration/driver-pack.json"
+h2_jar="${driver_root}/02-h2-migration/h2-2.1.214.jar"
+require_file "${h2_manifest}"
+require_file "${h2_jar}"
+expected_h2_sha="$(awk -F '"' '/"sha256"/ { print $4; exit }' "${h2_manifest}")"
+actual_h2_sha="$(shasum -a 256 -- "${h2_jar}" | awk '{ print $1 }')"
+if [[ -z "${expected_h2_sha}" || "${actual_h2_sha}" != "${expected_h2_sha}" ]]; then
+  echo "packaged H2 migration driver digest does not match its manifest" >&2
   exit 1
 fi
 

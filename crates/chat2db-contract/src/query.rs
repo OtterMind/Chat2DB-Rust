@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::error::ApiError;
+
 /// Lossless JSON representation of one JDBC scalar value.
 ///
 /// Numeric values that could lose precision in JavaScript are decimal strings.
@@ -141,9 +143,49 @@ pub struct QueryAccepted {
     pub operation_id: String,
 }
 
+/// Explicit, single-statement database write requested by a local automation surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteDatabaseWriteRequest {
+    /// Opaque datasource id.
+    pub datasource_id: String,
+    /// Exactly one SQL write statement.
+    pub sql: String,
+    /// Must be true at the trusted product boundary before any write is dispatched.
+    pub confirmed: bool,
+}
+
+/// Whether a database write completed and whether retrying it can be safe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DatabaseWriteState {
+    /// The database confirmed successful completion.
+    Succeeded,
+    /// No SQL was dispatched to the database, so a corrected request may be retried.
+    NotStarted,
+    /// The database confirmed that the dispatched statement failed.
+    Failed,
+    /// SQL may have reached the database, but its outcome cannot be determined. Never retry blindly.
+    Unknown,
+}
+
+/// Structured result for an explicitly confirmed database write.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseWriteResult {
+    /// Execution state with explicit unknown-outcome semantics.
+    pub state: DatabaseWriteState,
+    /// Server-reported affected rows when the write succeeded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub affected_rows: Option<String>,
+    /// Safe failure details without SQL text, parameters, or credentials.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<ApiError>,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::JdbcValue;
+    use super::{DatabaseWriteResult, DatabaseWriteState, JdbcValue};
 
     #[test]
     fn every_jdbc_value_variant_round_trips_losslessly() {
@@ -206,6 +248,23 @@ mod tests {
                 value
             );
         }
+    }
+
+    #[test]
+    fn database_write_state_is_explicit_and_affected_rows_remain_lossless() {
+        let result = DatabaseWriteResult {
+            state: DatabaseWriteState::Succeeded,
+            affected_rows: Some("9007199254740993".to_owned()),
+            error: None,
+        };
+        let json = serde_json::to_value(&result).expect("write result must serialize");
+        assert_eq!(json["state"], "succeeded");
+        assert_eq!(json["affectedRows"], "9007199254740993");
+        assert_eq!(
+            serde_json::from_value::<DatabaseWriteResult>(json)
+                .expect("write result must deserialize"),
+            result
+        );
     }
 
     #[test]

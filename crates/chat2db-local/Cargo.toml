@@ -26,6 +26,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+chat2db-java-bridge = { path = "../chat2db-java-bridge" }
 tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]

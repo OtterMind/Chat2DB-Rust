@@ -5,6 +5,8 @@ use chat2db_storage::Storage;
 use crate::{AppError, AppErrorKind};
 
 pub(crate) struct ResolvedDatasourceConnection {
+    pub(crate) datasource_id: String,
+    pub(crate) datasource_revision: u64,
     pub(crate) driver_id: String,
     pub(crate) datasource_name: String,
     pub(crate) connection: DatasourceConnection,
@@ -43,6 +45,8 @@ pub(crate) async fn resolve_datasource_connection(
         )
     })?;
     Ok(ResolvedDatasourceConnection {
+        datasource_id: datasource.id,
+        datasource_revision: datasource.revision,
         driver_id: datasource.driver_id,
         datasource_name: datasource.name,
         connection,
@@ -69,6 +73,7 @@ fn session_config(
         driver_id,
         datasource_name: _,
         connection,
+        ..
     } = resolved;
     let read_only = match read_only {
         SessionReadOnly::Configured => connection.read_only,
@@ -118,6 +123,8 @@ mod tests {
 
     fn resolved(read_only: bool) -> ResolvedDatasourceConnection {
         ResolvedDatasourceConnection {
+            datasource_id: "datasource-1".to_owned(),
+            datasource_revision: 1,
             driver_id: "driver-1".to_owned(),
             datasource_name: "Local H2".to_owned(),
             connection: DatasourceConnection {
@@ -128,6 +135,7 @@ mod tests {
                     sensitive: false,
                 }],
                 read_only,
+                ssh: None,
             },
         }
     }

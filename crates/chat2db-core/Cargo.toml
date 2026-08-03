@@ -10,16 +10,28 @@ repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+aes.workspace = true
 base64.workspace = true
+blowfish.workspace = true
+cbc.workspace = true
 chat2db-agent = { path = "../chat2db-agent" }
 chat2db-contract = { path = "../chat2db-contract" }
 chat2db-engine-protocol = { path = "../chat2db-engine-protocol" }
 chat2db-java-bridge = { path = "../chat2db-java-bridge" }
 chat2db-storage = { path = "../chat2db-storage" }
+chrono.workspace = true
+csv.workspace = true
+directories.workspace = true
+hex.workspace = true
 mysql_async.workspace = true
 prost.workspace = true
+quick-xml.workspace = true
+russh.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+sqlparser.workspace = true
 rustix.workspace = true
 tempfile = "3"
 thiserror.workspace = true
@@ -28,6 +40,8 @@ tokio-util.workspace = true
 tracing.workspace = true
 url.workspace = true
 uuid.workspace = true
+xls.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 futures-util.workspace = true
