@@ -197,6 +197,9 @@ function test() {
   runYarn(['test:ai-model-select'], worktree);
   runYarn(['test:export-connections'], worktree);
   runYarn(['test:host-file-transfer'], worktree);
+  runYarn(['test:canvas-lifecycle'], worktree);
+  runYarn(['test:result-resource-activity'], worktree);
+  runYarn(['test:workspace-resource-activity'], worktree);
 }
 
 function build() {
