@@ -132,7 +132,7 @@ if [[ "${CHAT2DB_REQUIRE_DEVELOPER_ID_SIGNATURE:-false}" == true ]]; then
       echo "${code_label} is missing a trusted timestamp" >&2
       exit 1
     fi
-    if ! grep -Eq '^flags=.*\(runtime\)' <<<"${signature_details}"; then
+    if ! grep -Eq '^CodeDirectory .*[[:space:]]flags=.*\(runtime\)' <<<"${signature_details}"; then
       echo "${code_label} is missing the hardened runtime flag" >&2
       exit 1
     fi
