@@ -9,7 +9,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex as StdMutex,
         atomic::{AtomicU64, Ordering},
     },
     time::{Instant, SystemTime, UNIX_EPOCH},
@@ -53,9 +53,9 @@ use legacy_files::{
     open_terminal, read_text_file, save_dialog_file_name, save_dialog_file_type, save_text_file,
     update_text_file,
 };
-use tauri::{Emitter, State, WebviewWindow, ipc::Channel};
-use tauri_plugin_dialog::{DialogExt, FilePath};
-use tokio::sync::{Mutex, oneshot};
+use tauri::{Emitter, Manager, State, WebviewWindow, ipc::Channel};
+use tauri_plugin_dialog::{DialogExt, FilePath, MessageDialogKind};
+use tokio::sync::{Mutex, oneshot, watch};
 
 const DATA_DIR_ENV: &str = "CHAT2DB_DATA_DIR";
 const DRIVER_PACK_DIR_ENV: &str = "CHAT2DB_DRIVER_PACK_DIR";
@@ -69,6 +69,8 @@ const BUNDLED_JAVA_ENGINE_JAR: &str = "compatibility-engine JAR";
 const BUNDLED_COMMUNITY_CLASSPATH: &str = "Community classpath";
 const BUNDLED_DRIVER_PACKS: &str = "driver packs";
 const COMMUNITY_JAVA_MESSAGE_EVENT: &str = "chat2db://java-message";
+const DESKTOP_RUNTIME_READY_EVENT: &str = "chat2db://runtime-ready";
+const DESKTOP_RUNTIME_FAILED_EVENT: &str = "chat2db://runtime-failed";
 
 #[derive(Debug, Default)]
 struct RuntimeResourceOverrides {
@@ -130,6 +132,92 @@ struct DesktopState {
     subscriptions: SubscriptionRegistry,
     next_legacy_execution_id: AtomicU64,
     next_subscription_id: AtomicU64,
+}
+
+#[derive(Clone)]
+enum DesktopStartupStatus {
+    Initializing,
+    Ready(Arc<DesktopState>),
+    Failed(Arc<str>),
+}
+
+struct DesktopStartup {
+    status: watch::Sender<DesktopStartupStatus>,
+    initialization: StdMutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+}
+
+impl DesktopStartup {
+    fn new() -> Self {
+        let (status, _) = watch::channel(DesktopStartupStatus::Initializing);
+        Self {
+            status,
+            initialization: StdMutex::new(None),
+        }
+    }
+
+    async fn ready(&self) -> Result<Arc<DesktopState>, String> {
+        let mut status = self.status.subscribe();
+        loop {
+            match status.borrow().clone() {
+                DesktopStartupStatus::Ready(state) => return Ok(state),
+                DesktopStartupStatus::Failed(message) => return Err(message.to_string()),
+                DesktopStartupStatus::Initializing => {}
+            }
+            status.changed().await.map_err(|_| {
+                "Chat2DB desktop runtime stopped before initialization completed".to_owned()
+            })?;
+        }
+    }
+
+    async fn ready_api(&self) -> Result<Arc<DesktopState>, ApiError> {
+        self.ready()
+            .await
+            .map_err(|message| ApiError::new("desktop_runtime_unavailable", message))
+    }
+
+    fn mark_ready(&self, state: Arc<DesktopState>) {
+        self.status.send_replace(DesktopStartupStatus::Ready(state));
+    }
+
+    fn mark_failed(&self, message: String) {
+        self.status
+            .send_replace(DesktopStartupStatus::Failed(Arc::from(message)));
+    }
+
+    fn ready_now(&self) -> Option<Arc<DesktopState>> {
+        match self.status.borrow().clone() {
+            DesktopStartupStatus::Ready(state) => Some(state),
+            DesktopStartupStatus::Initializing | DesktopStartupStatus::Failed(_) => None,
+        }
+    }
+
+    fn set_initialization_task(&self, task: tauri::async_runtime::JoinHandle<()>) {
+        let mut initialization = self
+            .initialization
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        debug_assert!(
+            initialization.is_none(),
+            "desktop runtime initialization must only start once"
+        );
+        *initialization = Some(task);
+    }
+
+    async fn shutdown(&self) -> Result<(), DesktopError> {
+        let initialization = self
+            .initialization
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(initialization) = initialization {
+            initialization.abort();
+            let _ = initialization.await;
+        }
+        if let Some(state) = self.ready_now() {
+            state.shutdown().await?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -384,20 +472,80 @@ impl std::error::Error for DesktopError {
     }
 }
 
+fn spawn_desktop_runtime_initialization<R: tauri::Runtime>(
+    app_handle: tauri::AppHandle<R>,
+    startup: &Arc<DesktopStartup>,
+) {
+    let task_startup = Arc::clone(startup);
+    let initialization = tauri::async_runtime::spawn(async move {
+        match DesktopState::open_from_environment().await {
+            Ok(state) => {
+                let state = Arc::new(state);
+                if app_handle.manage(Arc::clone(&state)) {
+                    task_startup.mark_ready(state);
+                    if let Err(error) = app_handle.emit(DESKTOP_RUNTIME_READY_EVENT, ()) {
+                        tracing::warn!(%error, "desktop runtime ready event failed");
+                    }
+                } else {
+                    let message =
+                        "Chat2DB desktop runtime state was registered more than once".to_owned();
+                    tracing::error!(%message);
+                    fail_desktop_runtime_initialization(&app_handle, &task_startup, &message);
+                }
+            }
+            Err(error) => {
+                let message = error.to_string();
+                tracing::error!(%error, "desktop runtime initialization failed");
+                fail_desktop_runtime_initialization(&app_handle, &task_startup, &message);
+            }
+        }
+    });
+    startup.set_initialization_task(initialization);
+}
+
+fn fail_desktop_runtime_initialization<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    startup: &DesktopStartup,
+    message: &str,
+) {
+    startup.mark_failed(message.to_owned());
+    if let Err(error) = app_handle.emit(DESKTOP_RUNTIME_FAILED_EVENT, message) {
+        tracing::warn!(%error, "desktop runtime failure event failed");
+    }
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let exit_handle = app_handle.clone();
+        window
+            .dialog()
+            .message(format!(
+                "Chat2DB could not initialize its local runtime.\n\n{message}"
+            ))
+            .title("Chat2DB startup failed")
+            .kind(MessageDialogKind::Error)
+            .parent(&window)
+            .show(move |_| exit_handle.exit(1));
+    } else {
+        app_handle.exit(1);
+    }
+}
+
 /// Runs the desktop event loop and gracefully shuts down its Java generation.
 ///
 /// # Errors
 ///
-/// Fails closed when the vault, storage, Java engine, or Tauri runtime cannot
-/// initialize, or when the owned Java generation cannot shut down cleanly.
+/// Fails closed when Tauri cannot initialize or the owned runtime cannot shut
+/// down cleanly. Runtime startup failures remain visible in the created window.
 pub fn run() -> Result<i32, DesktopError> {
-    let state = Arc::new(tauri::async_runtime::block_on(
-        DesktopState::open_from_environment(),
-    )?);
-    let managed_state = Arc::clone(&state);
+    let startup = Arc::new(DesktopStartup::new());
+    let managed_startup = Arc::clone(&startup);
+    let setup_startup = Arc::clone(&startup);
     let application = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(managed_state)
+        .manage(managed_startup)
+        .setup(move |app| {
+            // Tauri creates configured windows before this Ready-stage hook.
+            spawn_desktop_runtime_initialization(app.handle().clone(), &setup_startup);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             health,
             legacy_request,
@@ -460,14 +608,11 @@ pub fn run() -> Result<i32, DesktopError> {
         .build(tauri::generate_context!());
     let application = match application {
         Ok(application) => application,
-        Err(error) => {
-            tauri::async_runtime::block_on(state.shutdown())?;
-            return Err(DesktopError::tauri(error));
-        }
+        Err(error) => return Err(DesktopError::tauri(error)),
     };
 
     let exit_code = application.run_return(|_, _| {});
-    tauri::async_runtime::block_on(state.shutdown())?;
+    tauri::async_runtime::block_on(startup.shutdown())?;
     Ok(exit_code)
 }
 
@@ -626,14 +771,15 @@ fn api_error(error: &AppError) -> ApiError {
 
 #[tauri::command]
 async fn legacy_request(
-    state: State<'_, Arc<DesktopState>>,
+    startup: State<'_, Arc<DesktopStartup>>,
     window: WebviewWindow,
     request: String,
 ) -> Result<String, String> {
-    if let Some(response) = legacy_ai_stream_request_for(state.inner(), &window, &request).await? {
+    let state = startup.ready().await?;
+    if let Some(response) = legacy_ai_stream_request_for(&state, &window, &request).await? {
         return Ok(response);
     }
-    if let Some(response) = legacy_client_command_for(state.inner(), &window, &request).await? {
+    if let Some(response) = legacy_client_command_for(&state, &window, &request).await? {
         return Ok(response);
     }
     legacy_request_for(&state.application, &request).await
@@ -1712,21 +1858,22 @@ fn parse_after_sequence(value: Option<String>) -> Result<Option<u64>, Box<ApiErr
 }
 
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-fn health(state: State<'_, Arc<DesktopState>>) -> HealthResponse {
-    state.application.health()
+async fn health(state: State<'_, Arc<DesktopStartup>>) -> Result<HealthResponse, ApiError> {
+    let state = state.ready_api().await?;
+    Ok(state.application.health())
 }
 
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-fn list_drivers(state: State<'_, Arc<DesktopState>>) -> JdbcDriverList {
-    state.application.list_drivers()
+async fn list_drivers(state: State<'_, Arc<DesktopStartup>>) -> Result<JdbcDriverList, ApiError> {
+    let state = state.ready_api().await?;
+    Ok(state.application.list_drivers())
 }
 
 #[tauri::command]
 async fn list_community_plugins(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
 ) -> Result<CommunityPluginCatalog, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_community_plugins()
@@ -1736,9 +1883,10 @@ async fn list_community_plugins(
 
 #[tauri::command]
 async fn list_community_schemas(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: ListCommunitySchemasRequest,
 ) -> Result<CommunitySchemaList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_community_schemas(request)
@@ -1748,9 +1896,10 @@ async fn list_community_schemas(
 
 #[tauri::command]
 async fn list_community_databases(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: ListCommunityDatabasesRequest,
 ) -> Result<CommunityDatabaseList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_community_databases(request)
@@ -1760,9 +1909,10 @@ async fn list_community_databases(
 
 #[tauri::command]
 async fn list_community_tables(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: ListCommunityTablesRequest,
 ) -> Result<CommunityTableList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_community_tables(request)
@@ -1772,9 +1922,10 @@ async fn list_community_tables(
 
 #[tauri::command]
 async fn list_community_columns(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: ListCommunityColumnsRequest,
 ) -> Result<CommunityTableColumnList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_community_columns(request)
@@ -1784,9 +1935,10 @@ async fn list_community_columns(
 
 #[tauri::command]
 async fn list_community_indexes(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: ListCommunityIndexesRequest,
 ) -> Result<CommunityTableIndexList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_community_indexes(request)
@@ -1796,9 +1948,10 @@ async fn list_community_indexes(
 
 #[tauri::command]
 async fn list_community_views(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: ListCommunityViewsRequest,
 ) -> Result<CommunityViewList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_community_views(request)
@@ -1808,9 +1961,10 @@ async fn list_community_views(
 
 #[tauri::command]
 async fn list_community_imported_keys(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: ListCommunityTableKeysRequest,
 ) -> Result<CommunityForeignKeyList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_community_imported_keys(request)
@@ -1820,9 +1974,10 @@ async fn list_community_imported_keys(
 
 #[tauri::command]
 async fn list_community_exported_keys(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: ListCommunityTableKeysRequest,
 ) -> Result<CommunityForeignKeyList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_community_exported_keys(request)
@@ -1832,9 +1987,10 @@ async fn list_community_exported_keys(
 
 #[tauri::command]
 async fn list_community_primary_keys(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: ListCommunityTableKeysRequest,
 ) -> Result<CommunityPrimaryKeyList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_community_primary_keys(request)
@@ -1844,9 +2000,10 @@ async fn list_community_primary_keys(
 
 #[tauri::command]
 async fn list_community_functions(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: ListCommunityFunctionsRequest,
 ) -> Result<CommunityFunctionList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_community_functions(request)
@@ -1856,9 +2013,10 @@ async fn list_community_functions(
 
 #[tauri::command]
 async fn get_community_function(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: GetCommunityFunctionRequest,
 ) -> Result<CommunityFunction, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .get_community_function(request)
@@ -1868,9 +2026,10 @@ async fn get_community_function(
 
 #[tauri::command]
 async fn list_community_function_parameters(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: GetCommunityFunctionRequest,
 ) -> Result<CommunityFunctionParameterList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_community_function_parameters(request)
@@ -1880,9 +2039,10 @@ async fn list_community_function_parameters(
 
 #[tauri::command]
 async fn list_community_procedures(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: ListCommunityProceduresRequest,
 ) -> Result<CommunityProcedureList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_community_procedures(request)
@@ -1892,9 +2052,10 @@ async fn list_community_procedures(
 
 #[tauri::command]
 async fn get_community_procedure(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: GetCommunityProcedureRequest,
 ) -> Result<CommunityProcedure, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .get_community_procedure(request)
@@ -1904,9 +2065,10 @@ async fn get_community_procedure(
 
 #[tauri::command]
 async fn list_community_procedure_parameters(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: GetCommunityProcedureRequest,
 ) -> Result<CommunityProcedureParameterList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_community_procedure_parameters(request)
@@ -1916,9 +2078,10 @@ async fn list_community_procedure_parameters(
 
 #[tauri::command]
 async fn list_community_triggers(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: ListCommunityTriggersRequest,
 ) -> Result<CommunityTriggerList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_community_triggers(request)
@@ -1928,9 +2091,10 @@ async fn list_community_triggers(
 
 #[tauri::command]
 async fn get_community_trigger(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: GetCommunityTriggerRequest,
 ) -> Result<CommunityTrigger, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .get_community_trigger(request)
@@ -1940,9 +2104,10 @@ async fn get_community_trigger(
 
 #[tauri::command]
 async fn build_community_create_schema(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: BuildCommunityCreateSchemaRequest,
 ) -> Result<CommunityBuiltSql, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .build_community_create_schema(request)
@@ -1952,9 +2117,10 @@ async fn build_community_create_schema(
 
 #[tauri::command]
 async fn build_community_namespace_sql(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: BuildCommunityNamespaceSqlRequest,
 ) -> Result<CommunityBuiltSql, ApiError> {
+    let state = state.ready_api().await?;
     build_community_namespace_sql_for(&state.application, request).await
 }
 
@@ -1970,9 +2136,10 @@ async fn build_community_namespace_sql_for(
 
 #[tauri::command]
 async fn build_community_dml(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: BuildCommunityDmlRequest,
 ) -> Result<CommunityBuiltSql, ApiError> {
+    let state = state.ready_api().await?;
     build_community_dml_for(&state.application, request).await
 }
 
@@ -1988,9 +2155,10 @@ async fn build_community_dml_for(
 
 #[tauri::command]
 async fn start_community_table_preview(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: StartCommunityTablePreviewRequest,
 ) -> Result<CommunityTablePreviewAccepted, ApiError> {
+    let state = state.ready_api().await?;
     start_community_table_preview_for(&state.application, request).await
 }
 
@@ -2006,9 +2174,10 @@ async fn start_community_table_preview_for(
 
 #[tauri::command]
 async fn parse_community_sql(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: ParseCommunitySqlRequest,
 ) -> Result<CommunitySqlAnalysis, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .parse_community_sql(request)
@@ -2018,9 +2187,10 @@ async fn parse_community_sql(
 
 #[tauri::command]
 async fn validate_community_sql(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: ValidateCommunitySqlRequest,
 ) -> Result<CommunitySqlValidation, ApiError> {
+    let state = state.ready_api().await?;
     validate_community_sql_for(&state.application, request).await
 }
 
@@ -2036,9 +2206,10 @@ async fn validate_community_sql_for(
 
 #[tauri::command]
 async fn format_community_sql(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: FormatCommunitySqlRequest,
 ) -> Result<CommunityFormattedSql, ApiError> {
+    let state = state.ready_api().await?;
     format_community_sql_for(&state.application, request).await
 }
 
@@ -2054,9 +2225,10 @@ async fn format_community_sql_for(
 
 #[tauri::command]
 async fn complete_community_sql(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: CompleteCommunitySqlRequest,
 ) -> Result<CommunitySqlCompletion, ApiError> {
+    let state = state.ready_api().await?;
     complete_community_sql_for(&state.application, request).await
 }
 
@@ -2071,7 +2243,10 @@ async fn complete_community_sql_for(
 }
 
 #[tauri::command]
-async fn list_datasources(state: State<'_, Arc<DesktopState>>) -> Result<DatasourceList, ApiError> {
+async fn list_datasources(
+    state: State<'_, Arc<DesktopStartup>>,
+) -> Result<DatasourceList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_datasources()
@@ -2081,9 +2256,10 @@ async fn list_datasources(state: State<'_, Arc<DesktopState>>) -> Result<Datasou
 
 #[tauri::command]
 async fn create_datasource(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: CreateDatasourceRequest,
 ) -> Result<Datasource, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .create_datasource(request)
@@ -2093,9 +2269,10 @@ async fn create_datasource(
 
 #[tauri::command]
 async fn get_datasource(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     datasource_id: String,
 ) -> Result<Datasource, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .get_datasource(&datasource_id)
@@ -2105,10 +2282,11 @@ async fn get_datasource(
 
 #[tauri::command]
 async fn update_datasource(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     datasource_id: String,
     request: UpdateDatasourceRequest,
 ) -> Result<Datasource, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .update_datasource(&datasource_id, request)
@@ -2118,10 +2296,11 @@ async fn update_datasource(
 
 #[tauri::command]
 async fn delete_datasource(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     datasource_id: String,
     expected_revision: String,
 ) -> Result<(), ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .delete_datasource(&datasource_id, &expected_revision)
@@ -2131,8 +2310,9 @@ async fn delete_datasource(
 
 #[tauri::command]
 async fn list_provider_profiles(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
 ) -> Result<ProviderProfileList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_provider_profiles()
@@ -2142,9 +2322,10 @@ async fn list_provider_profiles(
 
 #[tauri::command]
 async fn create_provider_profile(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: CreateProviderProfileRequest,
 ) -> Result<ProviderProfile, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .create_provider_profile(request)
@@ -2154,9 +2335,10 @@ async fn create_provider_profile(
 
 #[tauri::command]
 async fn get_provider_profile(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     provider_id: String,
 ) -> Result<ProviderProfile, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .get_provider_profile(&provider_id)
@@ -2166,10 +2348,11 @@ async fn get_provider_profile(
 
 #[tauri::command]
 async fn update_provider_profile(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     provider_id: String,
     request: UpdateProviderProfileRequest,
 ) -> Result<ProviderProfile, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .update_provider_profile(&provider_id, request)
@@ -2179,10 +2362,11 @@ async fn update_provider_profile(
 
 #[tauri::command]
 async fn delete_provider_profile(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     provider_id: String,
     expected_revision: String,
 ) -> Result<(), ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .delete_provider_profile(&provider_id, &expected_revision)
@@ -2192,8 +2376,9 @@ async fn delete_provider_profile(
 
 #[tauri::command]
 async fn list_agent_sessions(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
 ) -> Result<AgentSessionList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_agent_sessions()
@@ -2203,9 +2388,10 @@ async fn list_agent_sessions(
 
 #[tauri::command]
 async fn create_agent_session(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: CreateAgentSessionRequest,
 ) -> Result<AgentSession, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .create_agent_session(request)
@@ -2215,9 +2401,10 @@ async fn create_agent_session(
 
 #[tauri::command]
 async fn get_agent_session(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     session_id: String,
 ) -> Result<AgentSession, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .get_agent_session(&session_id)
@@ -2227,10 +2414,11 @@ async fn get_agent_session(
 
 #[tauri::command]
 async fn update_agent_session(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     session_id: String,
     request: UpdateAgentSessionRequest,
 ) -> Result<AgentSession, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .update_agent_session(&session_id, request)
@@ -2240,10 +2428,11 @@ async fn update_agent_session(
 
 #[tauri::command]
 async fn delete_agent_session(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     session_id: String,
     expected_revision: String,
 ) -> Result<(), ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .delete_agent_session(&session_id, &expected_revision)
@@ -2253,11 +2442,12 @@ async fn delete_agent_session(
 
 #[tauri::command]
 async fn list_agent_messages(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     session_id: String,
     start_ordinal: String,
     limit: String,
 ) -> Result<AgentMessageList, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .list_agent_messages(&session_id, &start_ordinal, &limit)
@@ -2267,9 +2457,10 @@ async fn list_agent_messages(
 
 #[tauri::command]
 async fn start_agent_run(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: StartAgentRunRequest,
 ) -> Result<AgentRunAccepted, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .start_agent_run(request)
@@ -2279,9 +2470,10 @@ async fn start_agent_run(
 
 #[tauri::command]
 async fn agent_run_snapshot(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     run_id: String,
 ) -> Result<AgentRunSnapshot, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .agent_run_snapshot(&run_id)
@@ -2291,9 +2483,10 @@ async fn agent_run_snapshot(
 
 #[tauri::command]
 async fn cancel_agent_run(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     run_id: String,
 ) -> Result<CancelAgentRunResponse, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .cancel_agent_run(&run_id)
@@ -2303,10 +2496,11 @@ async fn cancel_agent_run(
 
 #[tauri::command]
 async fn decide_agent_permission(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     permission_id: String,
     request: DecideAgentPermissionRequest,
 ) -> Result<AgentPermissionResponse, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .decide_agent_permission(&permission_id, request)
@@ -2316,18 +2510,19 @@ async fn decide_agent_permission(
 
 #[tauri::command]
 async fn subscribe_agent_run(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     run_id: String,
     after_sequence: Option<String>,
     on_event: Channel<AgentStreamMessage>,
 ) -> Result<AgentSubscriptionAccepted, ApiError> {
+    let state = state.ready_api().await?;
     let after_sequence = parse_after_sequence(after_sequence).map_err(|error| *error)?;
     let subscription = state
         .application
         .subscribe_agent_run(&run_id, after_sequence)
         .await
         .map_err(|error| api_error(&error))?;
-    let state = Arc::clone(state.inner());
+    let state = Arc::clone(&state);
     let subscription_id = state
         .next_subscription_id
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
@@ -2363,9 +2558,10 @@ async fn subscribe_agent_run(
 
 #[tauri::command]
 async fn unsubscribe_agent_run(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     subscription_id: String,
 ) -> Result<(), ApiError> {
+    let state = state.ready_api().await?;
     state.subscriptions.unsubscribe(&subscription_id).await;
     Ok(())
 }
@@ -2410,9 +2606,10 @@ fn agent_stream_message(
 
 #[tauri::command]
 async fn start_query(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     request: StartQueryRequest,
 ) -> Result<QueryAccepted, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .start_query(request)
@@ -2422,9 +2619,10 @@ async fn start_query(
 
 #[tauri::command]
 async fn operation_snapshot(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     operation_id: String,
 ) -> Result<OperationSnapshot, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .operation_snapshot(&operation_id)
@@ -2434,26 +2632,28 @@ async fn operation_snapshot(
 
 #[tauri::command]
 async fn cancel_operation(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     operation_id: String,
 ) -> Result<CancelOperationResponse, ApiError> {
+    let state = state.ready_api().await?;
     Ok(state.application.cancel_operation(&operation_id).await)
 }
 
 #[tauri::command]
 async fn subscribe_operation(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     operation_id: String,
     after_sequence: Option<String>,
     on_event: Channel<OperationStreamMessage>,
 ) -> Result<OperationSubscriptionAccepted, ApiError> {
+    let state = state.ready_api().await?;
     let after_sequence = parse_after_sequence(after_sequence).map_err(|error| *error)?;
     let subscription = state
         .application
         .subscribe_operation(&operation_id, after_sequence)
         .await
         .map_err(|error| api_error(&error))?;
-    let state = Arc::clone(state.inner());
+    let state = Arc::clone(&state);
     let subscription_id = state
         .next_subscription_id
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
@@ -2489,9 +2689,10 @@ async fn subscribe_operation(
 
 #[tauri::command]
 async fn unsubscribe_operation(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     subscription_id: String,
 ) -> Result<(), ApiError> {
+    let state = state.ready_api().await?;
     state.subscriptions.unsubscribe(&subscription_id).await;
     Ok(())
 }
@@ -2536,10 +2737,11 @@ fn operation_stream_message(
 
 #[tauri::command]
 async fn result_page(
-    state: State<'_, Arc<DesktopState>>,
+    state: State<'_, Arc<DesktopStartup>>,
     result_id: String,
     request: ResultPageRequest,
 ) -> Result<ResultPage, ApiError> {
+    let state = state.ready_api().await?;
     state
         .application
         .result_page(&result_id, request)
@@ -2569,7 +2771,7 @@ mod tests {
 
     use super::{
         BUNDLED_COMMUNITY_CLASSPATH, BUNDLED_DRIVER_PACKS, BUNDLED_JAVA_BIN,
-        BUNDLED_JAVA_ENGINE_JAR, BundledRuntimeResources, DesktopError, FilePath,
+        BUNDLED_JAVA_ENGINE_JAR, BundledRuntimeResources, DesktopError, DesktopStartup, FilePath,
         LegacySqlCancellationRegistry, RuntimeResourceOverrides, SubscriptionRegistry,
         agent_stream_message, build_community_dml_for, build_community_namespace_sql_for,
         client_command_response, complete_community_sql_for, decode_client_message,
@@ -2610,6 +2812,43 @@ mod tests {
         fs::create_dir_all(&resources.driver_pack_dir).expect("bundled driver packs");
 
         (directory, executable, resources)
+    }
+
+    #[tokio::test]
+    async fn desktop_startup_failure_wakes_pending_and_late_requests() {
+        let startup = Arc::new(DesktopStartup::new());
+        let pending_startup = Arc::clone(&startup);
+        let pending = tokio::spawn(async move { pending_startup.ready().await });
+
+        tokio::task::yield_now().await;
+        startup.mark_failed("keychain authorization was denied".to_owned());
+
+        let Err(pending_error) = pending.await.expect("startup waiter must join") else {
+            panic!("startup waiter must receive the failure");
+        };
+        assert_eq!(pending_error, "keychain authorization was denied");
+        let Err(late_error) = startup.ready().await else {
+            panic!("late request must receive the stored failure");
+        };
+        assert_eq!(late_error, "keychain authorization was denied");
+        assert!(startup.ready_now().is_none());
+    }
+
+    #[tokio::test]
+    async fn desktop_startup_shutdown_aborts_pending_initialization() {
+        let startup = DesktopStartup::new();
+        let (started, waiting) = oneshot::channel();
+        let initialization = tauri::async_runtime::spawn(async move {
+            let _ = started.send(());
+            std::future::pending::<()>().await;
+        });
+        startup.set_initialization_task(initialization);
+        waiting.await.expect("initialization task must start");
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), startup.shutdown())
+            .await
+            .expect("shutdown must not wait for a blocked initialization")
+            .expect("pending initialization shutdown must succeed");
     }
 
     #[test]
