@@ -18,7 +18,7 @@
     },
     "macOS": {
       "minimumSystemVersion": "12.0",
-      "hardenedRuntime": false
+      "hardenedRuntime": true
     }
   }
 }

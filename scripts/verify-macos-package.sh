@@ -99,4 +99,63 @@ if ! lipo -archs "${java_bin}" | tr ' ' '\n' | grep -Fxq "${host_arch}"; then
 fi
 
 codesign --verify --deep --strict --verbose=2 "${app_path}"
+if [[ "${CHAT2DB_REQUIRE_DEVELOPER_ID_SIGNATURE:-false}" == true ]]; then
+  verify_developer_id_code() {
+    local code_path="$1"
+    local code_label="$2"
+    local expected_team_id="$3"
+    local signature_details
+    local signing_team_id
+    local signing_authority
+    local signing_timestamp
+    local designated_requirement
+
+    codesign --verify --strict --verbose=2 "${code_path}"
+    signature_details="$(codesign -dv --verbose=4 "${code_path}" 2>&1)"
+    signing_team_id="$(awk -F= '/^TeamIdentifier=/ { print $2; exit }' <<<"${signature_details}")"
+    signing_authority="$(awk -F= '/^Authority=/ { print $2; exit }' <<<"${signature_details}")"
+    signing_timestamp="$(awk -F= '/^Timestamp=/ { print $2; exit }' <<<"${signature_details}")"
+    designated_requirement="$(codesign -d -r- "${code_path}" 2>&1)"
+    if [[ "${signing_authority}" != Developer\ ID\ Application:* ]]; then
+      echo "${code_label} is not signed by a Developer ID Application identity" >&2
+      exit 1
+    fi
+    if [[ -z "${signing_team_id}" || "${signing_team_id}" == "not set" ]]; then
+      echo "${code_label} is missing a TeamIdentifier" >&2
+      exit 1
+    fi
+    if [[ -n "${expected_team_id}" && "${signing_team_id}" != "${expected_team_id}" ]]; then
+      echo "${code_label} TeamIdentifier does not match APPLE_TEAM_ID" >&2
+      exit 1
+    fi
+    if [[ -z "${signing_timestamp}" || "${signing_timestamp}" == "none" ]]; then
+      echo "${code_label} is missing a trusted timestamp" >&2
+      exit 1
+    fi
+    if ! grep -Eq '^flags=.*\(runtime\)' <<<"${signature_details}"; then
+      echo "${code_label} is missing the hardened runtime flag" >&2
+      exit 1
+    fi
+    if [[ "${designated_requirement}" == *"cdhash"* ]]; then
+      echo "${code_label} still has a build-specific cdhash requirement" >&2
+      exit 1
+    fi
+  }
+
+  verify_developer_id_code "${app_path}" "package" "${APPLE_TEAM_ID:-}"
+
+  runtime_macho_count=0
+  while IFS= read -r -d '' runtime_file; do
+    if [[ "$(file -b "${runtime_file}")" != *"Mach-O"* ]]; then
+      continue
+    fi
+    runtime_macho_count=$((runtime_macho_count + 1))
+    verify_developer_id_code "${runtime_file}" "packaged Java code ${runtime_file#"${app_path}/"}" ""
+  done < <(find "${resource_root}/java" -type f -print0)
+  if [[ "${runtime_macho_count}" -eq 0 ]]; then
+    echo "packaged Java runtime contains no Mach-O code" >&2
+    exit 1
+  fi
+  echo "Verified ${runtime_macho_count} Developer ID signed Java runtime binaries"
+fi
 echo "Verified self-contained macOS package at ${app_path}"
