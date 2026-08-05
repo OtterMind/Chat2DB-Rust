@@ -17,6 +17,7 @@ mod mysql_dashboard;
 pub mod mysql_ddl;
 mod mysql_schema_diff;
 mod mysql_workspace;
+mod native_driver;
 mod native_mysql;
 mod operation;
 mod query;
@@ -61,6 +62,7 @@ pub use large_value::{
 pub use legacy_community_import::LegacyCommunityImportOutcome;
 pub use operation::OperationSubscription;
 pub use query::{MysqlConsoleCancellation, MysqlConsoleRequest, MysqlConsoleResult};
+pub use query::{NativeConsoleCancellation, NativeConsoleRequest, NativeConsoleResult};
 pub use transfer::TransferArtifactDownload;
 
 use engine_manager::{
@@ -84,6 +86,7 @@ pub(crate) struct ApplicationInner {
     engine: EngineProvider,
     drivers: Vec<JdbcDriver>,
     managed_driver_ids: Option<HashSet<String>>,
+    native_drivers: native_driver::NativeDriverRegistry,
     large_values: large_value::LargeValueStore,
     agent_runs: AgentRunHub,
     operations: OperationHub,
@@ -254,6 +257,7 @@ impl Application {
                 .collect()
         });
         let drivers = drivers.unwrap_or_default();
+        let native_drivers = native_driver::NativeDriverRegistry::built_in();
         Self {
             inner: Arc::new(ApplicationInner {
                 started_at: Instant::now(),
@@ -262,6 +266,7 @@ impl Application {
                 engine,
                 drivers,
                 managed_driver_ids,
+                native_drivers,
                 large_values: large_value::LargeValueStore::default(),
                 agent_runs: AgentRunHub::new(),
                 operations: OperationHub::new(),
@@ -483,11 +488,13 @@ impl Application {
     #[must_use]
     pub fn list_drivers(&self) -> JdbcDriverList {
         let mut items = self.inner.drivers.clone();
-        if !items
-            .iter()
-            .any(|driver| driver.driver_id.eq_ignore_ascii_case("mysql"))
-        {
-            items.push(datasource_compatibility::native_mysql_driver());
+        for descriptor in self.inner.native_drivers.descriptors() {
+            if !items
+                .iter()
+                .any(|driver| driver.driver_id.eq_ignore_ascii_case(&descriptor.driver_id))
+            {
+                items.push(descriptor);
+            }
         }
         JdbcDriverList { items }
     }
@@ -511,8 +518,8 @@ impl Application {
             ));
         }
         self.require_managed_driver(driver_id)?;
-        if self.is_native_mysql_driver(driver_id) {
-            return native_mysql::test_connection(&connection).await;
+        if let Some(driver) = self.native_driver_for_driver_id(driver_id) {
+            return driver.connection().test_connection(&connection).await;
         }
         let engine = self.require_engine().await?;
         let session = datasource_session::open_datasource_session(
@@ -621,7 +628,7 @@ impl Application {
     }
 
     fn require_managed_driver(&self, driver_id: &str) -> Result<(), AppError> {
-        if self.is_native_mysql_driver(driver_id) {
+        if self.native_driver_for_driver_id(driver_id).is_some() {
             return Ok(());
         }
         match &self.inner.managed_driver_ids {
@@ -630,22 +637,28 @@ impl Application {
         }
     }
 
-    pub(crate) fn is_native_mysql_driver(&self, driver_id: &str) -> bool {
-        if driver_id.eq_ignore_ascii_case("mysql") {
-            return true;
-        }
+    pub(crate) fn native_driver_for_driver_id(
+        &self,
+        driver_id: &str,
+    ) -> Option<Arc<dyn native_driver::NativeDriver>> {
         self.inner
-            .drivers
-            .iter()
-            .find(|driver| driver.driver_id == driver_id)
-            .is_some_and(|driver| {
-                format!(
-                    "{} {} {} {}",
-                    driver.pack_id, driver.name, driver.driver_id, driver.driver_class
-                )
-                .to_ascii_lowercase()
-                .contains("mysql")
-            })
+            .native_drivers
+            .driver_for_driver_id(driver_id, &self.inner.drivers)
+    }
+
+    pub(crate) fn native_driver_for_database_type(
+        &self,
+        database_type: &str,
+    ) -> Option<Arc<dyn native_driver::NativeDriver>> {
+        self.inner
+            .native_drivers
+            .driver_for_database_type(database_type)
+    }
+
+    pub(crate) fn native_database_type_for_driver(&self, driver_id: &str) -> Option<String> {
+        self.native_driver_for_driver_id(driver_id)
+            .and_then(|driver| driver.database_types().first().copied())
+            .map(str::to_owned)
     }
 
     async fn require_managed_driver_for_update(
@@ -654,6 +667,9 @@ impl Application {
         datasource_id: &str,
         driver_id: &str,
     ) -> Result<(), AppError> {
+        if self.native_driver_for_driver_id(driver_id).is_some() {
+            return Ok(());
+        }
         let Some(driver_ids) = &self.inner.managed_driver_ids else {
             return Ok(());
         };

@@ -24,7 +24,7 @@ use tokio::{
 };
 use url::Url;
 
-use crate::{AppError, Application, native_mysql};
+use crate::{AppError, Application};
 
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const SSH_AUTH_TIMEOUT: Duration = Duration::from_secs(15);
@@ -210,15 +210,19 @@ impl Application {
             });
         };
         self.require_managed_driver(&request.driver_id)?;
-        if !self.is_native_mysql_driver(&request.driver_id) {
-            return Err(AppError::invalid(
-                "ssh_driver_not_supported",
-                "SSH forwarding is currently implemented for native MySQL only",
-            ));
-        }
+        let driver = self
+            .native_driver_for_driver_id(&request.driver_id)
+            .ok_or_else(|| {
+                AppError::invalid(
+                    "ssh_driver_not_supported",
+                    "SSH forwarding requires a native Rust driver",
+                )
+            })?;
         let mut forwarded = request.connection;
         forwarded.ssh = Some(ssh);
-        let local_port = native_mysql::test_connection_with_local_port(&forwarded)
+        let local_port = driver
+            .connection()
+            .test_connection_with_local_port(&forwarded)
             .await?
             .ok_or_else(AppError::internal)?;
         Ok(SshDatasourcePreConnectResult {

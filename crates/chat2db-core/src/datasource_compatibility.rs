@@ -182,11 +182,8 @@ impl Application {
     ) -> Result<DatasourceConnectResult, AppError> {
         let database_type = if database_type.trim().is_empty() {
             let datasource = self.get_datasource(datasource_id).await?;
-            if self.is_native_mysql_driver(&datasource.driver_id) {
-                "MYSQL".to_owned()
-            } else {
-                datasource.driver_id
-            }
+            self.native_database_type_for_driver(&datasource.driver_id)
+                .unwrap_or(datasource.driver_id)
         } else {
             database_type.trim().to_owned()
         };
@@ -243,27 +240,30 @@ impl Application {
         })
     }
 
-    /// Returns an explicit no-JAR result for `MySQL` driver mutations handled by `mysql_async`.
+    /// Returns an explicit no-artifact result for a registered native Rust driver.
     ///
     /// # Errors
     ///
-    /// Returns invalid-request for non-MySQL database types.
+    /// Returns invalid-request for database types without a registered native driver.
     pub fn native_driver_compatibility(
         &self,
         database_type: &str,
         action: NativeDriverAction,
     ) -> Result<NativeDriverCompatibility, AppError> {
-        if !database_type.trim().eq_ignore_ascii_case("mysql") {
-            return Err(AppError::invalid(
-                "native_driver_not_available",
-                "the requested database type is not implemented by a native Rust driver",
-            ));
-        }
+        let driver = self
+            .native_driver_for_database_type(database_type)
+            .ok_or_else(|| {
+                AppError::invalid(
+                    "native_driver_not_available",
+                    "the requested database type is not implemented by a native Rust driver",
+                )
+            })?;
+        let descriptor = driver.descriptor();
         Ok(NativeDriverCompatibility {
-            database_type: "MYSQL".to_owned(),
-            driver_id: "mysql".to_owned(),
+            database_type: driver.database_types()[0].to_owned(),
+            driver_id: descriptor.driver_id,
             action,
-            implementation: "mysql_async".to_owned(),
+            implementation: driver.implementation().to_owned(),
             artifact_required: false,
             changed: false,
         })

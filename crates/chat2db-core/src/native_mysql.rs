@@ -40,8 +40,8 @@ use crate::{
     datasource_session::{ResolvedDatasourceConnection, resolve_datasource_connection},
     operation::CancellationRequest,
     query::{
-        DatabaseWriteError, MysqlConsoleRequest, MysqlConsoleResult, PreparedQuery, QueryTaskError,
-        RetainedWriter,
+        DatabaseWriteError, NativeConsoleRequest, NativeConsoleResult, PreparedQuery,
+        QueryTaskError, RetainedWriter,
     },
     ssh::{SshTunnel, SshTunnelIdentity, mysql_target, rewrite_mysql_target},
 };
@@ -1772,7 +1772,7 @@ pub(crate) async fn start_table_preview(
 }
 
 struct ConsoleStatementExecution {
-    results: Vec<MysqlConsoleResult>,
+    results: Vec<NativeConsoleResult>,
     failure: Option<AppError>,
 }
 
@@ -1783,10 +1783,10 @@ enum ConsoleExecutionError {
 
 pub(crate) async fn execute_console(
     application: &Application,
-    request: MysqlConsoleRequest,
+    request: NativeConsoleRequest,
     mut cancellation: watch::Receiver<CancellationRequest>,
     force_read_only: bool,
-) -> Result<Vec<MysqlConsoleResult>, AppError> {
+) -> Result<Vec<NativeConsoleResult>, AppError> {
     let (statements, page_offset, page_end) = prepare_console_statements(&request)?;
 
     let initial_cancellation = { cancellation.borrow().clone() };
@@ -1879,7 +1879,7 @@ pub(crate) async fn execute_console(
 }
 
 fn prepare_console_statements(
-    request: &MysqlConsoleRequest,
+    request: &NativeConsoleRequest,
 ) -> Result<(Vec<String>, u64, u64), AppError> {
     let (page_offset, page_end) = validate_console_request(request)?;
     let mut statements = if request.single {
@@ -2136,7 +2136,7 @@ async fn execute_console_statement(
         }
 
         if retain {
-            results.push(MysqlConsoleResult {
+            results.push(NativeConsoleResult {
                 statement_sequence,
                 result_set_id: current_result_set_id,
                 sql: statement.to_owned(),
@@ -2158,7 +2158,7 @@ async fn execute_console_statement(
     }
 
     if results.is_empty() && selected_result_set_id.is_none() {
-        results.push(MysqlConsoleResult {
+        results.push(NativeConsoleResult {
             statement_sequence,
             result_set_id: None,
             sql: statement.to_owned(),
@@ -2237,9 +2237,9 @@ fn console_failure_result(
     sql: String,
     error: &AppError,
     duration_ms: u64,
-) -> MysqlConsoleResult {
+) -> NativeConsoleResult {
     let api_error = error.api_error();
-    MysqlConsoleResult {
+    NativeConsoleResult {
         statement_sequence,
         result_set_id: None,
         sql,
@@ -2255,7 +2255,7 @@ fn console_failure_result(
     }
 }
 
-fn validate_console_request(request: &MysqlConsoleRequest) -> Result<(u64, u64), AppError> {
+fn validate_console_request(request: &NativeConsoleRequest) -> Result<(u64, u64), AppError> {
     if request.datasource_id.trim().is_empty() {
         return Err(AppError::invalid(
             "invalid_mysql_console_request",
@@ -4547,7 +4547,10 @@ pub(crate) async fn resolve_native_connection(
 ) -> Result<ResolvedDatasourceConnection, AppError> {
     let storage = application.require_storage()?;
     let resolved = resolve_datasource_connection(&storage, datasource_id).await?;
-    if !application.is_native_mysql_driver(&resolved.driver_id) {
+    if application
+        .native_driver_for_driver_id(&resolved.driver_id)
+        .is_none_or(|driver| driver.id() != "mysql")
+    {
         return Err(AppError::invalid(
             "mysql_driver_mismatch",
             "The datasource is not configured with a MySQL driver",

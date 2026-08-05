@@ -36,7 +36,7 @@ pub(crate) struct PreparedQuery {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[allow(clippy::struct_excessive_bools)]
 #[serde(rename_all = "camelCase")]
-pub struct MysqlConsoleRequest {
+pub struct NativeConsoleRequest {
     /// Opaque datasource id resolved by Core.
     pub datasource_id: String,
     /// Optional `MySQL` database selected on the Console connection.
@@ -68,7 +68,7 @@ pub struct MysqlConsoleRequest {
 /// One statement result emitted by native `MySQL` Console execution.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MysqlConsoleResult {
+pub struct NativeConsoleResult {
     /// One-based statement position in the submitted script.
     pub statement_sequence: u32,
     /// One-based tabular result-set position within the statement.
@@ -99,11 +99,11 @@ pub struct MysqlConsoleResult {
 
 /// Cloneable cancellation source for one native `MySQL` Console execution.
 #[derive(Debug, Clone)]
-pub struct MysqlConsoleCancellation {
+pub struct NativeConsoleCancellation {
     sender: watch::Sender<CancellationRequest>,
 }
 
-impl MysqlConsoleCancellation {
+impl NativeConsoleCancellation {
     /// Creates an active cancellation source.
     #[must_use]
     pub fn new() -> Self {
@@ -134,7 +134,7 @@ impl MysqlConsoleCancellation {
     }
 }
 
-impl Default for MysqlConsoleCancellation {
+impl Default for NativeConsoleCancellation {
     fn default() -> Self {
         Self::new()
     }
@@ -144,12 +144,17 @@ const fn default_console_error_continue() -> bool {
     true
 }
 
+pub type MysqlConsoleRequest = NativeConsoleRequest;
+pub type MysqlConsoleResult = NativeConsoleResult;
+pub type MysqlConsoleCancellation = NativeConsoleCancellation;
+
 enum QueryBackend {
     Java {
         engine: EngineLease,
         resolved: ResolvedDatasourceConnection,
     },
-    NativeMysql {
+    Native {
+        driver: std::sync::Arc<dyn crate::native_driver::NativeDriver>,
         resolved: ResolvedDatasourceConnection,
     },
 }
@@ -193,7 +198,30 @@ impl Application {
         request: MysqlConsoleRequest,
         cancellation: MysqlConsoleCancellation,
     ) -> Result<Vec<MysqlConsoleResult>, AppError> {
-        crate::native_mysql::execute_console(self, request, cancellation.subscribe(), false).await
+        self.execute_native_console(request, cancellation).await
+    }
+
+    /// Executes a native-driver Console request on the runtime-selected driver.
+    ///
+    /// # Errors
+    ///
+    /// Returns datasource, capability, validation, connection, or execution errors.
+    pub async fn execute_native_console(
+        &self,
+        request: NativeConsoleRequest,
+        cancellation: NativeConsoleCancellation,
+    ) -> Result<Vec<NativeConsoleResult>, AppError> {
+        self.execute_native_console_with_mode(request, cancellation, false)
+            .await
+    }
+
+    pub(crate) async fn execute_native_read_console(
+        &self,
+        request: NativeConsoleRequest,
+        cancellation: NativeConsoleCancellation,
+    ) -> Result<Vec<NativeConsoleResult>, AppError> {
+        self.execute_native_console_with_mode(request, cancellation, true)
+            .await
     }
 
     pub(crate) async fn execute_mysql_read_console(
@@ -201,7 +229,35 @@ impl Application {
         request: MysqlConsoleRequest,
         cancellation: MysqlConsoleCancellation,
     ) -> Result<Vec<MysqlConsoleResult>, AppError> {
-        crate::native_mysql::execute_console(self, request, cancellation.subscribe(), true).await
+        self.execute_native_read_console(request, cancellation)
+            .await
+    }
+
+    async fn execute_native_console_with_mode(
+        &self,
+        request: NativeConsoleRequest,
+        cancellation: NativeConsoleCancellation,
+        force_read_only: bool,
+    ) -> Result<Vec<NativeConsoleResult>, AppError> {
+        let storage = self.require_storage()?;
+        let resolved = resolve_datasource_connection(&storage, &request.datasource_id).await?;
+        let driver = self
+            .native_driver_for_driver_id(&resolved.driver_id)
+            .ok_or_else(|| {
+                AppError::invalid(
+                    "native_driver_not_available",
+                    "The datasource does not have a native Rust driver",
+                )
+            })?;
+        let query = driver.query().ok_or_else(|| {
+            AppError::invalid(
+                "native_query_not_supported",
+                "The native Rust driver does not implement query execution",
+            )
+        })?;
+        query
+            .execute_console(self, request, cancellation.subscribe(), force_read_only)
+            .await
     }
 
     /// Accepts a query for asynchronous execution and returns its operation id.
@@ -286,11 +342,23 @@ impl Application {
             let _engine = self.require_engine().await?;
         }
         let resolved = resolve_datasource_connection(&storage, &prepared.datasource_id).await?;
-        let backend = if self.is_native_mysql_driver(&resolved.driver_id)
-            && crate::native_mysql::is_native_read_candidate(&prepared.sql)?
-        {
-            crate::native_mysql::validate_query(&prepared)?;
-            QueryBackend::NativeMysql { resolved }
+        let backend = if let Some(driver) = self.native_driver_for_driver_id(&resolved.driver_id) {
+            if let Some(query) = driver.query() {
+                if query.is_read_candidate(&prepared.sql)? {
+                    query.validate_query(&prepared)?;
+                    QueryBackend::Native { driver, resolved }
+                } else {
+                    QueryBackend::Java {
+                        engine: self.require_engine().await?,
+                        resolved,
+                    }
+                }
+            } else {
+                QueryBackend::Java {
+                    engine: self.require_engine().await?,
+                    resolved,
+                }
+            }
         } else {
             QueryBackend::Java {
                 engine: self.require_engine().await?,
@@ -371,17 +439,21 @@ impl Application {
                 )
                 .await
             }
-            QueryBackend::NativeMysql { resolved } => {
-                crate::native_mysql::execute_query_task(
-                    self,
-                    &operation_id,
-                    cancellation,
-                    query,
-                    storage,
-                    resolved,
-                )
-                .await
-            }
+            QueryBackend::Native { driver, resolved } => match driver.query() {
+                Some(native_query) => {
+                    native_query
+                        .execute_query_task(
+                            self,
+                            &operation_id,
+                            cancellation,
+                            query,
+                            storage,
+                            resolved,
+                        )
+                        .await
+                }
+                None => Err(QueryTaskError::Failed(AppError::internal())),
+            },
         };
         match outcome {
             Ok(result) => {
@@ -602,8 +674,10 @@ impl Application {
                 ),
             )));
         }
-        if self.is_native_mysql_driver(&resolved.driver_id) {
-            return crate::native_mysql::execute_update(resolved, sql, cancellation).await;
+        if let Some(driver) = self.native_driver_for_driver_id(&resolved.driver_id)
+            && let Some(query) = driver.query()
+        {
+            return query.execute_update(resolved, sql, cancellation).await;
         }
         Err(DatabaseWriteError::not_started(AppError::invalid(
             "mysql_driver_mismatch",
