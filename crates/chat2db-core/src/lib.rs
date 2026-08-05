@@ -17,9 +17,12 @@ mod mysql_dashboard;
 pub mod mysql_ddl;
 mod mysql_schema_diff;
 mod mysql_workspace;
+mod native_administration_types;
+mod native_api_adapter;
 mod native_driver;
 mod native_driver_types;
 mod native_mysql;
+mod native_schema_diff_types;
 mod operation;
 mod query;
 mod ssh;
@@ -251,6 +254,22 @@ impl Application {
         engine: EngineProvider,
         drivers: Option<Vec<JdbcDriver>>,
     ) -> Self {
+        Self::compose_with_native_drivers(
+            runtime_status,
+            storage,
+            engine,
+            drivers,
+            native_driver::NativeDriverRegistry::built_in(),
+        )
+    }
+
+    fn compose_with_native_drivers(
+        runtime_status: RuntimeStatus,
+        storage: Option<Storage>,
+        engine: EngineProvider,
+        drivers: Option<Vec<JdbcDriver>>,
+        native_drivers: native_driver::NativeDriverRegistry,
+    ) -> Self {
         let managed_driver_ids = drivers.as_ref().map(|drivers| {
             drivers
                 .iter()
@@ -258,7 +277,6 @@ impl Application {
                 .collect()
         });
         let drivers = drivers.unwrap_or_default();
-        let native_drivers = native_driver::NativeDriverRegistry::built_in();
         Self {
             inner: Arc::new(ApplicationInner {
                 started_at: Instant::now(),
@@ -278,6 +296,19 @@ impl Application {
                 tasks: Mutex::new(HashMap::new()),
             }),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_native_drivers_for_test(
+        native_drivers: native_driver::NativeDriverRegistry,
+    ) -> Self {
+        Self::compose_with_native_drivers(
+            RuntimeStatus::Ready,
+            None,
+            EngineProvider::Disabled,
+            None,
+            native_drivers,
+        )
     }
 
     /// Returns local storage only when runtime composition initialized it.

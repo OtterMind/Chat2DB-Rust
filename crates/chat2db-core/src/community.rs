@@ -68,6 +68,12 @@ use chat2db_java_bridge::{
 };
 use chat2db_storage::Storage;
 
+use crate::native_driver_types::{
+    CreateSchemaSqlRequest, DatabaseDefinition, DmlAssignment, DmlColumn, DmlRow, DmlSqlRequest,
+    DmlStatement, DmlTarget, DmlTemporalKind, DmlValue, NamespaceSqlOperation, NamespaceSqlRequest,
+    SchemaDefinition,
+};
+
 const FIXED_COMMUNITY_CLASSPATH_LOCK: &str =
     include_str!("../../../third_party/community-h2-classpath.lock");
 const DEFAULT_TABLE_PREVIEW_ROWS: u32 = 200;
@@ -1077,6 +1083,15 @@ impl Application {
         &self,
         request: BuildCommunityCreateSchemaRequest,
     ) -> Result<CommunityBuiltSql, AppError> {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(dialect) = driver.dialect()
+        {
+            return dialect
+                .build_create_schema(CreateSchemaSqlRequest {
+                    schema: native_schema(request.schema),
+                })
+                .map(|built| CommunityBuiltSql { sql: built.sql });
+        }
         let engine = self.require_community_engine().await?;
         let client = engine.community_client().map_err(AppError::from)?;
         client
@@ -1096,6 +1111,13 @@ impl Application {
         &self,
         request: BuildCommunityNamespaceSqlRequest,
     ) -> Result<CommunityBuiltSql, AppError> {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(dialect) = driver.dialect()
+        {
+            return dialect
+                .build_namespace_sql(native_namespace_request(request))
+                .map(|built| CommunityBuiltSql { sql: built.sql });
+        }
         let engine = self.require_community_engine().await?;
         let client = engine.community_client().map_err(AppError::from)?;
         client
@@ -1115,6 +1137,13 @@ impl Application {
         &self,
         request: BuildCommunityDmlRequest,
     ) -> Result<CommunityBuiltSql, AppError> {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(dialect) = driver.dialect()
+        {
+            return dialect
+                .build_dml(native_dml_request(request)?)
+                .map(|built| CommunityBuiltSql { sql: built.sql });
+        }
         let engine = self.require_community_engine().await?;
         let client = engine.community_client().map_err(AppError::from)?;
         client
@@ -1718,6 +1747,169 @@ fn bridge_database(database: CommunityDatabase) -> BridgeCommunityDatabase {
     }
 }
 
+fn native_schema(schema: CommunitySchema) -> SchemaDefinition {
+    SchemaDefinition {
+        database_name: schema.database_name,
+        name: schema.name,
+        comment: schema.comment,
+        owner: schema.owner,
+        system: schema.system,
+    }
+}
+
+fn native_database(database: CommunityDatabase) -> DatabaseDefinition {
+    DatabaseDefinition {
+        name: database.name,
+        comment: database.comment,
+        charset: database.charset,
+        collation: database.collation,
+        owner: database.owner,
+        system: database.system,
+    }
+}
+
+fn native_namespace_request(request: BuildCommunityNamespaceSqlRequest) -> NamespaceSqlRequest {
+    NamespaceSqlRequest {
+        operation: match request.operation {
+            CommunityNamespaceSqlOperation::CreateDatabase { database } => {
+                NamespaceSqlOperation::CreateDatabase {
+                    database: native_database(database),
+                }
+            }
+            CommunityNamespaceSqlOperation::AlterDatabase {
+                old_database,
+                new_database,
+            } => NamespaceSqlOperation::AlterDatabase {
+                old_database: native_database(old_database),
+                new_database: native_database(new_database),
+            },
+            CommunityNamespaceSqlOperation::DropDatabase { database_name } => {
+                NamespaceSqlOperation::DropDatabase { database_name }
+            }
+            CommunityNamespaceSqlOperation::UseDatabase { database_name } => {
+                NamespaceSqlOperation::UseDatabase { database_name }
+            }
+            CommunityNamespaceSqlOperation::CreateSchema { schema } => {
+                NamespaceSqlOperation::CreateSchema {
+                    schema: native_schema(schema),
+                }
+            }
+            CommunityNamespaceSqlOperation::AlterSchema {
+                old_schema_name,
+                new_schema_name,
+            } => NamespaceSqlOperation::AlterSchema {
+                old_schema_name,
+                new_schema_name,
+            },
+            CommunityNamespaceSqlOperation::DropSchema { schema_name } => {
+                NamespaceSqlOperation::DropSchema { schema_name }
+            }
+        },
+    }
+}
+
+fn native_dml_request(request: BuildCommunityDmlRequest) -> Result<DmlSqlRequest, AppError> {
+    Ok(DmlSqlRequest {
+        target: DmlTarget {
+            database_name: request.target.database_name,
+            schema_name: request.target.schema_name,
+            table_name: request.target.table_name,
+        },
+        statement: native_dml_statement(request.statement)?,
+    })
+}
+
+fn native_dml_statement(statement: CommunityDmlStatement) -> Result<DmlStatement, AppError> {
+    Ok(match statement {
+        CommunityDmlStatement::SingleInsert { columns, row } => DmlStatement::SingleInsert {
+            columns: columns.into_iter().map(native_dml_column).collect(),
+            row: native_dml_row(row)?,
+        },
+        CommunityDmlStatement::MultiInsert { columns, rows } => DmlStatement::MultiInsert {
+            columns: columns.into_iter().map(native_dml_column).collect(),
+            rows: rows
+                .into_iter()
+                .map(native_dml_row)
+                .collect::<Result<_, _>>()?,
+        },
+        CommunityDmlStatement::Update {
+            assignments,
+            predicates,
+        } => DmlStatement::Update {
+            assignments: assignments
+                .into_iter()
+                .map(native_dml_assignment)
+                .collect::<Result<_, _>>()?,
+            predicates: predicates
+                .into_iter()
+                .map(native_dml_assignment)
+                .collect::<Result<_, _>>()?,
+        },
+    })
+}
+
+fn native_dml_column(column: CommunityDmlColumn) -> DmlColumn {
+    DmlColumn {
+        name: column.name,
+        data_type_name: column.data_type_name,
+        precision: column.precision,
+        scale: column.scale,
+    }
+}
+
+fn native_dml_row(row: CommunityDmlRow) -> Result<DmlRow, AppError> {
+    Ok(DmlRow {
+        values: row
+            .values
+            .into_iter()
+            .map(native_dml_value)
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+fn native_dml_assignment(assignment: CommunityDmlAssignment) -> Result<DmlAssignment, AppError> {
+    Ok(DmlAssignment {
+        column: native_dml_column(assignment.column),
+        value: native_dml_value(assignment.value)?,
+    })
+}
+
+fn native_dml_value(value: CommunityDmlValue) -> Result<DmlValue, AppError> {
+    Ok(match value {
+        CommunityDmlValue::Null => DmlValue::Null,
+        CommunityDmlValue::String { value } => DmlValue::String(value),
+        CommunityDmlValue::Decimal { value } => DmlValue::Decimal(value),
+        CommunityDmlValue::Boolean { value } => DmlValue::Boolean(value),
+        CommunityDmlValue::Temporal {
+            temporal_kind,
+            value,
+        } => DmlValue::Temporal {
+            kind: match temporal_kind {
+                CommunityDmlTemporalKind::Date => DmlTemporalKind::Date,
+                CommunityDmlTemporalKind::Time => DmlTemporalKind::Time,
+                CommunityDmlTemporalKind::LocalDatetime => DmlTemporalKind::LocalDatetime,
+                CommunityDmlTemporalKind::OffsetDatetime => DmlTemporalKind::OffsetDatetime,
+            },
+            iso8601: value,
+        },
+        CommunityDmlValue::Binary { base64 } => {
+            let bytes = STANDARD.decode(&base64).map_err(|_| {
+                AppError::invalid(
+                    "community.dml_invalid_value",
+                    "Community DML binary values must use canonical standard base64",
+                )
+            })?;
+            if STANDARD.encode(&bytes) != base64 {
+                return Err(AppError::invalid(
+                    "community.dml_invalid_value",
+                    "Community DML binary values must use canonical standard base64",
+                ));
+            }
+            DmlValue::Binary(bytes)
+        }
+    })
+}
+
 fn bridge_namespace_request(
     request: BuildCommunityNamespaceSqlRequest,
 ) -> BridgeBuildCommunityNamespaceSqlRequest {
@@ -2151,8 +2343,9 @@ mod tests {
         community_function_parameter, community_plugin_catalog, community_primary_key,
         community_procedure, community_procedure_parameter, community_schema,
         community_sql_analysis, community_sql_validation, community_table, community_table_column,
-        community_table_index, community_trigger, preserve_primary_result, run_cancellation_safe,
-        run_cancellation_safe_with_cleanup, table_preview_row_limit, validate_table_preview_sql,
+        community_table_index, community_trigger, native_dml_request, preserve_primary_result,
+        run_cancellation_safe, run_cancellation_safe_with_cleanup, table_preview_row_limit,
+        validate_table_preview_sql,
     };
     use crate::{AppError, AppErrorKind};
 
@@ -2265,11 +2458,29 @@ mod tests {
             ])]
         );
 
+        let native = native_dml_request(binary_dml_request("AAH/"))
+            .expect("the native adapter must accept the same canonical bytes");
+        let crate::native_driver_types::DmlStatement::SingleInsert { row, .. } = native.statement
+        else {
+            panic!("single insert must retain its native variant");
+        };
+        assert_eq!(
+            row.values,
+            vec![crate::native_driver_types::DmlValue::Binary(vec![
+                0, 1, 255
+            ])]
+        );
+
         for invalid in ["AAH_", "AAH/==", "not base64"] {
             let error = bridge_dml_request(binary_dml_request(invalid))
                 .expect_err("noncanonical binary JSON must fail before engine access");
             assert_eq!(error.api_error().code, "community.dml_invalid_value");
             assert_eq!(error.kind(), AppErrorKind::InvalidRequest);
+
+            let native_error = native_dml_request(binary_dml_request(invalid))
+                .expect_err("the native adapter must reject the same noncanonical input");
+            assert_eq!(native_error.api_error().code, "community.dml_invalid_value");
+            assert_eq!(native_error.kind(), AppErrorKind::InvalidRequest);
         }
     }
 

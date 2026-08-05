@@ -15,8 +15,8 @@ use sqlparser::{
 };
 
 use crate::{
-    AppError, AppErrorKind, Application, MysqlConsoleCancellation, MysqlConsoleRequest,
-    MysqlConsoleResult, now_millis, storage_call,
+    AppError, AppErrorKind, Application, NativeConsoleCancellation, NativeConsoleRequest,
+    NativeConsoleResult, now_millis, storage_call,
 };
 
 const CHART_PAGE_SIZE: u32 = 200;
@@ -96,11 +96,11 @@ impl Application {
         storage_call(move || storage.get_community_chart(id)).await
     }
 
-    /// Returns a detached chart copy, optionally refreshing its result through native `MySQL`.
+    /// Returns a detached chart copy, optionally refreshing its result through a native driver.
     ///
     /// # Errors
     ///
-    /// Returns validation, datasource, `MySQL`, result-limit, or durable-storage failures.
+    /// Returns validation, datasource, native-driver, result-limit, or durable-storage failures.
     pub async fn get_community_chart_detail(
         &self,
         id: i64,
@@ -116,9 +116,18 @@ impl Application {
             return Ok(Some(chart));
         };
 
+        let database_type = match self.native_chart_database_type(&context).await {
+            Ok(database_type) => database_type,
+            Err(error) => {
+                self.record_chart_history(&chart, &context, None, None, Some(&error))
+                    .await;
+                return Err(error);
+            }
+        };
+
         let execution = self
-            .execute_mysql_read_console(
-                MysqlConsoleRequest {
+            .execute_native_read_console(
+                NativeConsoleRequest {
                     datasource_id: context.datasource_id.clone(),
                     database_name: context.database_name.clone().unwrap_or_default(),
                     sql: context.sql.clone(),
@@ -130,7 +139,7 @@ impl Application {
                     explain: false,
                     error_continue: false,
                 },
-                MysqlConsoleCancellation::new(),
+                NativeConsoleCancellation::new(),
             )
             .await;
 
@@ -141,8 +150,14 @@ impl Application {
                         "chart_query_incomplete",
                         "The chart query completed without a result",
                     );
-                    self.record_chart_history(&chart, &context, None, Some(&error))
-                        .await;
+                    self.record_chart_history(
+                        &chart,
+                        &context,
+                        Some(&database_type),
+                        None,
+                        Some(&error),
+                    )
+                    .await;
                     return Err(error);
                 };
                 if result.success {
@@ -155,22 +170,47 @@ impl Application {
                             .as_ref()
                             .map_or_else(|| result.message.clone(), |error| error.message.clone()),
                     );
-                    self.record_chart_history(&chart, &context, Some(&result), Some(&error))
-                        .await;
+                    self.record_chart_history(
+                        &chart,
+                        &context,
+                        Some(&database_type),
+                        Some(&result),
+                        Some(&error),
+                    )
+                    .await;
                     return Err(error);
                 }
             }
             Err(error) => {
-                self.record_chart_history(&chart, &context, None, Some(&error))
-                    .await;
+                self.record_chart_history(
+                    &chart,
+                    &context,
+                    Some(&database_type),
+                    None,
+                    Some(&error),
+                )
+                .await;
                 return Err(error);
             }
         };
-        let header_metadata = self.chart_header_metadata(&context).await;
+        let header_metadata = self.chart_header_metadata(&context, &database_type).await;
         chart.meta_data = Some(chart_metadata(&result, header_metadata.as_ref())?);
-        self.record_chart_history(&chart, &context, Some(&result), None)
+        self.record_chart_history(&chart, &context, Some(&database_type), Some(&result), None)
             .await;
         Ok(Some(chart))
+    }
+
+    async fn native_chart_database_type(
+        &self,
+        context: &ChartRefreshContext,
+    ) -> Result<String, AppError> {
+        self.require_native_driver_for_datasource(&context.datasource_id)
+            .await?
+            .database_types()
+            .first()
+            .copied()
+            .map(str::to_owned)
+            .ok_or_else(AppError::internal)
     }
 
     /// Creates one durable Community chart and returns its numeric id.
@@ -214,7 +254,8 @@ impl Application {
         &self,
         chart: &CommunityChart,
         context: &ChartRefreshContext,
-        result: Option<&MysqlConsoleResult>,
+        database_type: Option<&str>,
+        result: Option<&NativeConsoleResult>,
         error: Option<&AppError>,
     ) {
         let Some(storage) = self.storage().cloned() else {
@@ -233,7 +274,7 @@ impl Application {
             data_source_name: chart.data_source_name.clone(),
             connectable: Some(true),
             database_name: context.database_name.clone(),
-            database_type: Some("MYSQL".to_owned()),
+            database_type: database_type.map(str::to_owned),
             ddl: context.sql.clone(),
             status: if error.is_none() { "success" } else { "fail" }.to_owned(),
             operation_rows: result.and_then(|result| i64::try_from(result.row_count).ok()),
@@ -256,6 +297,7 @@ impl Application {
     async fn chart_header_metadata(
         &self,
         context: &ChartRefreshContext,
+        database_type: &str,
     ) -> Option<HashMap<String, CommunityTableColumn>> {
         let table = chart_editable_table(&context.sql)?;
         let database_name = table
@@ -268,7 +310,7 @@ impl Application {
         let columns = match self
             .list_community_columns(ListCommunityColumnsRequest {
                 datasource_id: context.datasource_id.clone(),
-                database_type: "MYSQL".to_owned(),
+                database_type: database_type.to_owned(),
                 database_name,
                 schema_name,
                 table_name: table.table_name,
@@ -407,7 +449,7 @@ fn non_editable_projection(item: &SelectItem) -> bool {
 }
 
 fn chart_metadata(
-    result: &MysqlConsoleResult,
+    result: &NativeConsoleResult,
     header_metadata: Option<&HashMap<String, CommunityTableColumn>>,
 ) -> Result<Value, AppError> {
     let metadata = json!({
@@ -614,7 +656,7 @@ mod tests {
 
     #[test]
     fn chart_metadata_matches_community_display_shape() {
-        let result = crate::MysqlConsoleResult {
+        let result = crate::NativeConsoleResult {
             statement_sequence: 1,
             result_set_id: Some(1),
             sql: "SELECT amount, note".to_owned(),
@@ -689,7 +731,7 @@ mod tests {
             "DATETIME"
         );
 
-        let result = crate::MysqlConsoleResult {
+        let result = crate::NativeConsoleResult {
             statement_sequence: 1,
             result_set_id: Some(1),
             sql: "SELECT CAST('2024-01-02' AS DATETIME)".to_owned(),

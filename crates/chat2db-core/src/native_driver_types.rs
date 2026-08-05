@@ -6,12 +6,13 @@ use chat2db_contract::{
     CommunityRoutineMigrationRequest, CommunitySchemaList, CommunityTable,
     CommunityTableColumnList, CommunityTableIndexList, CommunityTableList,
     CommunityTablePreviewAccepted, CommunityTrigger, CommunityTriggerList, CommunityViewList,
-    GetCommunityFunctionRequest, GetCommunityProcedureRequest, GetCommunityTriggerRequest,
-    ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityFunctionsRequest,
-    ListCommunityIndexesRequest, ListCommunityProceduresRequest, ListCommunitySchemasRequest,
-    ListCommunityTableKeysRequest, ListCommunityTablesRequest, ListCommunityTriggersRequest,
-    ListCommunityViewsRequest, PreviewCommunityRoutineInvocationRequest,
-    StartCommunityTablePreviewRequest,
+    DmlExportRequest, GetCommunityFunctionRequest, GetCommunityProcedureRequest,
+    GetCommunityTriggerRequest, ImportFileRequest, ListCommunityColumnsRequest,
+    ListCommunityDatabasesRequest, ListCommunityFunctionsRequest, ListCommunityIndexesRequest,
+    ListCommunityProceduresRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
+    ListCommunityTablesRequest, ListCommunityTriggersRequest, ListCommunityViewsRequest,
+    OtherFileExportRequest, PreviewCommunityRoutineInvocationRequest, SqlFileExportRequest,
+    StartCommunityTablePreviewRequest, TransferArtifact,
 };
 
 pub(crate) type DatabaseList = CommunityDatabaseList;
@@ -35,6 +36,145 @@ pub(crate) type EntityRelationTable = CommunityErTable;
 pub(crate) type TablePreviewAccepted = CommunityTablePreviewAccepted;
 pub(crate) type RoutineInvocationPreview = CommunityRoutineInvocationPreview;
 pub(crate) type RoutineMigrationExecution = CommunityRoutineMigrationExecution;
+pub(crate) type ImportTransferRequest = ImportFileRequest;
+pub(crate) type SqlExportTransferRequest = SqlFileExportRequest;
+pub(crate) type OtherExportTransferRequest = OtherFileExportRequest;
+pub(crate) type DmlExportTransferRequest = DmlExportRequest;
+pub(crate) type ExportArtifact = TransferArtifact;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BuiltSql {
+    pub(crate) sql: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DatabaseDefinition {
+    pub(crate) name: String,
+    pub(crate) comment: String,
+    pub(crate) charset: String,
+    pub(crate) collation: String,
+    pub(crate) owner: String,
+    pub(crate) system: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SchemaDefinition {
+    pub(crate) database_name: String,
+    pub(crate) name: String,
+    pub(crate) comment: String,
+    pub(crate) owner: String,
+    pub(crate) system: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CreateSchemaSqlRequest {
+    pub(crate) schema: SchemaDefinition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NamespaceSqlRequest {
+    pub(crate) operation: NamespaceSqlOperation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NamespaceSqlOperation {
+    CreateDatabase {
+        database: DatabaseDefinition,
+    },
+    AlterDatabase {
+        old_database: DatabaseDefinition,
+        new_database: DatabaseDefinition,
+    },
+    DropDatabase {
+        database_name: String,
+    },
+    UseDatabase {
+        database_name: String,
+    },
+    CreateSchema {
+        schema: SchemaDefinition,
+    },
+    AlterSchema {
+        old_schema_name: String,
+        new_schema_name: String,
+    },
+    DropSchema {
+        schema_name: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DmlSqlRequest {
+    pub(crate) target: DmlTarget,
+    pub(crate) statement: DmlStatement,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "qualified table segments are clearer with their database, schema, and table suffixes"
+)]
+pub(crate) struct DmlTarget {
+    pub(crate) database_name: Option<String>,
+    pub(crate) schema_name: Option<String>,
+    pub(crate) table_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DmlColumn {
+    pub(crate) name: String,
+    pub(crate) data_type_name: String,
+    pub(crate) precision: Option<u32>,
+    pub(crate) scale: Option<i32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DmlTemporalKind {
+    Date,
+    Time,
+    LocalDatetime,
+    OffsetDatetime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DmlValue {
+    Null,
+    String(String),
+    Decimal(String),
+    Boolean(bool),
+    Temporal {
+        kind: DmlTemporalKind,
+        iso8601: String,
+    },
+    Binary(Vec<u8>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DmlRow {
+    pub(crate) values: Vec<DmlValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DmlAssignment {
+    pub(crate) column: DmlColumn,
+    pub(crate) value: DmlValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DmlStatement {
+    SingleInsert {
+        columns: Vec<DmlColumn>,
+        row: DmlRow,
+    },
+    MultiInsert {
+        columns: Vec<DmlColumn>,
+        rows: Vec<DmlRow>,
+    },
+    Update {
+        assignments: Vec<DmlAssignment>,
+        predicates: Vec<DmlAssignment>,
+    },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MetadataScope {

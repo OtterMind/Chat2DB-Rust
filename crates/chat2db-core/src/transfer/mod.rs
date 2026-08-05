@@ -1,13 +1,11 @@
 mod class_generation;
 mod format;
 mod mysql;
+pub(crate) mod mysql_impl;
 
 use std::{
-    collections::HashMap,
-    fmt::Write as _,
-    fs::File,
-    path::{Path, PathBuf},
-    time::Duration,
+    collections::HashMap, fmt::Write as _, fs::File, future::Future, path::PathBuf, pin::Pin,
+    sync::Arc, time::Duration,
 };
 
 use chat2db_contract::{
@@ -21,21 +19,50 @@ use chat2db_storage::{
 };
 use tokio::{
     sync::{Mutex, oneshot},
-    task::JoinHandle,
+    task::{AbortHandle, JoinHandle},
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{AppError, Application, native_mysql, storage_call};
+use crate::{AppError, Application, storage_call};
 
 const MAX_TASK_PAGE_SIZE: u32 = 100;
+const MAX_TRANSFER_FAILURE_MESSAGE_BYTES: usize = 64 * 1024;
+const TRANSFER_FAILURE_TRUNCATION_SUFFIX: &str = "\n[truncated]";
+const TERMINAL_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(25);
+const TERMINAL_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
+const TERMINAL_RECOVERY_MESSAGE: &str =
+    "Transfer terminal state will be recovered when the runtime restarts";
 
 pub(crate) struct TransferTaskHub {
     tasks: Mutex<HashMap<i64, ActiveTransferTask>>,
 }
 
 struct ActiveTransferTask {
-    cancellation: CancellationToken,
+    control: TransferTaskControl,
     handle: JoinHandle<()>,
+}
+
+struct AbortTaskOnDrop(AbortHandle);
+
+impl Drop for AbortTaskOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+#[derive(Clone)]
+struct TransferTaskControl {
+    cancellation: CancellationToken,
+    terminal_gate: Arc<Mutex<()>>,
+}
+
+impl TransferTaskControl {
+    fn new() -> Self {
+        Self {
+            cancellation: CancellationToken::new(),
+            terminal_gate: Arc::new(Mutex::new(())),
+        }
+    }
 }
 
 pub struct TransferArtifactDownload {
@@ -65,37 +92,34 @@ impl TransferTaskHub {
     async fn insert(
         &self,
         task_id: i64,
-        cancellation: CancellationToken,
+        control: TransferTaskControl,
         handle: JoinHandle<()>,
     ) -> Option<ActiveTransferTask> {
-        self.tasks.lock().await.insert(
-            task_id,
-            ActiveTransferTask {
-                cancellation,
-                handle,
-            },
-        )
+        self.tasks
+            .lock()
+            .await
+            .insert(task_id, ActiveTransferTask { control, handle })
     }
 
     async fn remove(&self, task_id: i64) {
         self.tasks.lock().await.remove(&task_id);
     }
 
-    async fn cancel(&self, task_id: i64) -> bool {
-        let tasks = self.tasks.lock().await;
-        let Some(task) = tasks.get(&task_id) else {
-            return false;
-        };
-        task.cancellation.cancel();
-        true
+    async fn control(&self, task_id: i64) -> Option<TransferTaskControl> {
+        self.tasks
+            .lock()
+            .await
+            .get(&task_id)
+            .map(|task| task.control.clone())
     }
 
-    async fn cancel_all(&self) -> Vec<i64> {
-        let tasks = self.tasks.lock().await;
-        for task in tasks.values() {
-            task.cancellation.cancel();
-        }
-        tasks.keys().copied().collect()
+    async fn controls(&self) -> Vec<(i64, TransferTaskControl)> {
+        self.tasks
+            .lock()
+            .await
+            .iter()
+            .map(|(task_id, task)| (*task_id, task.control.clone()))
+            .collect()
     }
 
     async fn take_all(&self) -> HashMap<i64, ActiveTransferTask> {
@@ -103,7 +127,7 @@ impl TransferTaskHub {
     }
 }
 
-pub(super) struct TransferContext {
+pub(crate) struct TransferContext {
     storage: Storage,
     task_id: i64,
     cancellation: CancellationToken,
@@ -118,11 +142,11 @@ impl TransferContext {
         }
     }
 
-    pub(super) fn cancellation(&self) -> &CancellationToken {
+    pub(crate) fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
     }
 
-    pub(super) fn check_cancelled(&self) -> Result<(), TransferRunError> {
+    pub(crate) fn check_cancelled(&self) -> Result<(), TransferRunError> {
         if self.cancellation.is_cancelled() {
             Err(TransferRunError::Cancelled)
         } else {
@@ -130,7 +154,7 @@ impl TransferContext {
         }
     }
 
-    pub(super) fn begin_artifact(
+    pub(crate) fn begin_artifact(
         &self,
         file_name: &str,
         media_type: &str,
@@ -150,7 +174,7 @@ impl TransferContext {
             .map_err(TransferRunError::from)
     }
 
-    pub(super) async fn progress(
+    pub(crate) async fn progress(
         &self,
         current: u64,
         total: Option<u64>,
@@ -170,13 +194,13 @@ impl TransferContext {
     }
 }
 
-pub(super) enum TransferRunError {
+pub(crate) enum TransferRunError {
     Cancelled,
     Failed(AppError),
 }
 
 impl TransferRunError {
-    pub(super) fn into_app_error(self) -> AppError {
+    pub(crate) fn into_app_error(self) -> AppError {
         match self {
             Self::Cancelled => {
                 AppError::unavailable("transfer_cancelled", "The transfer operation was cancelled")
@@ -198,19 +222,135 @@ impl From<StorageError> for TransferRunError {
     }
 }
 
-pub(super) enum TaskCompletion {
+pub(crate) enum TaskCompletion {
     WithoutArtifact(String),
-    Artifact(TransferArtifactRecord),
+    Artifact(PendingTransferArtifact),
 }
 
-enum TransferJob {
-    Import(ImportFileRequest),
-    SqlExport(SqlFileExportRequest),
-    OtherExport(OtherFileExportRequest),
+type TransferJobFuture =
+    Pin<Box<dyn Future<Output = Result<TaskCompletion, TransferRunError>> + Send + 'static>>;
+
+type TransferJobRunner =
+    Box<dyn FnOnce(Application, TransferContext) -> TransferJobFuture + Send + 'static>;
+
+type TransferArtifactFuture =
+    Pin<Box<dyn Future<Output = Result<TransferArtifactRecord, AppError>> + Send + 'static>>;
+
+type TransferArtifactFinalizer = Box<dyn FnOnce() -> TransferArtifactFuture + Send + 'static>;
+
+pub(crate) struct PendingTransferArtifact {
+    finalizer: TransferArtifactFinalizer,
+}
+
+impl PendingTransferArtifact {
+    pub(crate) fn new<Finalizer, FinalizerFuture>(finalizer: Finalizer) -> Self
+    where
+        Finalizer: FnOnce() -> FinalizerFuture + Send + 'static,
+        FinalizerFuture: Future<Output = Result<TransferArtifactRecord, AppError>> + Send + 'static,
+    {
+        Self {
+            finalizer: Box::new(move || Box::pin(finalizer())),
+        }
+    }
+
+    async fn finalize(self) -> Result<TransferArtifactRecord, AppError> {
+        (self.finalizer)().await
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum TransferJobKind {
+    ImportFile,
+    ExportSql,
+    ExportFile,
+}
+
+pub(crate) struct TransferJobSpec {
+    datasource_id: String,
+    database_name: String,
+    schema_name: String,
+    table_name: Option<String>,
+    kind: TransferJobKind,
+    task_name: String,
+    runner: TransferJobRunner,
+}
+
+impl TransferJobSpec {
+    pub(crate) fn new<Runner, RunnerFuture>(
+        datasource_id: String,
+        database_name: String,
+        schema_name: String,
+        table_name: Option<String>,
+        kind: TransferJobKind,
+        task_name: String,
+        runner: Runner,
+    ) -> Self
+    where
+        Runner: FnOnce(Application, TransferContext) -> RunnerFuture + Send + 'static,
+        RunnerFuture: Future<Output = Result<TaskCompletion, TransferRunError>> + Send + 'static,
+    {
+        Self {
+            datasource_id,
+            database_name,
+            schema_name,
+            table_name,
+            kind,
+            task_name,
+            runner: Box::new(move |application, context| Box::pin(runner(application, context))),
+        }
+    }
+
+    fn into_parts(self) -> (CreateTransferTask, TransferJobRunner) {
+        let kind = match self.kind {
+            TransferJobKind::ImportFile => StoredTransferTaskKind::ImportFile,
+            TransferJobKind::ExportSql => StoredTransferTaskKind::ExportSql,
+            TransferJobKind::ExportFile => StoredTransferTaskKind::ExportFile,
+        };
+        (
+            CreateTransferTask {
+                datasource_id: self.datasource_id,
+                database_name: self.database_name,
+                schema_name: self.schema_name,
+                table_name: self.table_name,
+                kind,
+                task_name: self.task_name,
+            },
+            self.runner,
+        )
+    }
+}
+
+enum TransferTerminalState {
+    Succeeded(String),
+    Artifact(PendingTransferArtifact),
+    Cancelled(String),
+    Failed(String),
 }
 
 impl Application {
-    /// Starts a durable native-MySQL CSV, XLS, XLSX, or SQL import task.
+    /// Starts a durable import task through the datasource's native driver.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, datasource, storage, or runtime-shutdown failures.
+    pub async fn import_file(
+        &self,
+        request: ImportFileRequest,
+    ) -> Result<TransferTaskAccepted, AppError> {
+        let driver = self
+            .require_native_driver_for_datasource(&request.datasource_id)
+            .await?;
+        let transfer = driver.transfer().ok_or_else(|| {
+            AppError::invalid(
+                "native_transfer_capability_not_available",
+                "The native Rust driver does not implement import and export operations",
+            )
+        })?;
+        let spec = transfer.import_file(self, request).await?;
+        self.start_transfer_job(spec).await
+    }
+
+    /// Retained `MySQL` compatibility name for [`Self::import_file`].
     ///
     /// # Errors
     ///
@@ -219,27 +359,32 @@ impl Application {
         &self,
         request: ImportFileRequest,
     ) -> Result<TransferTaskAccepted, AppError> {
-        validate_import_request(&request)?;
-        native_mysql::resolve_native_connection(self, &request.datasource_id).await?;
-        let file_name = Path::new(&request.file_path)
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("file");
-        self.start_transfer_job(
-            CreateTransferTask {
-                datasource_id: request.datasource_id.clone(),
-                database_name: request.database_name.clone(),
-                schema_name: request.schema_name.clone(),
-                table_name: request.table_name.clone(),
-                kind: StoredTransferTaskKind::ImportFile,
-                task_name: format!("Import {file_name}"),
-            },
-            TransferJob::Import(request),
-        )
-        .await
+        self.import_file(request).await
     }
 
-    /// Starts a durable native-MySQL SQL dump export task.
+    /// Starts a durable SQL dump export through the datasource's native driver.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, datasource, storage, or runtime-shutdown failures.
+    pub async fn export_sql_file(
+        &self,
+        request: SqlFileExportRequest,
+    ) -> Result<TransferTaskAccepted, AppError> {
+        let driver = self
+            .require_native_driver_for_datasource(&request.datasource_id)
+            .await?;
+        let transfer = driver.transfer().ok_or_else(|| {
+            AppError::invalid(
+                "native_transfer_capability_not_available",
+                "The native Rust driver does not implement import and export operations",
+            )
+        })?;
+        let spec = transfer.export_sql_file(self, request).await?;
+        self.start_transfer_job(spec).await
+    }
+
+    /// Retained `MySQL` compatibility name for [`Self::export_sql_file`].
     ///
     /// # Errors
     ///
@@ -248,27 +393,32 @@ impl Application {
         &self,
         request: SqlFileExportRequest,
     ) -> Result<TransferTaskAccepted, AppError> {
-        validate_transfer_scope(
-            &request.datasource_id,
-            &request.database_name,
-            request.export_path.as_deref(),
-        )?;
-        native_mysql::resolve_native_connection(self, &request.datasource_id).await?;
-        self.start_transfer_job(
-            CreateTransferTask {
-                datasource_id: request.datasource_id.clone(),
-                database_name: request.database_name.clone(),
-                schema_name: request.schema_name.clone(),
-                table_name: single_table(&request.table_names),
-                kind: StoredTransferTaskKind::ExportSql,
-                task_name: format!("Export SQL {}", request.database_name),
-            },
-            TransferJob::SqlExport(request),
-        )
-        .await
+        self.export_sql_file(request).await
     }
 
-    /// Starts a durable native-MySQL table file export task.
+    /// Starts a durable table-file export through the datasource's native driver.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, datasource, storage, or runtime-shutdown failures.
+    pub async fn export_other_file(
+        &self,
+        request: OtherFileExportRequest,
+    ) -> Result<TransferTaskAccepted, AppError> {
+        let driver = self
+            .require_native_driver_for_datasource(&request.datasource_id)
+            .await?;
+        let transfer = driver.transfer().ok_or_else(|| {
+            AppError::invalid(
+                "native_transfer_capability_not_available",
+                "The native Rust driver does not implement import and export operations",
+            )
+        })?;
+        let spec = transfer.export_other_file(self, request).await?;
+        self.start_transfer_job(spec).await
+    }
+
+    /// Retained `MySQL` compatibility name for [`Self::export_other_file`].
     ///
     /// # Errors
     ///
@@ -277,34 +427,7 @@ impl Application {
         &self,
         request: OtherFileExportRequest,
     ) -> Result<TransferTaskAccepted, AppError> {
-        validate_transfer_scope(
-            &request.datasource_id,
-            &request.database_name,
-            request.export_path.as_deref(),
-        )?;
-        if request.table_names.is_empty() {
-            return Err(AppError::invalid(
-                "missing_export_tables",
-                "tableNames must contain at least one table",
-            ));
-        }
-        native_mysql::resolve_native_connection(self, &request.datasource_id).await?;
-        self.start_transfer_job(
-            CreateTransferTask {
-                datasource_id: request.datasource_id.clone(),
-                database_name: request.database_name.clone(),
-                schema_name: request.schema_name.clone(),
-                table_name: single_table(&request.table_names),
-                kind: StoredTransferTaskKind::ExportFile,
-                task_name: format!(
-                    "Export {} {} table(s)",
-                    request.format.extension().to_ascii_uppercase(),
-                    request.table_names.len()
-                ),
-            },
-            TransferJob::OtherExport(request),
-        )
-        .await
+        self.export_other_file(request).await
     }
 
     /// Lists retained transfer tasks newest first.
@@ -324,7 +447,7 @@ impl Application {
     /// Lists retained transfer tasks after applying an optional status set.
     ///
     /// An empty status set selects every task. Filtering happens before
-    /// pagination so legacy Community task tabs keep accurate totals.
+    /// pagination so legacy task tabs keep accurate totals.
     ///
     /// # Errors
     ///
@@ -389,10 +512,10 @@ impl Application {
     /// Returns not-found or durable-storage failures.
     pub async fn stop_transfer_task(&self, task_id: i64) -> Result<(), AppError> {
         let storage = self.require_storage()?;
-        let changed = storage_call(move || storage.request_transfer_cancel(task_id)).await?;
-        if changed {
-            self.inner.transfer_tasks.cancel(task_id).await;
+        if let Some(control) = self.inner.transfer_tasks.control(task_id).await {
+            control.cancellation.cancel();
         }
+        persist_cancel_request(&storage, task_id).await?;
         Ok(())
     }
 
@@ -442,14 +565,32 @@ impl Application {
     /// # Errors
     ///
     /// Returns SQL analysis, datasource, query, format, or storage failures.
+    pub async fn export_dml(
+        &self,
+        request: DmlExportRequest,
+    ) -> Result<TransferArtifact, AppError> {
+        let driver = self
+            .require_native_driver_for_datasource(&request.datasource_id)
+            .await?;
+        let transfer = driver.transfer().ok_or_else(|| {
+            AppError::invalid(
+                "native_transfer_capability_not_available",
+                "The native Rust driver does not implement import and export operations",
+            )
+        })?;
+        transfer.export_dml(self, request).await
+    }
+
+    /// Retained `MySQL` compatibility name for [`Self::export_dml`].
+    ///
+    /// # Errors
+    ///
+    /// Returns SQL analysis, datasource, query, format, or storage failures.
     pub async fn export_mysql_dml(
         &self,
         request: DmlExportRequest,
     ) -> Result<TransferArtifact, AppError> {
-        native_mysql::resolve_native_connection(self, &request.datasource_id).await?;
-        mysql::export_dml(self, request)
-            .await
-            .map(transfer_artifact)
+        self.export_dml(request).await
     }
 
     /// Generates `MyBatis` Plus entity, Mapper, and Mapper XML files from native `MySQL` metadata.
@@ -461,7 +602,8 @@ impl Application {
         &self,
         request: GenerateMysqlClassRequest,
     ) -> Result<GeneratedMysqlClassSet, AppError> {
-        native_mysql::resolve_native_connection(self, &request.datasource_id).await?;
+        self.require_native_driver_for_datasource(&request.datasource_id)
+            .await?;
         class_generation::generate(self, request).await
     }
 
@@ -474,16 +616,16 @@ impl Application {
         &self,
         request: GenerateMysqlClassRequest,
     ) -> Result<TransferArtifact, AppError> {
-        native_mysql::resolve_native_connection(self, &request.datasource_id).await?;
+        self.require_native_driver_for_datasource(&request.datasource_id)
+            .await?;
         class_generation::generate_archive(self, request)
             .await
             .map(transfer_artifact)
     }
 
-    async fn start_transfer_job(
+    pub(crate) async fn start_transfer_job(
         &self,
-        task: CreateTransferTask,
-        job: TransferJob,
+        spec: TransferJobSpec,
     ) -> Result<TransferTaskAccepted, AppError> {
         let accepting_work = self.inner.accepting_work.lock().await;
         if !*accepting_work {
@@ -492,6 +634,7 @@ impl Application {
                 "The Chat2DB runtime is shutting down",
             ));
         }
+        let (task, runner) = spec.into_parts();
         let storage = self.require_storage()?;
         let task_record = storage_call({
             let storage = storage.clone();
@@ -499,23 +642,57 @@ impl Application {
         })
         .await?;
         let task_id = task_record.id;
-        let cancellation = CancellationToken::new();
-        let run_cancellation = cancellation.clone();
+        let control = TransferTaskControl::new();
+        let run_control = control.clone();
+        let run_storage = storage.clone();
         let application = self.clone();
         let (registered, wait_for_registration) = oneshot::channel();
         let handle = tokio::spawn(async move {
             if wait_for_registration.await.is_err() {
                 return;
             }
-            application
-                .run_transfer_task(task_id, job, run_cancellation)
-                .await;
+            let run_application = application.clone();
+            let recovery_storage = run_storage.clone();
+            let recovery_control = run_control.clone();
+            let mut worker = tokio::spawn(async move {
+                run_application
+                    .run_transfer_task(task_id, runner, run_storage, run_control)
+                    .await;
+            });
+            let _abort_worker = AbortTaskOnDrop(worker.abort_handle());
+            match (&mut worker).await {
+                Ok(()) => {}
+                Err(error) if error.is_panic() => {
+                    tracing::error!(task_id, "transfer worker panicked");
+                    finalize_transfer_task(
+                        &recovery_storage,
+                        task_id,
+                        &recovery_control,
+                        TransferTerminalState::Failed("Transfer worker panicked".to_owned()),
+                        None,
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    tracing::error!(task_id, %error, "transfer worker stopped unexpectedly");
+                    finalize_transfer_task(
+                        &recovery_storage,
+                        task_id,
+                        &recovery_control,
+                        TransferTerminalState::Failed(
+                            "Transfer worker stopped unexpectedly".to_owned(),
+                        ),
+                        None,
+                    )
+                    .await;
+                }
+            }
             application.inner.transfer_tasks.remove(task_id).await;
         });
         let replaced = self
             .inner
             .transfer_tasks
-            .insert(task_id, cancellation, handle)
+            .insert(task_id, control.clone(), handle)
             .await;
         debug_assert!(replaced.is_none(), "transfer task ids must be unique");
         if registered.send(()).is_err() {
@@ -528,11 +705,15 @@ impl Application {
                 .remove(&task_id)
             {
                 task.handle.abort();
+                let _ = task.handle.await;
             }
-            let storage = storage.clone();
-            let _ = storage_call(move || {
-                storage.fail_transfer_task(task_id, "Transfer task registration failed")
-            })
+            finalize_transfer_task(
+                &storage,
+                task_id,
+                &control,
+                TransferTerminalState::Failed("Transfer task registration failed".to_owned()),
+                None,
+            )
             .await;
             return Err(AppError::internal());
         }
@@ -543,67 +724,57 @@ impl Application {
     async fn run_transfer_task(
         &self,
         task_id: i64,
-        job: TransferJob,
-        cancellation: CancellationToken,
+        runner: TransferJobRunner,
+        storage: Storage,
+        control: TransferTaskControl,
     ) {
-        let Some(storage) = self.storage().cloned() else {
-            return;
-        };
-        if cancellation.is_cancelled() {
-            let _ = storage_call(move || storage.request_transfer_cancel(task_id)).await;
+        if control.cancellation.is_cancelled() {
+            finalize_transfer_task(
+                &storage,
+                task_id,
+                &control,
+                TransferTerminalState::Cancelled("Transfer cancelled before startup".to_owned()),
+                None,
+            )
+            .await;
             return;
         }
         let start_storage = storage.clone();
         if let Err(error) = storage_call(move || start_storage.start_transfer_task(task_id)).await {
-            if !cancellation.is_cancelled() {
-                tracing::warn!(task_id, %error, "transfer task could not enter running state");
-            }
+            tracing::warn!(task_id, %error, "transfer task could not enter running state");
+            finalize_transfer_task(
+                &storage,
+                task_id,
+                &control,
+                TransferTerminalState::Failed("Transfer task could not start".to_owned()),
+                None,
+            )
+            .await;
             return;
         }
-        let context = TransferContext::new(storage.clone(), task_id, cancellation.clone());
-        let result = match job {
-            TransferJob::Import(request) => mysql::import_file(self, request, &context).await,
-            TransferJob::SqlExport(request) => mysql::export_sql(self, request, &context).await,
-            TransferJob::OtherExport(request) => mysql::export_other(self, request, &context).await,
-        };
-        match result {
+        let context = TransferContext::new(storage.clone(), task_id, control.cancellation.clone());
+        let result = runner(self.clone(), context).await;
+        let terminal = match result {
             Ok(TaskCompletion::WithoutArtifact(message)) => {
-                let complete_storage = storage.clone();
-                if let Err(error) =
-                    storage_call(move || complete_storage.complete_transfer_task(task_id, &message))
-                        .await
-                {
-                    tracing::warn!(task_id, %error, "transfer task completion could not be persisted");
-                }
+                TransferTerminalState::Succeeded(message)
             }
-            Ok(TaskCompletion::Artifact(artifact)) => {
-                debug_assert_eq!(artifact.task_id, Some(task_id));
-            }
+            Ok(TaskCompletion::Artifact(artifact)) => TransferTerminalState::Artifact(artifact),
             Err(TransferRunError::Cancelled) => {
-                let cancel_storage = storage.clone();
-                let _ = storage_call(move || {
-                    cancel_storage.cancel_transfer_task(task_id, "Transfer cancelled by request")
-                })
-                .await;
+                TransferTerminalState::Cancelled("Transfer cancelled by request".to_owned())
             }
             Err(TransferRunError::Failed(error)) => {
-                let message = error.api_error().message;
-                tracing::warn!(task_id, code = %error.api_error().code, "transfer task failed");
-                let fail_storage = storage.clone();
-                let _ =
-                    storage_call(move || fail_storage.fail_transfer_task(task_id, &message)).await;
+                let error = error.api_error();
+                tracing::warn!(task_id, code = %error.code, "transfer task failed");
+                TransferTerminalState::Failed(truncate_transfer_failure_message(error.message))
             }
-        }
+        };
+        finalize_transfer_task(&storage, task_id, &control, terminal, None).await;
     }
 
     pub(crate) async fn begin_transfer_shutdown(&self) {
-        let task_ids = self.inner.transfer_tasks.cancel_all().await;
-        let Some(storage) = self.storage().cloned() else {
-            return;
-        };
-        for task_id in task_ids {
-            let storage = storage.clone();
-            let _ = storage_call(move || storage.request_transfer_cancel(task_id)).await;
+        let controls = self.inner.transfer_tasks.controls().await;
+        for (_, control) in &controls {
+            control.cancellation.cancel();
         }
     }
 
@@ -612,23 +783,199 @@ impl Application {
         let deadline = tokio::time::Instant::now() + timeout;
         let storage = self.storage().cloned();
         for (task_id, mut task) in tasks {
-            let terminal_message = match tokio::time::timeout_at(deadline, &mut task.handle).await {
+            let terminal = match tokio::time::timeout_at(deadline, &mut task.handle).await {
                 Ok(Ok(())) => None,
-                Ok(Err(_)) => Some("Transfer worker stopped unexpectedly"),
+                Ok(Err(error)) => {
+                    tracing::error!(task_id, %error, "transfer worker monitor stopped unexpectedly");
+                    Some(TransferTerminalState::Failed(
+                        "Transfer worker stopped unexpectedly".to_owned(),
+                    ))
+                }
                 Err(_) => {
                     task.handle.abort();
-                    Some("Transfer stopped during runtime shutdown")
+                    let _ = task.handle.await;
+                    Some(TransferTerminalState::Cancelled(
+                        "Transfer stopped during runtime shutdown".to_owned(),
+                    ))
                 }
             };
-            if let (Some(storage), Some(message)) = (storage.clone(), terminal_message) {
-                let _ = storage_call(move || storage.cancel_transfer_task(task_id, message)).await;
+            if let (Some(storage), Some(terminal)) = (storage.as_ref(), terminal) {
+                let finalized = finalize_transfer_task(
+                    storage,
+                    task_id,
+                    &task.control,
+                    terminal,
+                    Some(deadline),
+                )
+                .await;
+                if !finalized {
+                    tracing::error!(task_id, "{TERMINAL_RECOVERY_MESSAGE}");
+                }
             }
         }
     }
 }
 
+async fn persist_cancel_request(storage: &Storage, task_id: i64) -> Result<bool, AppError> {
+    let storage = storage.clone();
+    storage_call(move || storage.request_transfer_cancel(task_id)).await
+}
+
+async fn load_transfer_task(
+    storage: &Storage,
+    task_id: i64,
+) -> Result<Option<TransferTaskRecord>, AppError> {
+    let storage = storage.clone();
+    storage_call(move || storage.get_transfer_task(task_id)).await
+}
+
+const fn stored_transfer_is_terminal(status: StoredTransferTaskStatus) -> bool {
+    matches!(
+        status,
+        StoredTransferTaskStatus::Succeeded
+            | StoredTransferTaskStatus::Failed
+            | StoredTransferTaskStatus::Cancelled
+            | StoredTransferTaskStatus::Interrupted
+    )
+}
+
+async fn finalize_transfer_task(
+    storage: &Storage,
+    task_id: i64,
+    control: &TransferTaskControl,
+    mut terminal: TransferTerminalState,
+    retry_deadline: Option<tokio::time::Instant>,
+) -> bool {
+    let mut attempt = 0_u32;
+    let mut retry_delay = TERMINAL_RETRY_INITIAL_DELAY;
+    loop {
+        attempt = attempt.saturating_add(1);
+        let finalization = async {
+            let _terminal = control.terminal_gate.lock().await;
+            finalize_transfer_once(storage, task_id, control, &mut terminal).await
+        };
+        let result = if let Some(deadline) = retry_deadline {
+            match tokio::time::timeout_at(deadline, finalization).await {
+                Ok(result) => result,
+                Err(_) => return false,
+            }
+        } else {
+            finalization.await
+        };
+        match result {
+            Ok(()) => return true,
+            Err(error) => {
+                tracing::warn!(
+                    task_id,
+                    attempt,
+                    %error,
+                    "transfer terminal state could not be persisted"
+                );
+                if retry_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+                    return false;
+                }
+            }
+        }
+        let delay = retry_deadline.map_or(retry_delay, |deadline| {
+            retry_delay.min(deadline.saturating_duration_since(tokio::time::Instant::now()))
+        });
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+        retry_delay = retry_delay.saturating_mul(2).min(TERMINAL_RETRY_MAX_DELAY);
+    }
+}
+
+fn truncate_transfer_failure_message(mut message: String) -> String {
+    if message.len() <= MAX_TRANSFER_FAILURE_MESSAGE_BYTES {
+        return message;
+    }
+    let mut boundary =
+        MAX_TRANSFER_FAILURE_MESSAGE_BYTES - TRANSFER_FAILURE_TRUNCATION_SUFFIX.len();
+    while !message.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    message.truncate(boundary);
+    message.push_str(TRANSFER_FAILURE_TRUNCATION_SUFFIX);
+    message
+}
+
+async fn finalize_transfer_once(
+    storage: &Storage,
+    task_id: i64,
+    control: &TransferTaskControl,
+    terminal: &mut TransferTerminalState,
+) -> Result<(), AppError> {
+    let Some(task) = load_transfer_task(storage, task_id).await? else {
+        tracing::warn!(task_id, "transfer task disappeared before finalization");
+        return Ok(());
+    };
+    if stored_transfer_is_terminal(task.status) {
+        return Ok(());
+    }
+    if control.cancellation.is_cancelled() || task.cancel_requested {
+        *terminal = TransferTerminalState::Cancelled(
+            "Transfer cancelled before terminal persistence".to_owned(),
+        );
+    }
+
+    match terminal {
+        TransferTerminalState::Succeeded(message) => {
+            let storage = storage.clone();
+            let message = message.clone();
+            let result =
+                storage_call(move || storage.complete_transfer_task(task_id, &message)).await;
+            if result.is_err() {
+                *terminal = TransferTerminalState::Failed(
+                    "Transfer completed but its success state could not be persisted".to_owned(),
+                );
+            }
+            result
+        }
+        TransferTerminalState::Artifact(_) => {
+            let TransferTerminalState::Artifact(artifact) = std::mem::replace(
+                terminal,
+                TransferTerminalState::Failed(
+                    "Transfer artifact could not be finalized".to_owned(),
+                ),
+            ) else {
+                unreachable!("artifact terminal state must contain an artifact finalizer");
+            };
+            let record = artifact.finalize().await?;
+            if record.task_id != Some(task_id) {
+                return Err(AppError::internal());
+            }
+            let task = load_transfer_task(storage, task_id)
+                .await?
+                .ok_or_else(AppError::internal)?;
+            if stored_transfer_is_terminal(task.status) {
+                Ok(())
+            } else {
+                Err(AppError::internal())
+            }
+        }
+        TransferTerminalState::Cancelled(message) => {
+            persist_cancel_request(storage, task_id).await?;
+            let Some(task) = load_transfer_task(storage, task_id).await? else {
+                return Ok(());
+            };
+            if stored_transfer_is_terminal(task.status) {
+                return Ok(());
+            }
+            let storage = storage.clone();
+            let message = message.clone();
+            storage_call(move || storage.cancel_transfer_task(task_id, &message)).await
+        }
+        TransferTerminalState::Failed(message) => {
+            let storage = storage.clone();
+            let message = message.clone();
+            storage_call(move || storage.fail_transfer_task(task_id, &message)).await
+        }
+    }
+}
+
 fn validate_import_request(request: &ImportFileRequest) -> Result<(), AppError> {
-    validate_transfer_scope(&request.datasource_id, &request.database_name, None)?;
+    validate_transfer_scope(&request.datasource_id, None)?;
     if request.file_path.trim().is_empty() || request.file_path.contains('\0') {
         return Err(AppError::invalid(
             "invalid_import_file",
@@ -646,18 +993,13 @@ fn validate_import_request(request: &ImportFileRequest) -> Result<(), AppError> 
     Ok(())
 }
 
-fn validate_transfer_scope(
-    datasource_id: &str,
-    database_name: &str,
-    export_path: Option<&str>,
-) -> Result<(), AppError> {
+fn validate_transfer_scope(datasource_id: &str, export_path: Option<&str>) -> Result<(), AppError> {
     if datasource_id.trim().is_empty() {
         return Err(AppError::invalid(
             "invalid_transfer_request",
             "datasourceId cannot be empty",
         ));
     }
-    native_mysql::quote_identifier(database_name, "databaseName")?;
     if export_path.is_some_and(|path| path.trim().is_empty() || path.contains('\0')) {
         return Err(AppError::invalid(
             "invalid_export_path",
@@ -737,9 +1079,247 @@ fn sha256_hex(digest: &[u8; 32]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use chat2db_storage::{StoredTransferTaskKind, StoredTransferTaskStatus, TransferTaskRecord};
+    use std::{future::Future, path::Path, time::Duration};
 
-    use super::transfer_task;
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use chat2db_java_bridge::{EngineCommand, EngineConfig};
+    use chat2db_storage::{StoredTransferTaskKind, StoredTransferTaskStatus, TransferTaskRecord};
+    use tempfile::TempDir;
+    use tokio::sync::oneshot;
+
+    use super::{
+        MAX_TRANSFER_FAILURE_MESSAGE_BYTES, TaskCompletion, TransferContext, TransferJobKind,
+        TransferJobSpec, TransferRunError, TransferTaskControl, TransferTerminalState,
+        finalize_transfer_task, transfer_task,
+    };
+    use crate::{AppError, Application, RuntimeConfig, RuntimeHost};
+
+    #[test]
+    fn transfer_job_spec_accepts_a_send_async_runner() {
+        fn assert_send<T: Send>(_: &T) {}
+
+        let spec = test_job("send runner", |_application, _context| async {
+            Ok(TaskCompletion::WithoutArtifact("done".to_owned()))
+        });
+        assert_send(&spec);
+    }
+
+    #[tokio::test]
+    async fn cancellation_wins_over_a_successful_runner_completion() {
+        let directory = TempDir::new().expect("temporary transfer runtime");
+        let mut host = RuntimeHost::open(test_runtime_config(directory.path()))
+            .await
+            .expect("transfer runtime must open");
+        let application = host.application();
+
+        let (cancel_started, cancel_ready) = oneshot::channel();
+        let (release_success, wait_for_success) = oneshot::channel();
+        let cancelled = application
+            .start_transfer_job(test_job(
+                "explicit cancel",
+                move |_application, _context| async move {
+                    let _ = cancel_started.send(());
+                    let _ = wait_for_success.await;
+                    Ok(TaskCompletion::WithoutArtifact("done".to_owned()))
+                },
+            ))
+            .await
+            .expect("generic transfer must start");
+        wait_until_started(cancel_ready).await;
+        application
+            .stop_transfer_task(cancelled.task_id)
+            .await
+            .expect("generic transfer must accept cancellation");
+        release_success
+            .send(())
+            .expect("successful runner must be released");
+        wait_for_status(
+            &application,
+            cancelled.task_id,
+            chat2db_contract::TransferTaskStatus::Cancelled,
+        )
+        .await;
+        wait_for_hub_removal(&application, cancelled.task_id).await;
+
+        host.shutdown()
+            .await
+            .expect("transfer runtime must shut down cleanly");
+    }
+
+    #[tokio::test]
+    async fn panicking_runner_is_failed_and_removed_from_the_hub() {
+        let directory = TempDir::new().expect("temporary transfer runtime");
+        let mut host = RuntimeHost::open(test_runtime_config(directory.path()))
+            .await
+            .expect("transfer runtime must open");
+        let application = host.application();
+
+        let failed = application
+            .start_transfer_job(test_job("panic", panicking_runner))
+            .await
+            .expect("panicking transfer must be admitted");
+        wait_for_status(
+            &application,
+            failed.task_id,
+            chat2db_contract::TransferTaskStatus::Failed,
+        )
+        .await;
+        wait_for_hub_removal(&application, failed.task_id).await;
+        let task = application
+            .transfer_task(failed.task_id)
+            .await
+            .expect("failed transfer must remain readable");
+        assert!(task.error_log.contains("Transfer worker panicked"));
+
+        host.shutdown()
+            .await
+            .expect("transfer runtime must shut down cleanly");
+    }
+
+    #[tokio::test]
+    async fn success_persistence_error_falls_back_to_a_failed_terminal_state() {
+        let directory = TempDir::new().expect("temporary transfer runtime");
+        let mut host = RuntimeHost::open(test_runtime_config(directory.path()))
+            .await
+            .expect("transfer runtime must open");
+        let application = host.application();
+
+        let failed = application
+            .start_transfer_job(test_job(
+                "invalid completion",
+                |_application, _context| async {
+                    Ok(TaskCompletion::WithoutArtifact("x".repeat(300 * 1024)))
+                },
+            ))
+            .await
+            .expect("transfer with invalid completion text must be admitted");
+        wait_for_status(
+            &application,
+            failed.task_id,
+            chat2db_contract::TransferTaskStatus::Failed,
+        )
+        .await;
+        wait_for_hub_removal(&application, failed.task_id).await;
+        let task = application
+            .transfer_task(failed.task_id)
+            .await
+            .expect("fallback failure must remain readable");
+        assert!(
+            task.error_log
+                .contains("success state could not be persisted")
+        );
+
+        host.shutdown()
+            .await
+            .expect("transfer runtime must shut down cleanly");
+    }
+
+    #[tokio::test]
+    async fn oversized_runner_failure_is_bounded_and_removed_from_the_hub() {
+        let directory = TempDir::new().expect("temporary transfer runtime");
+        let mut host = RuntimeHost::open(test_runtime_config(directory.path()))
+            .await
+            .expect("transfer runtime must open");
+        let application = host.application();
+
+        let failed = application
+            .start_transfer_job(test_job(
+                "oversized failure",
+                |_application, _context| async {
+                    Err(TransferRunError::Failed(AppError::invalid(
+                        "transfer_test_failed",
+                        "x".repeat(300 * 1024),
+                    )))
+                },
+            ))
+            .await
+            .expect("failing transfer must be admitted");
+        wait_for_status(
+            &application,
+            failed.task_id,
+            chat2db_contract::TransferTaskStatus::Failed,
+        )
+        .await;
+        wait_for_hub_removal(&application, failed.task_id).await;
+        let task = application
+            .transfer_task(failed.task_id)
+            .await
+            .expect("failed transfer must remain readable");
+        assert!(task.error_log.len() <= MAX_TRANSFER_FAILURE_MESSAGE_BYTES);
+        assert!(task.error_log.ends_with("[truncated]"));
+
+        host.shutdown()
+            .await
+            .expect("transfer runtime must shut down cleanly");
+    }
+
+    #[tokio::test]
+    async fn terminal_deadline_covers_waiting_for_the_terminal_gate() {
+        let directory = TempDir::new().expect("temporary transfer runtime");
+        let mut host = RuntimeHost::open(test_runtime_config(directory.path()))
+            .await
+            .expect("transfer runtime must open");
+        let application = host.application();
+        let storage = application
+            .storage()
+            .cloned()
+            .expect("transfer runtime must have storage");
+        let control = TransferTaskControl::new();
+        let terminal_guard = control.terminal_gate.lock().await;
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(25);
+
+        let finalized = tokio::time::timeout(
+            Duration::from_secs(1),
+            finalize_transfer_task(
+                &storage,
+                -1,
+                &control,
+                TransferTerminalState::Failed("shutdown".to_owned()),
+                Some(deadline),
+            ),
+        )
+        .await
+        .expect("terminal finalization must respect its deadline");
+        assert!(!finalized);
+        drop(terminal_guard);
+
+        host.shutdown()
+            .await
+            .expect("transfer runtime must shut down cleanly");
+    }
+
+    #[tokio::test]
+    async fn generic_transfer_runner_preserves_shutdown_semantics() {
+        let directory = TempDir::new().expect("temporary transfer runtime");
+        let mut host = RuntimeHost::open(test_runtime_config(directory.path()))
+            .await
+            .expect("transfer runtime must open");
+        let application = host.application();
+
+        let (shutdown_started, shutdown_ready) = oneshot::channel();
+        let interrupted = application
+            .start_transfer_job(waiting_job("shutdown cancel", shutdown_started))
+            .await
+            .expect("generic transfer must start before shutdown");
+        wait_until_started(shutdown_ready).await;
+        host.shutdown()
+            .await
+            .expect("transfer runtime must shut down cleanly");
+        let task = application
+            .transfer_task(interrupted.task_id)
+            .await
+            .expect("shutdown transfer task must remain readable");
+        assert_eq!(task.status, chat2db_contract::TransferTaskStatus::Cancelled);
+        assert!(
+            !application
+                .inner
+                .transfer_tasks
+                .tasks
+                .lock()
+                .await
+                .contains_key(&interrupted.task_id)
+        );
+    }
 
     #[test]
     fn durable_interrupted_status_is_preserved_for_transport_projection() {
@@ -767,5 +1347,92 @@ mod tests {
             projected.status,
             chat2db_contract::TransferTaskStatus::Interrupted
         );
+    }
+
+    fn test_runtime_config(directory: &Path) -> RuntimeConfig {
+        RuntimeConfig::new(EngineConfig::new(EngineCommand::new(
+            directory.join("missing-java"),
+        )))
+        .with_data_dir(directory.join("data"))
+        .with_vault_master_key_base64(STANDARD.encode([0x74; 32]))
+    }
+
+    fn test_job<Runner, RunnerFuture>(task_name: &str, runner: Runner) -> TransferJobSpec
+    where
+        Runner: FnOnce(Application, TransferContext) -> RunnerFuture + Send + 'static,
+        RunnerFuture: Future<Output = Result<TaskCompletion, TransferRunError>> + Send + 'static,
+    {
+        TransferJobSpec::new(
+            "test-driver".to_owned(),
+            "test-database".to_owned(),
+            String::new(),
+            None,
+            TransferJobKind::ImportFile,
+            task_name.to_owned(),
+            runner,
+        )
+    }
+
+    fn waiting_job(task_name: &str, started: oneshot::Sender<()>) -> TransferJobSpec {
+        test_job(task_name, move |_application, context| async move {
+            let _ = started.send(());
+            context.cancellation().cancelled().await;
+            Err(TransferRunError::Cancelled)
+        })
+    }
+
+    async fn panicking_runner(
+        _application: Application,
+        _context: TransferContext,
+    ) -> Result<TaskCompletion, TransferRunError> {
+        panic!("intentional transfer runner panic");
+    }
+
+    async fn wait_until_started(started: oneshot::Receiver<()>) {
+        tokio::time::timeout(Duration::from_secs(2), started)
+            .await
+            .expect("generic transfer must start before timeout")
+            .expect("generic transfer runner must signal startup");
+    }
+
+    async fn wait_for_status(
+        application: &Application,
+        task_id: i64,
+        expected: chat2db_contract::TransferTaskStatus,
+    ) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let task = application
+                    .transfer_task(task_id)
+                    .await
+                    .expect("generic transfer task must remain readable");
+                if task.status == expected {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("generic transfer status must settle before timeout");
+    }
+
+    async fn wait_for_hub_removal(application: &Application, task_id: i64) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if !application
+                    .inner
+                    .transfer_tasks
+                    .tasks
+                    .lock()
+                    .await
+                    .contains_key(&task_id)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("terminal transfer must leave the active hub before timeout");
     }
 }

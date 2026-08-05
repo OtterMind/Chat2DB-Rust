@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
-use super::{TaskCompletion, TransferContext, TransferRunError, format};
+use super::{PendingTransferArtifact, TaskCompletion, TransferContext, TransferRunError, format};
 use crate::{AppError, AppErrorKind, Application, native_mysql};
 
 const IMPORT_BATCH_ROWS: usize = 256;
@@ -1131,13 +1131,20 @@ async fn publish_task_artifact(
         None => None,
     };
     context.check_cancelled()?;
-    let artifact = writer.finish().map_err(AppError::from)?;
-    if let Some(pending) = pending
-        && let Err(error) = pending.publish().await
-    {
-        tracing::warn!(%error, artifact_id = %artifact.id, "managed transfer succeeded but exportPath publication failed");
-    }
-    Ok(TaskCompletion::Artifact(artifact))
+    Ok(TaskCompletion::Artifact(PendingTransferArtifact::new(
+        move || async move {
+            let artifact = tokio::task::spawn_blocking(move || writer.finish())
+                .await
+                .map_err(|_| AppError::internal())?
+                .map_err(AppError::from)?;
+            if let Some(pending) = pending
+                && let Err(error) = pending.publish().await
+            {
+                tracing::warn!(%error, artifact_id = %artifact.id, "managed transfer succeeded but exportPath publication failed");
+            }
+            Ok(artifact)
+        },
+    )))
 }
 
 struct PendingUserCopy {

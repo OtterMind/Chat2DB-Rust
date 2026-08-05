@@ -9,17 +9,24 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     AppError, Application,
     datasource_session::ResolvedDatasourceConnection,
+    native_administration_types::{
+        AdministrationCapability, AdministrationCommand, AdministrationExecution,
+        AdministrationPreview, PrincipalGrantList, PrincipalGrantsRequest, PrincipalList,
+    },
     native_driver_types::{
-        ColumnList, DatabaseList, EntityRelationTable, ForeignKeyList, FunctionList,
-        FunctionMetadata, FunctionParameterList, IndexList, ListColumnsRequest,
-        ListDatabasesRequest, ListIndexesRequest, ListRoutinesRequest, ListSchemasRequest,
-        ListTableKeysRequest, ListTablesRequest, ListTriggersRequest, ListViewsRequest, ObjectRef,
+        BuiltSql, ColumnList, CreateSchemaSqlRequest, DatabaseList, DmlExportTransferRequest,
+        DmlSqlRequest, EntityRelationTable, ExportArtifact, ForeignKeyList, FunctionList,
+        FunctionMetadata, FunctionParameterList, ImportTransferRequest, IndexList,
+        ListColumnsRequest, ListDatabasesRequest, ListIndexesRequest, ListRoutinesRequest,
+        ListSchemasRequest, ListTableKeysRequest, ListTablesRequest, ListTriggersRequest,
+        ListViewsRequest, NamespaceSqlRequest, ObjectRef, OtherExportTransferRequest,
         PrimaryKeyList, ProcedureList, ProcedureMetadata, ProcedureParameterList,
         RoutineInvocationPreview, RoutineInvocationRequest, RoutineMigrationExecution,
-        RoutineMigrationRequest, SchemaList, TableList, TableMetadata, TablePreviewAccepted,
-        TablePreviewRequest, TriggerList, TriggerMetadata, ViewList,
+        RoutineMigrationRequest, SchemaList, SqlExportTransferRequest, TableList, TableMetadata,
+        TablePreviewAccepted, TablePreviewRequest, TriggerList, TriggerMetadata, ViewList,
     },
     native_mysql,
+    native_schema_diff_types::{SchemaDiffRequest, SchemaDiffSql},
     operation::CancellationRequest,
     query::{
         DatabaseWriteError, NativeConsoleRequest, NativeConsoleResult, PreparedQuery,
@@ -246,6 +253,87 @@ pub(crate) trait NativeRoutineDriver: Send + Sync {
     ) -> Result<RoutineMigrationExecution, AppError>;
 }
 
+/// Import and export operations implemented by a native Rust driver.
+#[async_trait]
+pub(crate) trait NativeTransferDriver: Send + Sync {
+    async fn import_file(
+        &self,
+        application: &Application,
+        request: ImportTransferRequest,
+    ) -> Result<crate::transfer::TransferJobSpec, AppError>;
+
+    async fn export_sql_file(
+        &self,
+        application: &Application,
+        request: SqlExportTransferRequest,
+    ) -> Result<crate::transfer::TransferJobSpec, AppError>;
+
+    async fn export_other_file(
+        &self,
+        application: &Application,
+        request: OtherExportTransferRequest,
+    ) -> Result<crate::transfer::TransferJobSpec, AppError>;
+
+    async fn export_dml(
+        &self,
+        application: &Application,
+        request: DmlExportTransferRequest,
+    ) -> Result<ExportArtifact, AppError>;
+}
+
+/// Structured SQL builders supplied by one native database dialect.
+pub(crate) trait NativeDialectDriver: Send + Sync {
+    fn build_create_schema(&self, request: CreateSchemaSqlRequest) -> Result<BuiltSql, AppError>;
+
+    fn build_namespace_sql(&self, request: NamespaceSqlRequest) -> Result<BuiltSql, AppError>;
+
+    fn build_dml(&self, request: DmlSqlRequest) -> Result<BuiltSql, AppError>;
+}
+
+/// Database account and role administration implemented by a native driver.
+#[async_trait]
+pub(crate) trait NativeAdministrationDriver: Send + Sync {
+    async fn administration_capability(
+        &self,
+        application: &Application,
+        datasource_id: &str,
+    ) -> Result<AdministrationCapability, AppError>;
+
+    async fn list_principals(
+        &self,
+        application: &Application,
+        datasource_id: &str,
+    ) -> Result<PrincipalList, AppError>;
+
+    async fn principal_grants(
+        &self,
+        application: &Application,
+        request: &PrincipalGrantsRequest,
+    ) -> Result<PrincipalGrantList, AppError>;
+
+    fn preview_administration(
+        &self,
+        application: &Application,
+        request: &AdministrationCommand,
+    ) -> Result<AdministrationPreview, AppError>;
+
+    async fn execute_administration(
+        &self,
+        application: &Application,
+        request: &AdministrationCommand,
+    ) -> Result<AdministrationExecution, AppError>;
+}
+
+/// Schema-comparison operations implemented by a native Rust driver.
+#[async_trait]
+pub(crate) trait NativeSchemaDiffDriver: Send + Sync {
+    async fn preview_schema_diff(
+        &self,
+        application: &Application,
+        request: &SchemaDiffRequest,
+    ) -> Result<SchemaDiffSql, AppError>;
+}
+
 /// Runtime-polymorphic native Rust database driver.
 ///
 /// Optional capability accessors allow a driver to participate only in the
@@ -277,6 +365,22 @@ pub(crate) trait NativeDriver: Send + Sync {
     }
 
     fn routines(&self) -> Option<&dyn NativeRoutineDriver> {
+        None
+    }
+
+    fn transfer(&self) -> Option<&dyn NativeTransferDriver> {
+        None
+    }
+
+    fn dialect(&self) -> Option<&dyn NativeDialectDriver> {
+        None
+    }
+
+    fn administration(&self) -> Option<&dyn NativeAdministrationDriver> {
+        None
+    }
+
+    fn schema_diff(&self) -> Option<&dyn NativeSchemaDiffDriver> {
         None
     }
 }
@@ -409,6 +513,22 @@ impl NativeDriver for MysqlNativeDriver {
     }
 
     fn routines(&self) -> Option<&dyn NativeRoutineDriver> {
+        Some(self)
+    }
+
+    fn transfer(&self) -> Option<&dyn NativeTransferDriver> {
+        Some(self)
+    }
+
+    fn dialect(&self) -> Option<&dyn NativeDialectDriver> {
+        Some(self)
+    }
+
+    fn administration(&self) -> Option<&dyn NativeAdministrationDriver> {
+        Some(self)
+    }
+
+    fn schema_diff(&self) -> Option<&dyn NativeSchemaDiffDriver> {
         Some(self)
     }
 }
@@ -814,6 +934,109 @@ impl NativeRoutineDriver for MysqlNativeDriver {
     }
 }
 
+#[async_trait]
+impl NativeTransferDriver for MysqlNativeDriver {
+    async fn import_file(
+        &self,
+        application: &Application,
+        request: ImportTransferRequest,
+    ) -> Result<crate::transfer::TransferJobSpec, AppError> {
+        crate::transfer::mysql_impl::import_file(application, request).await
+    }
+
+    async fn export_sql_file(
+        &self,
+        application: &Application,
+        request: SqlExportTransferRequest,
+    ) -> Result<crate::transfer::TransferJobSpec, AppError> {
+        crate::transfer::mysql_impl::export_sql_file(application, request).await
+    }
+
+    async fn export_other_file(
+        &self,
+        application: &Application,
+        request: OtherExportTransferRequest,
+    ) -> Result<crate::transfer::TransferJobSpec, AppError> {
+        crate::transfer::mysql_impl::export_other_file(application, request).await
+    }
+
+    async fn export_dml(
+        &self,
+        application: &Application,
+        request: DmlExportTransferRequest,
+    ) -> Result<ExportArtifact, AppError> {
+        crate::transfer::mysql_impl::export_dml(application, request).await
+    }
+}
+
+impl NativeDialectDriver for MysqlNativeDriver {
+    fn build_create_schema(&self, request: CreateSchemaSqlRequest) -> Result<BuiltSql, AppError> {
+        crate::mysql_ddl::build_mysql_create_schema_request(request)
+    }
+
+    fn build_namespace_sql(&self, request: NamespaceSqlRequest) -> Result<BuiltSql, AppError> {
+        crate::mysql_ddl::build_mysql_namespace_request(request)
+    }
+
+    fn build_dml(&self, request: DmlSqlRequest) -> Result<BuiltSql, AppError> {
+        crate::mysql_ddl::build_mysql_dml_request(request)
+    }
+}
+
+#[async_trait]
+impl NativeAdministrationDriver for MysqlNativeDriver {
+    async fn administration_capability(
+        &self,
+        application: &Application,
+        datasource_id: &str,
+    ) -> Result<AdministrationCapability, AppError> {
+        crate::mysql_account::mysql_account_capability(application, datasource_id).await
+    }
+
+    async fn list_principals(
+        &self,
+        application: &Application,
+        datasource_id: &str,
+    ) -> Result<PrincipalList, AppError> {
+        crate::mysql_account::list_mysql_accounts(application, datasource_id).await
+    }
+
+    async fn principal_grants(
+        &self,
+        application: &Application,
+        request: &PrincipalGrantsRequest,
+    ) -> Result<PrincipalGrantList, AppError> {
+        crate::mysql_account::mysql_account_grants(application, request).await
+    }
+
+    fn preview_administration(
+        &self,
+        application: &Application,
+        request: &AdministrationCommand,
+    ) -> Result<AdministrationPreview, AppError> {
+        crate::mysql_account::preview_mysql_account(application, request)
+    }
+
+    async fn execute_administration(
+        &self,
+        application: &Application,
+        request: &AdministrationCommand,
+    ) -> Result<AdministrationExecution, AppError> {
+        crate::mysql_account::execute_mysql_account(application, request).await
+    }
+}
+
+#[async_trait]
+impl NativeSchemaDiffDriver for MysqlNativeDriver {
+    async fn preview_schema_diff(
+        &self,
+        application: &Application,
+        request: &SchemaDiffRequest,
+    ) -> Result<SchemaDiffSql, AppError> {
+        crate::mysql_schema_diff::preview_mysql_schema_diff(application, request).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -857,6 +1080,10 @@ mod tests {
         fn connection(&self) -> &dyn NativeConnectionDriver {
             self
         }
+
+        fn dialect(&self) -> Option<&dyn NativeDialectDriver> {
+            Some(self)
+        }
     }
 
     #[async_trait]
@@ -866,6 +1093,29 @@ mod tests {
             _connection: &DatasourceConnection,
         ) -> Result<(), AppError> {
             Ok(())
+        }
+    }
+
+    impl NativeDialectDriver for FakePostgresDriver {
+        fn build_create_schema(
+            &self,
+            request: CreateSchemaSqlRequest,
+        ) -> Result<BuiltSql, AppError> {
+            Ok(BuiltSql {
+                sql: format!("fake-postgres:create-schema:{}", request.schema.name),
+            })
+        }
+
+        fn build_namespace_sql(&self, _request: NamespaceSqlRequest) -> Result<BuiltSql, AppError> {
+            Ok(BuiltSql {
+                sql: "fake-postgres:namespace".to_owned(),
+            })
+        }
+
+        fn build_dml(&self, _request: DmlSqlRequest) -> Result<BuiltSql, AppError> {
+            Ok(BuiltSql {
+                sql: "fake-postgres:dml".to_owned(),
+            })
         }
     }
 
@@ -888,6 +1138,25 @@ mod tests {
                 .implementation(),
             "fake_postgres"
         );
+    }
+
+    #[tokio::test]
+    async fn application_dispatches_a_postgres_capability_through_the_registry() {
+        let registry = NativeDriverRegistry::try_new(vec![Arc::new(FakePostgresDriver)])
+            .expect("registry is valid");
+        let application = Application::with_native_drivers_for_test(registry);
+
+        let built = application
+            .build_community_namespace_sql(chat2db_contract::BuildCommunityNamespaceSqlRequest {
+                database_type: "POSTGRESQL".to_owned(),
+                operation: chat2db_contract::CommunityNamespaceSqlOperation::UseDatabase {
+                    database_name: "inventory".to_owned(),
+                },
+            })
+            .await
+            .expect("application must dispatch to the fake PostgreSQL capability");
+
+        assert_eq!(built.sql, "fake-postgres:namespace");
     }
 
     #[test]

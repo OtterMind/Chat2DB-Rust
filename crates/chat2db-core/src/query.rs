@@ -224,15 +224,6 @@ impl Application {
             .await
     }
 
-    pub(crate) async fn execute_mysql_read_console(
-        &self,
-        request: MysqlConsoleRequest,
-        cancellation: MysqlConsoleCancellation,
-    ) -> Result<Vec<MysqlConsoleResult>, AppError> {
-        self.execute_native_read_console(request, cancellation)
-            .await
-    }
-
     async fn execute_native_console_with_mode(
         &self,
         request: NativeConsoleRequest,
