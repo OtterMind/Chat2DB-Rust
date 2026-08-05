@@ -1,13 +1,10 @@
 use std::path::Path;
 
-use chat2db_contract::{
-    DmlExportRequest, ImportFileRequest, OtherFileExportRequest, SqlFileExportRequest,
-    TransferArtifact,
-};
+use chat2db_contract::{ImportFileRequest, SqlFileExportRequest, TransferArtifact};
 
 use super::{
-    TransferJobKind, TransferJobSpec, mysql, single_table, transfer_artifact,
-    validate_import_request, validate_transfer_scope,
+    QueryResultExportRequest, TableFileExportRequest, TransferJobKind, TransferJobSpec, mysql,
+    single_table, transfer_artifact, validate_import_request, validate_transfer_scope,
 };
 use crate::{AppError, Application, native_mysql};
 
@@ -55,9 +52,9 @@ pub(crate) async fn export_sql_file(
     ))
 }
 
-pub(crate) async fn export_other_file(
+pub(crate) async fn export_table_file(
     application: &Application,
-    request: OtherFileExportRequest,
+    request: TableFileExportRequest,
 ) -> Result<TransferJobSpec, AppError> {
     validate_transfer_scope(&request.datasource_id, request.export_path.as_deref())?;
     validate_mysql_database(&request.database_name)?;
@@ -80,17 +77,17 @@ pub(crate) async fn export_other_file(
             request.table_names.len()
         ),
         move |application, context| async move {
-            mysql::export_other(&application, request, &context).await
+            mysql::export_table_file(&application, request, &context).await
         },
     ))
 }
 
-pub(crate) async fn export_dml(
+pub(crate) async fn export_query_result(
     application: &Application,
-    request: DmlExportRequest,
+    request: QueryResultExportRequest,
 ) -> Result<TransferArtifact, AppError> {
     native_mysql::resolve_native_connection(application, &request.datasource_id).await?;
-    mysql::export_dml(application, request)
+    mysql::export_query_result(application, request)
         .await
         .map(transfer_artifact)
 }

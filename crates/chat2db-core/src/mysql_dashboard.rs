@@ -2,9 +2,8 @@ use std::collections::HashMap;
 
 use chat2db_contract::{
     ApiError, CommunityChart, CommunityDashboard, CommunityDashboardListQuery,
-    CommunityDashboardPage, CommunityTableColumn, CreateCommunityChartRequest,
-    CreateCommunityDashboardRequest, JdbcValue, ListCommunityColumnsRequest, ResultColumn,
-    UpdateCommunityChartRequest, UpdateCommunityDashboardRequest,
+    CommunityDashboardPage, CreateCommunityChartRequest, CreateCommunityDashboardRequest,
+    JdbcValue, ResultColumn, UpdateCommunityChartRequest, UpdateCommunityDashboardRequest,
 };
 use chat2db_storage::CreateOperationLog;
 use serde_json::{Map, Value, json};
@@ -16,7 +15,9 @@ use sqlparser::{
 
 use crate::{
     AppError, AppErrorKind, Application, NativeConsoleCancellation, NativeConsoleRequest,
-    NativeConsoleResult, now_millis, storage_call,
+    NativeConsoleResult,
+    native_driver_types::{ColumnMetadata, ListColumnsRequest, MetadataScope, TableRef},
+    now_millis, storage_call,
 };
 
 const CHART_PAGE_SIZE: u32 = 200;
@@ -193,7 +194,7 @@ impl Application {
                 return Err(error);
             }
         };
-        let header_metadata = self.chart_header_metadata(&context, &database_type).await;
+        let header_metadata = self.chart_header_metadata(&context).await;
         chart.meta_data = Some(chart_metadata(&result, header_metadata.as_ref())?);
         self.record_chart_history(&chart, &context, Some(&database_type), Some(&result), None)
             .await;
@@ -206,7 +207,8 @@ impl Application {
     ) -> Result<String, AppError> {
         self.require_native_driver_for_datasource(&context.datasource_id)
             .await?
-            .database_types()
+            .descriptor()
+            .database_types
             .first()
             .copied()
             .map(str::to_owned)
@@ -297,8 +299,7 @@ impl Application {
     async fn chart_header_metadata(
         &self,
         context: &ChartRefreshContext,
-        database_type: &str,
-    ) -> Option<HashMap<String, CommunityTableColumn>> {
+    ) -> Option<HashMap<String, ColumnMetadata>> {
         let table = chart_editable_table(&context.sql)?;
         let database_name = table
             .database_name
@@ -307,15 +308,33 @@ impl Application {
             .schema_name
             .clone()
             .unwrap_or_else(|| database_name.clone());
-        let columns = match self
-            .list_community_columns(ListCommunityColumnsRequest {
-                datasource_id: context.datasource_id.clone(),
-                database_type: database_type.to_owned(),
-                database_name,
-                schema_name,
-                table_name: table.table_name,
-            })
-            .await
+        let columns = match async {
+            let driver = self
+                .require_native_driver_for_datasource(&context.datasource_id)
+                .await?;
+            let metadata = driver.metadata().ok_or_else(|| {
+                AppError::invalid(
+                    "native_metadata_capability_not_available",
+                    "The native Rust driver does not implement metadata operations",
+                )
+            })?;
+            metadata
+                .list_columns(
+                    self,
+                    ListColumnsRequest {
+                        table: TableRef {
+                            scope: MetadataScope {
+                                datasource_id: context.datasource_id.clone(),
+                                database_name,
+                                schema_name,
+                            },
+                            table_name: table.table_name,
+                        },
+                    },
+                )
+                .await
+        }
+        .await
         {
             Ok(columns) => columns,
             Err(error) => {
@@ -450,7 +469,7 @@ fn non_editable_projection(item: &SelectItem) -> bool {
 
 fn chart_metadata(
     result: &NativeConsoleResult,
-    header_metadata: Option<&HashMap<String, CommunityTableColumn>>,
+    header_metadata: Option<&HashMap<String, ColumnMetadata>>,
 ) -> Result<Value, AppError> {
     let metadata = json!({
         "dataList": result
@@ -483,7 +502,7 @@ fn chart_metadata(
     Ok(metadata)
 }
 
-fn chart_header(column: &ResultColumn, metadata: Option<&CommunityTableColumn>) -> Value {
+fn chart_header(column: &ResultColumn, metadata: Option<&ColumnMetadata>) -> Value {
     let column_type = metadata.map_or(column.jdbc_type_name.as_str(), |column| {
         column.column_type.as_str()
     });
@@ -581,10 +600,10 @@ fn chart_editor_type(type_name: &str, jdbc_type: i32) -> &'static str {
 mod tests {
     use std::collections::HashMap;
 
-    use chat2db_contract::{
-        ColumnNullability, CommunityTableColumn, JdbcValue, JdbcValueType, ResultColumn, ResultRow,
-    };
+    use chat2db_contract::{ColumnNullability, JdbcValue, JdbcValueType, ResultColumn, ResultRow};
     use serde_json::json;
+
+    use crate::native_driver_types::ColumnMetadata;
 
     use super::{chart_data_type, chart_editable_table, chart_metadata, chart_refresh_context};
 
@@ -691,7 +710,7 @@ mod tests {
         };
         let header_metadata = HashMap::from([(
             "amount".to_owned(),
-            CommunityTableColumn {
+            ColumnMetadata {
                 name: "amount".to_owned(),
                 column_type: "DECIMAL".to_owned(),
                 auto_increment: Some(false),
@@ -700,7 +719,7 @@ mod tests {
                 column_size: Some(10),
                 decimal_digits: Some(2),
                 nullable: Some(1),
-                ..CommunityTableColumn::default()
+                ..ColumnMetadata::default()
             },
         )]);
         let metadata = chart_metadata(&result, Some(&header_metadata)).expect("chart metadata");

@@ -130,7 +130,10 @@ impl Application {
         if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
             && let Some(metadata) = driver.metadata()
         {
-            return metadata.list_schemas(self, request.into()).await;
+            return metadata
+                .list_schemas(self, request.into())
+                .await
+                .map(crate::native_api_adapter::schema_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -170,7 +173,10 @@ impl Application {
         if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
             && let Some(metadata) = driver.metadata()
         {
-            return metadata.list_databases(self, request.into()).await;
+            return metadata
+                .list_databases(self, request.into())
+                .await
+                .map(crate::native_api_adapter::database_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -209,7 +215,10 @@ impl Application {
         if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
             && let Some(metadata) = driver.metadata()
         {
-            return metadata.list_tables(self, request.into()).await;
+            return metadata
+                .list_tables(self, request.into())
+                .await
+                .map(crate::native_api_adapter::table_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -258,7 +267,10 @@ impl Application {
         if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
             && let Some(metadata) = driver.metadata()
         {
-            return metadata.list_columns(self, request.into()).await;
+            return metadata
+                .list_columns(self, request.into())
+                .await
+                .map(crate::native_api_adapter::column_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -359,7 +371,10 @@ impl Application {
         if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
             && let Some(metadata) = driver.metadata()
         {
-            return metadata.list_indexes(self, request.into()).await;
+            return metadata
+                .list_indexes(self, request.into())
+                .await
+                .map(crate::native_api_adapter::index_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -408,7 +423,10 @@ impl Application {
         if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
             && let Some(metadata) = driver.metadata()
         {
-            return metadata.list_views(self, request.into()).await;
+            return metadata
+                .list_views(self, request.into())
+                .await
+                .map(crate::native_api_adapter::view_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -458,7 +476,10 @@ impl Application {
         if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
             && let Some(metadata) = driver.metadata()
         {
-            return metadata.get_view(self, request.into()).await;
+            return metadata
+                .get_view(self, request.into())
+                .await
+                .map(crate::native_api_adapter::table_response);
         }
         self.list_community_views(request)
             .await?
@@ -485,7 +506,10 @@ impl Application {
         if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
             && let Some(metadata) = driver.metadata()
         {
-            return metadata.list_imported_keys(self, request.into()).await;
+            return metadata
+                .list_imported_keys(self, request.into())
+                .await
+                .map(crate::native_api_adapter::foreign_key_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -534,7 +558,10 @@ impl Application {
         if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
             && let Some(metadata) = driver.metadata()
         {
-            return metadata.list_exported_keys(self, request.into()).await;
+            return metadata
+                .list_exported_keys(self, request.into())
+                .await
+                .map(crate::native_api_adapter::foreign_key_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -583,7 +610,10 @@ impl Application {
         if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
             && let Some(metadata) = driver.metadata()
         {
-            return metadata.list_primary_keys(self, request.into()).await;
+            return metadata
+                .list_primary_keys(self, request.into())
+                .await
+                .map(crate::native_api_adapter::primary_key_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -632,7 +662,10 @@ impl Application {
         if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
             && let Some(metadata) = driver.metadata()
         {
-            return metadata.list_functions(self, request.into()).await;
+            return metadata
+                .list_functions(self, request.into())
+                .await
+                .map(crate::native_api_adapter::function_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -673,7 +706,10 @@ impl Application {
         if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
             && let Some(metadata) = driver.metadata()
         {
-            return metadata.get_function(self, request.into()).await;
+            return metadata
+                .get_function(self, request.into())
+                .await
+                .map(crate::native_api_adapter::function_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -722,7 +758,8 @@ impl Application {
         {
             return metadata
                 .list_function_parameters(self, request.into())
-                .await;
+                .await
+                .map(crate::native_api_adapter::function_parameter_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -774,7 +811,10 @@ impl Application {
         if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
             && let Some(metadata) = driver.metadata()
         {
-            return metadata.list_procedures(self, request.into()).await;
+            return metadata
+                .list_procedures(self, request.into())
+                .await
+                .map(crate::native_api_adapter::procedure_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -815,7 +855,10 @@ impl Application {
         if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
             && let Some(metadata) = driver.metadata()
         {
-            return metadata.get_procedure(self, request.into()).await;
+            return metadata
+                .get_procedure(self, request.into())
+                .await
+                .map(crate::native_api_adapter::procedure_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -864,7 +907,8 @@ impl Application {
         {
             return metadata
                 .list_procedure_parameters(self, request.into())
-                .await;
+                .await
+                .map(crate::native_api_adapter::procedure_parameter_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -927,7 +971,11 @@ impl Application {
                 "The native Rust driver does not implement routine operations",
             )
         })?;
-        routines.preview_invocation(self, request.into()).await
+        routines
+            .preview_invocation(self, request.into())
+            .await
+            .map(crate::native_api_adapter::routine_invocation_response)
+            .map_err(crate::native_api_adapter::compatibility_api_error)
     }
 
     /// Previews the compensating `MySQL` routine-replacement script.
@@ -954,7 +1002,10 @@ impl Application {
                 "The native Rust driver does not implement routine operations",
             )
         })?;
-        routines.preview_migration(request.clone().into())
+        routines
+            .preview_migration(request.clone().into())
+            .map(crate::native_api_adapter::routine_invocation_response)
+            .map_err(crate::native_api_adapter::compatibility_api_error)
     }
 
     /// Replaces one `MySQL` routine and restores its before-image when apply fails.
@@ -982,7 +1033,11 @@ impl Application {
                 "The native Rust driver does not implement routine operations",
             )
         })?;
-        routines.execute_migration(self, request.into()).await
+        routines
+            .execute_migration(self, request.into())
+            .await
+            .map(crate::native_api_adapter::routine_migration_execution_response)
+            .map_err(crate::native_api_adapter::compatibility_api_error)
     }
 
     /// Lists triggers through Community metadata using a forced read-only session.
@@ -997,7 +1052,10 @@ impl Application {
         if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
             && let Some(metadata) = driver.metadata()
         {
-            return metadata.list_triggers(self, request.into()).await;
+            return metadata
+                .list_triggers(self, request.into())
+                .await
+                .map(crate::native_api_adapter::trigger_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -1038,7 +1096,10 @@ impl Application {
         if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
             && let Some(metadata) = driver.metadata()
         {
-            return metadata.get_trigger(self, request.into()).await;
+            return metadata
+                .get_trigger(self, request.into())
+                .await
+                .map(crate::native_api_adapter::trigger_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -1175,7 +1236,9 @@ impl Application {
         {
             return tables
                 .start_table_preview(self, request.into(), row_limit)
-                .await;
+                .await
+                .map(crate::native_api_adapter::table_preview_response)
+                .map_err(crate::native_api_adapter::compatibility_api_error);
         }
 
         let engine = self.require_community_engine().await?;
@@ -2295,6 +2358,7 @@ fn preserve_primary_result<T>(
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
     use chat2db_contract::{
         BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest, CommunityDatabase,
         CommunityDmlColumn, CommunityDmlRow, CommunityDmlStatement, CommunityDmlTarget,
@@ -2304,9 +2368,10 @@ mod tests {
         CommunityPluginServices, CommunityPrimaryKey, CommunityProcedure,
         CommunityProcedureParameter, CommunitySchema, CommunitySqlAnalysis, CommunitySqlDiagnostic,
         CommunitySqlValidation, CommunityTable, CommunityTableColumn, CommunityTableIndex,
-        CommunityTableIndexColumn, CommunityTrigger, ListCommunityColumnsRequest,
-        ListCommunityDatabasesRequest, ListCommunityIndexesRequest, ListCommunitySchemasRequest,
-        ListCommunityTableKeysRequest, ListCommunityTablesRequest, ListCommunityViewsRequest,
+        CommunityTableIndexColumn, CommunityTrigger, DatasourceConnection,
+        ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityIndexesRequest,
+        ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
+        ListCommunityViewsRequest,
     };
     use chat2db_java_bridge::{
         CommunityDatabase as BridgeCommunityDatabase,
@@ -2347,7 +2412,91 @@ mod tests {
         run_cancellation_safe, run_cancellation_safe_with_cleanup, table_preview_row_limit,
         validate_table_preview_sql,
     };
-    use crate::{AppError, AppErrorKind};
+    use crate::{
+        AppError, AppErrorKind,
+        native_driver::{
+            NativeConnectionDriver, NativeDialectDriver, NativeDriver, NativeDriverRegistry,
+        },
+        native_driver_types::{
+            BuiltSql, CreateSchemaSqlRequest, DmlSqlRequest, NamespaceSqlRequest,
+            NativeDriverDescriptor,
+        },
+    };
+
+    struct FakePostgresDriver;
+
+    const FAKE_POSTGRES_DESCRIPTOR: NativeDriverDescriptor = NativeDriverDescriptor {
+        id: "postgresql",
+        implementation: "fake_postgres",
+        database_types: &["POSTGRESQL"],
+        compatibility_aliases: &["postgresql", "org.postgresql.Driver"],
+    };
+
+    impl NativeDriver for FakePostgresDriver {
+        fn descriptor(&self) -> &'static NativeDriverDescriptor {
+            &FAKE_POSTGRES_DESCRIPTOR
+        }
+
+        fn connection(&self) -> &dyn NativeConnectionDriver {
+            self
+        }
+
+        fn dialect(&self) -> Option<&dyn NativeDialectDriver> {
+            Some(self)
+        }
+    }
+
+    #[async_trait]
+    impl NativeConnectionDriver for FakePostgresDriver {
+        async fn test_connection(
+            &self,
+            _connection: &DatasourceConnection,
+        ) -> Result<(), AppError> {
+            Ok(())
+        }
+    }
+
+    impl NativeDialectDriver for FakePostgresDriver {
+        fn build_create_schema(
+            &self,
+            request: CreateSchemaSqlRequest,
+        ) -> Result<BuiltSql, AppError> {
+            Ok(BuiltSql {
+                sql: format!("fake-postgres:create-schema:{}", request.schema.name),
+            })
+        }
+
+        fn build_namespace_sql(&self, _request: NamespaceSqlRequest) -> Result<BuiltSql, AppError> {
+            Ok(BuiltSql {
+                sql: "fake-postgres:namespace".to_owned(),
+            })
+        }
+
+        fn build_dml(&self, _request: DmlSqlRequest) -> Result<BuiltSql, AppError> {
+            Ok(BuiltSql {
+                sql: "fake-postgres:dml".to_owned(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn compatibility_namespace_api_dispatches_through_the_native_registry() {
+        let registry = NativeDriverRegistry::try_new(vec![Arc::new(FakePostgresDriver)])
+            .expect("registry is valid");
+        let application = Application::with_native_drivers_for_test(registry);
+
+        let response = application
+            .build_community_namespace_sql(BuildCommunityNamespaceSqlRequest {
+                database_type: "POSTGRESQL".to_owned(),
+                operation: CommunityNamespaceSqlOperation::UseDatabase {
+                    database_name: "inventory".to_owned(),
+                },
+            })
+            .await
+            .expect("the compatibility API must use the registered native capability");
+
+        assert_eq!(response.sql, "fake-postgres:namespace");
+    }
 
     fn binary_dml_request(base64: &str) -> BuildCommunityDmlRequest {
         BuildCommunityDmlRequest {

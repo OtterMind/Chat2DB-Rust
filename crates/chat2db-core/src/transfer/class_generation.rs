@@ -5,14 +5,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use chat2db_contract::{CommunityTableColumn, GenerateMysqlClassRequest, GeneratedMysqlClassSet};
+use chat2db_contract::{GenerateMysqlClassRequest, GeneratedMysqlClassSet};
 use chat2db_storage::TransferArtifactRecord;
 use uuid::Uuid;
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
     AppError, Application,
-    native_driver_types::{ListColumnsRequest, MetadataScope, TableRef},
+    native_driver_types::{ColumnMetadata, ListColumnsRequest, MetadataScope, TableRef},
     now_millis,
 };
 
@@ -172,7 +172,7 @@ fn write_class_set(
 
 fn render_class_set(
     table_name: &str,
-    columns: &[CommunityTableColumn],
+    columns: &[ColumnMetadata],
 ) -> Result<RenderedClassSet, AppError> {
     let class_name = format!("{}DO", upper_camel(table_name));
     let entity_name = format!("{class_name}.java");
@@ -232,7 +232,7 @@ fn safe_archive_component(value: &str) -> String {
     }
 }
 
-fn render_entity(class_name: &str, table_name: &str, columns: &[CommunityTableColumn]) -> String {
+fn render_entity(class_name: &str, table_name: &str, columns: &[ColumnMetadata]) -> String {
     let mut imports = BTreeSet::from([
         "com.baomidou.mybatisplus.annotation.TableField",
         "com.baomidou.mybatisplus.annotation.TableName",

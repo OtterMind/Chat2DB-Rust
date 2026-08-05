@@ -99,6 +99,7 @@ impl Application {
                 &request.schema_name,
             )
             .await?;
+        let tables = crate::native_api_adapter::er_tables_response(tables);
         let storage = self.require_storage()?;
         let position = storage_call(move || {
             storage.mysql_er_position(

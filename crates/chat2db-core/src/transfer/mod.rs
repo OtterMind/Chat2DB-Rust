@@ -1,7 +1,7 @@
 mod class_generation;
 mod format;
 mod mysql;
-pub(crate) mod mysql_impl;
+pub(crate) mod mysql_driver;
 
 use std::{
     collections::HashMap, fmt::Write as _, fs::File, future::Future, path::PathBuf, pin::Pin,
@@ -9,9 +9,10 @@ use std::{
 };
 
 use chat2db_contract::{
-    DmlExportRequest, GenerateMysqlClassRequest, GeneratedMysqlClassSet, ImportFileRequest,
-    OtherFileExportRequest, SqlFileExportRequest, TransferArtifact, TransferTask,
-    TransferTaskAccepted, TransferTaskKind, TransferTaskPage, TransferTaskStatus,
+    DmlExportFormat, DmlExportRequest, DmlExportSize, GenerateMysqlClassRequest,
+    GeneratedMysqlClassSet, ImportFileRequest, OtherFileExportRequest, SqlFileExportRequest,
+    TransferArtifact, TransferFileFormat, TransferTask, TransferTaskAccepted, TransferTaskKind,
+    TransferTaskPage, TransferTaskStatus,
 };
 use chat2db_storage::{
     CreateTransferTask, ResolvedTransferArtifact, Storage, StorageError, StoredTransferTaskKind,
@@ -69,6 +70,90 @@ pub struct TransferArtifactDownload {
     pub artifact: TransferArtifact,
     pub path: PathBuf,
     pub file: File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TableFileExportRequest {
+    pub(crate) datasource_id: String,
+    pub(crate) database_name: String,
+    pub(crate) schema_name: String,
+    pub(crate) table_names: Vec<String>,
+    pub(crate) format: TransferFileFormat,
+    pub(crate) contains_header: bool,
+    pub(crate) export_path: Option<String>,
+}
+
+impl From<OtherFileExportRequest> for TableFileExportRequest {
+    fn from(request: OtherFileExportRequest) -> Self {
+        Self {
+            datasource_id: request.datasource_id,
+            database_name: request.database_name,
+            schema_name: request.schema_name,
+            table_names: request.table_names,
+            format: request.format,
+            contains_header: request.contains_header,
+            export_path: request.export_path,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueryResultExportScope {
+    CurrentPage,
+    All,
+}
+
+impl From<DmlExportSize> for QueryResultExportScope {
+    fn from(scope: DmlExportSize) -> Self {
+        match scope {
+            DmlExportSize::CurrentPage => Self::CurrentPage,
+            DmlExportSize::All => Self::All,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueryResultExportFormat {
+    Csv,
+    Xlsx,
+    Insert,
+}
+
+impl From<DmlExportFormat> for QueryResultExportFormat {
+    fn from(format: DmlExportFormat) -> Self {
+        match format {
+            DmlExportFormat::Csv => Self::Csv,
+            DmlExportFormat::Xlsx => Self::Xlsx,
+            DmlExportFormat::Insert => Self::Insert,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct QueryResultExportRequest {
+    pub(crate) datasource_id: String,
+    pub(crate) database_name: String,
+    pub(crate) schema_name: String,
+    pub(crate) sql: String,
+    pub(crate) original_sql: String,
+    pub(crate) result_set_id: Option<u32>,
+    pub(crate) scope: QueryResultExportScope,
+    pub(crate) format: QueryResultExportFormat,
+}
+
+impl From<DmlExportRequest> for QueryResultExportRequest {
+    fn from(request: DmlExportRequest) -> Self {
+        Self {
+            datasource_id: request.datasource_id,
+            database_name: request.database_name,
+            schema_name: request.schema_name,
+            sql: request.sql,
+            original_sql: request.original_sql,
+            result_set_id: request.result_set_id,
+            scope: request.export_size.into(),
+            format: request.format.into(),
+        }
+    }
 }
 
 impl std::fmt::Debug for TransferArtifactDownload {
@@ -401,9 +486,9 @@ impl Application {
     /// # Errors
     ///
     /// Returns validation, datasource, storage, or runtime-shutdown failures.
-    pub async fn export_other_file(
+    pub(crate) async fn export_table_file(
         &self,
-        request: OtherFileExportRequest,
+        request: TableFileExportRequest,
     ) -> Result<TransferTaskAccepted, AppError> {
         let driver = self
             .require_native_driver_for_datasource(&request.datasource_id)
@@ -414,11 +499,23 @@ impl Application {
                 "The native Rust driver does not implement import and export operations",
             )
         })?;
-        let spec = transfer.export_other_file(self, request).await?;
+        let spec = transfer.export_table_file(self, request).await?;
         self.start_transfer_job(spec).await
     }
 
-    /// Retained `MySQL` compatibility name for [`Self::export_other_file`].
+    /// Retained compatibility entry point for [`Self::export_table_file`].
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, datasource, storage, or runtime-shutdown failures.
+    pub async fn export_other_file(
+        &self,
+        request: OtherFileExportRequest,
+    ) -> Result<TransferTaskAccepted, AppError> {
+        self.export_table_file(request.into()).await
+    }
+
+    /// Retained `MySQL` compatibility name for [`Self::export_table_file`].
     ///
     /// # Errors
     ///
@@ -560,14 +657,14 @@ impl Application {
         self.transfer_artifact_download(&artifact_id).await
     }
 
-    /// Streams one DML result into a temporary managed CSV, XLSX, or INSERT artifact.
+    /// Streams one query result into a temporary managed CSV, XLSX, or INSERT artifact.
     ///
     /// # Errors
     ///
     /// Returns SQL analysis, datasource, query, format, or storage failures.
-    pub async fn export_dml(
+    pub(crate) async fn export_query_result(
         &self,
-        request: DmlExportRequest,
+        request: QueryResultExportRequest,
     ) -> Result<TransferArtifact, AppError> {
         let driver = self
             .require_native_driver_for_datasource(&request.datasource_id)
@@ -578,10 +675,22 @@ impl Application {
                 "The native Rust driver does not implement import and export operations",
             )
         })?;
-        transfer.export_dml(self, request).await
+        transfer.export_query_result(self, request).await
     }
 
-    /// Retained `MySQL` compatibility name for [`Self::export_dml`].
+    /// Retained compatibility entry point for [`Self::export_query_result`].
+    ///
+    /// # Errors
+    ///
+    /// Returns SQL analysis, datasource, query, format, or storage failures.
+    pub async fn export_dml(
+        &self,
+        request: DmlExportRequest,
+    ) -> Result<TransferArtifact, AppError> {
+        self.export_query_result(request.into()).await
+    }
+
+    /// Retained `MySQL` compatibility name for [`Self::export_query_result`].
     ///
     /// # Errors
     ///
@@ -1082,15 +1191,20 @@ mod tests {
     use std::{future::Future, path::Path, time::Duration};
 
     use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use chat2db_contract::{
+        DmlExportFormat, DmlExportRequest, DmlExportSize, OtherFileExportRequest,
+        TransferFileFormat,
+    };
     use chat2db_java_bridge::{EngineCommand, EngineConfig};
     use chat2db_storage::{StoredTransferTaskKind, StoredTransferTaskStatus, TransferTaskRecord};
     use tempfile::TempDir;
     use tokio::sync::oneshot;
 
     use super::{
-        MAX_TRANSFER_FAILURE_MESSAGE_BYTES, TaskCompletion, TransferContext, TransferJobKind,
-        TransferJobSpec, TransferRunError, TransferTaskControl, TransferTerminalState,
-        finalize_transfer_task, transfer_task,
+        MAX_TRANSFER_FAILURE_MESSAGE_BYTES, QueryResultExportFormat, QueryResultExportRequest,
+        QueryResultExportScope, TableFileExportRequest, TaskCompletion, TransferContext,
+        TransferJobKind, TransferJobSpec, TransferRunError, TransferTaskControl,
+        TransferTerminalState, finalize_transfer_task, transfer_task,
     };
     use crate::{AppError, Application, RuntimeConfig, RuntimeHost};
 
@@ -1102,6 +1216,74 @@ mod tests {
             Ok(TaskCompletion::WithoutArtifact("done".to_owned()))
         });
         assert_send(&spec);
+    }
+
+    #[test]
+    fn compatibility_table_file_request_maps_every_field() {
+        let request = TableFileExportRequest::from(OtherFileExportRequest {
+            datasource_id: "datasource".to_owned(),
+            database_name: "database".to_owned(),
+            schema_name: "schema".to_owned(),
+            table_names: vec!["first".to_owned(), "second".to_owned()],
+            format: TransferFileFormat::Xlsx,
+            contains_header: false,
+            export_path: Some("/tmp/export".to_owned()),
+        });
+
+        assert_eq!(request.datasource_id, "datasource");
+        assert_eq!(request.database_name, "database");
+        assert_eq!(request.schema_name, "schema");
+        assert_eq!(request.table_names, ["first", "second"]);
+        assert_eq!(request.format, TransferFileFormat::Xlsx);
+        assert!(!request.contains_header);
+        assert_eq!(request.export_path.as_deref(), Some("/tmp/export"));
+    }
+
+    #[test]
+    fn compatibility_query_result_request_maps_every_field() {
+        let request = QueryResultExportRequest::from(DmlExportRequest {
+            datasource_id: "datasource".to_owned(),
+            database_name: "database".to_owned(),
+            schema_name: "schema".to_owned(),
+            sql: "SELECT * FROM table LIMIT 10".to_owned(),
+            original_sql: "SELECT * FROM table".to_owned(),
+            result_set_id: Some(2),
+            export_size: DmlExportSize::CurrentPage,
+            format: DmlExportFormat::Insert,
+        });
+
+        assert_eq!(request.datasource_id, "datasource");
+        assert_eq!(request.database_name, "database");
+        assert_eq!(request.schema_name, "schema");
+        assert_eq!(request.sql, "SELECT * FROM table LIMIT 10");
+        assert_eq!(request.original_sql, "SELECT * FROM table");
+        assert_eq!(request.result_set_id, Some(2));
+        assert_eq!(request.scope, QueryResultExportScope::CurrentPage);
+        assert_eq!(request.format, QueryResultExportFormat::Insert);
+    }
+
+    #[test]
+    fn compatibility_query_result_enums_map_exhaustively() {
+        assert_eq!(
+            QueryResultExportScope::from(DmlExportSize::CurrentPage),
+            QueryResultExportScope::CurrentPage
+        );
+        assert_eq!(
+            QueryResultExportScope::from(DmlExportSize::All),
+            QueryResultExportScope::All
+        );
+        assert_eq!(
+            QueryResultExportFormat::from(DmlExportFormat::Csv),
+            QueryResultExportFormat::Csv
+        );
+        assert_eq!(
+            QueryResultExportFormat::from(DmlExportFormat::Xlsx),
+            QueryResultExportFormat::Xlsx
+        );
+        assert_eq!(
+            QueryResultExportFormat::from(DmlExportFormat::Insert),
+            QueryResultExportFormat::Insert
+        );
     }
 
     #[tokio::test]

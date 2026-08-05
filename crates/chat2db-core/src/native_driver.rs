@@ -1,7 +1,12 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
-use chat2db_contract::{DatasourceConnection, JdbcDriver, ResultMetadata};
+use chat2db_contract::{
+    DatasourceConnection, ImportFileRequest, ResultMetadata, SqlFileExportRequest, TransferArtifact,
+};
 use chat2db_storage::Storage;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -14,15 +19,14 @@ use crate::{
         AdministrationPreview, PrincipalGrantList, PrincipalGrantsRequest, PrincipalList,
     },
     native_driver_types::{
-        BuiltSql, ColumnList, CreateSchemaSqlRequest, DatabaseList, DmlExportTransferRequest,
-        DmlSqlRequest, EntityRelationTable, ExportArtifact, ForeignKeyList, FunctionList,
-        FunctionMetadata, FunctionParameterList, ImportTransferRequest, IndexList,
-        ListColumnsRequest, ListDatabasesRequest, ListIndexesRequest, ListRoutinesRequest,
-        ListSchemasRequest, ListTableKeysRequest, ListTablesRequest, ListTriggersRequest,
-        ListViewsRequest, NamespaceSqlRequest, ObjectRef, OtherExportTransferRequest,
-        PrimaryKeyList, ProcedureList, ProcedureMetadata, ProcedureParameterList,
-        RoutineInvocationPreview, RoutineInvocationRequest, RoutineMigrationExecution,
-        RoutineMigrationRequest, SchemaList, SqlExportTransferRequest, TableList, TableMetadata,
+        BuiltSql, ColumnList, CreateSchemaSqlRequest, DatabaseList, DmlSqlRequest,
+        EntityRelationTable, ForeignKeyList, FunctionList, FunctionMetadata, FunctionParameterList,
+        IndexList, ListColumnsRequest, ListDatabasesRequest, ListIndexesRequest,
+        ListRoutinesRequest, ListSchemasRequest, ListTableKeysRequest, ListTablesRequest,
+        ListTriggersRequest, ListViewsRequest, MetadataObjectRef, NamespaceSqlRequest,
+        NativeDriverDescriptor, PrimaryKeyList, ProcedureList, ProcedureMetadata,
+        ProcedureParameterList, RoutineInvocationPreview, RoutineInvocationRequest,
+        RoutineMigrationExecution, RoutineMigrationRequest, SchemaList, TableList, TableMetadata,
         TablePreviewAccepted, TablePreviewRequest, TriggerList, TriggerMetadata, ViewList,
     },
     native_mysql,
@@ -32,6 +36,7 @@ use crate::{
         DatabaseWriteError, NativeConsoleRequest, NativeConsoleResult, PreparedQuery,
         QueryTaskError,
     },
+    transfer::{QueryResultExportRequest, TableFileExportRequest},
 };
 
 /// Database connection operations implemented by one native Rust driver.
@@ -125,7 +130,7 @@ pub(crate) trait NativeMetadataDriver: Send + Sync {
     async fn get_view(
         &self,
         application: &Application,
-        request: ObjectRef,
+        request: MetadataObjectRef,
     ) -> Result<TableMetadata, AppError>;
 
     async fn list_imported_keys(
@@ -155,13 +160,13 @@ pub(crate) trait NativeMetadataDriver: Send + Sync {
     async fn get_function(
         &self,
         application: &Application,
-        request: ObjectRef,
+        request: MetadataObjectRef,
     ) -> Result<FunctionMetadata, AppError>;
 
     async fn list_function_parameters(
         &self,
         application: &Application,
-        request: ObjectRef,
+        request: MetadataObjectRef,
     ) -> Result<FunctionParameterList, AppError>;
 
     async fn list_procedures(
@@ -173,13 +178,13 @@ pub(crate) trait NativeMetadataDriver: Send + Sync {
     async fn get_procedure(
         &self,
         application: &Application,
-        request: ObjectRef,
+        request: MetadataObjectRef,
     ) -> Result<ProcedureMetadata, AppError>;
 
     async fn list_procedure_parameters(
         &self,
         application: &Application,
-        request: ObjectRef,
+        request: MetadataObjectRef,
     ) -> Result<ProcedureParameterList, AppError>;
 
     async fn list_triggers(
@@ -191,7 +196,7 @@ pub(crate) trait NativeMetadataDriver: Send + Sync {
     async fn get_trigger(
         &self,
         application: &Application,
-        request: ObjectRef,
+        request: MetadataObjectRef,
     ) -> Result<TriggerMetadata, AppError>;
 }
 
@@ -259,26 +264,26 @@ pub(crate) trait NativeTransferDriver: Send + Sync {
     async fn import_file(
         &self,
         application: &Application,
-        request: ImportTransferRequest,
+        request: ImportFileRequest,
     ) -> Result<crate::transfer::TransferJobSpec, AppError>;
 
     async fn export_sql_file(
         &self,
         application: &Application,
-        request: SqlExportTransferRequest,
+        request: SqlFileExportRequest,
     ) -> Result<crate::transfer::TransferJobSpec, AppError>;
 
-    async fn export_other_file(
+    async fn export_table_file(
         &self,
         application: &Application,
-        request: OtherExportTransferRequest,
+        request: TableFileExportRequest,
     ) -> Result<crate::transfer::TransferJobSpec, AppError>;
 
-    async fn export_dml(
+    async fn export_query_result(
         &self,
         application: &Application,
-        request: DmlExportTransferRequest,
-    ) -> Result<ExportArtifact, AppError>;
+        request: QueryResultExportRequest,
+    ) -> Result<TransferArtifact, AppError>;
 }
 
 /// Structured SQL builders supplied by one native database dialect.
@@ -340,15 +345,7 @@ pub(crate) trait NativeSchemaDiffDriver: Send + Sync {
 /// product surfaces it implements. Additional capability traits are attached
 /// here as native metadata and dialect services are migrated.
 pub(crate) trait NativeDriver: Send + Sync {
-    fn id(&self) -> &'static str;
-
-    fn implementation(&self) -> &'static str;
-
-    fn database_types(&self) -> &'static [&'static str];
-
-    fn descriptor(&self) -> JdbcDriver;
-
-    fn matches_driver(&self, driver_id: &str, descriptor: Option<&JdbcDriver>) -> bool;
+    fn descriptor(&self) -> &'static NativeDriverDescriptor;
 
     fn connection(&self) -> &dyn NativeConnectionDriver;
 
@@ -397,30 +394,58 @@ impl NativeDriverRegistry {
             .expect("built-in native drivers must have unique identities")
     }
 
-    fn try_new(drivers: Vec<Arc<dyn NativeDriver>>) -> Result<Self, AppError> {
-        let mut ids = HashSet::new();
-        let mut database_types = HashSet::new();
+    pub(crate) fn try_new(drivers: Vec<Arc<dyn NativeDriver>>) -> Result<Self, AppError> {
+        let mut driver_ids = HashSet::new();
+        let mut identifier_owners = HashMap::<String, String>::new();
         for driver in &drivers {
-            let id = driver.id().trim().to_ascii_lowercase();
-            if id.is_empty() || !ids.insert(id) {
+            let descriptor = driver.descriptor();
+            let trimmed_driver_id = descriptor.id.trim();
+            let driver_id = trimmed_driver_id.to_ascii_lowercase();
+            if driver_id.is_empty()
+                || descriptor.id != trimmed_driver_id
+                || !driver_ids.insert(driver_id.clone())
+            {
                 return Err(AppError::invalid(
                     "invalid_native_driver_registry",
-                    "native driver ids must be non-empty and unique",
+                    "native driver ids must be trimmed, non-empty, and unique",
                 ));
             }
-            if driver.database_types().is_empty() {
+            if descriptor.implementation.is_empty()
+                || descriptor.implementation != descriptor.implementation.trim()
+            {
+                return Err(AppError::invalid(
+                    "invalid_native_driver_registry",
+                    "native driver implementation names must be trimmed and non-empty",
+                ));
+            }
+            if descriptor.database_types.is_empty() {
                 return Err(AppError::invalid(
                     "invalid_native_driver_registry",
                     "native drivers must declare at least one database type",
                 ));
             }
-            for database_type in driver.database_types() {
-                let database_type = database_type.trim().to_ascii_lowercase();
-                if database_type.is_empty() || !database_types.insert(database_type) {
+
+            for identifier in std::iter::once(descriptor.id)
+                .chain(descriptor.database_types.iter().copied())
+                .chain(descriptor.compatibility_aliases.iter().copied())
+            {
+                let trimmed_identifier = identifier.trim();
+                if trimmed_identifier.is_empty() || identifier != trimmed_identifier {
                     return Err(AppError::invalid(
                         "invalid_native_driver_registry",
-                        "native database types must be non-empty and unique",
+                        "native driver identifiers and aliases must be trimmed and non-empty",
                     ));
+                }
+                let identifier = trimmed_identifier.to_ascii_lowercase();
+                if let Some(owner) = identifier_owners.get(&identifier) {
+                    if owner != &driver_id {
+                        return Err(AppError::invalid(
+                            "invalid_native_driver_registry",
+                            "native driver identifiers and aliases must have one owner",
+                        ));
+                    }
+                } else {
+                    identifier_owners.insert(identifier, driver_id.clone());
                 }
             }
         }
@@ -429,8 +454,27 @@ impl NativeDriverRegistry {
         })
     }
 
-    pub(crate) fn descriptors(&self) -> impl Iterator<Item = JdbcDriver> + '_ {
+    pub(crate) fn descriptors(&self) -> impl Iterator<Item = &'static NativeDriverDescriptor> + '_ {
         self.drivers.iter().map(|driver| driver.descriptor())
+    }
+
+    /// Resolves a persisted datasource driver ID to its native implementation.
+    pub(crate) fn driver_for_datasource_driver_id(
+        &self,
+        datasource_driver_id: &str,
+    ) -> Option<Arc<dyn NativeDriver>> {
+        let datasource_driver_id = datasource_driver_id.trim();
+        self.drivers
+            .iter()
+            .find(|driver| {
+                let descriptor = driver.descriptor();
+                descriptor.id.eq_ignore_ascii_case(datasource_driver_id)
+                    || descriptor
+                        .compatibility_aliases
+                        .iter()
+                        .any(|alias| alias.eq_ignore_ascii_case(datasource_driver_id))
+            })
+            .cloned()
     }
 
     pub(crate) fn driver_for_database_type(
@@ -441,59 +485,27 @@ impl NativeDriverRegistry {
             .iter()
             .find(|driver| {
                 driver
-                    .database_types()
+                    .descriptor()
+                    .database_types
                     .iter()
                     .any(|candidate| candidate.eq_ignore_ascii_case(database_type.trim()))
             })
-            .cloned()
-    }
-
-    pub(crate) fn driver_for_driver_id(
-        &self,
-        driver_id: &str,
-        managed_drivers: &[JdbcDriver],
-    ) -> Option<Arc<dyn NativeDriver>> {
-        let descriptor = managed_drivers
-            .iter()
-            .find(|driver| driver.driver_id == driver_id);
-        self.drivers
-            .iter()
-            .find(|driver| driver.matches_driver(driver_id, descriptor))
             .cloned()
     }
 }
 
 struct MysqlNativeDriver;
 
+const MYSQL_DRIVER_DESCRIPTOR: NativeDriverDescriptor = NativeDriverDescriptor {
+    id: "mysql",
+    implementation: "mysql_async",
+    database_types: &["MYSQL"],
+    compatibility_aliases: &["mysql", "mysql_async", "com.mysql"],
+};
+
 impl NativeDriver for MysqlNativeDriver {
-    fn id(&self) -> &'static str {
-        "mysql"
-    }
-
-    fn implementation(&self) -> &'static str {
-        "mysql_async"
-    }
-
-    fn database_types(&self) -> &'static [&'static str] {
-        &["MYSQL"]
-    }
-
-    fn descriptor(&self) -> JdbcDriver {
-        crate::datasource_compatibility::native_mysql_driver()
-    }
-
-    fn matches_driver(&self, driver_id: &str, descriptor: Option<&JdbcDriver>) -> bool {
-        if driver_id.eq_ignore_ascii_case(self.id()) {
-            return true;
-        }
-        descriptor.is_some_and(|driver| {
-            format!(
-                "{} {} {} {}",
-                driver.pack_id, driver.name, driver.driver_id, driver.driver_class
-            )
-            .to_ascii_lowercase()
-            .contains("mysql")
-        })
+    fn descriptor(&self) -> &'static NativeDriverDescriptor {
+        &MYSQL_DRIVER_DESCRIPTOR
     }
 
     fn connection(&self) -> &dyn NativeConnectionDriver {
@@ -677,14 +689,14 @@ impl NativeMetadataDriver for MysqlNativeDriver {
     async fn get_view(
         &self,
         application: &Application,
-        request: ObjectRef,
+        request: MetadataObjectRef,
     ) -> Result<TableMetadata, AppError> {
         native_mysql::get_view(
             application,
             &request.scope.datasource_id,
             &request.scope.database_name,
             &request.scope.schema_name,
-            &request.name,
+            &request.object_name,
         )
         .await
     }
@@ -749,14 +761,14 @@ impl NativeMetadataDriver for MysqlNativeDriver {
     async fn get_function(
         &self,
         application: &Application,
-        request: ObjectRef,
+        request: MetadataObjectRef,
     ) -> Result<FunctionMetadata, AppError> {
         native_mysql::get_function(
             application,
             &request.scope.datasource_id,
             &request.scope.database_name,
             &request.scope.schema_name,
-            &request.name,
+            &request.object_name,
         )
         .await
     }
@@ -764,14 +776,14 @@ impl NativeMetadataDriver for MysqlNativeDriver {
     async fn list_function_parameters(
         &self,
         application: &Application,
-        request: ObjectRef,
+        request: MetadataObjectRef,
     ) -> Result<FunctionParameterList, AppError> {
         native_mysql::list_function_parameters(
             application,
             &request.scope.datasource_id,
             &request.scope.database_name,
             &request.scope.schema_name,
-            &request.name,
+            &request.object_name,
         )
         .await
     }
@@ -793,14 +805,14 @@ impl NativeMetadataDriver for MysqlNativeDriver {
     async fn get_procedure(
         &self,
         application: &Application,
-        request: ObjectRef,
+        request: MetadataObjectRef,
     ) -> Result<ProcedureMetadata, AppError> {
         native_mysql::get_procedure(
             application,
             &request.scope.datasource_id,
             &request.scope.database_name,
             &request.scope.schema_name,
-            &request.name,
+            &request.object_name,
         )
         .await
     }
@@ -808,14 +820,14 @@ impl NativeMetadataDriver for MysqlNativeDriver {
     async fn list_procedure_parameters(
         &self,
         application: &Application,
-        request: ObjectRef,
+        request: MetadataObjectRef,
     ) -> Result<ProcedureParameterList, AppError> {
         native_mysql::list_procedure_parameters(
             application,
             &request.scope.datasource_id,
             &request.scope.database_name,
             &request.scope.schema_name,
-            &request.name,
+            &request.object_name,
         )
         .await
     }
@@ -837,14 +849,14 @@ impl NativeMetadataDriver for MysqlNativeDriver {
     async fn get_trigger(
         &self,
         application: &Application,
-        request: ObjectRef,
+        request: MetadataObjectRef,
     ) -> Result<TriggerMetadata, AppError> {
         native_mysql::get_trigger(
             application,
             &request.scope.datasource_id,
             &request.scope.database_name,
             &request.scope.schema_name,
-            &request.name,
+            &request.object_name,
         )
         .await
     }
@@ -939,33 +951,33 @@ impl NativeTransferDriver for MysqlNativeDriver {
     async fn import_file(
         &self,
         application: &Application,
-        request: ImportTransferRequest,
+        request: ImportFileRequest,
     ) -> Result<crate::transfer::TransferJobSpec, AppError> {
-        crate::transfer::mysql_impl::import_file(application, request).await
+        crate::transfer::mysql_driver::import_file(application, request).await
     }
 
     async fn export_sql_file(
         &self,
         application: &Application,
-        request: SqlExportTransferRequest,
+        request: SqlFileExportRequest,
     ) -> Result<crate::transfer::TransferJobSpec, AppError> {
-        crate::transfer::mysql_impl::export_sql_file(application, request).await
+        crate::transfer::mysql_driver::export_sql_file(application, request).await
     }
 
-    async fn export_other_file(
+    async fn export_table_file(
         &self,
         application: &Application,
-        request: OtherExportTransferRequest,
+        request: TableFileExportRequest,
     ) -> Result<crate::transfer::TransferJobSpec, AppError> {
-        crate::transfer::mysql_impl::export_other_file(application, request).await
+        crate::transfer::mysql_driver::export_table_file(application, request).await
     }
 
-    async fn export_dml(
+    async fn export_query_result(
         &self,
         application: &Application,
-        request: DmlExportTransferRequest,
-    ) -> Result<ExportArtifact, AppError> {
-        crate::transfer::mysql_impl::export_dml(application, request).await
+        request: QueryResultExportRequest,
+    ) -> Result<TransferArtifact, AppError> {
+        crate::transfer::mysql_driver::export_query_result(application, request).await
     }
 }
 
@@ -1040,41 +1052,58 @@ impl NativeSchemaDiffDriver for MysqlNativeDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_driver_types::NamespaceSqlOperation;
+
+    #[test]
+    fn native_spi_sources_do_not_depend_on_the_compatibility_wire_namespace() {
+        let compatibility_prefix = ["Commu", "nity"].concat();
+        let compatibility_identifier = ["commu", "nity_"].concat();
+        for (path, source) in [
+            ("native_driver.rs", include_str!("native_driver.rs")),
+            (
+                "native_driver_types.rs",
+                include_str!("native_driver_types.rs"),
+            ),
+            ("native_mysql.rs", include_str!("native_mysql.rs")),
+            (
+                "native_administration_types.rs",
+                include_str!("native_administration_types.rs"),
+            ),
+            (
+                "native_schema_diff_types.rs",
+                include_str!("native_schema_diff_types.rs"),
+            ),
+            (
+                "transfer/class_generation.rs",
+                include_str!("transfer/class_generation.rs"),
+            ),
+            (
+                "transfer/mysql_driver.rs",
+                include_str!("transfer/mysql_driver.rs"),
+            ),
+        ] {
+            assert!(
+                !source.contains(&compatibility_prefix)
+                    && !source.contains(&compatibility_identifier),
+                "{path} must stay independent from the compatibility wire namespace"
+            );
+        }
+    }
 
     struct FakePostgresDriver;
 
+    struct DescriptorOnlyDriver(&'static NativeDriverDescriptor);
+
+    const FAKE_POSTGRES_DESCRIPTOR: NativeDriverDescriptor = NativeDriverDescriptor {
+        id: "postgresql",
+        implementation: "fake_postgres",
+        database_types: &["POSTGRESQL", "POSTGRES"],
+        compatibility_aliases: &["postgresql", "org.postgresql.Driver"],
+    };
+
     impl NativeDriver for FakePostgresDriver {
-        fn id(&self) -> &'static str {
-            "postgresql"
-        }
-
-        fn implementation(&self) -> &'static str {
-            "fake_postgres"
-        }
-
-        fn database_types(&self) -> &'static [&'static str] {
-            &["POSTGRESQL", "POSTGRES"]
-        }
-
-        fn descriptor(&self) -> JdbcDriver {
-            JdbcDriver {
-                pack_id: "native:fake_postgres".to_owned(),
-                name: "PostgreSQL (test native Rust)".to_owned(),
-                version: "test".to_owned(),
-                driver_id: self.id().to_owned(),
-                driver_class: "rust:fake_postgres".to_owned(),
-                artifact_count: 0,
-                artifact_bytes: "0".to_owned(),
-            }
-        }
-
-        fn matches_driver(&self, driver_id: &str, descriptor: Option<&JdbcDriver>) -> bool {
-            driver_id.eq_ignore_ascii_case(self.id())
-                || descriptor.is_some_and(|driver| {
-                    driver
-                        .driver_class
-                        .eq_ignore_ascii_case("org.postgresql.Driver")
-                })
+        fn descriptor(&self) -> &'static NativeDriverDescriptor {
+            &FAKE_POSTGRES_DESCRIPTOR
         }
 
         fn connection(&self) -> &dyn NativeConnectionDriver {
@@ -1086,8 +1115,28 @@ mod tests {
         }
     }
 
+    impl NativeDriver for DescriptorOnlyDriver {
+        fn descriptor(&self) -> &'static NativeDriverDescriptor {
+            self.0
+        }
+
+        fn connection(&self) -> &dyn NativeConnectionDriver {
+            self
+        }
+    }
+
     #[async_trait]
     impl NativeConnectionDriver for FakePostgresDriver {
+        async fn test_connection(
+            &self,
+            _connection: &DatasourceConnection,
+        ) -> Result<(), AppError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl NativeConnectionDriver for DescriptorOnlyDriver {
         async fn test_connection(
             &self,
             _connection: &DatasourceConnection,
@@ -1128,58 +1177,47 @@ mod tests {
             registry
                 .driver_for_database_type("postgres")
                 .expect("database type resolves")
-                .id(),
+                .descriptor()
+                .id,
             "postgresql"
         );
         assert_eq!(
             registry
-                .driver_for_driver_id("POSTGRESQL", &[])
+                .driver_for_datasource_driver_id("POSTGRESQL")
                 .expect("driver id resolves")
-                .implementation(),
+                .descriptor()
+                .implementation,
             "fake_postgres"
+        );
+        assert!(
+            registry
+                .driver_for_datasource_driver_id("org.postgresql.Driver")
+                .is_some(),
+            "persisted compatibility aliases must resolve to their native implementation"
         );
     }
 
-    #[tokio::test]
-    async fn application_dispatches_a_postgres_capability_through_the_registry() {
+    #[test]
+    fn application_dispatches_a_postgres_capability_through_the_registry() {
         let registry = NativeDriverRegistry::try_new(vec![Arc::new(FakePostgresDriver)])
             .expect("registry is valid");
         let application = Application::with_native_drivers_for_test(registry);
 
-        let built = application
-            .build_community_namespace_sql(chat2db_contract::BuildCommunityNamespaceSqlRequest {
-                database_type: "POSTGRESQL".to_owned(),
-                operation: chat2db_contract::CommunityNamespaceSqlOperation::UseDatabase {
+        let driver = application
+            .native_driver_for_database_type("POSTGRESQL")
+            .expect("application must resolve the fake PostgreSQL driver");
+        let dialect = driver
+            .dialect()
+            .expect("fake PostgreSQL must expose its dialect capability");
+        let built = dialect
+            .build_namespace_sql(NamespaceSqlRequest {
+                operation: NamespaceSqlOperation::UseDatabase {
                     database_name: "inventory".to_owned(),
                 },
             })
-            .await
             .expect("application must dispatch to the fake PostgreSQL capability");
 
         assert_eq!(built.sql, "fake-postgres:namespace");
-    }
-
-    #[test]
-    fn registry_uses_managed_descriptor_aliases_without_owning_driver_jars() {
-        let registry = NativeDriverRegistry::try_new(vec![Arc::new(FakePostgresDriver)])
-            .expect("registry is valid");
-        let managed = vec![JdbcDriver {
-            pack_id: "postgresql-42".to_owned(),
-            name: "PostgreSQL JDBC".to_owned(),
-            version: "42".to_owned(),
-            driver_id: "managed-pg".to_owned(),
-            driver_class: "org.postgresql.Driver".to_owned(),
-            artifact_count: 1,
-            artifact_bytes: "1".to_owned(),
-        }];
-
-        assert_eq!(
-            registry
-                .driver_for_driver_id("managed-pg", &managed)
-                .expect("managed descriptor resolves")
-                .id(),
-            "postgresql"
-        );
     }
 
     #[test]
@@ -1187,24 +1225,14 @@ mod tests {
         struct DuplicatePostgresDriver;
 
         impl NativeDriver for DuplicatePostgresDriver {
-            fn id(&self) -> &'static str {
-                "duplicate-postgresql"
-            }
-
-            fn implementation(&self) -> &'static str {
-                "duplicate"
-            }
-
-            fn database_types(&self) -> &'static [&'static str] {
-                &["postgresql"]
-            }
-
-            fn descriptor(&self) -> JdbcDriver {
-                FakePostgresDriver.descriptor()
-            }
-
-            fn matches_driver(&self, _driver_id: &str, _descriptor: Option<&JdbcDriver>) -> bool {
-                false
+            fn descriptor(&self) -> &'static NativeDriverDescriptor {
+                static DESCRIPTOR: NativeDriverDescriptor = NativeDriverDescriptor {
+                    id: "duplicate-postgresql",
+                    implementation: "duplicate",
+                    database_types: &["postgresql"],
+                    compatibility_aliases: &[],
+                };
+                &DESCRIPTOR
             }
 
             fn connection(&self) -> &dyn NativeConnectionDriver {
@@ -1227,5 +1255,53 @@ mod tests {
             Arc::new(DuplicatePostgresDriver),
         ]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn registry_rejects_duplicate_driver_ids() {
+        let result = NativeDriverRegistry::try_new(vec![
+            Arc::new(FakePostgresDriver),
+            Arc::new(FakePostgresDriver),
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn registry_rejects_non_canonical_descriptor_text() {
+        static DESCRIPTORS: [NativeDriverDescriptor; 4] = [
+            NativeDriverDescriptor {
+                id: " postgresql",
+                implementation: "fake_postgres",
+                database_types: &["POSTGRESQL"],
+                compatibility_aliases: &[],
+            },
+            NativeDriverDescriptor {
+                id: "postgresql",
+                implementation: "fake_postgres ",
+                database_types: &["POSTGRESQL"],
+                compatibility_aliases: &[],
+            },
+            NativeDriverDescriptor {
+                id: "postgresql",
+                implementation: "fake_postgres",
+                database_types: &[" POSTGRESQL"],
+                compatibility_aliases: &[],
+            },
+            NativeDriverDescriptor {
+                id: "postgresql",
+                implementation: "fake_postgres",
+                database_types: &["POSTGRESQL"],
+                compatibility_aliases: &["org.postgresql.Driver "],
+            },
+        ];
+
+        for descriptor in &DESCRIPTORS {
+            let result =
+                NativeDriverRegistry::try_new(vec![Arc::new(DescriptorOnlyDriver(descriptor))]);
+            assert!(
+                result.is_err(),
+                "descriptor must be canonical: {descriptor:?}"
+            );
+        }
     }
 }

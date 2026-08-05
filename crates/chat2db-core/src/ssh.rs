@@ -211,7 +211,7 @@ impl Application {
         };
         self.require_managed_driver(&request.driver_id)?;
         let driver = self
-            .native_driver_for_driver_id(&request.driver_id)
+            .native_driver_for_datasource_driver_id(&request.driver_id)
             .ok_or_else(|| {
                 AppError::invalid(
                     "ssh_driver_not_supported",

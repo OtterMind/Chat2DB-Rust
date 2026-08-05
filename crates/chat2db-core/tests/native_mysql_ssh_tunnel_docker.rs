@@ -6,8 +6,8 @@ use chat2db_contract::{
     SshAuthentication, SshHostKeyVerification, SshTunnelConfig,
 };
 use chat2db_core::{
-    Application, MysqlConsoleCancellation, MysqlConsoleRequest, MysqlConsoleResult, RuntimeConfig,
-    RuntimeHost,
+    Application, NativeConsoleCancellation, NativeConsoleRequest, NativeConsoleResult,
+    RuntimeConfig, RuntimeHost,
 };
 use chat2db_java_bridge::{EngineCommand, EngineConfig};
 use tempfile::TempDir;
@@ -135,11 +135,11 @@ async fn native_mysql_concurrent_queries_share_one_fixed_ssh_tunnel() {
 fn spawn_sleep_query(
     application: Application,
     datasource_id: String,
-) -> tokio::task::JoinHandle<Result<Vec<MysqlConsoleResult>, chat2db_core::AppError>> {
+) -> tokio::task::JoinHandle<Result<Vec<NativeConsoleResult>, chat2db_core::AppError>> {
     tokio::spawn(async move {
         application
-            .execute_mysql_console(
-                MysqlConsoleRequest {
+            .execute_native_console(
+                NativeConsoleRequest {
                     datasource_id,
                     database_name: String::new(),
                     sql: "SELECT SLEEP(2), CONNECTION_ID()".to_owned(),
@@ -151,16 +151,16 @@ fn spawn_sleep_query(
                     explain: false,
                     error_continue: false,
                 },
-                MysqlConsoleCancellation::new(),
+                NativeConsoleCancellation::new(),
             )
             .await
     })
 }
 
 async fn await_query(
-    task: tokio::task::JoinHandle<Result<Vec<MysqlConsoleResult>, chat2db_core::AppError>>,
+    task: tokio::task::JoinHandle<Result<Vec<NativeConsoleResult>, chat2db_core::AppError>>,
     label: &str,
-) -> Vec<MysqlConsoleResult> {
+) -> Vec<NativeConsoleResult> {
     tokio::time::timeout(QUERY_TIMEOUT, task)
         .await
         .unwrap_or_else(|_| panic!("{label} tunneled query timed out"))
@@ -168,7 +168,7 @@ async fn await_query(
         .unwrap_or_else(|error| panic!("{label} tunneled query failed: {error}"))
 }
 
-fn assert_query_succeeded(results: &[MysqlConsoleResult]) {
+fn assert_query_succeeded(results: &[NativeConsoleResult]) {
     assert_eq!(results.len(), 1);
     assert!(results[0].success);
     assert_eq!(results[0].rows.len(), 1);

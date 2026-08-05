@@ -4,7 +4,10 @@ use chat2db_engine_protocol::wire;
 use chat2db_java_bridge as bridge;
 use chat2db_storage as storage;
 
-use crate::AppError;
+use crate::{
+    AppError,
+    query::{DatabaseValue, QueryExecutionOptions, QueryParameter},
+};
 
 pub(crate) const fn provider_kind_to_storage(
     kind: contract::ProviderKind,
@@ -125,56 +128,91 @@ pub(crate) fn result_page(page: storage::ResultPage) -> Result<contract::ResultP
 
 pub(crate) fn query_parameter(
     parameter: contract::QueryParameter,
-) -> Result<bridge::JdbcParameter, AppError> {
-    Ok(bridge::JdbcParameter {
+) -> Result<QueryParameter, AppError> {
+    Ok(QueryParameter {
         position: parameter.position,
-        value: request_value(parameter.value)?,
-        jdbc_type: None,
-        jdbc_type_name: None,
+        value: database_value_from_contract(parameter.value)?,
     })
 }
 
-fn request_value(value: contract::JdbcValue) -> Result<bridge::JdbcValue, AppError> {
+fn database_value_from_contract(value: contract::JdbcValue) -> Result<DatabaseValue, AppError> {
     Ok(match value {
-        contract::JdbcValue::Null => bridge::JdbcValue::Null,
-        contract::JdbcValue::Boolean { value } => bridge::JdbcValue::Boolean(value),
+        contract::JdbcValue::Null => DatabaseValue::Null,
+        contract::JdbcValue::Boolean { value } => DatabaseValue::Boolean(value),
         contract::JdbcValue::SignedInteger { value } => {
-            bridge::JdbcValue::SignedInteger(parse_number(&value, "signed integer")?)
+            DatabaseValue::SignedInteger(parse_number(&value, "signed integer")?)
         }
         contract::JdbcValue::UnsignedInteger { value } => {
-            bridge::JdbcValue::UnsignedInteger(parse_number(&value, "unsigned integer")?)
+            DatabaseValue::UnsignedInteger(parse_number(&value, "unsigned integer")?)
         }
-        contract::JdbcValue::Float32 { value } => {
-            bridge::JdbcValue::Float32(parse_float32(&value)?)
-        }
-        contract::JdbcValue::Float64 { value } => {
-            bridge::JdbcValue::Float64(parse_float64(&value)?)
-        }
-        contract::JdbcValue::Decimal { value } => bridge::JdbcValue::Decimal(value),
-        contract::JdbcValue::Text { value } => bridge::JdbcValue::Text(value),
+        contract::JdbcValue::Float32 { value } => DatabaseValue::Float32(parse_float32(&value)?),
+        contract::JdbcValue::Float64 { value } => DatabaseValue::Float64(parse_float64(&value)?),
+        contract::JdbcValue::Decimal { value } => DatabaseValue::Decimal(value),
+        contract::JdbcValue::Text { value } => DatabaseValue::Text(value),
         contract::JdbcValue::Binary { value } => {
-            bridge::JdbcValue::Binary(BASE64_STANDARD.decode(value).map_err(|_| {
+            DatabaseValue::Binary(BASE64_STANDARD.decode(value).map_err(|_| {
                 AppError::invalid(
                     "invalid_query_parameter",
                     "Binary parameters must use base64",
                 )
             })?)
         }
-        contract::JdbcValue::Date { value } => bridge::JdbcValue::Date(value),
-        contract::JdbcValue::Time { value } => bridge::JdbcValue::Time(value),
-        contract::JdbcValue::Timestamp { value } => bridge::JdbcValue::Timestamp(value),
+        contract::JdbcValue::Date { value } => DatabaseValue::Date(value),
+        contract::JdbcValue::Time { value } => DatabaseValue::Time(value),
+        contract::JdbcValue::Timestamp { value } => DatabaseValue::Timestamp(value),
         contract::JdbcValue::TimestampWithTimeZone { value } => {
-            bridge::JdbcValue::TimestampWithTimeZone(value)
+            DatabaseValue::TimestampWithTimeZone(value)
         }
-        contract::JdbcValue::Json { value } => bridge::JdbcValue::Json(value),
-        contract::JdbcValue::Uuid { value } => bridge::JdbcValue::Uuid(value),
+        contract::JdbcValue::Json { value } => DatabaseValue::Json(value),
+        contract::JdbcValue::Uuid { value } => DatabaseValue::Uuid(value),
         contract::JdbcValue::Opaque { .. } => {
             return Err(AppError::invalid(
                 "invalid_query_parameter",
-                "Opaque JDBC values cannot be query parameters",
+                "Opaque result values cannot be query parameters",
             ));
         }
     })
+}
+
+pub(crate) fn query_parameter_to_java(parameter: QueryParameter) -> bridge::JdbcParameter {
+    bridge::JdbcParameter {
+        position: parameter.position,
+        value: database_value_to_java(parameter.value),
+        jdbc_type: None,
+        jdbc_type_name: None,
+    }
+}
+
+pub(crate) const fn query_options_to_java(options: QueryExecutionOptions) -> bridge::QueryOptions {
+    bridge::QueryOptions {
+        max_rows: options.max_rows,
+        target_batch_rows: options.target_batch_rows,
+        target_batch_bytes: options.target_batch_bytes,
+        initial_batch_credits: options.initial_batch_credits,
+        max_result_bytes: options.max_result_bytes,
+    }
+}
+
+fn database_value_to_java(value: DatabaseValue) -> bridge::JdbcValue {
+    match value {
+        DatabaseValue::Null => bridge::JdbcValue::Null,
+        DatabaseValue::Boolean(value) => bridge::JdbcValue::Boolean(value),
+        DatabaseValue::SignedInteger(value) => bridge::JdbcValue::SignedInteger(value),
+        DatabaseValue::UnsignedInteger(value) => bridge::JdbcValue::UnsignedInteger(value),
+        DatabaseValue::Float32(value) => bridge::JdbcValue::Float32(value),
+        DatabaseValue::Float64(value) => bridge::JdbcValue::Float64(value),
+        DatabaseValue::Decimal(value) => bridge::JdbcValue::Decimal(value),
+        DatabaseValue::Text(value) => bridge::JdbcValue::Text(value),
+        DatabaseValue::Binary(value) => bridge::JdbcValue::Binary(value),
+        DatabaseValue::Date(value) => bridge::JdbcValue::Date(value),
+        DatabaseValue::Time(value) => bridge::JdbcValue::Time(value),
+        DatabaseValue::Timestamp(value) => bridge::JdbcValue::Timestamp(value),
+        DatabaseValue::TimestampWithTimeZone(value) => {
+            bridge::JdbcValue::TimestampWithTimeZone(value)
+        }
+        DatabaseValue::Json(value) => bridge::JdbcValue::Json(value),
+        DatabaseValue::Uuid(value) => bridge::JdbcValue::Uuid(value),
+    }
 }
 
 fn result_row(row: wire::JdbcRow) -> Result<contract::ResultRow, AppError> {
@@ -350,7 +388,11 @@ mod tests {
     use chat2db_contract::JdbcValue;
     use chat2db_engine_protocol::wire;
 
-    use super::{request_value, result_value};
+    use super::{
+        database_value_from_contract, database_value_to_java, query_options_to_java,
+        query_parameter_to_java, result_value,
+    };
+    use crate::query::{DatabaseValue, QueryExecutionOptions, QueryParameter};
 
     #[test]
     fn all_sixteen_portable_jdbc_values_round_trip() {
@@ -399,7 +441,8 @@ mod tests {
         ];
 
         for value in values {
-            let bridge = request_value(value.clone()).expect("request conversion");
+            let neutral = database_value_from_contract(value.clone()).expect("request conversion");
+            let bridge = database_value_to_java(neutral);
             let wire = wire::JdbcValue::from(bridge);
             assert_eq!(result_value(wire).expect("result conversion"), value);
         }
@@ -419,17 +462,45 @@ mod tests {
     #[test]
     fn opaque_and_noncanonical_infinity_are_rejected_as_inputs() {
         assert!(
-            request_value(JdbcValue::Opaque {
+            database_value_from_contract(JdbcValue::Opaque {
                 type_name: "vendor.Type".to_owned(),
                 display_value: "value".to_owned(),
             })
             .is_err()
         );
         assert!(
-            request_value(JdbcValue::Float64 {
+            database_value_from_contract(JdbcValue::Float64 {
                 value: "inf".to_owned(),
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn java_query_adapter_preserves_parameter_and_execution_options() {
+        let parameter = query_parameter_to_java(QueryParameter {
+            position: 7,
+            value: DatabaseValue::Text("inventory".to_owned()),
+        });
+        assert_eq!(parameter.position, 7);
+        assert!(matches!(
+            parameter.value,
+            chat2db_java_bridge::JdbcValue::Text(value) if value == "inventory"
+        ));
+        assert_eq!(parameter.jdbc_type, None);
+        assert_eq!(parameter.jdbc_type_name, None);
+
+        let options = query_options_to_java(QueryExecutionOptions {
+            max_rows: 101,
+            target_batch_rows: 102,
+            target_batch_bytes: 103,
+            initial_batch_credits: 104,
+            max_result_bytes: 105,
+        });
+        assert_eq!(options.max_rows, 101);
+        assert_eq!(options.target_batch_rows, 102);
+        assert_eq!(options.target_batch_bytes, 103);
+        assert_eq!(options.initial_batch_credits, 104);
+        assert_eq!(options.max_result_bytes, 105);
     }
 }

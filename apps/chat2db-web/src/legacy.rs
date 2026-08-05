@@ -57,7 +57,7 @@ use chat2db_contract::{
 };
 use chat2db_core::{
     AppError, AppErrorKind, Application, LargeValueChunk, LargeValueEncoding, LargeValuePreview,
-    LargeValueType, MysqlConsoleCancellation, MysqlConsoleRequest, MysqlConsoleResult,
+    LargeValueType, NativeConsoleCancellation, NativeConsoleRequest, NativeConsoleResult,
     TransferArtifactDownload,
     mysql_ddl::{
         MysqlColumnAlter, MysqlColumnDefinition, MysqlColumnPosition, MysqlDatabaseDefinition,
@@ -5381,7 +5381,7 @@ pub async fn execute_sql(
         return Box::pin(execute_mysql_sql(
             application,
             request,
-            MysqlConsoleCancellation::new(),
+            NativeConsoleCancellation::new(),
             &execution_id,
             "SQL_EDITOR_HTTP",
         ))
@@ -5452,8 +5452,8 @@ pub(crate) async fn count_mysql_rows(
     }
     let count_sql = build_mysql_count_query(&request.sql)?;
     let results = application
-        .execute_mysql_console(
-            MysqlConsoleRequest {
+        .execute_native_console(
+            NativeConsoleRequest {
                 datasource_id,
                 database_name: request.database_name.clone(),
                 sql: count_sql,
@@ -5465,7 +5465,7 @@ pub(crate) async fn count_mysql_rows(
                 explain: false,
                 error_continue: false,
             },
-            MysqlConsoleCancellation::new(),
+            NativeConsoleCancellation::new(),
         )
         .await?;
     let result = results.into_iter().next().ok_or_else(|| {
@@ -5518,7 +5518,7 @@ pub(crate) async fn count_mysql_rows(
 pub async fn execute_mysql_sql(
     application: &Application,
     request: &LegacySqlExecuteRequest,
-    cancellation: MysqlConsoleCancellation,
+    cancellation: NativeConsoleCancellation,
     execution_id: &str,
     history_source: &str,
 ) -> LegacyResult<Vec<LegacyManageResult>> {
@@ -5541,8 +5541,8 @@ pub async fn execute_mysql_sql(
             .map(|columns| columns.items)
     };
 
-    let execution = application.execute_mysql_console(
-        MysqlConsoleRequest {
+    let execution = application.execute_native_console(
+        NativeConsoleRequest {
             datasource_id,
             database_name: request.database_name.clone(),
             sql: request.sql.clone(),
@@ -5950,10 +5950,10 @@ fn mysql_console_result(
     application: &Application,
     large_value_owner: &str,
     request: &LegacySqlExecuteRequest,
-    result: MysqlConsoleResult,
+    result: NativeConsoleResult,
     editable_columns: Option<&[CommunityTableColumn]>,
 ) -> LegacyManageResult {
-    let MysqlConsoleResult {
+    let NativeConsoleResult {
         statement_sequence,
         result_set_id,
         sql,

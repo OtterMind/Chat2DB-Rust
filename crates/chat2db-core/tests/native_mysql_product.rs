@@ -15,7 +15,7 @@ use chat2db_contract::{
     ResultPageRequest, StartCommunityTablePreviewRequest, StartQueryRequest,
 };
 use chat2db_core::{
-    Application, MysqlConsoleCancellation, MysqlConsoleRequest, RuntimeConfig, RuntimeHost,
+    Application, NativeConsoleCancellation, NativeConsoleRequest, RuntimeConfig, RuntimeHost,
 };
 use chat2db_java_bridge::{EngineCommand, EngineConfig};
 use futures_util::FutureExt as _;
@@ -780,10 +780,10 @@ async fn execute_console_preview(
     datasource_id: &str,
     database_name: &str,
     sql: String,
-) -> Vec<chat2db_core::MysqlConsoleResult> {
+) -> Vec<chat2db_core::NativeConsoleResult> {
     let results = application
-        .execute_mysql_console(
-            MysqlConsoleRequest {
+        .execute_native_console(
+            NativeConsoleRequest {
                 datasource_id: datasource_id.to_owned(),
                 database_name: database_name.to_owned(),
                 sql,
@@ -795,7 +795,7 @@ async fn execute_console_preview(
                 explain: false,
                 error_continue: false,
             },
-            MysqlConsoleCancellation::new(),
+            NativeConsoleCancellation::new(),
         )
         .await
         .expect("generated routine invocation SQL must execute through Console");

@@ -6,8 +6,8 @@ use chat2db_contract::{
 };
 use chat2db_engine_protocol::wire;
 use chat2db_java_bridge::{
-    BridgeError, CancelDisposition as BridgeCancelDisposition, JdbcParameter, QueryEvent,
-    QueryOptions, QueryRequest, QueryStream,
+    BridgeError, CancelDisposition as BridgeCancelDisposition, QueryEvent, QueryRequest,
+    QueryStream,
 };
 use chat2db_storage::{ResultWriter, Storage, StorageError};
 use tokio::sync::{oneshot, watch};
@@ -26,23 +26,57 @@ use crate::{
 pub(crate) struct PreparedQuery {
     pub(crate) datasource_id: String,
     pub(crate) sql: String,
-    pub(crate) parameters: Vec<JdbcParameter>,
-    pub(crate) options: QueryOptions,
+    pub(crate) parameters: Vec<QueryParameter>,
+    pub(crate) options: QueryExecutionOptions,
     pub(crate) retention: Duration,
     pub(crate) force_read_only: bool,
 }
 
-/// One native `MySQL` Console execution request.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct QueryParameter {
+    pub(crate) position: u32,
+    pub(crate) value: DatabaseValue,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum DatabaseValue {
+    Null,
+    Boolean(bool),
+    SignedInteger(i64),
+    UnsignedInteger(u64),
+    Float32(f32),
+    Float64(f64),
+    Decimal(String),
+    Text(String),
+    Binary(Vec<u8>),
+    Date(String),
+    Time(String),
+    Timestamp(String),
+    TimestampWithTimeZone(String),
+    Json(String),
+    Uuid(String),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct QueryExecutionOptions {
+    pub(crate) max_rows: u64,
+    pub(crate) target_batch_rows: u32,
+    pub(crate) target_batch_bytes: u32,
+    pub(crate) initial_batch_credits: u32,
+    pub(crate) max_result_bytes: u64,
+}
+
+/// One native-driver Console execution request.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[allow(clippy::struct_excessive_bools)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeConsoleRequest {
     /// Opaque datasource id resolved by Core.
     pub datasource_id: String,
-    /// Optional `MySQL` database selected on the Console connection.
+    /// Optional database selected on the Console connection.
     #[serde(default)]
     pub database_name: String,
-    /// One statement or a semicolon-delimited `MySQL` script.
+    /// One statement or a semicolon-delimited script.
     pub sql: String,
     /// One-based result page number.
     pub page_no: u32,
@@ -65,7 +99,7 @@ pub struct NativeConsoleRequest {
     pub error_continue: bool,
 }
 
-/// One statement result emitted by native `MySQL` Console execution.
+/// One statement result emitted by native-driver Console execution.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeConsoleResult {
@@ -74,7 +108,7 @@ pub struct NativeConsoleResult {
     /// One-based tabular result-set position within the statement.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result_set_id: Option<u32>,
-    /// The exact statement sent to `MySQL`.
+    /// The exact statement sent to the database.
     pub sql: String,
     /// Whether this individual statement result succeeded.
     pub success: bool,
@@ -97,7 +131,7 @@ pub struct NativeConsoleResult {
     pub error: Option<ApiError>,
 }
 
-/// Cloneable cancellation source for one native `MySQL` Console execution.
+/// Cloneable cancellation source for one native-driver Console execution.
 #[derive(Debug, Clone)]
 pub struct NativeConsoleCancellation {
     sender: watch::Sender<CancellationRequest>,
@@ -144,10 +178,6 @@ const fn default_console_error_continue() -> bool {
     true
 }
 
-pub type MysqlConsoleRequest = NativeConsoleRequest;
-pub type MysqlConsoleResult = NativeConsoleResult;
-pub type MysqlConsoleCancellation = NativeConsoleCancellation;
-
 enum QueryBackend {
     Java {
         engine: EngineLease,
@@ -186,21 +216,6 @@ pub(crate) struct RetainedWriter {
 }
 
 impl Application {
-    /// Executes an arbitrary `MySQL` Console script natively on one connection.
-    ///
-    /// # Errors
-    ///
-    /// Returns validation, datasource, connection, cancellation, or unrecoverable
-    /// protocol failures. Recoverable `MySQL` statement errors are represented in
-    /// the returned result list so `error_continue` can be honored.
-    pub async fn execute_mysql_console(
-        &self,
-        request: MysqlConsoleRequest,
-        cancellation: MysqlConsoleCancellation,
-    ) -> Result<Vec<MysqlConsoleResult>, AppError> {
-        self.execute_native_console(request, cancellation).await
-    }
-
     /// Executes a native-driver Console request on the runtime-selected driver.
     ///
     /// # Errors
@@ -233,7 +248,7 @@ impl Application {
         let storage = self.require_storage()?;
         let resolved = resolve_datasource_connection(&storage, &request.datasource_id).await?;
         let driver = self
-            .native_driver_for_driver_id(&resolved.driver_id)
+            .native_driver_for_datasource_driver_id(&resolved.driver_id)
             .ok_or_else(|| {
                 AppError::invalid(
                     "native_driver_not_available",
@@ -333,7 +348,9 @@ impl Application {
             let _engine = self.require_engine().await?;
         }
         let resolved = resolve_datasource_connection(&storage, &prepared.datasource_id).await?;
-        let backend = if let Some(driver) = self.native_driver_for_driver_id(&resolved.driver_id) {
+        let backend = if let Some(driver) =
+            self.native_driver_for_datasource_driver_id(&resolved.driver_id)
+        {
             if let Some(query) = driver.query() {
                 if query.is_read_candidate(&prepared.sql)? {
                     query.validate_query(&prepared)?;
@@ -482,6 +499,7 @@ impl Application {
             SessionReadOnly::Configured
         };
         let session = open_datasource_session(&engine, resolved, read_only).await?;
+        let retention = query.retention;
 
         let cancellation_request = { cancellation.borrow().clone() };
         if let CancellationRequest::Requested { reason } = cancellation_request {
@@ -496,9 +514,13 @@ impl Application {
         let stream = match session
             .execute_query(QueryRequest {
                 sql: query.sql,
-                parameters: query.parameters,
+                parameters: query
+                    .parameters
+                    .into_iter()
+                    .map(convert::query_parameter_to_java)
+                    .collect(),
                 transaction_id: None,
-                options: query.options,
+                options: convert::query_options_to_java(query.options),
             })
             .await
         {
@@ -514,13 +536,7 @@ impl Application {
         };
 
         let result = self
-            .consume_stream(
-                operation_id,
-                &mut cancellation,
-                stream,
-                storage,
-                query.retention,
-            )
+            .consume_stream(operation_id, &mut cancellation, stream, storage, retention)
             .await;
         let close_result = session.close().await.map_err(AppError::from);
         preserve_primary_outcome(
@@ -665,7 +681,7 @@ impl Application {
                 ),
             )));
         }
-        if let Some(driver) = self.native_driver_for_driver_id(&resolved.driver_id)
+        if let Some(driver) = self.native_driver_for_datasource_driver_id(&resolved.driver_id)
             && let Some(query) = driver.query()
         {
             return query.execute_update(resolved, sql, cancellation).await;
@@ -774,7 +790,7 @@ impl TryFrom<StartQueryRequest> for PreparedQuery {
                 .into_iter()
                 .map(convert::query_parameter)
                 .collect::<Result<_, _>>()?,
-            options: QueryOptions {
+            options: QueryExecutionOptions {
                 max_rows: parse_u64(&max_rows, "maxRows")?,
                 target_batch_rows: batch_rows,
                 target_batch_bytes: batch_bytes,
@@ -987,13 +1003,13 @@ mod tests {
     use chat2db_java_bridge::{BridgeError, RemoteEngineError};
 
     use super::{
-        AppError, MysqlConsoleCancellation, MysqlConsoleRequest, QueryTaskError,
+        AppError, NativeConsoleCancellation, NativeConsoleRequest, QueryTaskError,
         is_inactive_credit_grant_error, preserve_primary_outcome, validate_credit_grant,
     };
 
     #[test]
-    fn mysql_console_cancellation_preserves_the_first_reason() {
-        let cancellation = MysqlConsoleCancellation::new();
+    fn native_console_cancellation_preserves_the_first_reason() {
+        let cancellation = NativeConsoleCancellation::new();
         let receiver = cancellation.subscribe();
 
         assert!(cancellation.cancel(Some("first".to_owned())));
@@ -1007,8 +1023,8 @@ mod tests {
     }
 
     #[test]
-    fn mysql_console_json_defaults_to_continuing_after_statement_errors() {
-        let request: MysqlConsoleRequest = serde_json::from_value(serde_json::json!({
+    fn native_console_json_defaults_to_continuing_after_statement_errors() {
+        let request: NativeConsoleRequest = serde_json::from_value(serde_json::json!({
             "datasourceId": "mysql-1",
             "sql": "SELECT 1",
             "pageNo": 1,
