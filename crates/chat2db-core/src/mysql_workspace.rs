@@ -3,7 +3,7 @@ use chat2db_contract::{
     CommunityPinnedTableList, CommunityPinnedTableRequest,
 };
 
-use crate::{AppError, Application, native_mysql, storage_call};
+use crate::{AppError, Application, storage_call};
 
 impl Application {
     /// Pins one `MySQL` table in the local workspace.
@@ -82,13 +82,23 @@ impl Application {
         &self,
         request: CommunityErQueryRequest,
     ) -> Result<CommunityErModel, AppError> {
-        let tables = native_mysql::load_er_tables(
-            self,
-            &request.data_source_id,
-            &request.database_name,
-            &request.schema_name,
-        )
-        .await?;
+        let driver = self
+            .require_native_driver_for_datasource(&request.data_source_id)
+            .await?;
+        let table_driver = driver.tables().ok_or_else(|| {
+            AppError::invalid(
+                "native_table_capability_not_available",
+                "The native Rust driver does not implement table operations",
+            )
+        })?;
+        let tables = table_driver
+            .load_er_tables(
+                self,
+                &request.data_source_id,
+                &request.database_name,
+                &request.schema_name,
+            )
+            .await?;
         let storage = self.require_storage()?;
         let position = storage_call(move || {
             storage.mysql_er_position(

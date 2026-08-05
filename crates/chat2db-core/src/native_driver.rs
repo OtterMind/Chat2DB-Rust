@@ -9,6 +9,16 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     AppError, Application,
     datasource_session::ResolvedDatasourceConnection,
+    native_driver_types::{
+        ColumnList, DatabaseList, EntityRelationTable, ForeignKeyList, FunctionList,
+        FunctionMetadata, FunctionParameterList, IndexList, ListColumnsRequest,
+        ListDatabasesRequest, ListIndexesRequest, ListRoutinesRequest, ListSchemasRequest,
+        ListTableKeysRequest, ListTablesRequest, ListTriggersRequest, ListViewsRequest, ObjectRef,
+        PrimaryKeyList, ProcedureList, ProcedureMetadata, ProcedureParameterList,
+        RoutineInvocationPreview, RoutineInvocationRequest, RoutineMigrationExecution,
+        RoutineMigrationRequest, SchemaList, TableList, TableMetadata, TablePreviewAccepted,
+        TablePreviewRequest, TriggerList, TriggerMetadata, ViewList,
+    },
     native_mysql,
     operation::CancellationRequest,
     query::{
@@ -66,6 +76,176 @@ pub(crate) trait NativeQueryDriver: Send + Sync {
     ) -> Result<Vec<NativeConsoleResult>, AppError>;
 }
 
+/// Relational metadata operations exposed through the native driver SPI.
+#[async_trait]
+pub(crate) trait NativeMetadataDriver: Send + Sync {
+    async fn list_schemas(
+        &self,
+        application: &Application,
+        request: ListSchemasRequest,
+    ) -> Result<SchemaList, AppError>;
+
+    async fn list_databases(
+        &self,
+        application: &Application,
+        request: ListDatabasesRequest,
+    ) -> Result<DatabaseList, AppError>;
+
+    async fn list_tables(
+        &self,
+        application: &Application,
+        request: ListTablesRequest,
+    ) -> Result<TableList, AppError>;
+
+    async fn list_columns(
+        &self,
+        application: &Application,
+        request: ListColumnsRequest,
+    ) -> Result<ColumnList, AppError>;
+
+    async fn list_indexes(
+        &self,
+        application: &Application,
+        request: ListIndexesRequest,
+    ) -> Result<IndexList, AppError>;
+
+    async fn list_views(
+        &self,
+        application: &Application,
+        request: ListViewsRequest,
+    ) -> Result<ViewList, AppError>;
+
+    async fn get_view(
+        &self,
+        application: &Application,
+        request: ObjectRef,
+    ) -> Result<TableMetadata, AppError>;
+
+    async fn list_imported_keys(
+        &self,
+        application: &Application,
+        request: ListTableKeysRequest,
+    ) -> Result<ForeignKeyList, AppError>;
+
+    async fn list_exported_keys(
+        &self,
+        application: &Application,
+        request: ListTableKeysRequest,
+    ) -> Result<ForeignKeyList, AppError>;
+
+    async fn list_primary_keys(
+        &self,
+        application: &Application,
+        request: ListTableKeysRequest,
+    ) -> Result<PrimaryKeyList, AppError>;
+
+    async fn list_functions(
+        &self,
+        application: &Application,
+        request: ListRoutinesRequest,
+    ) -> Result<FunctionList, AppError>;
+
+    async fn get_function(
+        &self,
+        application: &Application,
+        request: ObjectRef,
+    ) -> Result<FunctionMetadata, AppError>;
+
+    async fn list_function_parameters(
+        &self,
+        application: &Application,
+        request: ObjectRef,
+    ) -> Result<FunctionParameterList, AppError>;
+
+    async fn list_procedures(
+        &self,
+        application: &Application,
+        request: ListRoutinesRequest,
+    ) -> Result<ProcedureList, AppError>;
+
+    async fn get_procedure(
+        &self,
+        application: &Application,
+        request: ObjectRef,
+    ) -> Result<ProcedureMetadata, AppError>;
+
+    async fn list_procedure_parameters(
+        &self,
+        application: &Application,
+        request: ObjectRef,
+    ) -> Result<ProcedureParameterList, AppError>;
+
+    async fn list_triggers(
+        &self,
+        application: &Application,
+        request: ListTriggersRequest,
+    ) -> Result<TriggerList, AppError>;
+
+    async fn get_trigger(
+        &self,
+        application: &Application,
+        request: ObjectRef,
+    ) -> Result<TriggerMetadata, AppError>;
+}
+
+/// Table-specific native capabilities that are not plain metadata listings.
+#[async_trait]
+pub(crate) trait NativeTableDriver: Send + Sync {
+    async fn load_er_tables(
+        &self,
+        application: &Application,
+        datasource_id: &str,
+        database_name: &str,
+        schema_name: &str,
+    ) -> Result<Vec<EntityRelationTable>, AppError>;
+
+    async fn validate_column_reorder(
+        &self,
+        application: &Application,
+        datasource_id: &str,
+        database_name: &str,
+        table_name: &str,
+        column_names: &[String],
+    ) -> Result<(), AppError>;
+
+    async fn table_ddl(
+        &self,
+        application: &Application,
+        datasource_id: &str,
+        database_name: &str,
+        schema_name: &str,
+        table_name: &str,
+    ) -> Result<String, AppError>;
+
+    async fn start_table_preview(
+        &self,
+        application: &Application,
+        request: TablePreviewRequest,
+        row_limit: u32,
+    ) -> Result<TablePreviewAccepted, AppError>;
+}
+
+/// Stored-routine operations implemented by a native Rust driver.
+#[async_trait]
+pub(crate) trait NativeRoutineDriver: Send + Sync {
+    async fn preview_invocation(
+        &self,
+        application: &Application,
+        request: RoutineInvocationRequest,
+    ) -> Result<RoutineInvocationPreview, AppError>;
+
+    fn preview_migration(
+        &self,
+        request: RoutineMigrationRequest,
+    ) -> Result<RoutineInvocationPreview, AppError>;
+
+    async fn execute_migration(
+        &self,
+        application: &Application,
+        request: RoutineMigrationRequest,
+    ) -> Result<RoutineMigrationExecution, AppError>;
+}
+
 /// Runtime-polymorphic native Rust database driver.
 ///
 /// Optional capability accessors allow a driver to participate only in the
@@ -85,6 +265,18 @@ pub(crate) trait NativeDriver: Send + Sync {
     fn connection(&self) -> &dyn NativeConnectionDriver;
 
     fn query(&self) -> Option<&dyn NativeQueryDriver> {
+        None
+    }
+
+    fn metadata(&self) -> Option<&dyn NativeMetadataDriver> {
+        None
+    }
+
+    fn tables(&self) -> Option<&dyn NativeTableDriver> {
+        None
+    }
+
+    fn routines(&self) -> Option<&dyn NativeRoutineDriver> {
         None
     }
 }
@@ -207,6 +399,18 @@ impl NativeDriver for MysqlNativeDriver {
     fn query(&self) -> Option<&dyn NativeQueryDriver> {
         Some(self)
     }
+
+    fn metadata(&self) -> Option<&dyn NativeMetadataDriver> {
+        Some(self)
+    }
+
+    fn tables(&self) -> Option<&dyn NativeTableDriver> {
+        Some(self)
+    }
+
+    fn routines(&self) -> Option<&dyn NativeRoutineDriver> {
+        Some(self)
+    }
 }
 
 #[async_trait]
@@ -270,6 +474,343 @@ impl NativeQueryDriver for MysqlNativeDriver {
         force_read_only: bool,
     ) -> Result<Vec<NativeConsoleResult>, AppError> {
         native_mysql::execute_console(application, request, cancellation, force_read_only).await
+    }
+}
+
+#[async_trait]
+impl NativeMetadataDriver for MysqlNativeDriver {
+    async fn list_schemas(
+        &self,
+        application: &Application,
+        request: ListSchemasRequest,
+    ) -> Result<SchemaList, AppError> {
+        native_mysql::list_schemas(application, &request.datasource_id).await
+    }
+
+    async fn list_databases(
+        &self,
+        application: &Application,
+        request: ListDatabasesRequest,
+    ) -> Result<DatabaseList, AppError> {
+        native_mysql::list_databases(application, &request.datasource_id).await
+    }
+
+    async fn list_tables(
+        &self,
+        application: &Application,
+        request: ListTablesRequest,
+    ) -> Result<TableList, AppError> {
+        native_mysql::list_tables(
+            application,
+            &request.scope.datasource_id,
+            &request.scope.database_name,
+            &request.name_pattern,
+        )
+        .await
+    }
+
+    async fn list_columns(
+        &self,
+        application: &Application,
+        request: ListColumnsRequest,
+    ) -> Result<ColumnList, AppError> {
+        native_mysql::list_columns(
+            application,
+            &request.table.scope.datasource_id,
+            &request.table.scope.database_name,
+            &request.table.scope.schema_name,
+            &request.table.table_name,
+        )
+        .await
+    }
+
+    async fn list_indexes(
+        &self,
+        application: &Application,
+        request: ListIndexesRequest,
+    ) -> Result<IndexList, AppError> {
+        native_mysql::list_indexes(
+            application,
+            &request.table.scope.datasource_id,
+            &request.table.scope.database_name,
+            &request.table.scope.schema_name,
+            &request.table.table_name,
+        )
+        .await
+    }
+
+    async fn list_views(
+        &self,
+        application: &Application,
+        request: ListViewsRequest,
+    ) -> Result<ViewList, AppError> {
+        native_mysql::list_views(
+            application,
+            &request.scope.datasource_id,
+            &request.scope.database_name,
+            &request.scope.schema_name,
+            &request.name_pattern,
+        )
+        .await
+    }
+
+    async fn get_view(
+        &self,
+        application: &Application,
+        request: ObjectRef,
+    ) -> Result<TableMetadata, AppError> {
+        native_mysql::get_view(
+            application,
+            &request.scope.datasource_id,
+            &request.scope.database_name,
+            &request.scope.schema_name,
+            &request.name,
+        )
+        .await
+    }
+
+    async fn list_imported_keys(
+        &self,
+        application: &Application,
+        request: ListTableKeysRequest,
+    ) -> Result<ForeignKeyList, AppError> {
+        native_mysql::list_imported_keys(
+            application,
+            &request.table.scope.datasource_id,
+            &request.table.scope.database_name,
+            &request.table.table_name,
+        )
+        .await
+    }
+
+    async fn list_exported_keys(
+        &self,
+        application: &Application,
+        request: ListTableKeysRequest,
+    ) -> Result<ForeignKeyList, AppError> {
+        native_mysql::list_exported_keys(
+            application,
+            &request.table.scope.datasource_id,
+            &request.table.scope.database_name,
+            &request.table.table_name,
+        )
+        .await
+    }
+
+    async fn list_primary_keys(
+        &self,
+        application: &Application,
+        request: ListTableKeysRequest,
+    ) -> Result<PrimaryKeyList, AppError> {
+        native_mysql::list_primary_keys(
+            application,
+            &request.table.scope.datasource_id,
+            &request.table.scope.database_name,
+            &request.table.scope.schema_name,
+            &request.table.table_name,
+        )
+        .await
+    }
+
+    async fn list_functions(
+        &self,
+        application: &Application,
+        request: ListRoutinesRequest,
+    ) -> Result<FunctionList, AppError> {
+        native_mysql::list_functions(
+            application,
+            &request.scope.datasource_id,
+            &request.scope.database_name,
+            &request.scope.schema_name,
+        )
+        .await
+    }
+
+    async fn get_function(
+        &self,
+        application: &Application,
+        request: ObjectRef,
+    ) -> Result<FunctionMetadata, AppError> {
+        native_mysql::get_function(
+            application,
+            &request.scope.datasource_id,
+            &request.scope.database_name,
+            &request.scope.schema_name,
+            &request.name,
+        )
+        .await
+    }
+
+    async fn list_function_parameters(
+        &self,
+        application: &Application,
+        request: ObjectRef,
+    ) -> Result<FunctionParameterList, AppError> {
+        native_mysql::list_function_parameters(
+            application,
+            &request.scope.datasource_id,
+            &request.scope.database_name,
+            &request.scope.schema_name,
+            &request.name,
+        )
+        .await
+    }
+
+    async fn list_procedures(
+        &self,
+        application: &Application,
+        request: ListRoutinesRequest,
+    ) -> Result<ProcedureList, AppError> {
+        native_mysql::list_procedures(
+            application,
+            &request.scope.datasource_id,
+            &request.scope.database_name,
+            &request.scope.schema_name,
+        )
+        .await
+    }
+
+    async fn get_procedure(
+        &self,
+        application: &Application,
+        request: ObjectRef,
+    ) -> Result<ProcedureMetadata, AppError> {
+        native_mysql::get_procedure(
+            application,
+            &request.scope.datasource_id,
+            &request.scope.database_name,
+            &request.scope.schema_name,
+            &request.name,
+        )
+        .await
+    }
+
+    async fn list_procedure_parameters(
+        &self,
+        application: &Application,
+        request: ObjectRef,
+    ) -> Result<ProcedureParameterList, AppError> {
+        native_mysql::list_procedure_parameters(
+            application,
+            &request.scope.datasource_id,
+            &request.scope.database_name,
+            &request.scope.schema_name,
+            &request.name,
+        )
+        .await
+    }
+
+    async fn list_triggers(
+        &self,
+        application: &Application,
+        request: ListTriggersRequest,
+    ) -> Result<TriggerList, AppError> {
+        native_mysql::list_triggers(
+            application,
+            &request.scope.datasource_id,
+            &request.scope.database_name,
+            &request.scope.schema_name,
+        )
+        .await
+    }
+
+    async fn get_trigger(
+        &self,
+        application: &Application,
+        request: ObjectRef,
+    ) -> Result<TriggerMetadata, AppError> {
+        native_mysql::get_trigger(
+            application,
+            &request.scope.datasource_id,
+            &request.scope.database_name,
+            &request.scope.schema_name,
+            &request.name,
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl NativeTableDriver for MysqlNativeDriver {
+    async fn load_er_tables(
+        &self,
+        application: &Application,
+        datasource_id: &str,
+        database_name: &str,
+        schema_name: &str,
+    ) -> Result<Vec<EntityRelationTable>, AppError> {
+        native_mysql::load_er_tables(application, datasource_id, database_name, schema_name).await
+    }
+
+    async fn validate_column_reorder(
+        &self,
+        application: &Application,
+        datasource_id: &str,
+        database_name: &str,
+        table_name: &str,
+        column_names: &[String],
+    ) -> Result<(), AppError> {
+        native_mysql::validate_column_reorder(
+            application,
+            datasource_id,
+            database_name,
+            table_name,
+            column_names,
+        )
+        .await
+    }
+
+    async fn table_ddl(
+        &self,
+        application: &Application,
+        datasource_id: &str,
+        database_name: &str,
+        schema_name: &str,
+        table_name: &str,
+    ) -> Result<String, AppError> {
+        native_mysql::table_ddl(
+            application,
+            datasource_id,
+            database_name,
+            schema_name,
+            table_name,
+        )
+        .await
+    }
+
+    async fn start_table_preview(
+        &self,
+        application: &Application,
+        request: TablePreviewRequest,
+        row_limit: u32,
+    ) -> Result<TablePreviewAccepted, AppError> {
+        native_mysql::start_table_preview(application, request, row_limit).await
+    }
+}
+
+#[async_trait]
+impl NativeRoutineDriver for MysqlNativeDriver {
+    async fn preview_invocation(
+        &self,
+        application: &Application,
+        request: RoutineInvocationRequest,
+    ) -> Result<RoutineInvocationPreview, AppError> {
+        native_mysql::preview_routine_invocation(application, request).await
+    }
+
+    fn preview_migration(
+        &self,
+        request: RoutineMigrationRequest,
+    ) -> Result<RoutineInvocationPreview, AppError> {
+        native_mysql::preview_routine_migration(&request)
+    }
+
+    async fn execute_migration(
+        &self,
+        application: &Application,
+        request: RoutineMigrationRequest,
+    ) -> Result<RoutineMigrationExecution, AppError> {
+        native_mysql::execute_routine_migration(application, request).await
     }
 }
 

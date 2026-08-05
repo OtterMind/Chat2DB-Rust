@@ -4,14 +4,11 @@ use chat2db_contract::{
     CommunityErTable, CommunityForeignKey, CommunityForeignKeyList, CommunityFunction,
     CommunityFunctionList, CommunityFunctionParameter, CommunityFunctionParameterList,
     CommunityPrimaryKey, CommunityPrimaryKeyList, CommunityProcedure, CommunityProcedureList,
-    CommunityProcedureParameter, CommunityProcedureParameterList,
-    CommunityRoutineInvocationPreview, CommunityRoutineMigrationExecution,
-    CommunityRoutineMigrationRequest, CommunitySchemaList, CommunityTable, CommunityTableColumn,
-    CommunityTableColumnList, CommunityTableIndex, CommunityTableIndexColumn,
-    CommunityTableIndexList, CommunityTableList, CommunityTablePreviewAccepted, CommunityTrigger,
+    CommunityProcedureParameter, CommunityProcedureParameterList, CommunitySchemaList,
+    CommunityTable, CommunityTableColumn, CommunityTableColumnList, CommunityTableIndex,
+    CommunityTableIndexColumn, CommunityTableIndexList, CommunityTableList, CommunityTrigger,
     CommunityTriggerList, CommunityViewList, DatasourceConnection, JdbcValue, JdbcValueType,
-    PreviewCommunityRoutineInvocationRequest, QueryLimits, ResultColumn, ResultMetadata, ResultRow,
-    StartCommunityTablePreviewRequest, StartQueryRequest,
+    QueryLimits, ResultColumn, ResultMetadata, ResultRow, StartQueryRequest,
 };
 use chat2db_engine_protocol::wire;
 use chat2db_java_bridge::{JdbcParameter, JdbcValue as BridgeJdbcValue, QueryOptions};
@@ -38,6 +35,10 @@ use url::Url;
 use crate::{
     AppError, AppErrorKind, Application,
     datasource_session::{ResolvedDatasourceConnection, resolve_datasource_connection},
+    native_driver_types::{
+        RoutineInvocationPreview, RoutineInvocationRequest, RoutineMigrationExecution,
+        RoutineMigrationRequest, TablePreviewAccepted, TablePreviewRequest,
+    },
     operation::CancellationRequest,
     query::{
         DatabaseWriteError, NativeConsoleRequest, NativeConsoleResult, PreparedQuery,
@@ -285,10 +286,6 @@ impl DerefMut for ManagedMysqlConnection {
 struct PreparedMysqlConnection {
     options: Opts,
     tunnel: Option<SshTunnel>,
-}
-
-pub(crate) fn is_mysql_database_type(database_type: &str) -> bool {
-    database_type.trim().eq_ignore_ascii_case("mysql")
 }
 
 pub(crate) async fn test_connection(connection: &DatasourceConnection) -> Result<(), AppError> {
@@ -1047,15 +1044,15 @@ pub(crate) async fn list_procedure_parameters(
 
 pub(crate) async fn preview_routine_invocation(
     application: &Application,
-    request: PreviewCommunityRoutineInvocationRequest,
-) -> Result<CommunityRoutineInvocationPreview, AppError> {
+    request: RoutineInvocationRequest,
+) -> Result<RoutineInvocationPreview, AppError> {
     let routine_type = normalize_mysql_routine_type(&request.routine_type)?;
     let routine_name = request.routine_name.trim().to_owned();
     let routine_lookup_name = mysql_routine_lookup_name(&routine_name);
-    let database_name = request.database_name.trim().to_owned();
+    let database_name = request.scope.database_name.trim().to_owned();
     validate_metadata_identifier(&routine_name, "routineName")?;
     validate_metadata_identifier(&database_name, "databaseName")?;
-    let resolved = resolve_native_connection(application, &request.datasource_id).await?;
+    let resolved = resolve_native_connection(application, &request.scope.datasource_id).await?;
     let mut conn = open_resolved_connection(&resolved).await?;
     let query = "SELECT ORDINAL_POSITION, PARAMETER_MODE, PARAMETER_NAME, DATA_TYPE \
                  FROM information_schema.PARAMETERS \
@@ -1072,7 +1069,7 @@ pub(crate) async fn preview_routine_invocation(
             .filter_map(|row| routine_invocation_parameter(routine_type, row))
             .collect::<Vec<_>>();
         parameters.sort_by_key(|parameter| parameter.ordinal_position);
-        CommunityRoutineInvocationPreview {
+        RoutineInvocationPreview {
             sql: render_routine_invocation_preview(routine_type, &routine_name, &parameters),
         }
     });
@@ -1080,20 +1077,20 @@ pub(crate) async fn preview_routine_invocation(
 }
 
 pub(crate) fn preview_routine_migration(
-    request: &CommunityRoutineMigrationRequest,
-) -> Result<CommunityRoutineInvocationPreview, AppError> {
+    request: &RoutineMigrationRequest,
+) -> Result<RoutineInvocationPreview, AppError> {
     let plan = routine_migration_plan(request)?;
-    Ok(CommunityRoutineInvocationPreview {
+    Ok(RoutineInvocationPreview {
         sql: plan.preview_sql,
     })
 }
 
 pub(crate) async fn execute_routine_migration(
     application: &Application,
-    request: CommunityRoutineMigrationRequest,
-) -> Result<CommunityRoutineMigrationExecution, AppError> {
+    request: RoutineMigrationRequest,
+) -> Result<RoutineMigrationExecution, AppError> {
     let plan = routine_migration_plan(&request)?;
-    let resolved = resolve_native_connection(application, &request.datasource_id).await?;
+    let resolved = resolve_native_connection(application, &request.scope.datasource_id).await?;
     let mut conn = open_resolved_connection(&resolved).await?;
     let result = execute_routine_migration_with_connection(&mut conn, &plan).await;
     finish_connection(conn, Ok(result)).await
@@ -1102,7 +1099,7 @@ pub(crate) async fn execute_routine_migration(
 async fn execute_routine_migration_with_connection(
     conn: &mut Conn,
     plan: &RoutineMigrationPlan,
-) -> CommunityRoutineMigrationExecution {
+) -> RoutineMigrationExecution {
     let selected_database = quote_identifier(&plan.database_name, "databaseName")
         .expect("validated migration database name must remain valid");
     if let Err(error) = metadata_query(conn.query_drop(format!("USE {selected_database}"))).await {
@@ -1145,7 +1142,7 @@ async fn execute_routine_migration_with_connection(
     }
 
     match metadata_query(conn.query_drop(&plan.create_sql)).await {
-        Ok(()) => CommunityRoutineMigrationExecution {
+        Ok(()) => RoutineMigrationExecution {
             success: true,
             message: "Statement executed successfully".to_owned(),
             sql: plan.preview_sql.clone(),
@@ -1234,10 +1231,10 @@ async fn capture_previous_routine(
 }
 
 fn routine_migration_plan(
-    request: &CommunityRoutineMigrationRequest,
+    request: &RoutineMigrationRequest,
 ) -> Result<RoutineMigrationPlan, AppError> {
     let routine_type = normalize_mysql_routine_type(&request.routine_type)?;
-    let database_name = request.database_name.trim().to_owned();
+    let database_name = request.scope.database_name.trim().to_owned();
     let routine_name = mysql_routine_lookup_name(request.routine_name.trim());
     validate_metadata_identifier(&database_name, "databaseName")?;
     validate_metadata_identifier(&routine_name, "routineName")?;
@@ -1276,8 +1273,8 @@ fn routine_migration_failure(
     failure_stage: &str,
     restore_attempted: bool,
     restore_succeeded: bool,
-) -> CommunityRoutineMigrationExecution {
-    CommunityRoutineMigrationExecution {
+) -> RoutineMigrationExecution {
+    RoutineMigrationExecution {
         success: false,
         message,
         sql: plan.preview_sql.clone(),
@@ -1744,15 +1741,15 @@ fn invalid_sql_lexeme(detail: &str) -> AppError {
 
 pub(crate) async fn start_table_preview(
     application: &Application,
-    request: StartCommunityTablePreviewRequest,
+    request: TablePreviewRequest,
     row_limit: u32,
-) -> Result<CommunityTablePreviewAccepted, AppError> {
-    let database_name = quote_identifier(&request.database_name, "databaseName")?;
-    let table_name = quote_identifier(&request.table_name, "tableName")?;
+) -> Result<TablePreviewAccepted, AppError> {
+    let database_name = quote_identifier(&request.table.scope.database_name, "databaseName")?;
+    let table_name = quote_identifier(&request.table.table_name, "tableName")?;
     let sql = format!("SELECT * FROM {database_name}.{table_name} LIMIT {row_limit}");
     let accepted = application
         .start_read_query(StartQueryRequest {
-            datasource_id: request.datasource_id,
+            datasource_id: request.table.scope.datasource_id,
             sql: sql.clone(),
             parameters: Vec::new(),
             limits: QueryLimits {
@@ -1764,7 +1761,7 @@ pub(crate) async fn start_table_preview(
             },
         })
         .await?;
-    Ok(CommunityTablePreviewAccepted {
+    Ok(TablePreviewAccepted {
         operation_id: accepted.operation_id,
         sql,
         row_limit,
@@ -4839,8 +4836,7 @@ fn mysql_query_error(error: MysqlError) -> AppError {
 #[cfg(test)]
 mod tests {
     use chat2db_contract::{
-        CommunityRoutineMigrationRequest, DatasourceConnection, DatasourceConnectionProperty,
-        JdbcValue, ResultRow,
+        DatasourceConnection, DatasourceConnectionProperty, JdbcValue, ResultRow,
     };
     use mysql_async::{Conn, Opts};
     use tokio::sync::watch;
@@ -4849,8 +4845,8 @@ mod tests {
         ColumnRow, ConsoleExecutionError, ConsoleStatementExecution, MAX_CONSOLE_PAGE_SIZE,
         MAX_CONSOLE_RESULT_BYTES, community_column, community_foreign_key,
         community_function_parameter, community_indexes, community_procedure_parameter,
-        connection_opts, execute_console_statement, is_mysql_database_type,
-        is_native_read_candidate, mysql_column_reorder_hazard, mysql_identifier_is_backtick_quoted,
+        connection_opts, execute_console_statement, is_native_read_candidate,
+        mysql_column_reorder_hazard, mysql_identifier_is_backtick_quoted,
         mysql_metadata_column_type, mysql_routine_default_value, mysql_routine_invocation_name,
         mysql_routine_lookup_name, normalize_mysql_routine_type, normalize_table_type,
         open_connection_with_opts, qualified_identifier, quote_identifier,
@@ -4860,6 +4856,7 @@ mod tests {
         validate_read_sql, validate_single_write_sql,
     };
     use super::{MysqlRoutineType, RoutineInvocationParameter};
+    use crate::native_driver_types::{MetadataScope, RoutineMigrationRequest};
     use crate::{MysqlConsoleRequest, operation::CancellationRequest};
 
     #[test]
@@ -5208,9 +5205,7 @@ mod tests {
     }
 
     #[test]
-    fn mysql_detection_and_table_types_are_closed() {
-        assert!(is_mysql_database_type(" mysql "));
-        assert!(!is_mysql_database_type("mariadb"));
+    fn mysql_table_types_are_closed() {
         assert_eq!(normalize_table_type("VIEW"), "VIEW");
         assert_eq!(normalize_table_type("BASE TABLE"), "TABLE");
     }
@@ -5344,11 +5339,13 @@ mod tests {
 
     #[test]
     fn mysql_routine_migration_preview_is_qualified_and_terminated() {
-        let plan = routine_migration_plan(&CommunityRoutineMigrationRequest {
-            datasource_id: "mysql-local".to_owned(),
+        let plan = routine_migration_plan(&RoutineMigrationRequest {
+            scope: MetadataScope {
+                datasource_id: "mysql-local".to_owned(),
+                database_name: "inventory".to_owned(),
+                schema_name: String::new(),
+            },
             database_type: "MYSQL".to_owned(),
-            database_name: "inventory".to_owned(),
-            schema_name: String::new(),
             routine_type: " function ".to_owned(),
             routine_name: "`odd``name`".to_owned(),
             ddl: "CREATE FUNCTION `odd``name`() RETURNS INT RETURN 2".to_owned(),
@@ -5364,11 +5361,13 @@ mod tests {
 
     #[test]
     fn mysql_routine_migration_rejects_missing_ddl() {
-        let error = routine_migration_plan(&CommunityRoutineMigrationRequest {
-            datasource_id: "mysql-local".to_owned(),
+        let error = routine_migration_plan(&RoutineMigrationRequest {
+            scope: MetadataScope {
+                datasource_id: "mysql-local".to_owned(),
+                database_name: "inventory".to_owned(),
+                schema_name: String::new(),
+            },
             database_type: "MYSQL".to_owned(),
-            database_name: "inventory".to_owned(),
-            schema_name: String::new(),
             routine_type: "PROCEDURE".to_owned(),
             routine_name: "refresh_items".to_owned(),
             ddl: "  ".to_owned(),

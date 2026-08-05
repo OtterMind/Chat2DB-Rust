@@ -18,6 +18,7 @@ pub mod mysql_ddl;
 mod mysql_schema_diff;
 mod mysql_workspace;
 mod native_driver;
+mod native_driver_types;
 mod native_mysql;
 mod operation;
 mod query;
@@ -659,6 +660,22 @@ impl Application {
         self.native_driver_for_driver_id(driver_id)
             .and_then(|driver| driver.database_types().first().copied())
             .map(str::to_owned)
+    }
+
+    pub(crate) async fn require_native_driver_for_datasource(
+        &self,
+        datasource_id: &str,
+    ) -> Result<Arc<dyn native_driver::NativeDriver>, AppError> {
+        let storage = self.require_storage()?;
+        let resolved =
+            datasource_session::resolve_datasource_connection(&storage, datasource_id).await?;
+        self.native_driver_for_driver_id(&resolved.driver_id)
+            .ok_or_else(|| {
+                AppError::invalid(
+                    "native_driver_not_available",
+                    "The datasource does not have a native Rust driver",
+                )
+            })
     }
 
     async fn require_managed_driver_for_update(
