@@ -96,6 +96,22 @@ jobs:
       - name: Package Java engine
         working-directory: java
         run: ./mvnw -B -DskipTests package
+      - name: Prepare verified DM JDBC driver pack
+        run: ./scripts/prepare-dm-driver-pack.sh
+      - name: Verify managed DM driver loading
+        env:
+          CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
+          DM_TEST_DRIVER_PACK_DIR: "${{ github.workspace }}/target/driver-packs"
+        run: >-
+          cargo test -p chat2db-core --features java-integration
+          --test java_dm_driver_pack --locked
+      - name: Verify Rust-owned DM SPI without Community
+        env:
+          CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
+          DM_TEST_DRIVER_PACK_DIR: "${{ github.workspace }}/target/driver-packs"
+        run: >-
+          cargo test -p chat2db-core --features java-integration
+          --test java_dm_product --locked
       - name: Verify Rust-Java process protocol
         env:
           CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
@@ -351,7 +367,7 @@ jobs:
         env:
           CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
           CHAT2DB_COMMUNITY_CLASSPATH_DIR: "${{ github.workspace }}/target/community-h2-classpath"
-          MYSQL_TEST_DRIVER_PACK_DIR: "${{ github.workspace }}/target/mysql-driver-packs"
+          MYSQL_TEST_DRIVER_PACK_DIR: "${{ github.workspace }}/target/driver-packs"
           MYSQL_TEST_HOST: 127.0.0.1
           MYSQL_TEST_PORT: "3306"
           MYSQL_TEST_USER: root

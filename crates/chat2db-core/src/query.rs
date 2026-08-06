@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     AppError, AppErrorKind, Application, convert,
     datasource_session::{
-        ResolvedDatasourceConnection, SessionReadOnly, open_datasource_session,
+        ResolvedDatasourceConnection, SessionReadOnly, open_mapped_datasource_session,
         resolve_datasource_connection,
     },
     engine_manager::EngineLease,
@@ -498,7 +498,7 @@ impl Application {
         } else {
             SessionReadOnly::Configured
         };
-        let session = open_datasource_session(&engine, resolved, read_only).await?;
+        let session = open_mapped_datasource_session(self, &engine, resolved, read_only).await?;
         let retention = query.retention;
 
         let cancellation_request = { cancellation.borrow().clone() };
@@ -870,7 +870,7 @@ fn is_cancelled(error: &BridgeError) -> bool {
     )
 }
 
-async fn grant_next_credit(stream: &QueryStream) -> Result<(), AppError> {
+pub(crate) async fn grant_next_credit(stream: &QueryStream) -> Result<(), AppError> {
     match stream.grant_credits(1).await {
         Ok(accepted) => validate_credit_grant(accepted),
         Err(error) if is_inactive_credit_grant_error(&error) => {
@@ -895,7 +895,7 @@ fn validate_credit_grant(accepted: u32) -> Result<(), AppError> {
     ))
 }
 
-async fn settle_query_stream(stream: &mut QueryStream) -> Result<(), AppError> {
+pub(crate) async fn settle_query_stream(stream: &mut QueryStream) -> Result<(), AppError> {
     match stream
         .cancel(Some(
             "Chat2DB stopped the query after local result handling failed".to_owned(),

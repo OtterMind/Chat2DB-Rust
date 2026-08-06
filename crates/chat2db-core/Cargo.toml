@@ -61,6 +61,16 @@ name = "java_community_mysql_product"
 path = "tests/java_community_mysql_product.rs"
 required-features = ["java-integration"]
 
+[[test]]
+name = "java_dm_driver_pack"
+path = "tests/java_dm_driver_pack.rs"
+required-features = ["java-integration"]
+
+[[test]]
+name = "java_dm_product"
+path = "tests/java_dm_product.rs"
+required-features = ["java-integration"]
+
 [features]
 default = []
 java-integration = []

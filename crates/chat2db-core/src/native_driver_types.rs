@@ -12,59 +12,59 @@ pub(crate) struct NativeDriverDescriptor {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct SchemaMetadata {
-    pub(crate) database_name: String,
-    pub(crate) name: String,
-    pub(crate) comment: String,
-    pub(crate) owner: String,
-    pub(crate) system: bool,
+pub struct SchemaMetadata {
+    pub database_name: String,
+    pub name: String,
+    pub comment: String,
+    pub owner: String,
+    pub system: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct SchemaList {
-    pub(crate) items: Vec<SchemaMetadata>,
+pub struct SchemaList {
+    pub items: Vec<SchemaMetadata>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct DatabaseMetadata {
-    pub(crate) name: String,
-    pub(crate) comment: String,
-    pub(crate) charset: String,
-    pub(crate) collation: String,
-    pub(crate) owner: String,
-    pub(crate) system: bool,
+pub struct DatabaseMetadata {
+    pub name: String,
+    pub comment: String,
+    pub charset: String,
+    pub collation: String,
+    pub owner: String,
+    pub system: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct DatabaseList {
-    pub(crate) items: Vec<DatabaseMetadata>,
+pub struct DatabaseList {
+    pub items: Vec<DatabaseMetadata>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct TableMetadata {
-    pub(crate) database_name: String,
-    pub(crate) schema_name: String,
-    pub(crate) name: String,
-    pub(crate) table_type: String,
-    pub(crate) comment: String,
-    pub(crate) database_type: String,
-    pub(crate) pinned: bool,
-    pub(crate) ddl: String,
-    pub(crate) engine: String,
-    pub(crate) charset: String,
-    pub(crate) collation: String,
-    pub(crate) increment_value: Option<String>,
-    pub(crate) partition: String,
-    pub(crate) tablespace: String,
-    pub(crate) rows: Option<String>,
-    pub(crate) data_length: Option<String>,
-    pub(crate) create_time: String,
-    pub(crate) update_time: String,
+pub struct TableMetadata {
+    pub database_name: String,
+    pub schema_name: String,
+    pub name: String,
+    pub table_type: String,
+    pub comment: String,
+    pub database_type: String,
+    pub pinned: bool,
+    pub ddl: String,
+    pub engine: String,
+    pub charset: String,
+    pub collation: String,
+    pub increment_value: Option<String>,
+    pub partition: String,
+    pub tablespace: String,
+    pub rows: Option<String>,
+    pub data_length: Option<String>,
+    pub create_time: String,
+    pub update_time: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct TableList {
-    pub(crate) items: Vec<TableMetadata>,
+pub struct TableList {
+    pub items: Vec<TableMetadata>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -73,43 +73,43 @@ pub(crate) struct ViewList {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ColumnMetadata {
-    pub(crate) database_name: String,
-    pub(crate) schema_name: String,
-    pub(crate) table_name: String,
-    pub(crate) name: String,
-    pub(crate) column_type: String,
-    pub(crate) data_type: Option<i32>,
-    pub(crate) default_value: Option<String>,
-    pub(crate) auto_increment: Option<bool>,
-    pub(crate) comment: String,
-    pub(crate) primary_key: Option<bool>,
-    pub(crate) primary_key_name: String,
-    pub(crate) primary_key_order: i32,
-    pub(crate) column_size: Option<i32>,
-    pub(crate) buffer_length: Option<i32>,
-    pub(crate) decimal_digits: Option<i32>,
-    pub(crate) num_prec_radix: Option<i32>,
-    pub(crate) sql_data_type: Option<i32>,
-    pub(crate) sql_datetime_sub: Option<i32>,
-    pub(crate) char_octet_length: Option<i32>,
-    pub(crate) ordinal_position: Option<i32>,
-    pub(crate) nullable: Option<i32>,
-    pub(crate) generated_column: Option<bool>,
-    pub(crate) extent: String,
-    pub(crate) charset: String,
-    pub(crate) collation: String,
-    pub(crate) unit: String,
-    pub(crate) sparse: Option<bool>,
-    pub(crate) default_constraint_name: String,
-    pub(crate) seed: Option<i32>,
-    pub(crate) increment: Option<i32>,
-    pub(crate) on_update_current_timestamp: Option<bool>,
+pub struct ColumnMetadata {
+    pub database_name: String,
+    pub schema_name: String,
+    pub table_name: String,
+    pub name: String,
+    pub column_type: String,
+    pub data_type: Option<i32>,
+    pub default_value: Option<String>,
+    pub auto_increment: Option<bool>,
+    pub comment: String,
+    pub primary_key: Option<bool>,
+    pub primary_key_name: String,
+    pub primary_key_order: i32,
+    pub column_size: Option<i32>,
+    pub buffer_length: Option<i32>,
+    pub decimal_digits: Option<i32>,
+    pub num_prec_radix: Option<i32>,
+    pub sql_data_type: Option<i32>,
+    pub sql_datetime_sub: Option<i32>,
+    pub char_octet_length: Option<i32>,
+    pub ordinal_position: Option<i32>,
+    pub nullable: Option<i32>,
+    pub generated_column: Option<bool>,
+    pub extent: String,
+    pub charset: String,
+    pub collation: String,
+    pub unit: String,
+    pub sparse: Option<bool>,
+    pub default_constraint_name: String,
+    pub seed: Option<i32>,
+    pub increment: Option<i32>,
+    pub on_update_current_timestamp: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ColumnList {
-    pub(crate) items: Vec<ColumnMetadata>,
+pub struct ColumnList {
+    pub items: Vec<ColumnMetadata>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -318,10 +318,10 @@ pub(crate) struct EntityRelationTable {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct TablePreviewAccepted {
-    pub(crate) operation_id: String,
-    pub(crate) sql: String,
-    pub(crate) row_limit: u32,
+pub struct TablePreviewAccepted {
+    pub operation_id: String,
+    pub sql: String,
+    pub row_limit: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -474,16 +474,16 @@ pub(crate) enum DmlStatement {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MetadataScope {
-    pub(crate) datasource_id: String,
-    pub(crate) database_name: String,
-    pub(crate) schema_name: String,
+pub struct MetadataScope {
+    pub datasource_id: String,
+    pub database_name: String,
+    pub schema_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TableRef {
-    pub(crate) scope: MetadataScope,
-    pub(crate) table_name: String,
+pub struct TableRef {
+    pub scope: MetadataScope,
+    pub table_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -493,25 +493,25 @@ pub(crate) struct MetadataObjectRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ListDatabasesRequest {
-    pub(crate) datasource_id: String,
+pub struct ListDatabasesRequest {
+    pub datasource_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ListSchemasRequest {
-    pub(crate) datasource_id: String,
-    pub(crate) database_name: String,
+pub struct ListSchemasRequest {
+    pub datasource_id: String,
+    pub database_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ListTablesRequest {
-    pub(crate) scope: MetadataScope,
-    pub(crate) name_pattern: String,
+pub struct ListTablesRequest {
+    pub scope: MetadataScope,
+    pub name_pattern: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ListColumnsRequest {
-    pub(crate) table: TableRef,
+pub struct ListColumnsRequest {
+    pub table: TableRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -541,8 +541,8 @@ pub(crate) struct ListTriggersRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TablePreviewRequest {
-    pub(crate) table: TableRef,
+pub struct TablePreviewRequest {
+    pub table: TableRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

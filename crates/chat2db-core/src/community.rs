@@ -99,6 +99,7 @@ use crate::{
     AppError, Application,
     datasource_session::{SessionReadOnly, open_datasource_session, resolve_datasource_connection},
     engine_manager::EngineLease,
+    native_driver::native_capability_not_supported,
 };
 
 impl Application {
@@ -127,11 +128,13 @@ impl Application {
         &self,
         request: ListCommunitySchemasRequest,
     ) -> Result<CommunitySchemaList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
-            return metadata
-                .list_schemas(self, request.into())
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "schema metadata")
+            })?;
+            let database_type = request.database_type.clone();
+            return self
+                .list_native_schemas(&database_type, request.into())
                 .await
                 .map(crate::native_api_adapter::schema_list_response);
         }
@@ -170,11 +173,13 @@ impl Application {
         &self,
         request: ListCommunityDatabasesRequest,
     ) -> Result<CommunityDatabaseList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
-            return metadata
-                .list_databases(self, request.into())
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "database metadata")
+            })?;
+            let database_type = request.database_type.clone();
+            return self
+                .list_native_databases(&database_type, request.into())
                 .await
                 .map(crate::native_api_adapter::database_list_response);
         }
@@ -212,11 +217,13 @@ impl Application {
         &self,
         request: ListCommunityTablesRequest,
     ) -> Result<CommunityTableList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
-            return metadata
-                .list_tables(self, request.into())
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "table metadata")
+            })?;
+            let database_type = request.database_type.clone();
+            return self
+                .list_native_tables(&database_type, request.into())
                 .await
                 .map(crate::native_api_adapter::table_list_response);
         }
@@ -264,11 +271,13 @@ impl Application {
         &self,
         request: ListCommunityColumnsRequest,
     ) -> Result<CommunityTableColumnList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
-            return metadata
-                .list_columns(self, request.into())
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "column metadata")
+            })?;
+            let database_type = request.database_type.clone();
+            return self
+                .list_native_columns(&database_type, request.into())
                 .await
                 .map(crate::native_api_adapter::column_list_response);
         }
@@ -368,9 +377,10 @@ impl Application {
         &self,
         request: ListCommunityIndexesRequest,
     ) -> Result<CommunityTableIndexList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
             return metadata
                 .list_indexes(self, request.into())
                 .await
@@ -420,9 +430,10 @@ impl Application {
         &self,
         request: ListCommunityViewsRequest,
     ) -> Result<CommunityViewList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
             return metadata
                 .list_views(self, request.into())
                 .await
@@ -473,9 +484,10 @@ impl Application {
         request: ListCommunityViewsRequest,
     ) -> Result<CommunityTable, AppError> {
         let view_name = request.view_name_pattern.clone();
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
             return metadata
                 .get_view(self, request.into())
                 .await
@@ -503,9 +515,10 @@ impl Application {
         &self,
         request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityForeignKeyList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
             return metadata
                 .list_imported_keys(self, request.into())
                 .await
@@ -555,9 +568,10 @@ impl Application {
         &self,
         request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityForeignKeyList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
             return metadata
                 .list_exported_keys(self, request.into())
                 .await
@@ -607,9 +621,10 @@ impl Application {
         &self,
         request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityPrimaryKeyList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
             return metadata
                 .list_primary_keys(self, request.into())
                 .await
@@ -659,9 +674,10 @@ impl Application {
         &self,
         request: ListCommunityFunctionsRequest,
     ) -> Result<CommunityFunctionList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
             return metadata
                 .list_functions(self, request.into())
                 .await
@@ -703,9 +719,10 @@ impl Application {
         &self,
         request: GetCommunityFunctionRequest,
     ) -> Result<CommunityFunction, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
             return metadata
                 .get_function(self, request.into())
                 .await
@@ -753,9 +770,10 @@ impl Application {
         &self,
         request: GetCommunityFunctionRequest,
     ) -> Result<CommunityFunctionParameterList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
             return metadata
                 .list_function_parameters(self, request.into())
                 .await
@@ -808,9 +826,10 @@ impl Application {
         &self,
         request: ListCommunityProceduresRequest,
     ) -> Result<CommunityProcedureList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
             return metadata
                 .list_procedures(self, request.into())
                 .await
@@ -852,9 +871,10 @@ impl Application {
         &self,
         request: GetCommunityProcedureRequest,
     ) -> Result<CommunityProcedure, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
             return metadata
                 .get_procedure(self, request.into())
                 .await
@@ -902,9 +922,10 @@ impl Application {
         &self,
         request: GetCommunityProcedureRequest,
     ) -> Result<CommunityProcedureParameterList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
             return metadata
                 .list_procedure_parameters(self, request.into())
                 .await
@@ -1049,9 +1070,10 @@ impl Application {
         &self,
         request: ListCommunityTriggersRequest,
     ) -> Result<CommunityTriggerList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
             return metadata
                 .list_triggers(self, request.into())
                 .await
@@ -1093,9 +1115,10 @@ impl Application {
         &self,
         request: GetCommunityTriggerRequest,
     ) -> Result<CommunityTrigger, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(metadata) = driver.metadata()
-        {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
             return metadata
                 .get_trigger(self, request.into())
                 .await
@@ -1144,9 +1167,10 @@ impl Application {
         &self,
         request: BuildCommunityCreateSchemaRequest,
     ) -> Result<CommunityBuiltSql, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(dialect) = driver.dialect()
-        {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            let dialect = driver.dialect().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "SQL dialect")
+            })?;
             return dialect
                 .build_create_schema(CreateSchemaSqlRequest {
                     schema: native_schema(request.schema),
@@ -1172,9 +1196,10 @@ impl Application {
         &self,
         request: BuildCommunityNamespaceSqlRequest,
     ) -> Result<CommunityBuiltSql, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(dialect) = driver.dialect()
-        {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            let dialect = driver.dialect().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "SQL dialect")
+            })?;
             return dialect
                 .build_namespace_sql(native_namespace_request(request))
                 .map(|built| CommunityBuiltSql { sql: built.sql });
@@ -1198,9 +1223,10 @@ impl Application {
         &self,
         request: BuildCommunityDmlRequest,
     ) -> Result<CommunityBuiltSql, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(dialect) = driver.dialect()
-        {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+            let dialect = driver.dialect().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "SQL dialect")
+            })?;
             return dialect
                 .build_dml(native_dml_request(request)?)
                 .map(|built| CommunityBuiltSql { sql: built.sql });
@@ -1231,11 +1257,13 @@ impl Application {
                 "datasourceId cannot be empty",
             ));
         }
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
-            && let Some(tables) = driver.tables()
+        if self
+            .native_driver_for_database_type(&request.database_type)
+            .is_some()
         {
-            return tables
-                .start_table_preview(self, request.into(), row_limit)
+            let database_type = request.database_type.clone();
+            return self
+                .start_native_table_preview(&database_type, request.into(), row_limit)
                 .await
                 .map(crate::native_api_adapter::table_preview_response)
                 .map_err(crate::native_api_adapter::compatibility_api_error);
@@ -2360,18 +2388,18 @@ fn preserve_primary_result<T>(
 mod tests {
     use async_trait::async_trait;
     use chat2db_contract::{
-        BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest, CommunityDatabase,
-        CommunityDmlColumn, CommunityDmlRow, CommunityDmlStatement, CommunityDmlTarget,
-        CommunityDmlValue, CommunityDriverConfig, CommunityForeignKey, CommunityFormattedSql,
-        CommunityFunction, CommunityFunctionParameter, CommunityNamespaceSqlOperation,
-        CommunityParsedStatement, CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog,
-        CommunityPluginServices, CommunityPrimaryKey, CommunityProcedure,
-        CommunityProcedureParameter, CommunitySchema, CommunitySqlAnalysis, CommunitySqlDiagnostic,
-        CommunitySqlValidation, CommunityTable, CommunityTableColumn, CommunityTableIndex,
-        CommunityTableIndexColumn, CommunityTrigger, DatasourceConnection,
-        ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityIndexesRequest,
-        ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
-        ListCommunityViewsRequest,
+        BuildCommunityCreateSchemaRequest, BuildCommunityDmlRequest,
+        BuildCommunityNamespaceSqlRequest, CommunityDatabase, CommunityDmlColumn, CommunityDmlRow,
+        CommunityDmlStatement, CommunityDmlTarget, CommunityDmlValue, CommunityDriverConfig,
+        CommunityForeignKey, CommunityFormattedSql, CommunityFunction, CommunityFunctionParameter,
+        CommunityNamespaceSqlOperation, CommunityParsedStatement, CommunityPlugin,
+        CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
+        CommunityPrimaryKey, CommunityProcedure, CommunityProcedureParameter, CommunitySchema,
+        CommunitySqlAnalysis, CommunitySqlDiagnostic, CommunitySqlValidation, CommunityTable,
+        CommunityTableColumn, CommunityTableIndex, CommunityTableIndexColumn, CommunityTrigger,
+        DatasourceConnection, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
+        ListCommunityIndexesRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
+        ListCommunityTablesRequest, ListCommunityViewsRequest,
     };
     use chat2db_java_bridge::{
         CommunityDatabase as BridgeCommunityDatabase,
@@ -2437,8 +2465,8 @@ mod tests {
             &FAKE_POSTGRES_DESCRIPTOR
         }
 
-        fn connection(&self) -> &dyn NativeConnectionDriver {
-            self
+        fn connection(&self) -> Option<&dyn NativeConnectionDriver> {
+            Some(self)
         }
 
         fn dialect(&self) -> Option<&dyn NativeDialectDriver> {
@@ -2496,6 +2524,51 @@ mod tests {
             .expect("the compatibility API must use the registered native capability");
 
         assert_eq!(response.sql, "fake-postgres:namespace");
+    }
+
+    #[tokio::test]
+    async fn registered_driver_never_falls_back_to_community_for_missing_dialect_capabilities() {
+        let application = Application::new();
+
+        let create_schema_error = application
+            .build_community_create_schema(BuildCommunityCreateSchemaRequest {
+                database_type: "DM".to_owned(),
+                schema: CommunitySchema {
+                    name: "APP".to_owned(),
+                    ..CommunitySchema::default()
+                },
+            })
+            .await
+            .expect_err("DM must not fall back to the Community schema builder");
+        assert_eq!(
+            create_schema_error.api_error().code,
+            "native_driver_capability_not_supported"
+        );
+
+        let namespace_error = application
+            .build_community_namespace_sql(BuildCommunityNamespaceSqlRequest {
+                database_type: "DM".to_owned(),
+                operation: CommunityNamespaceSqlOperation::DropSchema {
+                    schema_name: "APP".to_owned(),
+                },
+            })
+            .await
+            .expect_err("DM must not fall back to the Community namespace builder");
+        assert_eq!(
+            namespace_error.api_error().code,
+            "native_driver_capability_not_supported"
+        );
+
+        let mut dml_request = binary_dml_request("AAH/");
+        dml_request.database_type = "DM".to_owned();
+        let dml_error = application
+            .build_community_dml(dml_request)
+            .await
+            .expect_err("DM must not fall back to the Community DML builder");
+        assert_eq!(
+            dml_error.api_error().code,
+            "native_driver_capability_not_supported"
+        );
     }
 
     fn binary_dml_request(base64: &str) -> BuildCommunityDmlRequest {

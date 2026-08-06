@@ -220,8 +220,13 @@ impl Application {
             })?;
         let mut forwarded = request.connection;
         forwarded.ssh = Some(ssh);
-        let local_port = driver
-            .connection()
+        let connection_driver = driver.connection().ok_or_else(|| {
+            AppError::invalid(
+                "ssh_driver_not_supported",
+                "SSH forwarding requires a native Rust connection driver",
+            )
+        })?;
+        let local_port = connection_driver
             .test_connection_with_local_port(&forwarded)
             .await?
             .ok_or_else(AppError::internal)?;
