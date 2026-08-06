@@ -78,7 +78,7 @@ for path in \
   "${repository_root}/target/macos-runtime/bin/java" \
   "${repository_root}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar" \
   "${repository_root}/target/community-h2-classpath" \
-  "${repository_root}/target/mysql-driver-packs" \
+  "${repository_root}/target/macos-driver-packs" \
   "${repository_root}/apps/frontend/dist"; do
   if [[ ! -e "${path}" ]]; then
     echo "package prerequisite is missing: ${path}" >&2
