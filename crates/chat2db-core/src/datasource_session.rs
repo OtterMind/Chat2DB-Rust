@@ -250,11 +250,12 @@ impl ManagedJdbcSession {
         let session = self.session.take();
         let engine = self.engine.take();
         let cleanup = tokio::spawn(async move {
-            let _engine = engine;
-            match session {
+            let close_result = match session {
                 Some(session) => session.close().await.map_err(AppError::from),
                 None => Ok(()),
-            }
+            };
+            drop(engine);
+            close_result
         });
         let close_result = match cleanup.await {
             Ok(result) => result,
@@ -295,13 +296,13 @@ impl Drop for ManagedJdbcSession {
             return;
         };
         runtime.spawn(async move {
-            let _engine = engine;
             if let Err(error) = session.close().await {
                 tracing::warn!(
                     close_error = %error,
                     "best-effort JDBC session cleanup failed"
                 );
             }
+            drop(engine);
         });
     }
 }
