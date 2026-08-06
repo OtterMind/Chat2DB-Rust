@@ -2289,7 +2289,7 @@ fn canonical_temporal(kind: DmlTemporalKind, value: &str) -> Result<String, AppE
             .map(format_iso_local_datetime)
             .ok_or_else(invalid),
         DmlTemporalKind::OffsetDatetime => {
-            let normalized = normalize_offset_datetime(value).ok_or_else(&invalid)?;
+            let normalized = normalize_offset_datetime(value).ok_or_else(invalid)?;
             let parsed = DateTime::parse_from_rfc3339(&normalized).map_err(|_| invalid())?;
             let offset = if parsed.offset().local_minus_utc() == 0 {
                 "Z".to_owned()
