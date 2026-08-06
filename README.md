@@ -279,6 +279,40 @@ Connector/J is downloaded from Maven Central only after its pinned byte length
 and SHA-256 are verified; it remains an external driver pack and is never
 embedded in the Java engine.
 
+Prepare and verify the pinned DM JDBC driver pack without requiring a running
+DM server:
+
+```bash
+make dm-driver-pack-integration
+```
+
+The gate starts the project-owned Java 17 JDBC engine and loads only
+`dm.jdbc.driver.DmDriver` from the managed pack. DM capability routing,
+metadata SQL, validation, result mapping, and bounded table-preview SQL belong
+to the Rust `DmDriver` registered in the unified native-driver SPI. The Java
+engine is only the generic JDBC transport for the official vendor JAR; it does
+not load or invoke the Chat2DB Community DM or Oracle plugins.
+
+A separate product gate proves that the Rust-owned DM SPI works without any
+Community classpath or Community database plugin configured:
+
+```bash
+make dm-product-integration
+```
+
+A live product path is also exercised by this target when `DM_TEST_HOST`, `DM_TEST_PORT`,
+`DM_TEST_USER`, and `DM_TEST_PASSWORD` are all set; use `DM_TEST_REQUIRED=1` to
+make their absence an error. `DM_TEST_JDBC_URL` can override the default
+`jdbc:dm://<host>:<port>` URL. The live test covers connection, database,
+schema, table, and column discovery, bounded preview/query execution, and
+fixture cleanup. Without an endpoint, the gate still verifies the Driver Pack
+and Rust SPI identity without loading a Community classpath.
+
+The public macOS package does not bundle the proprietary DM JDBC JAR because
+the JAR contains no verifiable redistribution grant. For local testing, prepare
+the pinned pack explicitly and point Web or Desktop at it with
+`CHAT2DB_DRIVER_PACK_DIR`.
+
 Those targets require a clean submodule at the fixed commit, build through the
 checked-in Maven Wrapper and a repository-local Maven cache, derive archive
 timestamps from the commit, exclude the H2 JDBC driver, and deterministically
@@ -302,7 +336,7 @@ enabled:
 make java community-h2-classpath mysql-driver-pack frontend
 CHAT2DB_JAVA_ENGINE_JAR="$PWD/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar" \
 CHAT2DB_COMMUNITY_CLASSPATH_DIR="$PWD/target/community-h2-classpath" \
-CHAT2DB_DRIVER_PACK_DIR="$PWD/target/mysql-driver-packs" \
+CHAT2DB_DRIVER_PACK_DIR="$PWD/target/driver-packs" \
 CHAT2DB_VAULT_MASTER_KEY="$(openssl rand -base64 32)" \
 cargo run -p chat2db-web
 ```
