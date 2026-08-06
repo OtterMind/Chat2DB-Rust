@@ -68,6 +68,12 @@ use chat2db_java_bridge::{
 };
 use chat2db_storage::Storage;
 
+use crate::native_driver_types::{
+    CreateSchemaSqlRequest, DatabaseDefinition, DmlAssignment, DmlColumn, DmlRow, DmlSqlRequest,
+    DmlStatement, DmlTarget, DmlTemporalKind, DmlValue, NamespaceSqlOperation, NamespaceSqlRequest,
+    SchemaDefinition,
+};
+
 const FIXED_COMMUNITY_CLASSPATH_LOCK: &str =
     include_str!("../../../third_party/community-h2-classpath.lock");
 const DEFAULT_TABLE_PREVIEW_ROWS: u32 = 200;
@@ -93,7 +99,6 @@ use crate::{
     AppError, Application,
     datasource_session::{SessionReadOnly, open_datasource_session, resolve_datasource_connection},
     engine_manager::EngineLease,
-    native_mysql,
 };
 
 impl Application {
@@ -122,8 +127,13 @@ impl Application {
         &self,
         request: ListCommunitySchemasRequest,
     ) -> Result<CommunitySchemaList, AppError> {
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::list_schemas(self, &request.datasource_id).await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .list_schemas(self, request.into())
+                .await
+                .map(crate::native_api_adapter::schema_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -160,8 +170,13 @@ impl Application {
         &self,
         request: ListCommunityDatabasesRequest,
     ) -> Result<CommunityDatabaseList, AppError> {
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::list_databases(self, &request.datasource_id).await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .list_databases(self, request.into())
+                .await
+                .map(crate::native_api_adapter::database_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -197,14 +212,13 @@ impl Application {
         &self,
         request: ListCommunityTablesRequest,
     ) -> Result<CommunityTableList, AppError> {
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::list_tables(
-                self,
-                &request.datasource_id,
-                &request.database_name,
-                &request.table_name_pattern,
-            )
-            .await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .list_tables(self, request.into())
+                .await
+                .map(crate::native_api_adapter::table_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -250,15 +264,13 @@ impl Application {
         &self,
         request: ListCommunityColumnsRequest,
     ) -> Result<CommunityTableColumnList, AppError> {
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::list_columns(
-                self,
-                &request.datasource_id,
-                &request.database_name,
-                &request.schema_name,
-                &request.table_name,
-            )
-            .await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .list_columns(self, request.into())
+                .await
+                .map(crate::native_api_adapter::column_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -307,14 +319,18 @@ impl Application {
         table_name: &str,
         column_names: &[String],
     ) -> Result<(), AppError> {
-        native_mysql::validate_column_reorder(
-            self,
-            datasource_id,
-            database_name,
-            table_name,
-            column_names,
-        )
-        .await
+        let driver = self
+            .require_native_driver_for_datasource(datasource_id)
+            .await?;
+        let tables = driver.tables().ok_or_else(|| {
+            AppError::invalid(
+                "native_table_capability_not_available",
+                "The native Rust driver does not implement table operations",
+            )
+        })?;
+        tables
+            .validate_column_reorder(self, datasource_id, database_name, table_name, column_names)
+            .await
     }
 
     /// Reads a `MySQL` table definition through the native driver without starting Java.
@@ -329,7 +345,18 @@ impl Application {
         schema_name: &str,
         table_name: &str,
     ) -> Result<String, AppError> {
-        native_mysql::table_ddl(self, data_source_id, database_name, schema_name, table_name).await
+        let driver = self
+            .require_native_driver_for_datasource(data_source_id)
+            .await?;
+        let tables = driver.tables().ok_or_else(|| {
+            AppError::invalid(
+                "native_table_capability_not_available",
+                "The native Rust driver does not implement table operations",
+            )
+        })?;
+        tables
+            .table_ddl(self, data_source_id, database_name, schema_name, table_name)
+            .await
     }
 
     /// Lists indexes through Community metadata using a forced read-only session.
@@ -341,15 +368,13 @@ impl Application {
         &self,
         request: ListCommunityIndexesRequest,
     ) -> Result<CommunityTableIndexList, AppError> {
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::list_indexes(
-                self,
-                &request.datasource_id,
-                &request.database_name,
-                &request.schema_name,
-                &request.table_name,
-            )
-            .await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .list_indexes(self, request.into())
+                .await
+                .map(crate::native_api_adapter::index_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -395,15 +420,13 @@ impl Application {
         &self,
         request: ListCommunityViewsRequest,
     ) -> Result<CommunityViewList, AppError> {
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::list_views(
-                self,
-                &request.datasource_id,
-                &request.database_name,
-                &request.schema_name,
-                &request.view_name_pattern,
-            )
-            .await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .list_views(self, request.into())
+                .await
+                .map(crate::native_api_adapter::view_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -450,15 +473,13 @@ impl Application {
         request: ListCommunityViewsRequest,
     ) -> Result<CommunityTable, AppError> {
         let view_name = request.view_name_pattern.clone();
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::get_view(
-                self,
-                &request.datasource_id,
-                &request.database_name,
-                &request.schema_name,
-                &view_name,
-            )
-            .await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .get_view(self, request.into())
+                .await
+                .map(crate::native_api_adapter::table_response);
         }
         self.list_community_views(request)
             .await?
@@ -482,14 +503,13 @@ impl Application {
         &self,
         request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityForeignKeyList, AppError> {
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::list_imported_keys(
-                self,
-                &request.datasource_id,
-                &request.database_name,
-                &request.table_name,
-            )
-            .await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .list_imported_keys(self, request.into())
+                .await
+                .map(crate::native_api_adapter::foreign_key_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -535,14 +555,13 @@ impl Application {
         &self,
         request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityForeignKeyList, AppError> {
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::list_exported_keys(
-                self,
-                &request.datasource_id,
-                &request.database_name,
-                &request.table_name,
-            )
-            .await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .list_exported_keys(self, request.into())
+                .await
+                .map(crate::native_api_adapter::foreign_key_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -588,15 +607,13 @@ impl Application {
         &self,
         request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityPrimaryKeyList, AppError> {
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::list_primary_keys(
-                self,
-                &request.datasource_id,
-                &request.database_name,
-                &request.schema_name,
-                &request.table_name,
-            )
-            .await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .list_primary_keys(self, request.into())
+                .await
+                .map(crate::native_api_adapter::primary_key_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -642,14 +659,13 @@ impl Application {
         &self,
         request: ListCommunityFunctionsRequest,
     ) -> Result<CommunityFunctionList, AppError> {
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::list_functions(
-                self,
-                &request.datasource_id,
-                &request.database_name,
-                &request.schema_name,
-            )
-            .await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .list_functions(self, request.into())
+                .await
+                .map(crate::native_api_adapter::function_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -687,15 +703,13 @@ impl Application {
         &self,
         request: GetCommunityFunctionRequest,
     ) -> Result<CommunityFunction, AppError> {
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::get_function(
-                self,
-                &request.datasource_id,
-                &request.database_name,
-                &request.schema_name,
-                &request.function_name,
-            )
-            .await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .get_function(self, request.into())
+                .await
+                .map(crate::native_api_adapter::function_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -739,15 +753,13 @@ impl Application {
         &self,
         request: GetCommunityFunctionRequest,
     ) -> Result<CommunityFunctionParameterList, AppError> {
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::list_function_parameters(
-                self,
-                &request.datasource_id,
-                &request.database_name,
-                &request.schema_name,
-                &request.function_name,
-            )
-            .await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .list_function_parameters(self, request.into())
+                .await
+                .map(crate::native_api_adapter::function_parameter_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -796,14 +808,13 @@ impl Application {
         &self,
         request: ListCommunityProceduresRequest,
     ) -> Result<CommunityProcedureList, AppError> {
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::list_procedures(
-                self,
-                &request.datasource_id,
-                &request.database_name,
-                &request.schema_name,
-            )
-            .await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .list_procedures(self, request.into())
+                .await
+                .map(crate::native_api_adapter::procedure_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -841,15 +852,13 @@ impl Application {
         &self,
         request: GetCommunityProcedureRequest,
     ) -> Result<CommunityProcedure, AppError> {
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::get_procedure(
-                self,
-                &request.datasource_id,
-                &request.database_name,
-                &request.schema_name,
-                &request.procedure_name,
-            )
-            .await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .get_procedure(self, request.into())
+                .await
+                .map(crate::native_api_adapter::procedure_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -893,15 +902,13 @@ impl Application {
         &self,
         request: GetCommunityProcedureRequest,
     ) -> Result<CommunityProcedureParameterList, AppError> {
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::list_procedure_parameters(
-                self,
-                &request.datasource_id,
-                &request.database_name,
-                &request.schema_name,
-                &request.procedure_name,
-            )
-            .await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .list_procedure_parameters(self, request.into())
+                .await
+                .map(crate::native_api_adapter::procedure_parameter_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -950,13 +957,25 @@ impl Application {
         &self,
         request: PreviewCommunityRoutineInvocationRequest,
     ) -> Result<CommunityRoutineInvocationPreview, AppError> {
-        if !native_mysql::is_mysql_database_type(&request.database_type) {
-            return Err(AppError::invalid(
-                "invalid_community_routine_invocation_request",
-                "routine invocation preview supports only MySQL",
-            ));
-        }
-        native_mysql::preview_routine_invocation(self, request).await
+        let driver = self
+            .native_driver_for_database_type(&request.database_type)
+            .ok_or_else(|| {
+                AppError::invalid(
+                    "invalid_community_routine_invocation_request",
+                    "routine invocation preview requires a native Rust driver",
+                )
+            })?;
+        let routines = driver.routines().ok_or_else(|| {
+            AppError::invalid(
+                "native_routine_capability_not_available",
+                "The native Rust driver does not implement routine operations",
+            )
+        })?;
+        routines
+            .preview_invocation(self, request.into())
+            .await
+            .map(crate::native_api_adapter::routine_invocation_response)
+            .map_err(crate::native_api_adapter::compatibility_api_error)
     }
 
     /// Previews the compensating `MySQL` routine-replacement script.
@@ -969,13 +988,24 @@ impl Application {
         &self,
         request: &CommunityRoutineMigrationRequest,
     ) -> Result<CommunityRoutineInvocationPreview, AppError> {
-        if !native_mysql::is_mysql_database_type(&request.database_type) {
-            return Err(AppError::invalid(
-                "invalid_community_routine_migration_request",
-                "routine migration supports only MySQL",
-            ));
-        }
-        native_mysql::preview_routine_migration(request)
+        let driver = self
+            .native_driver_for_database_type(&request.database_type)
+            .ok_or_else(|| {
+                AppError::invalid(
+                    "invalid_community_routine_migration_request",
+                    "routine migration requires a native Rust driver",
+                )
+            })?;
+        let routines = driver.routines().ok_or_else(|| {
+            AppError::invalid(
+                "native_routine_capability_not_available",
+                "The native Rust driver does not implement routine operations",
+            )
+        })?;
+        routines
+            .preview_migration(request.clone().into())
+            .map(crate::native_api_adapter::routine_invocation_response)
+            .map_err(crate::native_api_adapter::compatibility_api_error)
     }
 
     /// Replaces one `MySQL` routine and restores its before-image when apply fails.
@@ -989,13 +1019,25 @@ impl Application {
         &self,
         request: CommunityRoutineMigrationRequest,
     ) -> Result<CommunityRoutineMigrationExecution, AppError> {
-        if !native_mysql::is_mysql_database_type(&request.database_type) {
-            return Err(AppError::invalid(
-                "invalid_community_routine_migration_request",
-                "routine migration supports only MySQL",
-            ));
-        }
-        native_mysql::execute_routine_migration(self, request).await
+        let driver = self
+            .native_driver_for_database_type(&request.database_type)
+            .ok_or_else(|| {
+                AppError::invalid(
+                    "invalid_community_routine_migration_request",
+                    "routine migration requires a native Rust driver",
+                )
+            })?;
+        let routines = driver.routines().ok_or_else(|| {
+            AppError::invalid(
+                "native_routine_capability_not_available",
+                "The native Rust driver does not implement routine operations",
+            )
+        })?;
+        routines
+            .execute_migration(self, request.into())
+            .await
+            .map(crate::native_api_adapter::routine_migration_execution_response)
+            .map_err(crate::native_api_adapter::compatibility_api_error)
     }
 
     /// Lists triggers through Community metadata using a forced read-only session.
@@ -1007,14 +1049,13 @@ impl Application {
         &self,
         request: ListCommunityTriggersRequest,
     ) -> Result<CommunityTriggerList, AppError> {
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::list_triggers(
-                self,
-                &request.datasource_id,
-                &request.database_name,
-                &request.schema_name,
-            )
-            .await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .list_triggers(self, request.into())
+                .await
+                .map(crate::native_api_adapter::trigger_list_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -1052,15 +1093,13 @@ impl Application {
         &self,
         request: GetCommunityTriggerRequest,
     ) -> Result<CommunityTrigger, AppError> {
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::get_trigger(
-                self,
-                &request.datasource_id,
-                &request.database_name,
-                &request.schema_name,
-                &request.trigger_name,
-            )
-            .await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(metadata) = driver.metadata()
+        {
+            return metadata
+                .get_trigger(self, request.into())
+                .await
+                .map(crate::native_api_adapter::trigger_response);
         }
         let storage = self.require_storage()?;
         let engine = self.require_community_engine().await?;
@@ -1105,6 +1144,15 @@ impl Application {
         &self,
         request: BuildCommunityCreateSchemaRequest,
     ) -> Result<CommunityBuiltSql, AppError> {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(dialect) = driver.dialect()
+        {
+            return dialect
+                .build_create_schema(CreateSchemaSqlRequest {
+                    schema: native_schema(request.schema),
+                })
+                .map(|built| CommunityBuiltSql { sql: built.sql });
+        }
         let engine = self.require_community_engine().await?;
         let client = engine.community_client().map_err(AppError::from)?;
         client
@@ -1124,6 +1172,13 @@ impl Application {
         &self,
         request: BuildCommunityNamespaceSqlRequest,
     ) -> Result<CommunityBuiltSql, AppError> {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(dialect) = driver.dialect()
+        {
+            return dialect
+                .build_namespace_sql(native_namespace_request(request))
+                .map(|built| CommunityBuiltSql { sql: built.sql });
+        }
         let engine = self.require_community_engine().await?;
         let client = engine.community_client().map_err(AppError::from)?;
         client
@@ -1143,6 +1198,13 @@ impl Application {
         &self,
         request: BuildCommunityDmlRequest,
     ) -> Result<CommunityBuiltSql, AppError> {
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(dialect) = driver.dialect()
+        {
+            return dialect
+                .build_dml(native_dml_request(request)?)
+                .map(|built| CommunityBuiltSql { sql: built.sql });
+        }
         let engine = self.require_community_engine().await?;
         let client = engine.community_client().map_err(AppError::from)?;
         client
@@ -1169,8 +1231,14 @@ impl Application {
                 "datasourceId cannot be empty",
             ));
         }
-        if native_mysql::is_mysql_database_type(&request.database_type) {
-            return native_mysql::start_table_preview(self, request, row_limit).await;
+        if let Some(driver) = self.native_driver_for_database_type(&request.database_type)
+            && let Some(tables) = driver.tables()
+        {
+            return tables
+                .start_table_preview(self, request.into(), row_limit)
+                .await
+                .map(crate::native_api_adapter::table_preview_response)
+                .map_err(crate::native_api_adapter::compatibility_api_error);
         }
 
         let engine = self.require_community_engine().await?;
@@ -1742,6 +1810,169 @@ fn bridge_database(database: CommunityDatabase) -> BridgeCommunityDatabase {
     }
 }
 
+fn native_schema(schema: CommunitySchema) -> SchemaDefinition {
+    SchemaDefinition {
+        database_name: schema.database_name,
+        name: schema.name,
+        comment: schema.comment,
+        owner: schema.owner,
+        system: schema.system,
+    }
+}
+
+fn native_database(database: CommunityDatabase) -> DatabaseDefinition {
+    DatabaseDefinition {
+        name: database.name,
+        comment: database.comment,
+        charset: database.charset,
+        collation: database.collation,
+        owner: database.owner,
+        system: database.system,
+    }
+}
+
+fn native_namespace_request(request: BuildCommunityNamespaceSqlRequest) -> NamespaceSqlRequest {
+    NamespaceSqlRequest {
+        operation: match request.operation {
+            CommunityNamespaceSqlOperation::CreateDatabase { database } => {
+                NamespaceSqlOperation::CreateDatabase {
+                    database: native_database(database),
+                }
+            }
+            CommunityNamespaceSqlOperation::AlterDatabase {
+                old_database,
+                new_database,
+            } => NamespaceSqlOperation::AlterDatabase {
+                old_database: native_database(old_database),
+                new_database: native_database(new_database),
+            },
+            CommunityNamespaceSqlOperation::DropDatabase { database_name } => {
+                NamespaceSqlOperation::DropDatabase { database_name }
+            }
+            CommunityNamespaceSqlOperation::UseDatabase { database_name } => {
+                NamespaceSqlOperation::UseDatabase { database_name }
+            }
+            CommunityNamespaceSqlOperation::CreateSchema { schema } => {
+                NamespaceSqlOperation::CreateSchema {
+                    schema: native_schema(schema),
+                }
+            }
+            CommunityNamespaceSqlOperation::AlterSchema {
+                old_schema_name,
+                new_schema_name,
+            } => NamespaceSqlOperation::AlterSchema {
+                old_schema_name,
+                new_schema_name,
+            },
+            CommunityNamespaceSqlOperation::DropSchema { schema_name } => {
+                NamespaceSqlOperation::DropSchema { schema_name }
+            }
+        },
+    }
+}
+
+fn native_dml_request(request: BuildCommunityDmlRequest) -> Result<DmlSqlRequest, AppError> {
+    Ok(DmlSqlRequest {
+        target: DmlTarget {
+            database_name: request.target.database_name,
+            schema_name: request.target.schema_name,
+            table_name: request.target.table_name,
+        },
+        statement: native_dml_statement(request.statement)?,
+    })
+}
+
+fn native_dml_statement(statement: CommunityDmlStatement) -> Result<DmlStatement, AppError> {
+    Ok(match statement {
+        CommunityDmlStatement::SingleInsert { columns, row } => DmlStatement::SingleInsert {
+            columns: columns.into_iter().map(native_dml_column).collect(),
+            row: native_dml_row(row)?,
+        },
+        CommunityDmlStatement::MultiInsert { columns, rows } => DmlStatement::MultiInsert {
+            columns: columns.into_iter().map(native_dml_column).collect(),
+            rows: rows
+                .into_iter()
+                .map(native_dml_row)
+                .collect::<Result<_, _>>()?,
+        },
+        CommunityDmlStatement::Update {
+            assignments,
+            predicates,
+        } => DmlStatement::Update {
+            assignments: assignments
+                .into_iter()
+                .map(native_dml_assignment)
+                .collect::<Result<_, _>>()?,
+            predicates: predicates
+                .into_iter()
+                .map(native_dml_assignment)
+                .collect::<Result<_, _>>()?,
+        },
+    })
+}
+
+fn native_dml_column(column: CommunityDmlColumn) -> DmlColumn {
+    DmlColumn {
+        name: column.name,
+        data_type_name: column.data_type_name,
+        precision: column.precision,
+        scale: column.scale,
+    }
+}
+
+fn native_dml_row(row: CommunityDmlRow) -> Result<DmlRow, AppError> {
+    Ok(DmlRow {
+        values: row
+            .values
+            .into_iter()
+            .map(native_dml_value)
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+fn native_dml_assignment(assignment: CommunityDmlAssignment) -> Result<DmlAssignment, AppError> {
+    Ok(DmlAssignment {
+        column: native_dml_column(assignment.column),
+        value: native_dml_value(assignment.value)?,
+    })
+}
+
+fn native_dml_value(value: CommunityDmlValue) -> Result<DmlValue, AppError> {
+    Ok(match value {
+        CommunityDmlValue::Null => DmlValue::Null,
+        CommunityDmlValue::String { value } => DmlValue::String(value),
+        CommunityDmlValue::Decimal { value } => DmlValue::Decimal(value),
+        CommunityDmlValue::Boolean { value } => DmlValue::Boolean(value),
+        CommunityDmlValue::Temporal {
+            temporal_kind,
+            value,
+        } => DmlValue::Temporal {
+            kind: match temporal_kind {
+                CommunityDmlTemporalKind::Date => DmlTemporalKind::Date,
+                CommunityDmlTemporalKind::Time => DmlTemporalKind::Time,
+                CommunityDmlTemporalKind::LocalDatetime => DmlTemporalKind::LocalDatetime,
+                CommunityDmlTemporalKind::OffsetDatetime => DmlTemporalKind::OffsetDatetime,
+            },
+            iso8601: value,
+        },
+        CommunityDmlValue::Binary { base64 } => {
+            let bytes = STANDARD.decode(&base64).map_err(|_| {
+                AppError::invalid(
+                    "community.dml_invalid_value",
+                    "Community DML binary values must use canonical standard base64",
+                )
+            })?;
+            if STANDARD.encode(&bytes) != base64 {
+                return Err(AppError::invalid(
+                    "community.dml_invalid_value",
+                    "Community DML binary values must use canonical standard base64",
+                ));
+            }
+            DmlValue::Binary(bytes)
+        }
+    })
+}
+
 fn bridge_namespace_request(
     request: BuildCommunityNamespaceSqlRequest,
 ) -> BridgeBuildCommunityNamespaceSqlRequest {
@@ -2127,6 +2358,7 @@ fn preserve_primary_result<T>(
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
     use chat2db_contract::{
         BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest, CommunityDatabase,
         CommunityDmlColumn, CommunityDmlRow, CommunityDmlStatement, CommunityDmlTarget,
@@ -2136,9 +2368,10 @@ mod tests {
         CommunityPluginServices, CommunityPrimaryKey, CommunityProcedure,
         CommunityProcedureParameter, CommunitySchema, CommunitySqlAnalysis, CommunitySqlDiagnostic,
         CommunitySqlValidation, CommunityTable, CommunityTableColumn, CommunityTableIndex,
-        CommunityTableIndexColumn, CommunityTrigger, ListCommunityColumnsRequest,
-        ListCommunityDatabasesRequest, ListCommunityIndexesRequest, ListCommunitySchemasRequest,
-        ListCommunityTableKeysRequest, ListCommunityTablesRequest, ListCommunityViewsRequest,
+        CommunityTableIndexColumn, CommunityTrigger, DatasourceConnection,
+        ListCommunityColumnsRequest, ListCommunityDatabasesRequest, ListCommunityIndexesRequest,
+        ListCommunitySchemasRequest, ListCommunityTableKeysRequest, ListCommunityTablesRequest,
+        ListCommunityViewsRequest,
     };
     use chat2db_java_bridge::{
         CommunityDatabase as BridgeCommunityDatabase,
@@ -2175,10 +2408,95 @@ mod tests {
         community_function_parameter, community_plugin_catalog, community_primary_key,
         community_procedure, community_procedure_parameter, community_schema,
         community_sql_analysis, community_sql_validation, community_table, community_table_column,
-        community_table_index, community_trigger, preserve_primary_result, run_cancellation_safe,
-        run_cancellation_safe_with_cleanup, table_preview_row_limit, validate_table_preview_sql,
+        community_table_index, community_trigger, native_dml_request, preserve_primary_result,
+        run_cancellation_safe, run_cancellation_safe_with_cleanup, table_preview_row_limit,
+        validate_table_preview_sql,
     };
-    use crate::{AppError, AppErrorKind};
+    use crate::{
+        AppError, AppErrorKind,
+        native_driver::{
+            NativeConnectionDriver, NativeDialectDriver, NativeDriver, NativeDriverRegistry,
+        },
+        native_driver_types::{
+            BuiltSql, CreateSchemaSqlRequest, DmlSqlRequest, NamespaceSqlRequest,
+            NativeDriverDescriptor,
+        },
+    };
+
+    struct FakePostgresDriver;
+
+    const FAKE_POSTGRES_DESCRIPTOR: NativeDriverDescriptor = NativeDriverDescriptor {
+        id: "postgresql",
+        implementation: "fake_postgres",
+        database_types: &["POSTGRESQL"],
+        compatibility_aliases: &["postgresql", "org.postgresql.Driver"],
+    };
+
+    impl NativeDriver for FakePostgresDriver {
+        fn descriptor(&self) -> &'static NativeDriverDescriptor {
+            &FAKE_POSTGRES_DESCRIPTOR
+        }
+
+        fn connection(&self) -> &dyn NativeConnectionDriver {
+            self
+        }
+
+        fn dialect(&self) -> Option<&dyn NativeDialectDriver> {
+            Some(self)
+        }
+    }
+
+    #[async_trait]
+    impl NativeConnectionDriver for FakePostgresDriver {
+        async fn test_connection(
+            &self,
+            _connection: &DatasourceConnection,
+        ) -> Result<(), AppError> {
+            Ok(())
+        }
+    }
+
+    impl NativeDialectDriver for FakePostgresDriver {
+        fn build_create_schema(
+            &self,
+            request: CreateSchemaSqlRequest,
+        ) -> Result<BuiltSql, AppError> {
+            Ok(BuiltSql {
+                sql: format!("fake-postgres:create-schema:{}", request.schema.name),
+            })
+        }
+
+        fn build_namespace_sql(&self, _request: NamespaceSqlRequest) -> Result<BuiltSql, AppError> {
+            Ok(BuiltSql {
+                sql: "fake-postgres:namespace".to_owned(),
+            })
+        }
+
+        fn build_dml(&self, _request: DmlSqlRequest) -> Result<BuiltSql, AppError> {
+            Ok(BuiltSql {
+                sql: "fake-postgres:dml".to_owned(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn compatibility_namespace_api_dispatches_through_the_native_registry() {
+        let registry = NativeDriverRegistry::try_new(vec![Arc::new(FakePostgresDriver)])
+            .expect("registry is valid");
+        let application = Application::with_native_drivers_for_test(registry);
+
+        let response = application
+            .build_community_namespace_sql(BuildCommunityNamespaceSqlRequest {
+                database_type: "POSTGRESQL".to_owned(),
+                operation: CommunityNamespaceSqlOperation::UseDatabase {
+                    database_name: "inventory".to_owned(),
+                },
+            })
+            .await
+            .expect("the compatibility API must use the registered native capability");
+
+        assert_eq!(response.sql, "fake-postgres:namespace");
+    }
 
     fn binary_dml_request(base64: &str) -> BuildCommunityDmlRequest {
         BuildCommunityDmlRequest {
@@ -2289,11 +2607,29 @@ mod tests {
             ])]
         );
 
+        let native = native_dml_request(binary_dml_request("AAH/"))
+            .expect("the native adapter must accept the same canonical bytes");
+        let crate::native_driver_types::DmlStatement::SingleInsert { row, .. } = native.statement
+        else {
+            panic!("single insert must retain its native variant");
+        };
+        assert_eq!(
+            row.values,
+            vec![crate::native_driver_types::DmlValue::Binary(vec![
+                0, 1, 255
+            ])]
+        );
+
         for invalid in ["AAH_", "AAH/==", "not base64"] {
             let error = bridge_dml_request(binary_dml_request(invalid))
                 .expect_err("noncanonical binary JSON must fail before engine access");
             assert_eq!(error.api_error().code, "community.dml_invalid_value");
             assert_eq!(error.kind(), AppErrorKind::InvalidRequest);
+
+            let native_error = native_dml_request(binary_dml_request(invalid))
+                .expect_err("the native adapter must reject the same noncanonical input");
+            assert_eq!(native_error.api_error().code, "community.dml_invalid_value");
+            assert_eq!(native_error.kind(), AppErrorKind::InvalidRequest);
         }
     }
 

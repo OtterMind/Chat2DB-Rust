@@ -5,18 +5,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chat2db_contract::{
-    ApiError, CommunityAccount, CommunityAccountAction, CommunityAccountCapability,
-    CommunityAccountCommandRequest, CommunityAccountExecution, CommunityAccountGrantList,
-    CommunityAccountGrantsRequest, CommunityAccountList, CommunityAccountPreview,
-    CommunityAccountPrivilegeScope, CommunityMysqlPrivilege, DatasourceConnection,
-};
+use chat2db_contract::{ApiError, DatasourceConnection};
 use mysql_async::{Conn, Error as MysqlError, prelude::Queryable};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
     AppError, AppErrorKind, Application,
+    native_administration_types::{
+        AdministrationAction, AdministrationCapability, AdministrationCommand,
+        AdministrationExecution, AdministrationPreview, Principal, PrincipalGrantList,
+        PrincipalGrantsRequest, PrincipalList, PrincipalRef, PrivilegeScope,
+    },
     native_mysql::{finish_connection, open_resolved_connection, resolve_native_connection},
 };
 
@@ -37,6 +37,62 @@ const PROBE_ACCOUNT_LOCK: &str = "SELECT account_locked FROM mysql.user LIMIT 1"
 const SELECT_ACCOUNTS: &str = "SELECT User, Host, plugin FROM mysql.user ORDER BY User, Host";
 const SELECT_ACCOUNTS_WITH_LOCK: &str =
     "SELECT User, Host, plugin, account_locked FROM mysql.user ORDER BY User, Host";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum MysqlPrivilege {
+    Select,
+    Insert,
+    Update,
+    Delete,
+    Create,
+    Drop,
+    Alter,
+    Index,
+    References,
+    Execute,
+    ShowView,
+    Trigger,
+    Event,
+    CreateTemporaryTables,
+}
+
+impl MysqlPrivilege {
+    const ALL: [Self; 14] = [
+        Self::Select,
+        Self::Insert,
+        Self::Update,
+        Self::Delete,
+        Self::Create,
+        Self::Drop,
+        Self::Alter,
+        Self::Index,
+        Self::References,
+        Self::Execute,
+        Self::ShowView,
+        Self::Trigger,
+        Self::Event,
+        Self::CreateTemporaryTables,
+    ];
+
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Select => "SELECT",
+            Self::Insert => "INSERT",
+            Self::Update => "UPDATE",
+            Self::Delete => "DELETE",
+            Self::Create => "CREATE",
+            Self::Drop => "DROP",
+            Self::Alter => "ALTER",
+            Self::Index => "INDEX",
+            Self::References => "REFERENCES",
+            Self::Execute => "EXECUTE",
+            Self::ShowView => "SHOW_VIEW",
+            Self::Trigger => "TRIGGER",
+            Self::Event => "EVENT",
+            Self::CreateTemporaryTables => "CREATE_TEMPORARY_TABLES",
+        }
+    }
+}
 
 enum AccountQueryFailure {
     Timeout,
@@ -105,60 +161,72 @@ impl AccountPreviewRegistry {
             && binding.datasource_id == datasource_id
             && binding.sql_sha256 == sha256(sql.as_bytes())
     }
+
+    fn authorizes(&self, token: &str, datasource_id: &str, sql: &str) -> bool {
+        if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return false;
+        }
+        let token_sha256 = sha256(token.as_bytes());
+        let Ok(pending) = self.pending.lock() else {
+            return false;
+        };
+        let Some(binding) = pending.get(&token_sha256) else {
+            return false;
+        };
+        binding.expires_at > Instant::now()
+            && binding.datasource_id == datasource_id
+            && binding.sql_sha256 == sha256(sql.as_bytes())
+    }
 }
 
-impl Application {
-    /// Returns `MySQL` account-administration capability for one datasource.
-    ///
-    /// # Errors
-    ///
-    /// Returns datasource, secret, driver, connection, or cleanup errors.
-    pub async fn mysql_account_capability(
-        &self,
-        datasource_id: &str,
-    ) -> Result<CommunityAccountCapability, AppError> {
-        let resolved = resolve_native_connection(self, datasource_id).await?;
-        let connection_user = configured_connection_user(&resolved.connection);
-        let mut conn = open_resolved_connection(&resolved).await?;
+/// Returns `MySQL` account-administration capability for one datasource.
+///
+/// # Errors
+///
+/// Returns datasource, secret, driver, connection, or cleanup errors.
+pub(crate) async fn mysql_account_capability(
+    application: &Application,
+    datasource_id: &str,
+) -> Result<AdministrationCapability, AppError> {
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let connection_user = configured_connection_user(&resolved.connection);
+    let mut conn = open_resolved_connection(&resolved).await?;
 
-        let account_list_readable = match timed_query(conn.query_drop(PROBE_ACCOUNT_LIST)).await {
-            Ok(()) => true,
-            Err(AccountQueryFailure::Mysql(_)) => false,
-            Err(AccountQueryFailure::Timeout) => {
-                return finish_connection(
-                    conn,
-                    Ok(capability_with_message(
-                        connection_user,
-                        false,
-                        false,
-                        "The MySQL account capability query timed out",
-                    )),
-                )
-                .await;
-            }
-        };
-        let account_lock_supported = match timed_query(conn.query_drop(PROBE_ACCOUNT_LOCK)).await {
-            Ok(()) => true,
-            Err(AccountQueryFailure::Mysql(_)) => false,
-            Err(AccountQueryFailure::Timeout) => {
-                return finish_connection(
-                    conn,
-                    Ok(capability_with_message(
-                        connection_user,
-                        account_list_readable,
-                        false,
-                        "The MySQL account capability query timed out",
-                    )),
-                )
-                .await;
-            }
-        };
+    let account_list_readable = match timed_query(conn.query_drop(PROBE_ACCOUNT_LIST)).await {
+        Ok(()) => true,
+        Err(AccountQueryFailure::Mysql(_)) => false,
+        Err(AccountQueryFailure::Timeout) => {
+            return finish_connection(
+                conn,
+                Ok(capability_with_message(
+                    connection_user,
+                    false,
+                    false,
+                    "The MySQL account capability query timed out",
+                )),
+            )
+            .await;
+        }
+    };
+    let account_lock_supported = match timed_query(conn.query_drop(PROBE_ACCOUNT_LOCK)).await {
+        Ok(()) => true,
+        Err(AccountQueryFailure::Mysql(_)) => false,
+        Err(AccountQueryFailure::Timeout) => {
+            return finish_connection(
+                conn,
+                Ok(capability_with_message(
+                    connection_user,
+                    account_list_readable,
+                    false,
+                    "The MySQL account capability query timed out",
+                )),
+            )
+            .await;
+        }
+    };
 
-        let (product_version, current_user, message) = match timed_query(
-            conn.query_first::<(String, String), _>(SELECT_CURRENT_ACCOUNT),
-        )
-        .await
-        {
+    let (product_version, current_user, message) =
+        match timed_query(conn.query_first::<(String, String), _>(SELECT_CURRENT_ACCOUNT)).await {
             Ok(Some((version, current_user))) => (Some(version), Some(current_user), None),
             Ok(None) => (None, None, None),
             Err(AccountQueryFailure::Timeout) => (
@@ -170,208 +238,190 @@ impl Application {
                 (None, None, Some(safe_query_message(&error)))
             }
         };
-        finish_connection(
-            conn,
-            Ok(CommunityAccountCapability {
-                db_type: "MYSQL".to_owned(),
-                product_name: "MySQL".to_owned(),
-                product_version,
-                current_user,
-                connection_user,
-                account_list_readable,
-                account_lock_supported,
-                editable_privileges: CommunityMysqlPrivilege::ALL
-                    .into_iter()
-                    .map(|privilege| privilege.wire_name().to_owned())
-                    .collect(),
-                message,
-            }),
-        )
-        .await
-    }
+    finish_connection(
+        conn,
+        Ok(AdministrationCapability {
+            database_type: "MYSQL".to_owned(),
+            product_name: "MySQL".to_owned(),
+            product_version,
+            current_principal: current_user,
+            connection_principal: connection_user,
+            principal_list_readable: account_list_readable,
+            principal_lock_supported: account_lock_supported,
+            editable_privileges: MysqlPrivilege::ALL
+                .into_iter()
+                .map(|privilege| privilege.wire_name().to_owned())
+                .collect(),
+            message,
+        }),
+    )
+    .await
+}
 
-    /// Lists `MySQL` accounts in stable user and host order.
-    ///
-    /// # Errors
-    ///
-    /// Returns datasource, connection, permission, query, or cleanup errors.
-    pub async fn list_mysql_accounts(
-        &self,
-        datasource_id: &str,
-    ) -> Result<CommunityAccountList, AppError> {
-        let resolved = resolve_native_connection(self, datasource_id).await?;
-        let mut conn = open_resolved_connection(&resolved).await?;
-        let with_lock = timed_query(
-            conn.query::<(String, String, Option<String>, Option<String>), _>(
-                SELECT_ACCOUNTS_WITH_LOCK,
-            ),
-        )
-        .await;
-        let result = match with_lock {
-            Ok(rows) => Ok(CommunityAccountList {
-                items: rows
-                    .into_iter()
-                    .map(|(user, host, plugin, locked)| {
-                        account(user, host, plugin, locked.as_deref())
-                    })
-                    .collect(),
-            }),
-            Err(AccountQueryFailure::Timeout) => Err(account_query_unavailable(
-                ACCOUNT_LIST_UNAVAILABLE,
-                "The MySQL account list query timed out",
-            )),
-            Err(AccountQueryFailure::Mysql(_)) => {
-                match timed_query(
-                    conn.query::<(String, String, Option<String>), _>(SELECT_ACCOUNTS),
-                )
+/// Lists `MySQL` accounts in stable user and host order.
+///
+/// # Errors
+///
+/// Returns datasource, connection, permission, query, or cleanup errors.
+pub(crate) async fn list_mysql_accounts(
+    application: &Application,
+    datasource_id: &str,
+) -> Result<PrincipalList, AppError> {
+    let resolved = resolve_native_connection(application, datasource_id).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
+    let with_lock = timed_query(
+        conn.query::<(String, String, Option<String>, Option<String>), _>(
+            SELECT_ACCOUNTS_WITH_LOCK,
+        ),
+    )
+    .await;
+    let result = match with_lock {
+        Ok(rows) => Ok(PrincipalList {
+            items: rows
+                .into_iter()
+                .map(|(user, host, plugin, locked)| account(user, host, plugin, locked.as_deref()))
+                .collect(),
+        }),
+        Err(AccountQueryFailure::Timeout) => Err(account_query_unavailable(
+            ACCOUNT_LIST_UNAVAILABLE,
+            "The MySQL account list query timed out",
+        )),
+        Err(AccountQueryFailure::Mysql(_)) => {
+            match timed_query(conn.query::<(String, String, Option<String>), _>(SELECT_ACCOUNTS))
                 .await
-                {
-                    Ok(rows) => Ok(CommunityAccountList {
-                        items: rows
-                            .into_iter()
-                            .map(|(user, host, plugin)| account(user, host, plugin, None))
-                            .collect(),
-                    }),
-                    Err(_) => Err(account_query_unavailable(
-                        ACCOUNT_LIST_UNAVAILABLE,
-                        "The MySQL account list is unavailable",
-                    )),
-                }
+            {
+                Ok(rows) => Ok(PrincipalList {
+                    items: rows
+                        .into_iter()
+                        .map(|(user, host, plugin)| account(user, host, plugin, None))
+                        .collect(),
+                }),
+                Err(_) => Err(account_query_unavailable(
+                    ACCOUNT_LIST_UNAVAILABLE,
+                    "The MySQL account list is unavailable",
+                )),
             }
-        };
-        finish_connection(conn, result).await
-    }
-
-    /// Returns `SHOW GRANTS` rows for one `MySQL` account.
-    ///
-    /// # Errors
-    ///
-    /// Returns validation, datasource, connection, permission, query, or cleanup errors.
-    pub async fn mysql_account_grants(
-        &self,
-        request: &CommunityAccountGrantsRequest,
-    ) -> Result<CommunityAccountGrantList, AppError> {
-        let account = account_literal(&request.user, &request.host)?;
-        let resolved = resolve_native_connection(self, &request.datasource_id).await?;
-        let mut conn = open_resolved_connection(&resolved).await?;
-        let sql = format!("SHOW GRANTS FOR {account}");
-        let result = match timed_query(query_account_grants(&mut conn, &sql)).await {
-            Ok(items) => Ok(CommunityAccountGrantList { items }),
-            Err(_) => Err(account_query_unavailable(
-                ACCOUNT_GRANTS_UNAVAILABLE,
-                "The MySQL grants are unavailable",
-            )),
-        };
-        finish_connection(conn, result).await
-    }
-
-    /// Builds a masked account-operation preview without opening `MySQL` or starting Java.
-    ///
-    /// # Errors
-    ///
-    /// Returns a field-specific account validation error.
-    pub fn preview_mysql_account(
-        &self,
-        request: &CommunityAccountCommandRequest,
-    ) -> Result<CommunityAccountPreview, AppError> {
-        preview_account(&self.inner.account_previews, request)
-    }
-
-    /// Executes one preview-authorized `MySQL` account operation through `mysql_async`.
-    ///
-    /// SQL execution errors are returned in [`CommunityAccountExecution`]. Datasource,
-    /// validation, preview-token, connection, read-only, and cleanup failures remain errors.
-    ///
-    /// # Errors
-    ///
-    /// Returns validation, token, datasource, connection, read-only, or cleanup errors.
-    pub async fn execute_mysql_account(
-        &self,
-        request: &CommunityAccountCommandRequest,
-    ) -> Result<CommunityAccountExecution, AppError> {
-        let execution_sql = build_account_sql(request, false)?;
-        let preview_sql = build_account_sql(request, true)?;
-        let supplied_token = request.preview_token.as_deref().unwrap_or_default();
-        if !self.inner.account_previews.consume(
-            supplied_token,
-            &request.datasource_id,
-            &execution_sql,
-        ) {
-            return Err(AppError::new(
-                AppErrorKind::Conflict,
-                ApiError::new(
-                    ACCOUNT_PREVIEW_TOKEN_MISMATCH,
-                    "The MySQL account preview token does not match this operation",
-                ),
-            ));
         }
+    };
+    finish_connection(conn, result).await
+}
 
-        let resolved = resolve_native_connection(self, &request.datasource_id).await?;
-        if resolved.connection.read_only {
-            return Err(AppError::new(
-                AppErrorKind::Conflict,
-                ApiError::new(
-                    "datasource_read_only",
-                    "The datasource connection is configured as read-only",
-                ),
-            ));
-        }
-        let mut conn = open_resolved_connection(&resolved).await?;
-        let query_result = timed_query(execute_account_sql(&mut conn, &execution_sql)).await;
-        drop(execution_sql);
+/// Returns `SHOW GRANTS` rows for one `MySQL` account.
+///
+/// # Errors
+///
+/// Returns validation, datasource, connection, permission, query, or cleanup errors.
+pub(crate) async fn mysql_account_grants(
+    application: &Application,
+    request: &PrincipalGrantsRequest,
+) -> Result<PrincipalGrantList, AppError> {
+    let account = account_literal(&request.principal)?;
+    let resolved = resolve_native_connection(application, &request.datasource_id).await?;
+    let mut conn = open_resolved_connection(&resolved).await?;
+    let sql = format!("SHOW GRANTS FOR {account}");
+    let result = match timed_query(query_account_grants(&mut conn, &sql)).await {
+        Ok(items) => Ok(PrincipalGrantList { items }),
+        Err(_) => Err(account_query_unavailable(
+            ACCOUNT_GRANTS_UNAVAILABLE,
+            "The MySQL grants are unavailable",
+        )),
+    };
+    finish_connection(conn, result).await
+}
 
-        let response = match query_result {
-            Ok(()) => CommunityAccountExecution {
-                action_type: request.action_type,
+/// Builds a masked account-operation preview without opening `MySQL` or starting Java.
+///
+/// # Errors
+///
+/// Returns a field-specific account validation error.
+pub(crate) fn preview_mysql_account(
+    application: &Application,
+    request: &AdministrationCommand,
+) -> Result<AdministrationPreview, AppError> {
+    preview_account(&application.inner.account_previews, request)
+}
+
+/// Executes one preview-authorized `MySQL` account operation through `mysql_async`.
+///
+/// SQL execution errors are returned in [`AdministrationExecution`]. Datasource,
+/// validation, preview-token, connection, read-only, and cleanup failures remain errors.
+///
+/// # Errors
+///
+/// Returns validation, token, datasource, connection, read-only, or cleanup errors.
+pub(crate) async fn execute_mysql_account(
+    application: &Application,
+    request: &AdministrationCommand,
+) -> Result<AdministrationExecution, AppError> {
+    let execution_sql =
+        authorize_account_preview(&application.inner.account_previews, request, true)?;
+    let preview_sql = build_account_sql(request, true)?;
+
+    let resolved = resolve_native_connection(application, &request.datasource_id).await?;
+    if resolved.connection.read_only {
+        return Err(AppError::new(
+            AppErrorKind::Conflict,
+            ApiError::new(
+                "datasource_read_only",
+                "The datasource connection is configured as read-only",
+            ),
+        ));
+    }
+    let mut conn = open_resolved_connection(&resolved).await?;
+    let query_result = timed_query(execute_account_sql(&mut conn, &execution_sql)).await;
+    drop(execution_sql);
+
+    let response = match query_result {
+        Ok(()) => AdministrationExecution {
+            action: request.action,
+            sql: preview_sql.clone(),
+            success: true,
+            message: Some("OK".to_owned()),
+            failure_code: None,
+            error_code: None,
+            sql_state: None,
+        },
+        Err(AccountQueryFailure::Mysql(MysqlError::Server(server))) => {
+            AdministrationExecution {
+                action: request.action,
                 sql: preview_sql.clone(),
-                success: true,
-                message: Some("OK".to_owned()),
-                failure_code: None,
-                error_code: None,
-                sql_state: None,
-            },
-            Err(AccountQueryFailure::Mysql(MysqlError::Server(server))) => {
-                CommunityAccountExecution {
-                    action_type: request.action_type,
-                    sql: preview_sql.clone(),
-                    success: false,
-                    message: Some(redact_password(
-                        &server.message,
-                        request.password.as_deref(),
-                    )),
-                    failure_code: Some(ACCOUNT_EXECUTE_FAILED.to_owned()),
-                    error_code: Some(server.code),
-                    sql_state: Some(server.state),
-                }
+                success: false,
+                message: Some(redact_password(
+                    &server.message,
+                    request.credential.as_deref(),
+                )),
+                failure_code: Some(ACCOUNT_EXECUTE_FAILED.to_owned()),
+                error_code: Some(server.code),
+                sql_state: Some(server.state),
             }
-            Err(AccountQueryFailure::Mysql(_)) => account_outcome_unknown(
-                request.action_type,
-                preview_sql.clone(),
-                    "The MySQL connection ended after dispatch; the account-operation outcome is unknown and must not be retried blindly".to_owned(),
-            ),
-            Err(AccountQueryFailure::Timeout) => account_outcome_unknown(
-                request.action_type,
-                preview_sql,
-                    "The MySQL account operation timed out after dispatch; its outcome is unknown and must not be retried blindly".to_owned(),
-            ),
-        };
-        if let Err(error) = finish_connection(conn, Ok(())).await {
-            tracing::warn!(
-                error = %error,
-                "native MySQL account connection cleanup failed after a settled operation"
-            );
         }
-        Ok(response)
+        Err(AccountQueryFailure::Mysql(_)) => account_outcome_unknown(
+            request.action,
+            preview_sql.clone(),
+            "The MySQL connection ended after dispatch; the account-operation outcome is unknown and must not be retried blindly".to_owned(),
+        ),
+        Err(AccountQueryFailure::Timeout) => account_outcome_unknown(
+            request.action,
+            preview_sql,
+            "The MySQL account operation timed out after dispatch; its outcome is unknown and must not be retried blindly".to_owned(),
+        ),
+    };
+    if let Err(error) = finish_connection(conn, Ok(())).await {
+        tracing::warn!(
+            error = %error,
+            "native MySQL account connection cleanup failed after a settled operation"
+        );
     }
+    Ok(response)
 }
 
 fn account_outcome_unknown(
-    action_type: CommunityAccountAction,
+    action: AdministrationAction,
     sql: String,
     message: String,
-) -> CommunityAccountExecution {
-    CommunityAccountExecution {
-        action_type,
+) -> AdministrationExecution {
+    AdministrationExecution {
+        action,
         sql,
         success: false,
         message: Some(message),
@@ -383,37 +433,61 @@ fn account_outcome_unknown(
 
 fn preview_account(
     registry: &AccountPreviewRegistry,
-    request: &CommunityAccountCommandRequest,
-) -> Result<CommunityAccountPreview, AppError> {
+    request: &AdministrationCommand,
+) -> Result<AdministrationPreview, AppError> {
     let execution_sql = build_account_sql(request, false)?;
     let sql = build_account_sql(request, true)?;
     let preview_token = registry.issue(&request.datasource_id, &execution_sql)?;
     drop(execution_sql);
-    Ok(CommunityAccountPreview {
-        action_type: request.action_type,
+    Ok(AdministrationPreview {
+        action: request.action,
         sql,
         preview_token,
     })
 }
 
+fn authorize_account_preview(
+    registry: &AccountPreviewRegistry,
+    request: &AdministrationCommand,
+    consume: bool,
+) -> Result<String, AppError> {
+    let execution_sql = build_account_sql(request, false)?;
+    let supplied_token = request.preview_token.as_deref().unwrap_or_default();
+    let authorized = if consume {
+        registry.consume(supplied_token, &request.datasource_id, &execution_sql)
+    } else {
+        registry.authorizes(supplied_token, &request.datasource_id, &execution_sql)
+    };
+    if !authorized {
+        return Err(AppError::new(
+            AppErrorKind::Conflict,
+            ApiError::new(
+                ACCOUNT_PREVIEW_TOKEN_MISMATCH,
+                "The MySQL account preview token does not match this operation",
+            ),
+        ));
+    }
+    Ok(execution_sql)
+}
+
 fn build_account_sql(
-    request: &CommunityAccountCommandRequest,
+    request: &AdministrationCommand,
     mask_sensitive: bool,
 ) -> Result<String, AppError> {
-    let account = account_literal(&request.user, &request.host)?;
-    match request.action_type {
-        CommunityAccountAction::CreateUser => Ok(format!(
+    let account = account_literal(&request.principal)?;
+    match request.action {
+        AdministrationAction::CreatePrincipal => Ok(format!(
             "CREATE USER {account} IDENTIFIED BY {}",
             password_literal(request, mask_sensitive)?
         )),
-        CommunityAccountAction::AlterPassword => Ok(format!(
+        AdministrationAction::AlterCredential => Ok(format!(
             "ALTER USER {account} IDENTIFIED BY {}",
             password_literal(request, mask_sensitive)?
         )),
-        CommunityAccountAction::LockAccount => Ok(format!("ALTER USER {account} ACCOUNT LOCK")),
-        CommunityAccountAction::UnlockAccount => Ok(format!("ALTER USER {account} ACCOUNT UNLOCK")),
-        CommunityAccountAction::DropUser => Ok(format!("DROP USER {account}")),
-        CommunityAccountAction::GrantPrivilege => {
+        AdministrationAction::LockPrincipal => Ok(format!("ALTER USER {account} ACCOUNT LOCK")),
+        AdministrationAction::UnlockPrincipal => Ok(format!("ALTER USER {account} ACCOUNT UNLOCK")),
+        AdministrationAction::DropPrincipal => Ok(format!("DROP USER {account}")),
+        AdministrationAction::GrantPrivileges => {
             let privileges = privilege_list(&request.privileges)?;
             let scope = privilege_scope(request)?;
             let grant_option = if request.grant_option {
@@ -425,7 +499,7 @@ fn build_account_sql(
                 "GRANT {privileges} ON {scope} TO {account}{grant_option}"
             ))
         }
-        CommunityAccountAction::RevokePrivilege => {
+        AdministrationAction::RevokePrivileges => {
             let privileges = privilege_list(&request.privileges)?;
             let scope = privilege_scope(request)?;
             Ok(format!("REVOKE {privileges} ON {scope} FROM {account}"))
@@ -434,10 +508,13 @@ fn build_account_sql(
 }
 
 fn password_literal(
-    request: &CommunityAccountCommandRequest,
+    request: &AdministrationCommand,
     mask_sensitive: bool,
 ) -> Result<String, AppError> {
-    let password = request.password.as_deref().filter(|value| !is_blank(value));
+    let password = request
+        .credential
+        .as_deref()
+        .filter(|value| !is_blank(value));
     if password.is_none() {
         return Err(account_validation_error(
             "mysql.account.passwordRequired",
@@ -451,7 +528,9 @@ fn password_literal(
     }
 }
 
-fn account_literal(user: &str, host: &str) -> Result<String, AppError> {
+fn account_literal(principal: &PrincipalRef) -> Result<String, AppError> {
+    let user = principal.name.as_str();
+    let host = principal.qualifier.as_deref().unwrap_or_default();
     validate_account_part(
         user,
         "mysql.account.userRequired",
@@ -482,33 +561,39 @@ fn validate_account_part(
     Ok(())
 }
 
-fn privilege_scope(request: &CommunityAccountCommandRequest) -> Result<String, AppError> {
-    match request.scope {
-        Some(CommunityAccountPrivilegeScope::Global) => Ok("*.*".to_owned()),
-        Some(CommunityAccountPrivilegeScope::Database) => {
+fn privilege_scope(request: &AdministrationCommand) -> Result<String, AppError> {
+    let Some(target) = request.target.as_ref() else {
+        return Err(account_validation_error(
+            "mysql.account.scopeRequired",
+            "A privilege scope is required",
+        ));
+    };
+    match target.scope {
+        PrivilegeScope::Global => Ok("*.*".to_owned()),
+        PrivilegeScope::Database => {
             let database = required_identifier(
-                request.database_name.as_deref(),
+                target.database_name.as_deref(),
                 "mysql.account.databaseRequired",
                 "A database name is required for database privileges",
             )?;
             Ok(format!("{database}.*"))
         }
-        Some(CommunityAccountPrivilegeScope::Table) => {
+        PrivilegeScope::Table => {
             let database = required_identifier(
-                request.database_name.as_deref(),
+                target.database_name.as_deref(),
                 "mysql.account.databaseRequired",
                 "A database name is required for table privileges",
             )?;
             let table = required_identifier(
-                request.table_name.as_deref(),
+                target.object_name.as_deref(),
                 "mysql.account.tableRequired",
                 "A table name is required for table privileges",
             )?;
             Ok(format!("{database}.{table}"))
         }
-        None => Err(account_validation_error(
-            "mysql.account.scopeRequired",
-            "A privilege scope is required",
+        PrivilegeScope::Schema => Err(account_validation_error(
+            "mysql.account.scopeUnsupported",
+            "MySQL does not support schema-scoped account privileges",
         )),
     }
 }
@@ -606,22 +691,22 @@ fn privilege_list(privileges: &[String]) -> Result<String, AppError> {
         .join(", "))
 }
 
-fn parse_privilege(value: &str) -> Result<CommunityMysqlPrivilege, AppError> {
+fn parse_privilege(value: &str) -> Result<MysqlPrivilege, AppError> {
     match value.trim().to_ascii_uppercase().as_str() {
-        "SELECT" => Ok(CommunityMysqlPrivilege::Select),
-        "INSERT" => Ok(CommunityMysqlPrivilege::Insert),
-        "UPDATE" => Ok(CommunityMysqlPrivilege::Update),
-        "DELETE" => Ok(CommunityMysqlPrivilege::Delete),
-        "CREATE" => Ok(CommunityMysqlPrivilege::Create),
-        "DROP" => Ok(CommunityMysqlPrivilege::Drop),
-        "ALTER" => Ok(CommunityMysqlPrivilege::Alter),
-        "INDEX" => Ok(CommunityMysqlPrivilege::Index),
-        "REFERENCES" => Ok(CommunityMysqlPrivilege::References),
-        "EXECUTE" => Ok(CommunityMysqlPrivilege::Execute),
-        "SHOW_VIEW" => Ok(CommunityMysqlPrivilege::ShowView),
-        "TRIGGER" => Ok(CommunityMysqlPrivilege::Trigger),
-        "EVENT" => Ok(CommunityMysqlPrivilege::Event),
-        "CREATE_TEMPORARY_TABLES" => Ok(CommunityMysqlPrivilege::CreateTemporaryTables),
+        "SELECT" => Ok(MysqlPrivilege::Select),
+        "INSERT" => Ok(MysqlPrivilege::Insert),
+        "UPDATE" => Ok(MysqlPrivilege::Update),
+        "DELETE" => Ok(MysqlPrivilege::Delete),
+        "CREATE" => Ok(MysqlPrivilege::Create),
+        "DROP" => Ok(MysqlPrivilege::Drop),
+        "ALTER" => Ok(MysqlPrivilege::Alter),
+        "INDEX" => Ok(MysqlPrivilege::Index),
+        "REFERENCES" => Ok(MysqlPrivilege::References),
+        "EXECUTE" => Ok(MysqlPrivilege::Execute),
+        "SHOW_VIEW" => Ok(MysqlPrivilege::ShowView),
+        "TRIGGER" => Ok(MysqlPrivilege::Trigger),
+        "EVENT" => Ok(MysqlPrivilege::Event),
+        "CREATE_TEMPORARY_TABLES" => Ok(MysqlPrivilege::CreateTemporaryTables),
         _ => Err(account_validation_error(
             "mysql.account.privilegeUnsupported",
             "The requested MySQL privilege is not supported",
@@ -629,10 +714,10 @@ fn parse_privilege(value: &str) -> Result<CommunityMysqlPrivilege, AppError> {
     }
 }
 
-const fn privilege_sql_name(privilege: CommunityMysqlPrivilege) -> &'static str {
+const fn privilege_sql_name(privilege: MysqlPrivilege) -> &'static str {
     match privilege {
-        CommunityMysqlPrivilege::ShowView => "SHOW VIEW",
-        CommunityMysqlPrivilege::CreateTemporaryTables => "CREATE TEMPORARY TABLES",
+        MysqlPrivilege::ShowView => "SHOW VIEW",
+        MysqlPrivilege::CreateTemporaryTables => "CREATE TEMPORARY TABLES",
         other => other.wire_name(),
     }
 }
@@ -646,12 +731,12 @@ fn account(
     host: String,
     authentication_plugin: Option<String>,
     locked: Option<&str>,
-) -> CommunityAccount {
-    CommunityAccount {
+) -> Principal {
+    Principal {
         display_name: format!("{user}@{host}"),
-        user,
-        host,
-        authentication_plugin,
+        name: user,
+        qualifier: Some(host),
+        authentication_method: authentication_plugin,
         locked: locked
             .and_then(|value| (!value.trim().is_empty()).then(|| value.eq_ignore_ascii_case("Y"))),
     }
@@ -674,16 +759,16 @@ fn capability_with_message(
     account_list_readable: bool,
     account_lock_supported: bool,
     message: &str,
-) -> CommunityAccountCapability {
-    CommunityAccountCapability {
-        db_type: "MYSQL".to_owned(),
+) -> AdministrationCapability {
+    AdministrationCapability {
+        database_type: "MYSQL".to_owned(),
         product_name: "MySQL".to_owned(),
         product_version: None,
-        current_user: None,
-        connection_user,
-        account_list_readable,
-        account_lock_supported,
-        editable_privileges: CommunityMysqlPrivilege::ALL
+        current_principal: None,
+        connection_principal: connection_user,
+        principal_list_readable: account_list_readable,
+        principal_lock_supported: account_lock_supported,
+        editable_privileges: MysqlPrivilege::ALL
             .into_iter()
             .map(|privilege| privilege.wire_name().to_owned())
             .collect(),
@@ -731,61 +816,65 @@ fn is_blank(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use chat2db_contract::{
-        CommunityAccountAction, CommunityAccountCommandRequest, CommunityAccountPrivilegeScope,
+    use crate::{
+        Application,
+        native_administration_types::{
+            AdministrationAction, AdministrationCommand, PrincipalRef, PrivilegeScope,
+            PrivilegeTarget,
+        },
     };
 
-    use crate::Application;
-
     use super::{
-        AccountPreviewRegistry, account_outcome_unknown, build_account_sql, preview_account,
-        redact_password, sql_mode_with_no_backslash_escapes, string_literal,
+        AccountPreviewRegistry, account_outcome_unknown, authorize_account_preview,
+        build_account_sql, execute_mysql_account as execute_mysql_account_impl, preview_account,
+        preview_mysql_account as preview_mysql_account_impl, redact_password,
+        sql_mode_with_no_backslash_escapes, string_literal,
     };
 
     #[test]
-    fn every_account_action_matches_community_sql() {
+    fn every_administration_action_matches_mysql_sql() {
         assert_eq!(
-            sql(CommunityAccountAction::CreateUser),
+            sql(AdministrationAction::CreatePrincipal),
             "CREATE USER 'reader'@'%' IDENTIFIED BY 'pa''ss\\word'"
         );
         assert_eq!(
-            sql(CommunityAccountAction::AlterPassword),
+            sql(AdministrationAction::AlterCredential),
             "ALTER USER 'reader'@'%' IDENTIFIED BY 'pa''ss\\word'"
         );
         assert_eq!(
-            sql(CommunityAccountAction::LockAccount),
+            sql(AdministrationAction::LockPrincipal),
             "ALTER USER 'reader'@'%' ACCOUNT LOCK"
         );
         assert_eq!(
-            sql(CommunityAccountAction::UnlockAccount),
+            sql(AdministrationAction::UnlockPrincipal),
             "ALTER USER 'reader'@'%' ACCOUNT UNLOCK"
         );
         assert_eq!(
-            sql(CommunityAccountAction::DropUser),
+            sql(AdministrationAction::DropPrincipal),
             "DROP USER 'reader'@'%'"
         );
         assert_eq!(
-            sql(CommunityAccountAction::GrantPrivilege),
+            sql(AdministrationAction::GrantPrivileges),
             "GRANT SELECT, SHOW VIEW, CREATE TEMPORARY TABLES ON `odd``db`.`order``item` TO 'reader'@'%' WITH GRANT OPTION"
         );
         assert_eq!(
-            sql(CommunityAccountAction::RevokePrivilege),
+            sql(AdministrationAction::RevokePrivileges),
             "REVOKE SELECT, SHOW VIEW, CREATE TEMPORARY TABLES ON `odd``db`.`order``item` FROM 'reader'@'%'"
         );
     }
 
     #[test]
-    fn scopes_and_account_literals_match_community_escaping() {
-        let mut request = command(CommunityAccountAction::GrantPrivilege);
-        request.user = "o'brien\\ops".to_owned();
-        request.host = "local'host".to_owned();
-        request.scope = Some(CommunityAccountPrivilegeScope::Global);
+    fn scopes_and_account_literals_use_stable_mysql_escaping() {
+        let mut request = command(AdministrationAction::GrantPrivileges);
+        request.principal.name = "o'brien\\ops".to_owned();
+        request.principal.qualifier = Some("local'host".to_owned());
+        request.target.as_mut().expect("target").scope = PrivilegeScope::Global;
         assert_eq!(
             build_account_sql(&request, false).expect("global grant"),
             "GRANT SELECT, SHOW VIEW, CREATE TEMPORARY TABLES ON *.* TO 'o''brien\\ops'@'local''host' WITH GRANT OPTION"
         );
 
-        request.scope = Some(CommunityAccountPrivilegeScope::Database);
+        request.target.as_mut().expect("target").scope = PrivilegeScope::Database;
         assert_eq!(
             build_account_sql(&request, false).expect("database grant"),
             "GRANT SELECT, SHOW VIEW, CREATE TEMPORARY TABLES ON `odd``db`.* TO 'o''brien\\ops'@'local''host' WITH GRANT OPTION"
@@ -820,7 +909,7 @@ mod tests {
     #[test]
     fn preview_masks_password_and_issues_an_opaque_token() {
         let registry = AccountPreviewRegistry::default();
-        let request = command(CommunityAccountAction::CreateUser);
+        let request = command(AdministrationAction::CreatePrincipal);
         let preview = preview_account(&registry, &request).expect("valid account preview");
 
         assert_eq!(
@@ -843,7 +932,7 @@ mod tests {
         );
         assert_ne!(
             preview.preview_token,
-            preview_account(&registry, &command_with_password("different"))
+            preview_account(&registry, &command_with_credential("different"))
                 .expect("second preview")
                 .preview_token
         );
@@ -852,7 +941,7 @@ mod tests {
     #[test]
     fn preview_tokens_are_datasource_bound_exact_and_single_use() {
         let registry = AccountPreviewRegistry::default();
-        let request = command(CommunityAccountAction::DropUser);
+        let request = command(AdministrationAction::DropPrincipal);
         let sql = build_account_sql(&request, false).expect("account SQL");
 
         let wrong_datasource =
@@ -878,8 +967,27 @@ mod tests {
     }
 
     #[test]
+    fn registry_preflight_does_not_consume_the_preview_token() {
+        let application = Application::new();
+        let mut request = command(AdministrationAction::DropPrincipal);
+        request.preview_token = Some(
+            preview_mysql_account_impl(&application, &request)
+                .expect("account preview")
+                .preview_token,
+        );
+
+        authorize_account_preview(&application.inner.account_previews, &request, false)
+            .expect("non-consuming preflight");
+        authorize_account_preview(&application.inner.account_previews, &request, true)
+            .expect("single execution authorization");
+        let error = authorize_account_preview(&application.inner.account_previews, &request, true)
+            .expect_err("execution authorization must remain single-use");
+        assert_eq!(error.api_error().code, "mysql.account.previewTokenMismatch");
+    }
+
+    #[test]
     fn duplicate_privileges_are_removed_in_first_seen_order() {
-        let mut request = command(CommunityAccountAction::GrantPrivilege);
+        let mut request = command(AdministrationAction::GrantPrivileges);
         request.privileges = vec![
             "select".to_owned(),
             " SELECT ".to_owned(),
@@ -892,52 +1000,66 @@ mod tests {
     }
 
     #[test]
-    fn invalid_fields_return_community_error_codes() {
-        let mut request = command(CommunityAccountAction::CreateUser);
-        request.user.clear();
+    fn invalid_fields_return_mysql_error_codes() {
+        let mut request = command(AdministrationAction::CreatePrincipal);
+        request.principal.name.clear();
         assert_code(&request, "mysql.account.userRequired");
 
-        request.user = "reader\0hidden".to_owned();
+        request.principal.name = "reader\0hidden".to_owned();
         assert_code(&request, "mysql.account.invalidAccountName");
 
-        request.user = "reader".to_owned();
-        request.password = Some("   ".to_owned());
+        request.principal.name = "reader".to_owned();
+        request.credential = Some("   ".to_owned());
         assert_code(&request, "mysql.account.passwordRequired");
 
-        request = command(CommunityAccountAction::GrantPrivilege);
-        request.scope = None;
+        request = command(AdministrationAction::GrantPrivileges);
+        request.target = None;
         assert_code(&request, "mysql.account.scopeRequired");
 
-        request.scope = Some(CommunityAccountPrivilegeScope::Database);
-        request.database_name = None;
+        request.target = Some(PrivilegeTarget {
+            scope: PrivilegeScope::Database,
+            database_name: None,
+            schema_name: None,
+            object_name: None,
+        });
         assert_code(&request, "mysql.account.databaseRequired");
 
-        request.scope = Some(CommunityAccountPrivilegeScope::Table);
-        request.database_name = Some("inventory".to_owned());
-        request.table_name = None;
+        request.target = Some(PrivilegeTarget {
+            scope: PrivilegeScope::Table,
+            database_name: Some("inventory".to_owned()),
+            schema_name: None,
+            object_name: None,
+        });
         assert_code(&request, "mysql.account.tableRequired");
 
-        request.table_name = Some("orders".to_owned());
+        request.target.as_mut().expect("target").object_name = Some("orders".to_owned());
         request.privileges = vec!["ROLE_ADMIN".to_owned()];
         assert_code(&request, "mysql.account.privilegeUnsupported");
+
+        request.privileges = vec!["SELECT".to_owned()];
+        request.target.as_mut().expect("target").scope = PrivilegeScope::Schema;
+        assert_code(&request, "mysql.account.scopeUnsupported");
     }
 
     #[tokio::test]
     async fn token_mismatch_is_rejected_before_storage_or_mysql_access() {
-        let mut request = command(CommunityAccountAction::DropUser);
+        let mut request = command(AdministrationAction::DropPrincipal);
         request.preview_token = Some("not-the-preview-token".to_owned());
 
-        let error = Application::new()
-            .execute_mysql_account(&request)
+        let application = Application::new();
+        let direct_error = execute_mysql_account_impl(&application, &request)
             .await
-            .expect_err("token mismatch must fail before datasource resolution");
-        assert_eq!(error.api_error().code, "mysql.account.previewTokenMismatch");
+            .expect_err("direct token mismatch must fail before datasource resolution");
+        assert_eq!(
+            direct_error.api_error().code,
+            "mysql.account.previewTokenMismatch"
+        );
     }
 
     #[test]
     fn interrupted_account_writes_are_explicitly_non_retryable_unknown_outcomes() {
         let result = account_outcome_unknown(
-            CommunityAccountAction::AlterPassword,
+            AdministrationAction::AlterCredential,
             "ALTER USER 'reader'@'%' IDENTIFIED BY '******'".to_owned(),
             "The outcome is unknown and must not be retried blindly".to_owned(),
         );
@@ -968,37 +1090,42 @@ mod tests {
         assert!(redacted.contains("[REDACTED]"));
     }
 
-    fn sql(action: CommunityAccountAction) -> String {
+    fn sql(action: AdministrationAction) -> String {
         build_account_sql(&command(action), false).expect("account SQL")
     }
 
-    fn command(action_type: CommunityAccountAction) -> CommunityAccountCommandRequest {
-        CommunityAccountCommandRequest {
+    fn command(action: AdministrationAction) -> AdministrationCommand {
+        AdministrationCommand {
             datasource_id: "42".to_owned(),
-            user: "reader".to_owned(),
-            host: "%".to_owned(),
-            action_type,
-            scope: Some(CommunityAccountPrivilegeScope::Table),
-            database_name: Some("odd`db".to_owned()),
-            table_name: Some("order`item".to_owned()),
+            principal: PrincipalRef {
+                name: "reader".to_owned(),
+                qualifier: Some("%".to_owned()),
+            },
+            action,
+            target: Some(PrivilegeTarget {
+                scope: PrivilegeScope::Table,
+                database_name: Some("odd`db".to_owned()),
+                schema_name: None,
+                object_name: Some("order`item".to_owned()),
+            }),
             privileges: vec![
                 "SELECT".to_owned(),
                 "SHOW_VIEW".to_owned(),
                 "CREATE_TEMPORARY_TABLES".to_owned(),
             ],
             grant_option: true,
-            password: Some("pa'ss\\word".to_owned()),
+            credential: Some("pa'ss\\word".to_owned()),
             preview_token: None,
         }
     }
 
-    fn command_with_password(password: &str) -> CommunityAccountCommandRequest {
-        let mut request = command(CommunityAccountAction::CreateUser);
-        request.password = Some(password.to_owned());
+    fn command_with_credential(credential: &str) -> AdministrationCommand {
+        let mut request = command(AdministrationAction::CreatePrincipal);
+        request.credential = Some(credential.to_owned());
         request
     }
 
-    fn assert_code(request: &CommunityAccountCommandRequest, expected: &str) {
+    fn assert_code(request: &AdministrationCommand, expected: &str) {
         let error = build_account_sql(request, false).expect_err("request must be invalid");
         assert_eq!(error.api_error().code, expected);
     }

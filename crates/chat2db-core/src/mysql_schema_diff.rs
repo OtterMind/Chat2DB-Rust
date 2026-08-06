@@ -3,14 +3,13 @@ use std::{
     time::Duration,
 };
 
-use chat2db_contract::{
-    ApiError, CommunitySchemaDiffEndpoint, CommunitySchemaDiffRequest, CommunitySchemaDiffSql,
-};
+use chat2db_contract::ApiError;
 use mysql_async::{Conn, Error as MysqlError, prelude::Queryable};
 
 use crate::{
     AppError, AppErrorKind, Application,
     native_mysql::{finish_connection, open_resolved_connection, resolve_native_connection},
+    native_schema_diff_types::{SchemaDiffEndpoint, SchemaDiffRequest, SchemaDiffSql},
 };
 
 const SCHEMA_DIFF_TIMEOUT: Duration = Duration::from_secs(30);
@@ -64,10 +63,10 @@ struct ForeignKeyDefinition {
     referenced_table: String,
 }
 
-/// Pinned Community parity intentionally compares only these existing-table options.
+/// Pinned compatibility behavior intentionally compares only these existing-table options.
 ///
 /// CHECK constraints, partition definitions, and additional `MySQL` table options are preserved
-/// when a missing table is created, but the Community schema-diff contract does not alter them on
+/// when a missing table is created, but the retained schema-diff behavior does not alter them on
 /// an existing table. The SHOW CREATE `AUTO_INCREMENT=N` next counter is runtime state and is
 /// deliberately excluded from both comparison and generated CREATE statements.
 #[derive(Debug, Default)]
@@ -85,32 +84,27 @@ struct ExistingTableDiff {
     foreign_key_adds: Vec<String>,
 }
 
-impl Application {
-    /// Previews SQL that changes the target `MySQL` namespace to match the source.
-    ///
-    /// This method only reads metadata. Generated SQL is never executed automatically.
-    ///
-    /// # Errors
-    ///
-    /// Returns validation, datasource, connection, metadata, parse, resource-limit, or cleanup
-    /// errors.
-    pub async fn preview_mysql_schema_diff(
-        &self,
-        request: &CommunitySchemaDiffRequest,
-    ) -> Result<CommunitySchemaDiffSql, AppError> {
-        validate_endpoint(&request.source, "source")?;
-        validate_endpoint(&request.target, "target")?;
+/// Previews SQL that changes the target `MySQL` namespace to match the source.
+///
+/// This function only reads metadata. Generated SQL is never executed automatically.
+///
+/// # Errors
+///
+/// Returns validation, datasource, connection, metadata, parse, resource-limit, or cleanup
+/// errors.
+pub(crate) async fn preview_mysql_schema_diff(
+    application: &Application,
+    request: &SchemaDiffRequest,
+) -> Result<SchemaDiffSql, AppError> {
+    validate_endpoint(&request.source, "source")?;
+    validate_endpoint(&request.target, "target")?;
 
-        let source = load_endpoint_snapshot(self, &request.source).await?;
-        let target = load_endpoint_snapshot(self, &request.target).await?;
-        build_schema_diff(&source, &target).map(CommunitySchemaDiffSql::new)
-    }
+    let source = load_endpoint_snapshot(application, &request.source).await?;
+    let target = load_endpoint_snapshot(application, &request.target).await?;
+    build_schema_diff(&source, &target).map(SchemaDiffSql::new)
 }
 
-fn validate_endpoint(
-    endpoint: &CommunitySchemaDiffEndpoint,
-    role: &'static str,
-) -> Result<(), AppError> {
+fn validate_endpoint(endpoint: &SchemaDiffEndpoint, role: &'static str) -> Result<(), AppError> {
     if endpoint.datasource_id.trim().is_empty() {
         return Err(invalid_schema_diff(format!(
             "The {role} datasource id is required"
@@ -131,7 +125,7 @@ fn validate_endpoint(
 
 async fn load_endpoint_snapshot(
     application: &Application,
-    endpoint: &CommunitySchemaDiffEndpoint,
+    endpoint: &SchemaDiffEndpoint,
 ) -> Result<SchemaSnapshot, AppError> {
     let resolved = resolve_native_connection(application, &endpoint.datasource_id).await?;
     let mut conn = open_resolved_connection(&resolved).await?;
@@ -315,7 +309,7 @@ fn parse_table_snapshot(table_name: &str, ddl: &str) -> Result<TableSnapshot, Ap
             }
             indexes.push(index);
         }
-        // Pinned Community parity preserves CHECK and other table-level clauses for new tables,
+        // Pinned compatibility preserves CHECK and other table-level clauses for new tables,
         // but does not claim to diff them on an existing table.
         definitions_without_foreign_keys.push(definition);
     }
@@ -1463,7 +1457,7 @@ fn malformed_view_definition() -> AppError {
 }
 
 fn invalid_schema_diff(message: impl Into<String>) -> AppError {
-    AppError::invalid("invalid_community_schema_diff_request", message)
+    AppError::invalid("invalid_schema_diff_request", message)
 }
 
 fn schema_diff_resource_limit(message: &'static str) -> AppError {
@@ -1475,13 +1469,15 @@ fn schema_diff_resource_limit(message: &'static str) -> AppError {
 
 #[cfg(test)]
 mod tests {
-    use chat2db_contract::{CommunitySchemaDiffEndpoint, CommunitySchemaDiffRequest};
-
-    use crate::Application;
+    use crate::{
+        Application,
+        native_schema_diff_types::{SchemaDiffEndpoint, SchemaDiffRequest},
+    };
 
     use super::{
         NO_DIFFERENCES_SQL, SchemaSnapshot, ViewSnapshot, build_schema_diff,
-        canonicalize_column_definition, parse_table_snapshot, rewrite_qualified_catalog,
+        canonicalize_column_definition, parse_table_snapshot,
+        preview_mysql_schema_diff as preview_mysql_schema_diff_impl, rewrite_qualified_catalog,
     };
 
     fn snapshot(database_name: &str) -> SchemaSnapshot {
@@ -1492,7 +1488,7 @@ mod tests {
     }
 
     #[test]
-    fn no_difference_uses_the_pinned_community_comment() {
+    fn no_difference_uses_the_pinned_compatibility_comment() {
         let mut snapshot = snapshot("same_db");
         snapshot.tables.insert(
             "items".to_owned(),
@@ -1883,17 +1879,14 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_request_fails_before_storage_or_java_access() {
-        let error = Application::new()
-            .preview_mysql_schema_diff(&CommunitySchemaDiffRequest {
-                source: CommunitySchemaDiffEndpoint::default(),
-                target: CommunitySchemaDiffEndpoint::default(),
-            })
+        let application = Application::new();
+        let request = SchemaDiffRequest {
+            source: SchemaDiffEndpoint::default(),
+            target: SchemaDiffEndpoint::default(),
+        };
+        let direct_error = preview_mysql_schema_diff_impl(&application, &request)
             .await
-            .expect_err("missing source endpoint must fail");
-
-        assert_eq!(
-            error.api_error().code,
-            "invalid_community_schema_diff_request"
-        );
+            .expect_err("direct missing source endpoint must fail");
+        assert_eq!(direct_error.api_error().code, "invalid_schema_diff_request");
     }
 }

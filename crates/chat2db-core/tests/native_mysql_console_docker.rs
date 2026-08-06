@@ -6,8 +6,8 @@ use chat2db_contract::{
     JdbcValue,
 };
 use chat2db_core::{
-    Application, MysqlConsoleCancellation, MysqlConsoleRequest, MysqlConsoleResult, RuntimeConfig,
-    RuntimeHost,
+    Application, NativeConsoleCancellation, NativeConsoleRequest, NativeConsoleResult,
+    RuntimeConfig, RuntimeHost,
 };
 use chat2db_java_bridge::{EngineCommand, EngineConfig};
 use futures_util::FutureExt as _;
@@ -539,14 +539,14 @@ async fn verify_read_only(
     assert!(inspected[0].success);
 
     let error = application
-        .execute_mysql_console(
+        .execute_native_console(
             request(
                 &datasource.id,
                 database_name,
                 format!("INSERT INTO `{table_name}` (`id`, `label`, `score`) VALUES (900, 'blocked', 900)"),
                 false,
             ),
-            MysqlConsoleCancellation::new(),
+            NativeConsoleCancellation::new(),
         )
         .await
         .expect_err("read-only datasource must reject writes");
@@ -563,7 +563,7 @@ async fn verify_cancellation(
     datasource_id: &str,
     database_name: &str,
 ) {
-    let cancellation = MysqlConsoleCancellation::new();
+    let cancellation = NativeConsoleCancellation::new();
     let execution_cancellation = cancellation.clone();
     let execution_application = application.clone();
     let execution_request = request(
@@ -574,7 +574,7 @@ async fn verify_cancellation(
     );
     let execution = tokio::spawn(async move {
         execution_application
-            .execute_mysql_console(execution_request, execution_cancellation)
+            .execute_native_console(execution_request, execution_cancellation)
             .await
     });
 
@@ -610,10 +610,10 @@ async fn query_count(
 
 async fn execute(
     application: &Application,
-    request: MysqlConsoleRequest,
-) -> Vec<MysqlConsoleResult> {
+    request: NativeConsoleRequest,
+) -> Vec<NativeConsoleResult> {
     application
-        .execute_mysql_console(request, MysqlConsoleCancellation::new())
+        .execute_native_console(request, NativeConsoleCancellation::new())
         .await
         .expect("native MySQL Console request must complete")
 }
@@ -623,8 +623,8 @@ fn request(
     database_name: &str,
     sql: String,
     error_continue: bool,
-) -> MysqlConsoleRequest {
-    MysqlConsoleRequest {
+) -> NativeConsoleRequest {
+    NativeConsoleRequest {
         datasource_id: datasource_id.to_owned(),
         database_name: database_name.to_owned(),
         sql,
@@ -638,7 +638,7 @@ fn request(
     }
 }
 
-fn assert_single_success(results: &[MysqlConsoleResult], update_count: u64) {
+fn assert_single_success(results: &[NativeConsoleResult], update_count: u64) {
     assert_eq!(results.len(), 1);
     assert!(results[0].success);
     assert_eq!(results[0].statement_sequence, 1);
@@ -646,7 +646,7 @@ fn assert_single_success(results: &[MysqlConsoleResult], update_count: u64) {
     assert!(results[0].error.is_none());
 }
 
-fn statement_value(result: &MysqlConsoleResult) -> &str {
+fn statement_value(result: &NativeConsoleResult) -> &str {
     let row = result.rows.first().expect("result must contain one row");
     let value = row.values.first().expect("result must contain one column");
     scalar_text(value)

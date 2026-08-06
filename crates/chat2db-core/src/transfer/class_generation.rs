@@ -5,12 +5,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use chat2db_contract::{CommunityTableColumn, GenerateMysqlClassRequest, GeneratedMysqlClassSet};
+use chat2db_contract::{GenerateMysqlClassRequest, GeneratedMysqlClassSet};
 use chat2db_storage::TransferArtifactRecord;
 use uuid::Uuid;
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
-use crate::{AppError, Application, native_mysql, now_millis};
+use crate::{
+    AppError, Application,
+    native_driver_types::{ColumnMetadata, ListColumnsRequest, MetadataScope, TableRef},
+    now_millis,
+};
 
 const CLASS_ARCHIVE_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
 const MAX_CLASS_ARCHIVE_BYTES: u64 = 16 * 1024 * 1024;
@@ -79,15 +83,31 @@ async fn render_request(
     application: &Application,
     request: &GenerateMysqlClassRequest,
 ) -> Result<RenderedClassSet, AppError> {
-    let columns = native_mysql::list_columns(
-        application,
-        &request.datasource_id,
-        &request.database_name,
-        &request.schema_name,
-        &request.table_name,
-    )
-    .await?
-    .items;
+    let driver = application
+        .require_native_driver_for_datasource(&request.datasource_id)
+        .await?;
+    let metadata = driver.metadata().ok_or_else(|| {
+        AppError::invalid(
+            "native_metadata_capability_not_available",
+            "The native Rust driver does not implement metadata operations",
+        )
+    })?;
+    let columns = metadata
+        .list_columns(
+            application,
+            ListColumnsRequest {
+                table: TableRef {
+                    scope: MetadataScope {
+                        datasource_id: request.datasource_id.clone(),
+                        database_name: request.database_name.clone(),
+                        schema_name: request.schema_name.clone(),
+                    },
+                    table_name: request.table_name.clone(),
+                },
+            },
+        )
+        .await?
+        .items;
     if columns.is_empty() {
         return Err(AppError::not_found(
             "mysql_table_not_found",
@@ -152,7 +172,7 @@ fn write_class_set(
 
 fn render_class_set(
     table_name: &str,
-    columns: &[CommunityTableColumn],
+    columns: &[ColumnMetadata],
 ) -> Result<RenderedClassSet, AppError> {
     let class_name = format!("{}DO", upper_camel(table_name));
     let entity_name = format!("{class_name}.java");
@@ -212,7 +232,7 @@ fn safe_archive_component(value: &str) -> String {
     }
 }
 
-fn render_entity(class_name: &str, table_name: &str, columns: &[CommunityTableColumn]) -> String {
+fn render_entity(class_name: &str, table_name: &str, columns: &[ColumnMetadata]) -> String {
     let mut imports = BTreeSet::from([
         "com.baomidou.mybatisplus.annotation.TableField",
         "com.baomidou.mybatisplus.annotation.TableName",

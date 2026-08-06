@@ -1,11 +1,19 @@
-//! MySQL-specific structured SQL builders used by the retained Community API.
+//! MySQL-specific structured SQL builders.
 
 use std::fmt::Write as _;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Timelike as _};
 use serde::{Deserialize, Serialize};
 
-use crate::AppError;
+use crate::{
+    AppError,
+    native_driver_types::{
+        BuiltSql, CreateSchemaSqlRequest, DatabaseDefinition, DmlAssignment, DmlColumn, DmlRow,
+        DmlSqlRequest, DmlStatement, DmlTarget, DmlTemporalKind, DmlValue, NamespaceSqlOperation,
+        NamespaceSqlRequest, SchemaDefinition,
+    },
+};
 
 pub const MYSQL_RESULT_DEFAULT_PLACEHOLDER: &str = "CHAT2DB_UPDATE_TABLE_DATA_USER_FILLED_DEFAULT";
 pub const MYSQL_RESULT_GENERATED_PLACEHOLDER: &str =
@@ -15,6 +23,19 @@ pub const MYSQL_PARTIAL_LARGE_VALUE_PREFIX: &str = "CHAT2DB_LARGE_VALUE_PREVIEW:
 const MAX_IDENTIFIER_CHARS: usize = 64;
 const MAX_VIEW_BODY_BYTES: usize = 1024 * 1024;
 const MAX_COMMENT_BYTES: usize = 2048;
+const MAX_DML_COLUMNS: usize = 2_048;
+const MAX_DML_ROWS: usize = 4_096;
+const MAX_DML_VALUES: usize = 32_768;
+const MAX_DML_IDENTIFIER_BYTES: usize = 512;
+const MAX_DML_DATA_TYPE_NAME_BYTES: usize = 256;
+const MAX_DML_DECIMAL_BYTES: usize = 1_024;
+const MAX_DML_TEMPORAL_BYTES: usize = 128;
+const MAX_DML_VALUE_BYTES: usize = 262_144;
+const MAX_NAMESPACE_IDENTIFIER_BYTES: usize = 512;
+const MAX_NAMESPACE_PROPERTY_BYTES: usize = 4_096;
+const MAX_NAMESPACE_COMMENT_BYTES: usize = 65_536;
+const MAX_REQUEST_BYTES: usize = 8 * 1_024 * 1_024;
+const MAX_BUILT_SQL_BYTES: usize = 1_024 * 1_024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -575,6 +596,101 @@ pub fn build_mysql_external_in_values(values: &[String]) -> Result<String, AppEr
         ));
     }
     Ok(format!("({})", quoted.join(", ")))
+}
+
+/// Builds a native `MySQL` schema-creation preview for the transport-neutral dialect SPI.
+///
+/// # Errors
+///
+/// Returns [`AppError`] when the schema name is invalid.
+pub(crate) fn build_mysql_create_schema_request(
+    request: CreateSchemaSqlRequest,
+) -> Result<BuiltSql, AppError> {
+    let CreateSchemaSqlRequest { schema } = request;
+    validate_namespace_schema(&schema)?;
+    finish_built_sql(format!(
+        "CREATE SCHEMA {}",
+        quote_namespace_identifier(&schema.name)
+    ))
+}
+
+/// Builds one native `MySQL` database/schema namespace statement.
+///
+/// # Errors
+///
+/// Returns [`AppError`] when an identifier or option is invalid, or when the requested namespace
+/// operation is not supported by `MySQL`.
+pub(crate) fn build_mysql_namespace_request(
+    request: NamespaceSqlRequest,
+) -> Result<BuiltSql, AppError> {
+    validate_namespace_request(&request)?;
+    let sql = match request.operation {
+        NamespaceSqlOperation::CreateDatabase { database } => {
+            let mut sql = format!(
+                "CREATE DATABASE {}",
+                quote_namespace_identifier(&database.name)
+            );
+            if let Some(charset) = non_blank_owned(database.charset) {
+                write!(
+                    &mut sql,
+                    " DEFAULT CHARACTER SET={}",
+                    mysql_namespace_property(&charset)?
+                )
+                .expect("writing to a String cannot fail");
+            }
+            if let Some(collation) = non_blank_owned(database.collation) {
+                write!(
+                    &mut sql,
+                    " COLLATE={}",
+                    mysql_namespace_property(&collation)?
+                )
+                .expect("writing to a String cannot fail");
+            }
+            sql
+        }
+        NamespaceSqlOperation::AlterDatabase { .. } | NamespaceSqlOperation::AlterSchema { .. } => {
+            return Err(namespace_builder_not_supported());
+        }
+        NamespaceSqlOperation::DropDatabase { database_name } => {
+            format!(
+                "DROP DATABASE {}",
+                quote_namespace_identifier(&database_name)
+            )
+        }
+        NamespaceSqlOperation::UseDatabase { database_name } => {
+            format!("USE {}", quote_namespace_identifier(&database_name))
+        }
+        NamespaceSqlOperation::CreateSchema { schema } => {
+            format!("CREATE SCHEMA {}", quote_namespace_identifier(&schema.name))
+        }
+        NamespaceSqlOperation::DropSchema { schema_name } => {
+            format!("DROP SCHEMA {}", quote_namespace_identifier(&schema_name))
+        }
+    };
+    finish_built_sql(sql)
+}
+
+/// Builds one typed native `MySQL` INSERT or UPDATE statement.
+///
+/// # Errors
+///
+/// Returns [`AppError`] when identifiers, row shapes, typed values, or predicates are invalid.
+pub(crate) fn build_mysql_dml_request(request: DmlSqlRequest) -> Result<BuiltSql, AppError> {
+    validate_dml_request(&request)?;
+    let target = quote_dml_target(&request.target)?;
+    let sql = match request.statement {
+        DmlStatement::SingleInsert { columns, row } => {
+            build_typed_insert(&target, &columns, std::slice::from_ref(&row))?
+        }
+        DmlStatement::MultiInsert { columns, rows } => {
+            build_typed_insert(&target, &columns, &rows)?
+        }
+        DmlStatement::Update {
+            assignments,
+            predicates,
+        } => build_typed_update(&target, &assignments, &predicates)?,
+    };
+    finish_built_sql(sql)
 }
 
 /// Wraps exactly one `MySQL` read statement in a bounded count query.
@@ -1461,6 +1577,832 @@ fn is_decimal_literal(value: &str, allow_exponent: bool) -> bool {
         && (!whole.is_empty() || fraction.is_some_and(|fraction| !fraction.is_empty()))
 }
 
+fn non_blank_owned(value: String) -> Option<String> {
+    (!value.trim().is_empty()).then_some(value)
+}
+
+fn invalid_database_request(message: impl Into<String>) -> AppError {
+    AppError::invalid("invalid_database_request", message)
+}
+
+fn protocol_limit_exceeded(message: impl Into<String>) -> AppError {
+    AppError::invalid("protocol.limit_exceeded", message)
+}
+
+fn namespace_builder_not_supported() -> AppError {
+    AppError::invalid(
+        "community.namespace_builder_not_supported",
+        "the selected Community plugin does not support this namespace operation",
+    )
+}
+
+fn dml_value_not_supported() -> AppError {
+    AppError::invalid(
+        "community.dml_value_not_supported",
+        "the selected Community value processor cannot preserve this typed value",
+    )
+}
+
+fn finish_built_sql(sql: String) -> Result<BuiltSql, AppError> {
+    if sql.trim().is_empty() || sql.len() > MAX_BUILT_SQL_BYTES {
+        return Err(protocol_limit_exceeded(format!(
+            "built SQL cannot exceed {MAX_BUILT_SQL_BYTES} bytes"
+        )));
+    }
+    Ok(BuiltSql { sql })
+}
+
+fn validate_namespace_request(request: &NamespaceSqlRequest) -> Result<(), AppError> {
+    let mut bytes = 32_usize;
+    match &request.operation {
+        NamespaceSqlOperation::CreateDatabase { database } => {
+            bytes = bytes.saturating_add(validate_namespace_database(database)?);
+        }
+        NamespaceSqlOperation::AlterDatabase {
+            old_database,
+            new_database,
+        } => {
+            bytes = bytes
+                .saturating_add(validate_namespace_database(old_database)?)
+                .saturating_add(validate_namespace_database(new_database)?);
+        }
+        NamespaceSqlOperation::DropDatabase { database_name }
+        | NamespaceSqlOperation::UseDatabase { database_name } => {
+            validate_namespace_identifier(database_name, "database name")?;
+            bytes = bytes.saturating_add(database_name.len());
+        }
+        NamespaceSqlOperation::CreateSchema { schema } => {
+            bytes = bytes.saturating_add(validate_namespace_schema(schema)?);
+        }
+        NamespaceSqlOperation::AlterSchema {
+            old_schema_name,
+            new_schema_name,
+        } => {
+            validate_namespace_identifier(old_schema_name, "old schema name")?;
+            validate_namespace_identifier(new_schema_name, "new schema name")?;
+            bytes = bytes
+                .saturating_add(old_schema_name.len())
+                .saturating_add(new_schema_name.len());
+        }
+        NamespaceSqlOperation::DropSchema { schema_name } => {
+            validate_namespace_identifier(schema_name, "schema name")?;
+            bytes = bytes.saturating_add(schema_name.len());
+        }
+    }
+    if bytes > MAX_REQUEST_BYTES {
+        return Err(invalid_database_request(format!(
+            "Community namespace request cannot exceed {MAX_REQUEST_BYTES} encoded bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_namespace_database(database: &DatabaseDefinition) -> Result<usize, AppError> {
+    validate_namespace_identifier(&database.name, "database name")?;
+    validate_utf8_limit(
+        &database.comment,
+        MAX_NAMESPACE_COMMENT_BYTES,
+        "database comment",
+    )?;
+    validate_namespace_property_preflight(&database.charset, "database charset")?;
+    validate_namespace_property_preflight(&database.collation, "database collation")?;
+    validate_namespace_property_preflight(&database.owner, "database owner")?;
+    validate_namespace_comment_runtime(&database.comment)?;
+    validate_namespace_property_runtime(&database.charset)?;
+    validate_namespace_property_runtime(&database.collation)?;
+    validate_namespace_property_runtime(&database.owner)?;
+    Ok(database
+        .name
+        .len()
+        .saturating_add(database.comment.len())
+        .saturating_add(database.charset.len())
+        .saturating_add(database.collation.len())
+        .saturating_add(database.owner.len())
+        .saturating_add(64))
+}
+
+fn validate_namespace_schema(schema: &SchemaDefinition) -> Result<usize, AppError> {
+    if !schema.database_name.is_empty() {
+        validate_namespace_identifier(&schema.database_name, "schema database name")?;
+    }
+    validate_namespace_identifier(&schema.name, "schema name")?;
+    validate_utf8_limit(
+        &schema.comment,
+        MAX_NAMESPACE_COMMENT_BYTES,
+        "schema comment",
+    )?;
+    validate_namespace_property_preflight(&schema.owner, "schema owner")?;
+    validate_namespace_comment_runtime(&schema.comment)?;
+    validate_namespace_property_runtime(&schema.owner)?;
+    Ok(schema
+        .database_name
+        .len()
+        .saturating_add(schema.name.len())
+        .saturating_add(schema.comment.len())
+        .saturating_add(schema.owner.len())
+        .saturating_add(64))
+}
+
+fn validate_namespace_identifier(value: &str, field: &str) -> Result<(), AppError> {
+    validate_non_blank_utf8_limit(value, MAX_NAMESPACE_IDENTIFIER_BYTES, field)?;
+    if value.trim() != value
+        || value.chars().any(char::is_control)
+        || value.contains(['.', ';', '\'', '"', '`', '[', ']'])
+        || contains_comment_marker(value)
+    {
+        return Err(invalid_database_request(format!(
+            "Community namespace {field} contains unsafe identifier syntax"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_namespace_property_preflight(value: &str, field: &str) -> Result<(), AppError> {
+    validate_utf8_limit(value, MAX_NAMESPACE_PROPERTY_BYTES, field)?;
+    if !value.is_empty()
+        && (value.trim() != value
+            || value.chars().any(char::is_control)
+            || value.contains([';', '\'', '"', '`', '[', ']'])
+            || contains_comment_marker(value))
+    {
+        return Err(invalid_database_request(format!(
+            "Community namespace {field} contains unsafe property syntax"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_namespace_property_runtime(value: &str) -> Result<(), AppError> {
+    if !value.is_empty()
+        && !value.chars().all(|character| {
+            character.is_alphanumeric() || matches!(character, '_' | '-' | '$' | '@')
+        })
+    {
+        return Err(AppError::invalid(
+            "community.namespace_property_invalid",
+            "a Community namespace property contains unsafe syntax",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_namespace_comment_runtime(value: &str) -> Result<(), AppError> {
+    if !value.is_empty()
+        && (value.chars().any(char::is_control)
+            || value.contains(['\'', '\\'])
+            || contains_comment_marker(value))
+    {
+        return Err(AppError::invalid(
+            "community.namespace_comment_invalid",
+            "a Community namespace comment contains unsafe syntax",
+        ));
+    }
+    Ok(())
+}
+
+fn mysql_namespace_property(value: &str) -> Result<&str, AppError> {
+    if value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        Ok(value)
+    } else {
+        Err(AppError::invalid(
+            "community.namespace_builder_failed",
+            "the Community namespace builder failed internally",
+        ))
+    }
+}
+
+fn contains_comment_marker(value: &str) -> bool {
+    value.contains("--") || value.contains("/*") || value.contains("*/")
+}
+
+fn validate_non_blank_utf8_limit(value: &str, maximum: usize, field: &str) -> Result<(), AppError> {
+    if value.trim().is_empty() || value.len() > maximum {
+        return Err(invalid_database_request(format!(
+            "{field} must be non-blank and cannot exceed {maximum} UTF-8 bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_utf8_limit(value: &str, maximum: usize, field: &str) -> Result<(), AppError> {
+    if value.len() > maximum {
+        return Err(invalid_database_request(format!(
+            "{field} cannot exceed {maximum} UTF-8 bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn quote_native_identifier(value: &str) -> Result<String, AppError> {
+    let quoted = format!("`{value}`");
+    if quoted.len() > MAX_DML_IDENTIFIER_BYTES {
+        return Err(protocol_limit_exceeded(format!(
+            "quoted identifier cannot exceed {MAX_DML_IDENTIFIER_BYTES} bytes"
+        )));
+    }
+    Ok(quoted)
+}
+
+fn quote_namespace_identifier(value: &str) -> String {
+    format!("`{value}`")
+}
+
+fn validate_dml_request(request: &DmlSqlRequest) -> Result<(), AppError> {
+    let mut bytes = validate_dml_target(&request.target)?.saturating_add(32);
+    let value_count = match &request.statement {
+        DmlStatement::SingleInsert { columns, row } => {
+            bytes = bytes.saturating_add(validate_dml_columns(columns, "insert columns")?);
+            if row.values.len() != columns.len() {
+                return Err(invalid_database_request(
+                    "Community DML insert row width must equal its column count",
+                ));
+            }
+            bytes = bytes.saturating_add(validate_dml_values(&row.values, false)?);
+            row.values.len()
+        }
+        DmlStatement::MultiInsert { columns, rows } => {
+            bytes = bytes.saturating_add(validate_dml_columns(columns, "batch insert columns")?);
+            if rows.is_empty() || rows.len() > MAX_DML_ROWS {
+                return Err(invalid_database_request(format!(
+                    "Community DML batch row count must be between 1 and {MAX_DML_ROWS}"
+                )));
+            }
+            let total = columns
+                .len()
+                .checked_mul(rows.len())
+                .ok_or_else(|| invalid_database_request("Community DML value count overflowed"))?;
+            for row in rows {
+                if row.values.len() != columns.len() {
+                    return Err(invalid_database_request(
+                        "Community DML batch row width must equal its column count",
+                    ));
+                }
+                bytes = bytes
+                    .saturating_add(validate_dml_values(&row.values, false)?)
+                    .saturating_add(8);
+            }
+            total
+        }
+        DmlStatement::Update {
+            assignments,
+            predicates,
+        } => {
+            bytes = bytes
+                .saturating_add(validate_dml_assignments(
+                    assignments,
+                    "update assignments",
+                    false,
+                )?)
+                .saturating_add(validate_dml_assignments(
+                    predicates,
+                    "update predicates",
+                    true,
+                )?);
+            assignments.len().saturating_add(predicates.len())
+        }
+    };
+    if value_count > MAX_DML_VALUES {
+        return Err(invalid_database_request(format!(
+            "Community DML cannot contain more than {MAX_DML_VALUES} values"
+        )));
+    }
+    if bytes > MAX_REQUEST_BYTES {
+        return Err(invalid_database_request(format!(
+            "Community DML request cannot exceed {MAX_REQUEST_BYTES} encoded bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_dml_target(target: &DmlTarget) -> Result<usize, AppError> {
+    let mut bytes = target.table_name.len().saturating_add(16);
+    validate_dml_identifier(&target.table_name, "table name")?;
+    if let Some(database_name) = &target.database_name {
+        validate_dml_identifier(database_name, "database name")?;
+        bytes = bytes.saturating_add(database_name.len()).saturating_add(8);
+    }
+    if let Some(schema_name) = &target.schema_name {
+        validate_dml_identifier(schema_name, "schema name")?;
+        bytes = bytes.saturating_add(schema_name.len()).saturating_add(8);
+    }
+    Ok(bytes)
+}
+
+fn validate_dml_columns(columns: &[DmlColumn], field: &str) -> Result<usize, AppError> {
+    if columns.is_empty() || columns.len() > MAX_DML_COLUMNS {
+        return Err(invalid_database_request(format!(
+            "Community DML {field} count must be between 1 and {MAX_DML_COLUMNS}"
+        )));
+    }
+    let mut names = std::collections::HashSet::with_capacity(columns.len());
+    let mut bytes = 0_usize;
+    for column in columns {
+        bytes = bytes.saturating_add(validate_dml_column(column)?);
+        if !names.insert(column.name.as_str()) {
+            return Err(invalid_database_request(format!(
+                "Community DML {field} cannot contain duplicate column names"
+            )));
+        }
+    }
+    Ok(bytes)
+}
+
+fn validate_dml_assignments(
+    assignments: &[DmlAssignment],
+    field: &str,
+    reject_null: bool,
+) -> Result<usize, AppError> {
+    if assignments.is_empty() || assignments.len() > MAX_DML_COLUMNS {
+        return Err(invalid_database_request(format!(
+            "Community DML {field} count must be between 1 and {MAX_DML_COLUMNS}"
+        )));
+    }
+    let mut names = std::collections::HashSet::with_capacity(assignments.len());
+    let mut bytes = 0_usize;
+    for assignment in assignments {
+        bytes = bytes
+            .saturating_add(validate_dml_column(&assignment.column)?)
+            .saturating_add(validate_dml_value_preflight(
+                &assignment.value,
+                reject_null,
+            )?)
+            .saturating_add(8);
+        if !names.insert(assignment.column.name.as_str()) {
+            return Err(invalid_database_request(format!(
+                "Community DML {field} cannot contain duplicate column names"
+            )));
+        }
+    }
+    Ok(bytes)
+}
+
+fn validate_dml_column(column: &DmlColumn) -> Result<usize, AppError> {
+    validate_dml_identifier(&column.name, "column name")?;
+    validate_non_blank_utf8_limit(
+        &column.data_type_name,
+        MAX_DML_DATA_TYPE_NAME_BYTES,
+        "DML data type name",
+    )?;
+    if column.data_type_name.chars().any(char::is_control) {
+        return Err(invalid_database_request(
+            "Community DML data type names cannot contain control characters",
+        ));
+    }
+    if column
+        .precision
+        .is_some_and(|value| value > i32::MAX as u32)
+    {
+        return Err(invalid_database_request(
+            "Community DML precision cannot exceed the Java Integer range",
+        ));
+    }
+    Ok(column
+        .name
+        .len()
+        .saturating_add(column.data_type_name.len())
+        .saturating_add(24))
+}
+
+fn validate_dml_values(values: &[DmlValue], reject_null: bool) -> Result<usize, AppError> {
+    if values.len() > MAX_DML_VALUES {
+        return Err(invalid_database_request(format!(
+            "Community DML cannot contain more than {MAX_DML_VALUES} values"
+        )));
+    }
+    let mut bytes = 0_usize;
+    for value in values {
+        bytes = bytes
+            .saturating_add(validate_dml_value_preflight(value, reject_null)?)
+            .saturating_add(8);
+    }
+    Ok(bytes)
+}
+
+fn validate_dml_value_preflight(value: &DmlValue, reject_null: bool) -> Result<usize, AppError> {
+    match value {
+        DmlValue::Null if reject_null => Err(invalid_database_request(
+            "Community DML equality predicates cannot compare NULL",
+        )),
+        DmlValue::String(value) => {
+            validate_utf8_limit(value, MAX_DML_VALUE_BYTES, "DML string value")?;
+            Ok(value.len())
+        }
+        DmlValue::Decimal(value) => {
+            validate_plain_decimal(value)?;
+            Ok(value.len())
+        }
+        DmlValue::Temporal { iso8601, .. } => {
+            validate_non_blank_utf8_limit(iso8601, MAX_DML_TEMPORAL_BYTES, "DML temporal value")?;
+            if iso8601.chars().any(char::is_control) {
+                return Err(invalid_database_request(
+                    "Community DML temporal values cannot contain control characters",
+                ));
+            }
+            Ok(iso8601.len())
+        }
+        DmlValue::Binary(value) if value.len() > MAX_DML_VALUE_BYTES => {
+            Err(invalid_database_request(format!(
+                "Community DML binary values cannot exceed {MAX_DML_VALUE_BYTES} bytes"
+            )))
+        }
+        DmlValue::Null | DmlValue::Boolean(_) => Ok(1),
+        DmlValue::Binary(value) => Ok(value.len()),
+    }
+}
+
+fn validate_dml_identifier(value: &str, field: &str) -> Result<(), AppError> {
+    validate_non_blank_utf8_limit(value, MAX_DML_IDENTIFIER_BYTES, field)?;
+    if value.trim() != value
+        || value.chars().any(char::is_control)
+        || value.contains(['.', ';', '\'', '"', '`', '[', ']'])
+        || contains_comment_marker(value)
+    {
+        return Err(invalid_database_request(format!(
+            "Community DML {field} contains unsafe identifier syntax"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_plain_decimal(value: &str) -> Result<(), AppError> {
+    validate_non_blank_utf8_limit(value, MAX_DML_DECIMAL_BYTES, "DML decimal value")?;
+    let bytes = value.as_bytes();
+    let mut index = usize::from(bytes.first() == Some(&b'-'));
+    let integer_start = index;
+    while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+        index += 1;
+    }
+    if index == integer_start {
+        return Err(invalid_database_request(
+            "Community DML decimal values must use plain base-10 notation",
+        ));
+    }
+    if bytes.get(index) == Some(&b'.') {
+        index += 1;
+        let fraction_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        if index == fraction_start {
+            return Err(invalid_database_request(
+                "Community DML decimal fractions require at least one digit",
+            ));
+        }
+    }
+    if index != bytes.len() {
+        return Err(invalid_database_request(
+            "Community DML decimal values must use plain base-10 notation",
+        ));
+    }
+    Ok(())
+}
+
+fn quote_dml_target(target: &DmlTarget) -> Result<String, AppError> {
+    let mut segments = Vec::with_capacity(3);
+    if let Some(database_name) = &target.database_name {
+        segments.push(quote_native_identifier(database_name)?);
+    }
+    if let Some(schema_name) = &target.schema_name {
+        segments.push(quote_native_identifier(schema_name)?);
+    }
+    segments.push(quote_native_identifier(&target.table_name)?);
+    Ok(segments.join("."))
+}
+
+fn build_typed_insert(
+    target: &str,
+    columns: &[DmlColumn],
+    rows: &[DmlRow],
+) -> Result<String, AppError> {
+    let column_sql = columns
+        .iter()
+        .map(|column| quote_native_identifier(&column.name))
+        .collect::<Result<Vec<_>, _>>()?
+        .join(", ");
+    let values = rows
+        .iter()
+        .map(|row| build_typed_row(columns, row))
+        .collect::<Result<Vec<_>, _>>()?
+        .join(", ");
+    Ok(format!(
+        "INSERT INTO {target} ({column_sql}) VALUES {values}"
+    ))
+}
+
+fn build_typed_row(columns: &[DmlColumn], row: &DmlRow) -> Result<String, AppError> {
+    let values = columns
+        .iter()
+        .zip(&row.values)
+        .map(|(column, value)| serialize_dml_value(column, value))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(format!("({})", values.join(", ")))
+}
+
+fn build_typed_update(
+    target: &str,
+    assignments: &[DmlAssignment],
+    predicates: &[DmlAssignment],
+) -> Result<String, AppError> {
+    let assignments = assignments
+        .iter()
+        .map(|assignment| {
+            Ok(format!(
+                "{} = {}",
+                quote_native_identifier(&assignment.column.name)?,
+                serialize_dml_value(&assignment.column, &assignment.value)?
+            ))
+        })
+        .collect::<Result<Vec<_>, AppError>>()?
+        .join(", ");
+    let predicates = predicates
+        .iter()
+        .map(build_typed_predicate)
+        .collect::<Result<Vec<_>, _>>()?
+        .join(" AND ");
+    Ok(format!(
+        "UPDATE {target} SET {assignments} WHERE {predicates}"
+    ))
+}
+
+fn build_typed_predicate(assignment: &DmlAssignment) -> Result<String, AppError> {
+    let column = quote_native_identifier(&assignment.column.name)?;
+    Ok(format!(
+        "{column} = {}",
+        serialize_dml_value(&assignment.column, &assignment.value)?
+    ))
+}
+
+fn serialize_dml_value(column: &DmlColumn, value: &DmlValue) -> Result<String, AppError> {
+    match value {
+        DmlValue::Null => Ok("NULL".to_owned()),
+        DmlValue::String(value) => quote_dml_string(value),
+        DmlValue::Decimal(value) => {
+            if !is_compatible_decimal_type(&column.data_type_name) {
+                return Err(dml_value_not_supported());
+            }
+            Ok(canonical_decimal(value))
+        }
+        DmlValue::Boolean(value) => {
+            if !is_compatible_boolean_type(&column.data_type_name) {
+                return Err(dml_value_not_supported());
+            }
+            let bit = if *value { "1" } else { "0" };
+            Ok(if base_data_type(&column.data_type_name) == "BIT" {
+                format!("b'{bit}'")
+            } else {
+                format!("'{bit}'")
+            })
+        }
+        DmlValue::Temporal { kind, iso8601 } => {
+            let canonical = canonical_temporal(*kind, iso8601)?;
+            if !is_compatible_temporal_type(*kind, &column.data_type_name)
+                || !is_compatible_temporal_scale(*kind, column.scale.unwrap_or(0), &canonical)
+            {
+                return Err(dml_value_not_supported());
+            }
+            quote_dml_string(&canonical)
+        }
+        DmlValue::Binary(bytes) => {
+            if !is_compatible_binary_type(&column.data_type_name) {
+                return Err(dml_value_not_supported());
+            }
+            let mut literal = String::with_capacity(bytes.len().saturating_mul(2) + 2);
+            literal.push_str("0x");
+            for byte in bytes {
+                write!(&mut literal, "{byte:02X}").expect("writing to a String cannot fail");
+            }
+            Ok(literal)
+        }
+    }
+}
+
+fn quote_dml_string(value: &str) -> Result<String, AppError> {
+    if value.contains(['\\', '\0']) {
+        return Err(dml_value_not_supported());
+    }
+    Ok(format!("'{}'", value.replace('\'', "''")))
+}
+
+fn canonical_decimal(value: &str) -> String {
+    let negative = value.starts_with('-');
+    let unsigned = value.strip_prefix('-').unwrap_or(value);
+    let (whole, fraction) = unsigned
+        .split_once('.')
+        .map_or((unsigned, ""), |(whole, fraction)| (whole, fraction));
+    let whole = whole.trim_start_matches('0');
+    let whole = if whole.is_empty() { "0" } else { whole };
+    let fraction = fraction.trim_end_matches('0');
+    let zero = whole == "0" && fraction.is_empty();
+    let mut canonical = if fraction.is_empty() {
+        whole.to_owned()
+    } else {
+        format!("{whole}.{fraction}")
+    };
+    if negative && !zero {
+        canonical.insert(0, '-');
+    }
+    canonical
+}
+
+fn base_data_type(data_type_name: &str) -> String {
+    let normalized = data_type_name.trim().to_ascii_uppercase();
+    let end = normalized.find(['(', ' ']).unwrap_or(normalized.len());
+    normalized[..end].trim().to_owned()
+}
+
+fn is_compatible_decimal_type(data_type_name: &str) -> bool {
+    matches!(
+        base_data_type(data_type_name).as_str(),
+        "TINYINT"
+            | "SMALLINT"
+            | "MEDIUMINT"
+            | "BIGINT"
+            | "INTEGER"
+            | "INT"
+            | "INT2"
+            | "INT4"
+            | "INT8"
+            | "DECIMAL"
+            | "DEC"
+            | "NUMERIC"
+            | "NUMBER"
+            | "FLOAT"
+            | "FLOAT4"
+            | "FLOAT8"
+            | "DOUBLE"
+            | "REAL"
+            | "MONEY"
+            | "SMALLMONEY"
+            | "SERIAL"
+            | "BIGSERIAL"
+            | "BINARY_FLOAT"
+            | "BINARY_DOUBLE"
+    )
+}
+
+fn is_compatible_boolean_type(data_type_name: &str) -> bool {
+    let normalized = data_type_name.trim().to_ascii_uppercase();
+    !normalized.contains("VARYING")
+        && matches!(
+            base_data_type(&normalized).as_str(),
+            "BOOL" | "BOOLEAN" | "BIT"
+        )
+}
+
+fn is_compatible_binary_type(data_type_name: &str) -> bool {
+    let normalized = data_type_name.trim().to_ascii_uppercase();
+    normalized.starts_with("BIT VARYING")
+        || normalized.starts_with("LONG RAW")
+        || matches!(
+            base_data_type(&normalized).as_str(),
+            "BINARY"
+                | "VARBINARY"
+                | "LONGVARBINARY"
+                | "BLOB"
+                | "TINYBLOB"
+                | "MEDIUMBLOB"
+                | "LONGBLOB"
+                | "BYTEA"
+                | "RAW"
+                | "IMAGE"
+        )
+}
+
+fn canonical_temporal(kind: DmlTemporalKind, value: &str) -> Result<String, AppError> {
+    let invalid = || {
+        AppError::invalid(
+            "community.dml_temporal_invalid",
+            "the Community DML temporal value is not valid ISO-8601",
+        )
+    };
+    match kind {
+        DmlTemporalKind::Date => NaiveDate::parse_from_str(value, "%Y-%m-%d")
+            .map(|date| date.format("%Y-%m-%d").to_string())
+            .map_err(|_| invalid()),
+        DmlTemporalKind::Time => parse_iso_time(value)
+            .map(format_iso_time)
+            .ok_or_else(invalid),
+        DmlTemporalKind::LocalDatetime => parse_iso_local_datetime(value)
+            .map(format_iso_local_datetime)
+            .ok_or_else(invalid),
+        DmlTemporalKind::OffsetDatetime => {
+            let normalized = normalize_offset_datetime(value).ok_or_else(invalid)?;
+            let parsed = DateTime::parse_from_rfc3339(&normalized).map_err(|_| invalid())?;
+            let offset = if parsed.offset().local_minus_utc() == 0 {
+                "Z".to_owned()
+            } else {
+                parsed.offset().to_string()
+            };
+            Ok(format!(
+                "{} {offset}",
+                format_iso_local_datetime(parsed.naive_local())
+            ))
+        }
+    }
+}
+
+fn parse_iso_time(value: &str) -> Option<NaiveTime> {
+    ["%H:%M", "%H:%M:%S", "%H:%M:%S%.f"]
+        .into_iter()
+        .find_map(|format| NaiveTime::parse_from_str(value, format).ok())
+}
+
+fn parse_iso_local_datetime(value: &str) -> Option<NaiveDateTime> {
+    [
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S%.f",
+    ]
+    .into_iter()
+    .find_map(|format| NaiveDateTime::parse_from_str(value, format).ok())
+}
+
+fn format_iso_time(value: NaiveTime) -> String {
+    let mut rendered = value.format("%H:%M").to_string();
+    if value.second() != 0 || value.nanosecond() != 0 {
+        write!(&mut rendered, ":{:02}", value.second()).expect("writing to a String cannot fail");
+    }
+    if value.nanosecond() != 0 {
+        let fraction = format!("{:09}", value.nanosecond());
+        rendered.push('.');
+        rendered.push_str(fraction.trim_end_matches('0'));
+    }
+    rendered
+}
+
+fn format_iso_local_datetime(value: NaiveDateTime) -> String {
+    format!(
+        "{} {}",
+        value.date().format("%Y-%m-%d"),
+        format_iso_time(value.time())
+    )
+}
+
+fn normalize_offset_datetime(value: &str) -> Option<String> {
+    let offset_start = if value.ends_with('Z') {
+        value.len().checked_sub(1)?
+    } else {
+        value
+            .char_indices()
+            .skip_while(|(index, _)| *index <= 10)
+            .find_map(|(index, character)| matches!(character, '+' | '-').then_some(index))?
+    };
+    let (local, offset) = value.split_at(offset_start);
+    let local = parse_iso_local_datetime(local)?;
+    Some(format!(
+        "{}T{:02}:{:02}:{:02}.{:09}{offset}",
+        local.date().format("%Y-%m-%d"),
+        local.hour(),
+        local.minute(),
+        local.second(),
+        local.nanosecond()
+    ))
+}
+
+fn is_compatible_temporal_type(kind: DmlTemporalKind, data_type_name: &str) -> bool {
+    let normalized = data_type_name.trim().to_ascii_uppercase();
+    let offset = normalized.contains("WITH TIME ZONE")
+        || normalized.contains("TIMESTAMPTZ")
+        || normalized.contains("DATETIMEOFFSET")
+        || normalized.contains("TIMESTAMP_TZ");
+    let local_time_zone = normalized.contains("WITH LOCAL TIME ZONE");
+    let date_time = normalized.contains("TIMESTAMP")
+        || normalized.contains("DATETIME")
+        || normalized.contains("SMALLDATETIME");
+    let date =
+        normalized == "DATE" || normalized.starts_with("DATE(") || normalized.starts_with("DATE ");
+    let time = (normalized == "TIME"
+        || normalized.starts_with("TIME(")
+        || normalized.starts_with("TIME "))
+        && !normalized.contains("TIMESTAMP");
+    match kind {
+        DmlTemporalKind::Date => date,
+        DmlTemporalKind::Time => time && !offset,
+        DmlTemporalKind::LocalDatetime => (date_time && (!offset || local_time_zone)) || date,
+        DmlTemporalKind::OffsetDatetime => offset && !local_time_zone,
+    }
+}
+
+fn is_compatible_temporal_scale(kind: DmlTemporalKind, scale: i32, canonical: &str) -> bool {
+    if !(0..=9).contains(&scale) {
+        return false;
+    }
+    let scale = usize::try_from(scale).expect("a validated temporal scale is non-negative");
+    if kind == DmlTemporalKind::Date {
+        return true;
+    }
+    canonical.find('.').is_none_or(|decimal_point| {
+        canonical[decimal_point + 1..]
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .count()
+            <= scale
+    })
+}
+
 fn build_create_namespace(database: &MysqlDatabaseDefinition) -> Result<String, AppError> {
     let mut sql = format!(
         "CREATE DATABASE {}{}",
@@ -2289,6 +3231,272 @@ mod tests {
             name: "items".to_owned(),
         };
         assert!(quote_qualified_name(&mismatched).is_err());
+    }
+
+    #[test]
+    fn native_dialect_builds_structured_namespace_sql() {
+        let create = build_mysql_namespace_request(NamespaceSqlRequest {
+            operation: NamespaceSqlOperation::CreateDatabase {
+                database: DatabaseDefinition {
+                    name: "app_db".to_owned(),
+                    comment: String::new(),
+                    charset: "utf8mb4".to_owned(),
+                    collation: "utf8mb4_0900_ai_ci".to_owned(),
+                    owner: String::new(),
+                    system: false,
+                },
+            },
+        })
+        .expect("native namespace SQL");
+        assert_eq!(
+            create.sql,
+            "CREATE DATABASE `app_db` DEFAULT CHARACTER SET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci"
+        );
+
+        let use_database = build_mysql_namespace_request(NamespaceSqlRequest {
+            operation: NamespaceSqlOperation::UseDatabase {
+                database_name: "app_db".to_owned(),
+            },
+        })
+        .expect("native USE SQL");
+        assert_eq!(use_database.sql, "USE `app_db`");
+
+        let rename = build_mysql_namespace_request(NamespaceSqlRequest {
+            operation: NamespaceSqlOperation::AlterSchema {
+                old_schema_name: "before".to_owned(),
+                new_schema_name: "after".to_owned(),
+            },
+        })
+        .expect_err("MySQL schema rename must fail closed");
+        assert_eq!(
+            rename.api_error().code,
+            "community.namespace_builder_not_supported"
+        );
+    }
+
+    #[test]
+    fn native_dialect_builds_typed_insert_and_update_sql() {
+        let columns = vec![
+            DmlColumn {
+                name: "id".to_owned(),
+                data_type_name: "BIGINT".to_owned(),
+                precision: None,
+                scale: None,
+            },
+            DmlColumn {
+                name: "label_value".to_owned(),
+                data_type_name: "VARCHAR".to_owned(),
+                precision: Some(255),
+                scale: None,
+            },
+            DmlColumn {
+                name: "payload".to_owned(),
+                data_type_name: "BLOB".to_owned(),
+                precision: None,
+                scale: None,
+            },
+        ];
+        let insert = build_mysql_dml_request(DmlSqlRequest {
+            target: DmlTarget {
+                database_name: Some("app".to_owned()),
+                schema_name: None,
+                table_name: "items".to_owned(),
+            },
+            statement: DmlStatement::SingleInsert {
+                columns,
+                row: DmlRow {
+                    values: vec![
+                        DmlValue::Decimal("42.00".to_owned()),
+                        DmlValue::String("O'Reilly".to_owned()),
+                        DmlValue::Binary(vec![0, 255, 16]),
+                    ],
+                },
+            },
+        })
+        .expect("typed INSERT");
+        assert_eq!(
+            insert.sql,
+            "INSERT INTO `app`.`items` (`id`, `label_value`, `payload`) VALUES (42, 'O''Reilly', 0x00FF10)"
+        );
+
+        let update = build_mysql_dml_request(DmlSqlRequest {
+            target: DmlTarget {
+                database_name: None,
+                schema_name: None,
+                table_name: "items".to_owned(),
+            },
+            statement: DmlStatement::Update {
+                assignments: vec![DmlAssignment {
+                    column: DmlColumn {
+                        name: "active".to_owned(),
+                        data_type_name: "BOOLEAN".to_owned(),
+                        precision: None,
+                        scale: None,
+                    },
+                    value: DmlValue::Boolean(true),
+                }],
+                predicates: vec![DmlAssignment {
+                    column: DmlColumn {
+                        name: "id".to_owned(),
+                        data_type_name: "BIGINT".to_owned(),
+                        precision: None,
+                        scale: None,
+                    },
+                    value: DmlValue::Decimal("1".to_owned()),
+                }],
+            },
+        })
+        .expect("typed UPDATE");
+        assert_eq!(
+            update.sql,
+            "UPDATE `items` SET `active` = '1' WHERE `id` = 1"
+        );
+    }
+
+    #[test]
+    fn native_dialect_rejects_invalid_predicates_and_typed_values() {
+        let target = DmlTarget {
+            database_name: None,
+            schema_name: None,
+            table_name: "items".to_owned(),
+        };
+        let column = DmlColumn {
+            name: "payload".to_owned(),
+            data_type_name: "BLOB".to_owned(),
+            precision: None,
+            scale: None,
+        };
+        let unbounded = build_mysql_dml_request(DmlSqlRequest {
+            target: target.clone(),
+            statement: DmlStatement::Update {
+                assignments: vec![DmlAssignment {
+                    column: column.clone(),
+                    value: DmlValue::Null,
+                }],
+                predicates: Vec::new(),
+            },
+        })
+        .expect_err("unbounded UPDATE");
+        assert_eq!(unbounded.api_error().code, "invalid_database_request");
+
+        let null_predicate = build_mysql_dml_request(DmlSqlRequest {
+            target: target.clone(),
+            statement: DmlStatement::Update {
+                assignments: vec![DmlAssignment {
+                    column: column.clone(),
+                    value: DmlValue::Null,
+                }],
+                predicates: vec![DmlAssignment {
+                    column: column.clone(),
+                    value: DmlValue::Null,
+                }],
+            },
+        })
+        .expect_err("NULL equality predicate");
+        assert_eq!(null_predicate.api_error().code, "invalid_database_request");
+
+        let incompatible = build_mysql_dml_request(DmlSqlRequest {
+            target: target.clone(),
+            statement: DmlStatement::SingleInsert {
+                columns: vec![DmlColumn {
+                    data_type_name: "VARCHAR".to_owned(),
+                    ..column.clone()
+                }],
+                row: DmlRow {
+                    values: vec![DmlValue::Binary(vec![0, 255])],
+                },
+            },
+        })
+        .expect_err("binary value for VARCHAR");
+        assert_eq!(
+            incompatible.api_error().code,
+            "community.dml_value_not_supported"
+        );
+
+        let malformed_temporal = build_mysql_dml_request(DmlSqlRequest {
+            target,
+            statement: DmlStatement::SingleInsert {
+                columns: vec![DmlColumn {
+                    name: "created_at".to_owned(),
+                    data_type_name: "DATETIME".to_owned(),
+                    precision: None,
+                    scale: None,
+                }],
+                row: DmlRow {
+                    values: vec![DmlValue::Temporal {
+                        kind: DmlTemporalKind::LocalDatetime,
+                        iso8601: "2026-13-99T99:99:99".to_owned(),
+                    }],
+                },
+            },
+        })
+        .expect_err("malformed temporal");
+        assert_eq!(
+            malformed_temporal.api_error().code,
+            "community.dml_temporal_invalid"
+        );
+    }
+
+    #[test]
+    fn native_dialect_enforces_bridge_limits_and_sql_mode_independent_strings() {
+        let target = DmlTarget {
+            database_name: None,
+            schema_name: None,
+            table_name: "items".to_owned(),
+        };
+        let string_column = DmlColumn {
+            name: "label".to_owned(),
+            data_type_name: "VARCHAR".to_owned(),
+            precision: Some(255),
+            scale: None,
+        };
+        let unsupported_string = build_mysql_dml_request(DmlSqlRequest {
+            target: target.clone(),
+            statement: DmlStatement::SingleInsert {
+                columns: vec![string_column.clone()],
+                row: DmlRow {
+                    values: vec![DmlValue::String("back\\slash".to_owned())],
+                },
+            },
+        })
+        .expect_err("backslashes cannot be preserved across every MySQL SQL mode");
+        assert_eq!(
+            unsupported_string.api_error().code,
+            "community.dml_value_not_supported"
+        );
+
+        let invalid_decimal = build_mysql_dml_request(DmlSqlRequest {
+            target: target.clone(),
+            statement: DmlStatement::SingleInsert {
+                columns: vec![DmlColumn {
+                    data_type_name: "DECIMAL".to_owned(),
+                    ..string_column.clone()
+                }],
+                row: DmlRow {
+                    values: vec![DmlValue::Decimal("+1".to_owned())],
+                },
+            },
+        })
+        .expect_err("the Bridge accepts only plain decimal notation");
+        assert_eq!(invalid_decimal.api_error().code, "invalid_database_request");
+
+        let oversized_identifier = build_mysql_dml_request(DmlSqlRequest {
+            target,
+            statement: DmlStatement::SingleInsert {
+                columns: vec![DmlColumn {
+                    name: "x".repeat(MAX_DML_IDENTIFIER_BYTES + 1),
+                    ..string_column
+                }],
+                row: DmlRow {
+                    values: vec![DmlValue::String("value".to_owned())],
+                },
+            },
+        })
+        .expect_err("identifiers above the Bridge limit must fail before rendering");
+        assert_eq!(
+            oversized_identifier.api_error().code,
+            "invalid_database_request"
+        );
     }
 
     #[test]

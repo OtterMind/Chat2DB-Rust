@@ -8,8 +8,8 @@ use std::{
 };
 
 use chat2db_contract::{
-    DmlExportFormat, DmlExportRequest, DmlExportSize, ImportFileRequest, OtherFileExportRequest,
-    SqlFileExportRequest, TabularImportEncoding, TransferFileFormat, TransferSqlScope,
+    ImportFileRequest, SqlFileExportRequest, TabularImportEncoding, TransferFileFormat,
+    TransferSqlScope,
 };
 use chat2db_storage::{TransferArtifactRecord, TransferArtifactWriter};
 use mysql_async::{
@@ -27,12 +27,16 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
-use super::{TaskCompletion, TransferContext, TransferRunError, format};
+use super::{
+    PendingTransferArtifact, QueryResultExportFormat, QueryResultExportRequest,
+    QueryResultExportScope, TableFileExportRequest, TaskCompletion, TransferContext,
+    TransferRunError, format,
+};
 use crate::{AppError, AppErrorKind, Application, native_mysql};
 
 const IMPORT_BATCH_ROWS: usize = 256;
 const PROGRESS_ROW_INTERVAL: u64 = 250;
-const DML_ARTIFACT_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
+const QUERY_RESULT_ARTIFACT_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
 
 pub(super) async fn import_file(
     application: &Application,
@@ -112,9 +116,9 @@ pub(super) async fn export_sql(
     publish_task_artifact(writer, request.export_path.as_deref(), &file_name, context).await
 }
 
-pub(super) async fn export_other(
+pub(super) async fn export_table_file(
     application: &Application,
-    request: OtherFileExportRequest,
+    request: TableFileExportRequest,
     context: &TransferContext,
 ) -> Result<TaskCompletion, TransferRunError> {
     validate_database_name(&request.database_name).map_err(TransferRunError::into_app_error)?;
@@ -193,24 +197,26 @@ pub(super) async fn export_other(
     publish_task_artifact(writer, request.export_path.as_deref(), &file_name, context).await
 }
 
-pub(super) async fn export_dml(
+pub(super) async fn export_query_result(
     application: &Application,
-    request: DmlExportRequest,
+    request: QueryResultExportRequest,
 ) -> Result<TransferArtifactRecord, AppError> {
     validate_database_name(&request.database_name).map_err(TransferRunError::into_app_error)?;
-    let sql = match request.export_size {
-        DmlExportSize::CurrentPage if !request.sql.trim().is_empty() => request.sql.trim(),
-        DmlExportSize::CurrentPage | DmlExportSize::All => request.original_sql.trim(),
+    let sql = match request.scope {
+        QueryResultExportScope::CurrentPage if !request.sql.trim().is_empty() => request.sql.trim(),
+        QueryResultExportScope::CurrentPage | QueryResultExportScope::All => {
+            request.original_sql.trim()
+        }
     };
     let table_name = select_table_name(sql)?;
     let (format, extension, media_type) = match request.format {
-        DmlExportFormat::Csv => (TransferFileFormat::Csv, "csv", "text/csv; charset=utf-8"),
-        DmlExportFormat::Xlsx => (
+        QueryResultExportFormat::Csv => (TransferFileFormat::Csv, "csv", "text/csv; charset=utf-8"),
+        QueryResultExportFormat::Xlsx => (
             TransferFileFormat::Xlsx,
             "xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ),
-        DmlExportFormat::Insert => (
+        QueryResultExportFormat::Insert => (
             TransferFileFormat::Sql,
             "sql",
             "application/sql; charset=utf-8",
@@ -221,7 +227,7 @@ pub(super) async fn export_dml(
         .unwrap_or(request.database_name.as_str());
     let file_name = timestamped_file_name(stem, extension);
     let storage = application.require_storage()?;
-    let expires_at = now_millis()?.saturating_add(DML_ARTIFACT_TTL_MS);
+    let expires_at = now_millis()?.saturating_add(QUERY_RESULT_ARTIFACT_TTL_MS);
     let mut writer = storage
         .begin_transfer_artifact(
             None,
@@ -238,7 +244,7 @@ pub(super) async fn export_dml(
         .map_err(TransferRunError::into_app_error)?;
     let selected_result_set = request.result_set_id.unwrap_or(0);
     let write_result = match request.format {
-        DmlExportFormat::Csv | DmlExportFormat::Xlsx => write_query_tabular(
+        QueryResultExportFormat::Csv | QueryResultExportFormat::Xlsx => write_query_tabular(
             &mut conn,
             writer.file_mut(),
             sql,
@@ -250,7 +256,7 @@ pub(super) async fn export_dml(
         )
         .await
         .map(|_| ()),
-        DmlExportFormat::Insert => {
+        QueryResultExportFormat::Insert => {
             let table_name = table_name.ok_or_else(|| {
                 AppError::invalid(
                     "sql_analysis_error",
@@ -1131,13 +1137,20 @@ async fn publish_task_artifact(
         None => None,
     };
     context.check_cancelled()?;
-    let artifact = writer.finish().map_err(AppError::from)?;
-    if let Some(pending) = pending
-        && let Err(error) = pending.publish().await
-    {
-        tracing::warn!(%error, artifact_id = %artifact.id, "managed transfer succeeded but exportPath publication failed");
-    }
-    Ok(TaskCompletion::Artifact(artifact))
+    Ok(TaskCompletion::Artifact(PendingTransferArtifact::new(
+        move || async move {
+            let artifact = tokio::task::spawn_blocking(move || writer.finish())
+                .await
+                .map_err(|_| AppError::internal())?
+                .map_err(AppError::from)?;
+            if let Some(pending) = pending
+                && let Err(error) = pending.publish().await
+            {
+                tracing::warn!(%error, artifact_id = %artifact.id, "managed transfer succeeded but exportPath publication failed");
+            }
+            Ok(artifact)
+        },
+    )))
 }
 
 struct PendingUserCopy {

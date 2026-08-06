@@ -41,7 +41,7 @@ use chat2db_contract::{
     UpdateDatasourceRequest, UpdateProviderProfileRequest, ValidateCommunitySqlRequest,
 };
 use chat2db_core::{
-    AppError, Application, MysqlConsoleCancellation, RuntimeConfig, RuntimeHost,
+    AppError, Application, NativeConsoleCancellation, RuntimeConfig, RuntimeHost,
     load_fixed_community_classpath,
 };
 use chat2db_java_bridge::{BridgeError, EngineCommand, EngineConfig};
@@ -222,11 +222,11 @@ impl DesktopStartup {
 
 #[derive(Default)]
 struct LegacySqlCancellationRegistry {
-    cancellations: Mutex<HashMap<String, MysqlConsoleCancellation>>,
+    cancellations: Mutex<HashMap<String, NativeConsoleCancellation>>,
 }
 
 impl LegacySqlCancellationRegistry {
-    async fn insert(&self, execution_id: String, cancellation: MysqlConsoleCancellation) {
+    async fn insert(&self, execution_id: String, cancellation: NativeConsoleCancellation) {
         self.cancellations
             .lock()
             .await
@@ -1054,7 +1054,7 @@ async fn legacy_client_command_for(
                     })
                     .map(|id| format!("mysql-console-{id}"))
                     .map_err(|_| "No MySQL Console execution ids remain".to_owned())?;
-                let cancellation = MysqlConsoleCancellation::new();
+                let cancellation = NativeConsoleCancellation::new();
                 state
                     .legacy_sql_cancellations
                     .insert(execution_id.clone(), cancellation.clone())
@@ -1278,7 +1278,7 @@ async fn forward_native_mysql_sql_execution(
     request_uuid: String,
     execution_id: String,
     request: chat2db_web::legacy::LegacySqlExecuteRequest,
-    cancellation: MysqlConsoleCancellation,
+    cancellation: NativeConsoleCancellation,
 ) {
     let started_at = Instant::now();
     let mut sequence = 0_u64;
@@ -2766,7 +2766,7 @@ mod tests {
         OperationEvent, OperationEventEnvelope, OperationStreamMessage,
         StartCommunityTablePreviewRequest, ValidateCommunitySqlRequest,
     };
-    use chat2db_core::{AppError, Application, MysqlConsoleCancellation};
+    use chat2db_core::{AppError, Application, NativeConsoleCancellation};
     use tokio::sync::oneshot;
 
     use super::{
@@ -2989,7 +2989,7 @@ mod tests {
     #[tokio::test]
     async fn native_mysql_cancellation_registry_owns_execution_lifecycle() {
         let registry = LegacySqlCancellationRegistry::default();
-        let cancellation = MysqlConsoleCancellation::new();
+        let cancellation = NativeConsoleCancellation::new();
         registry
             .insert("mysql-console-1".to_owned(), cancellation.clone())
             .await;

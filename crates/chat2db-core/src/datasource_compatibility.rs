@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use chat2db_contract::{
     CloneDatasourceRequest, CommunityDatasourceExport, CommunityDatasourceImportResult,
@@ -13,8 +13,12 @@ use chat2db_storage::{CreateDatasource, SecretValue, StorageError};
 use url::Url;
 
 use crate::{
-    AppError, Application, convert, datasource_edit::project_ssh,
-    datasource_session::resolve_datasource_connection, now_millis, storage_call,
+    AppError, Application, convert,
+    datasource_edit::project_ssh,
+    datasource_session::resolve_datasource_connection,
+    native_driver::{NativeDriver, NativeDriverRegistry},
+    native_driver_types::NativeDriverDescriptor,
+    now_millis, storage_call,
 };
 
 const COMMUNITY_DATASOURCE_DOCUMENT_VERSION: u32 = 1;
@@ -182,11 +186,8 @@ impl Application {
     ) -> Result<DatasourceConnectResult, AppError> {
         let database_type = if database_type.trim().is_empty() {
             let datasource = self.get_datasource(datasource_id).await?;
-            if self.is_native_mysql_driver(&datasource.driver_id) {
-                "MYSQL".to_owned()
-            } else {
-                datasource.driver_id
-            }
+            self.native_database_type_for_datasource_driver_id(&datasource.driver_id)
+                .unwrap_or(datasource.driver_id)
         } else {
             database_type.trim().to_owned()
         };
@@ -243,43 +244,106 @@ impl Application {
         })
     }
 
-    /// Returns an explicit no-JAR result for `MySQL` driver mutations handled by `mysql_async`.
+    /// Returns an explicit no-artifact result for a registered native Rust driver.
     ///
     /// # Errors
     ///
-    /// Returns invalid-request for non-MySQL database types.
+    /// Returns invalid-request for database types without a registered native driver.
     pub fn native_driver_compatibility(
         &self,
         database_type: &str,
         action: NativeDriverAction,
     ) -> Result<NativeDriverCompatibility, AppError> {
-        if !database_type.trim().eq_ignore_ascii_case("mysql") {
-            return Err(AppError::invalid(
-                "native_driver_not_available",
-                "the requested database type is not implemented by a native Rust driver",
-            ));
-        }
+        let driver = self
+            .native_driver_for_database_type(database_type)
+            .ok_or_else(|| {
+                AppError::invalid(
+                    "native_driver_not_available",
+                    "the requested database type is not implemented by a native Rust driver",
+                )
+            })?;
+        let descriptor = driver.descriptor();
         Ok(NativeDriverCompatibility {
-            database_type: "MYSQL".to_owned(),
-            driver_id: "mysql".to_owned(),
+            database_type: descriptor.database_types[0].to_owned(),
+            driver_id: descriptor.id.to_owned(),
             action,
-            implementation: "mysql_async".to_owned(),
+            implementation: descriptor.implementation.to_owned(),
             artifact_required: false,
             changed: false,
         })
     }
 }
 
-pub(crate) fn native_mysql_driver() -> JdbcDriver {
+/// Converts native identity metadata into the historical JDBC-shaped HTTP contract.
+pub(crate) fn jdbc_driver_from_descriptor(descriptor: &NativeDriverDescriptor) -> JdbcDriver {
+    let display_name = match descriptor.id.to_ascii_lowercase().as_str() {
+        "mysql" => "MySQL".to_owned(),
+        _ => descriptor
+            .database_types
+            .first()
+            .copied()
+            .unwrap_or(descriptor.id)
+            .to_owned(),
+    };
     JdbcDriver {
-        pack_id: "native:mysql_async".to_owned(),
-        name: "MySQL (native Rust)".to_owned(),
+        pack_id: format!("native:{}", descriptor.implementation),
+        name: format!("{display_name} (native Rust)"),
         version: "native".to_owned(),
-        driver_id: "mysql".to_owned(),
-        driver_class: "rust:mysql_async".to_owned(),
+        driver_id: descriptor.id.to_owned(),
+        driver_class: format!("rust:{}", descriptor.implementation),
         artifact_count: 0,
         artifact_bytes: "0".to_owned(),
     }
+}
+
+/// Resolves the native implementation for a persisted datasource driver ID.
+pub(crate) fn native_driver_for_datasource_driver_id(
+    registry: &NativeDriverRegistry,
+    datasource_driver_id: &str,
+    managed_drivers: &[JdbcDriver],
+) -> Option<Arc<dyn NativeDriver>> {
+    if let Some(driver) = registry.driver_for_datasource_driver_id(datasource_driver_id) {
+        return Some(driver);
+    }
+
+    let managed_descriptor = managed_drivers.iter().find(|driver| {
+        driver
+            .driver_id
+            .eq_ignore_ascii_case(datasource_driver_id.trim())
+    })?;
+    let mut matches = registry
+        .descriptors()
+        .filter(|descriptor| jdbc_driver_matches_descriptor(managed_descriptor, descriptor));
+    let driver_id = matches.next()?.id;
+    if matches.next().is_some() {
+        return None;
+    }
+    registry.driver_for_datasource_driver_id(driver_id)
+}
+
+fn jdbc_driver_matches_descriptor(
+    jdbc_driver: &JdbcDriver,
+    descriptor: &NativeDriverDescriptor,
+) -> bool {
+    let compatibility_values = [
+        jdbc_driver.pack_id.as_str(),
+        jdbc_driver.name.as_str(),
+        jdbc_driver.driver_id.as_str(),
+        jdbc_driver.driver_class.as_str(),
+    ];
+    descriptor
+        .compatibility_aliases
+        .iter()
+        .copied()
+        .filter_map(|alias| {
+            let alias = alias.trim().to_ascii_lowercase();
+            (!alias.is_empty()).then_some(alias)
+        })
+        .any(|alias| {
+            compatibility_values
+                .iter()
+                .any(|value| value.to_ascii_lowercase().contains(&alias))
+        })
 }
 
 fn copy_name(name: &str) -> String {
@@ -431,14 +495,16 @@ mod tests {
 
     use chat2db_contract::{
         CreateDatasourceRequest, DatasourceConnection, DatasourceConnectionProperty,
-        ExportCommunityDatasourcesRequest, NativeDriverAction, SshAuthentication,
+        ExportCommunityDatasourcesRequest, JdbcDriver, NativeDriverAction, SshAuthentication,
         SshAuthenticationType, SshHostKeyVerification, SshTunnelConfig,
     };
     use chat2db_storage::{SecretRef, SecretValue, SecretVault, SecretVaultError, Storage};
     use tempfile::TempDir;
 
-    use super::CloneDatasourceRequest;
-    use crate::Application;
+    use super::{
+        CloneDatasourceRequest, jdbc_driver_from_descriptor, native_driver_for_datasource_driver_id,
+    };
+    use crate::{Application, native_driver::NativeDriverRegistry};
 
     #[derive(Debug, Default)]
     struct MemoryVault {
@@ -664,5 +730,46 @@ mod tests {
             .expect("native compatibility resolves");
         assert!(!compatibility.artifact_required);
         assert!(!compatibility.changed);
+    }
+
+    #[test]
+    fn native_descriptor_preserves_the_existing_mysql_jdbc_wire_shape() {
+        let registry = NativeDriverRegistry::built_in();
+        let descriptor = registry
+            .descriptors()
+            .next()
+            .expect("built-in MySQL descriptor exists");
+
+        assert_eq!(
+            jdbc_driver_from_descriptor(descriptor),
+            JdbcDriver {
+                pack_id: "native:mysql_async".to_owned(),
+                name: "MySQL (native Rust)".to_owned(),
+                version: "native".to_owned(),
+                driver_id: "mysql".to_owned(),
+                driver_class: "rust:mysql_async".to_owned(),
+                artifact_count: 0,
+                artifact_bytes: "0".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn managed_jdbc_driver_id_resolves_through_the_datasource_compatibility_boundary() {
+        let registry = NativeDriverRegistry::built_in();
+        let managed_drivers = vec![JdbcDriver {
+            pack_id: "mysql-connector-j".to_owned(),
+            name: "MySQL JDBC".to_owned(),
+            version: "9".to_owned(),
+            driver_id: "managed-mysql".to_owned(),
+            driver_class: "com.mysql.cj.jdbc.Driver".to_owned(),
+            artifact_count: 1,
+            artifact_bytes: "1".to_owned(),
+        }];
+
+        let driver =
+            native_driver_for_datasource_driver_id(&registry, "managed-mysql", &managed_drivers)
+                .expect("managed MySQL descriptor resolves to the native implementation");
+        assert_eq!(driver.descriptor().id, "mysql");
     }
 }
