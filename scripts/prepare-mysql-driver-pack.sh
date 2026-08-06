@@ -9,7 +9,7 @@ readonly connector_url="https://repo.maven.apache.org/maven2/mysql/mysql-connect
 readonly pack_directory_name="01-mysql"
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-output_root="${1:-${repository_root}/target/mysql-driver-packs}"
+output_root="${1:-${repository_root}/target/driver-packs}"
 source_jar="${MYSQL_CONNECTOR_JAR:-}"
 staging_directory=""
 backup_directory=""

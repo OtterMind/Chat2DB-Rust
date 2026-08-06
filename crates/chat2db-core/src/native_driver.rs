@@ -18,6 +18,7 @@ use crate::{
         AdministrationCapability, AdministrationCommand, AdministrationExecution,
         AdministrationPreview, PrincipalGrantList, PrincipalGrantsRequest, PrincipalList,
     },
+    native_dm,
     native_driver_types::{
         BuiltSql, ColumnList, CreateSchemaSqlRequest, DatabaseList, DmlSqlRequest,
         EntityRelationTable, ForeignKeyList, FunctionList, FunctionMetadata, FunctionParameterList,
@@ -347,7 +348,9 @@ pub(crate) trait NativeSchemaDiffDriver: Send + Sync {
 pub(crate) trait NativeDriver: Send + Sync {
     fn descriptor(&self) -> &'static NativeDriverDescriptor;
 
-    fn connection(&self) -> &dyn NativeConnectionDriver;
+    fn connection(&self) -> Option<&dyn NativeConnectionDriver> {
+        None
+    }
 
     fn query(&self) -> Option<&dyn NativeQueryDriver> {
         None
@@ -390,7 +393,7 @@ pub(crate) struct NativeDriverRegistry {
 
 impl NativeDriverRegistry {
     pub(crate) fn built_in() -> Self {
-        Self::try_new(vec![Arc::new(MysqlNativeDriver)])
+        Self::try_new(vec![Arc::new(MysqlNativeDriver), Arc::new(DmNativeDriver)])
             .expect("built-in native drivers must have unique identities")
     }
 
@@ -458,6 +461,15 @@ impl NativeDriverRegistry {
         self.drivers.iter().map(|driver| driver.descriptor())
     }
 
+    pub(crate) fn standalone_descriptors(
+        &self,
+    ) -> impl Iterator<Item = &'static NativeDriverDescriptor> + '_ {
+        self.drivers
+            .iter()
+            .filter(|driver| driver.connection().is_some())
+            .map(|driver| driver.descriptor())
+    }
+
     /// Resolves a persisted datasource driver ID to its native implementation.
     pub(crate) fn driver_for_datasource_driver_id(
         &self,
@@ -494,7 +506,116 @@ impl NativeDriverRegistry {
     }
 }
 
+impl Application {
+    /// Lists databases through the runtime-selected Rust Driver SPI.
+    ///
+    /// # Errors
+    ///
+    /// Returns driver selection, capability, datasource, JDBC, or metadata errors.
+    pub async fn list_native_databases(
+        &self,
+        database_type: &str,
+        request: ListDatabasesRequest,
+    ) -> Result<DatabaseList, AppError> {
+        let driver = self.require_native_driver_capability(database_type)?;
+        let metadata = driver
+            .metadata()
+            .ok_or_else(|| native_capability_not_supported(database_type, "database metadata"))?;
+        metadata.list_databases(self, request).await
+    }
+
+    /// Lists schemas through the runtime-selected Rust Driver SPI.
+    ///
+    /// # Errors
+    ///
+    /// Returns driver selection, capability, datasource, JDBC, or metadata errors.
+    pub async fn list_native_schemas(
+        &self,
+        database_type: &str,
+        request: ListSchemasRequest,
+    ) -> Result<SchemaList, AppError> {
+        let driver = self.require_native_driver_capability(database_type)?;
+        let metadata = driver
+            .metadata()
+            .ok_or_else(|| native_capability_not_supported(database_type, "schema metadata"))?;
+        metadata.list_schemas(self, request).await
+    }
+
+    /// Lists tables through the runtime-selected Rust Driver SPI.
+    ///
+    /// # Errors
+    ///
+    /// Returns driver selection, capability, datasource, JDBC, or metadata errors.
+    pub async fn list_native_tables(
+        &self,
+        database_type: &str,
+        request: ListTablesRequest,
+    ) -> Result<TableList, AppError> {
+        let driver = self.require_native_driver_capability(database_type)?;
+        let metadata = driver
+            .metadata()
+            .ok_or_else(|| native_capability_not_supported(database_type, "table metadata"))?;
+        metadata.list_tables(self, request).await
+    }
+
+    /// Lists table columns through the runtime-selected Rust Driver SPI.
+    ///
+    /// # Errors
+    ///
+    /// Returns driver selection, capability, datasource, JDBC, or metadata errors.
+    pub async fn list_native_columns(
+        &self,
+        database_type: &str,
+        request: ListColumnsRequest,
+    ) -> Result<ColumnList, AppError> {
+        let driver = self.require_native_driver_capability(database_type)?;
+        let metadata = driver
+            .metadata()
+            .ok_or_else(|| native_capability_not_supported(database_type, "column metadata"))?;
+        metadata.list_columns(self, request).await
+    }
+
+    /// Starts a bounded table preview through the runtime-selected Rust Driver SPI.
+    ///
+    /// # Errors
+    ///
+    /// Returns driver selection, capability, validation, datasource, or query errors.
+    pub async fn start_native_table_preview(
+        &self,
+        database_type: &str,
+        request: TablePreviewRequest,
+        row_limit: u32,
+    ) -> Result<TablePreviewAccepted, AppError> {
+        let driver = self.require_native_driver_capability(database_type)?;
+        let tables = driver
+            .tables()
+            .ok_or_else(|| native_capability_not_supported(database_type, "table preview"))?;
+        tables.start_table_preview(self, request, row_limit).await
+    }
+
+    fn require_native_driver_capability(
+        &self,
+        database_type: &str,
+    ) -> Result<Arc<dyn NativeDriver>, AppError> {
+        self.native_driver_for_database_type(database_type)
+            .ok_or_else(|| {
+                AppError::invalid(
+                    "native_driver_not_available",
+                    format!("No Rust Driver SPI implementation is registered for {database_type}"),
+                )
+            })
+    }
+}
+
+pub(crate) fn native_capability_not_supported(database_type: &str, capability: &str) -> AppError {
+    AppError::invalid(
+        "native_driver_capability_not_supported",
+        format!("The {database_type} driver does not implement {capability}"),
+    )
+}
+
 struct MysqlNativeDriver;
+struct DmNativeDriver;
 
 const MYSQL_DRIVER_DESCRIPTOR: NativeDriverDescriptor = NativeDriverDescriptor {
     id: "mysql",
@@ -508,8 +629,8 @@ impl NativeDriver for MysqlNativeDriver {
         &MYSQL_DRIVER_DESCRIPTOR
     }
 
-    fn connection(&self) -> &dyn NativeConnectionDriver {
-        self
+    fn connection(&self) -> Option<&dyn NativeConnectionDriver> {
+        Some(self)
     }
 
     fn query(&self) -> Option<&dyn NativeQueryDriver> {
@@ -543,6 +664,232 @@ impl NativeDriver for MysqlNativeDriver {
     fn schema_diff(&self) -> Option<&dyn NativeSchemaDiffDriver> {
         Some(self)
     }
+}
+
+impl NativeDriver for DmNativeDriver {
+    fn descriptor(&self) -> &'static NativeDriverDescriptor {
+        &native_dm::DM_DRIVER_DESCRIPTOR
+    }
+
+    fn metadata(&self) -> Option<&dyn NativeMetadataDriver> {
+        Some(self)
+    }
+
+    fn tables(&self) -> Option<&dyn NativeTableDriver> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl NativeMetadataDriver for DmNativeDriver {
+    async fn list_schemas(
+        &self,
+        application: &Application,
+        request: ListSchemasRequest,
+    ) -> Result<SchemaList, AppError> {
+        native_dm::list_schemas(application, &request.datasource_id, &request.database_name).await
+    }
+
+    async fn list_databases(
+        &self,
+        application: &Application,
+        request: ListDatabasesRequest,
+    ) -> Result<DatabaseList, AppError> {
+        native_dm::list_databases(application, &request.datasource_id).await
+    }
+
+    async fn list_tables(
+        &self,
+        application: &Application,
+        request: ListTablesRequest,
+    ) -> Result<TableList, AppError> {
+        native_dm::list_tables(
+            application,
+            &request.scope.datasource_id,
+            &request.scope.database_name,
+            &request.scope.schema_name,
+            &request.name_pattern,
+        )
+        .await
+    }
+
+    async fn list_columns(
+        &self,
+        application: &Application,
+        request: ListColumnsRequest,
+    ) -> Result<ColumnList, AppError> {
+        native_dm::list_columns(
+            application,
+            &request.table.scope.datasource_id,
+            &request.table.scope.database_name,
+            &request.table.scope.schema_name,
+            &request.table.table_name,
+        )
+        .await
+    }
+
+    async fn list_indexes(
+        &self,
+        _application: &Application,
+        _request: ListIndexesRequest,
+    ) -> Result<IndexList, AppError> {
+        Err(dm_capability_not_supported("index metadata"))
+    }
+
+    async fn list_views(
+        &self,
+        _application: &Application,
+        _request: ListViewsRequest,
+    ) -> Result<ViewList, AppError> {
+        Err(dm_capability_not_supported("view metadata"))
+    }
+
+    async fn get_view(
+        &self,
+        _application: &Application,
+        _request: MetadataObjectRef,
+    ) -> Result<TableMetadata, AppError> {
+        Err(dm_capability_not_supported("view detail metadata"))
+    }
+
+    async fn list_imported_keys(
+        &self,
+        _application: &Application,
+        _request: ListTableKeysRequest,
+    ) -> Result<ForeignKeyList, AppError> {
+        Err(dm_capability_not_supported("imported key metadata"))
+    }
+
+    async fn list_exported_keys(
+        &self,
+        _application: &Application,
+        _request: ListTableKeysRequest,
+    ) -> Result<ForeignKeyList, AppError> {
+        Err(dm_capability_not_supported("exported key metadata"))
+    }
+
+    async fn list_primary_keys(
+        &self,
+        _application: &Application,
+        _request: ListTableKeysRequest,
+    ) -> Result<PrimaryKeyList, AppError> {
+        Err(dm_capability_not_supported("primary key metadata"))
+    }
+
+    async fn list_functions(
+        &self,
+        _application: &Application,
+        _request: ListRoutinesRequest,
+    ) -> Result<FunctionList, AppError> {
+        Err(dm_capability_not_supported("function metadata"))
+    }
+
+    async fn get_function(
+        &self,
+        _application: &Application,
+        _request: MetadataObjectRef,
+    ) -> Result<FunctionMetadata, AppError> {
+        Err(dm_capability_not_supported("function detail metadata"))
+    }
+
+    async fn list_function_parameters(
+        &self,
+        _application: &Application,
+        _request: MetadataObjectRef,
+    ) -> Result<FunctionParameterList, AppError> {
+        Err(dm_capability_not_supported("function parameter metadata"))
+    }
+
+    async fn list_procedures(
+        &self,
+        _application: &Application,
+        _request: ListRoutinesRequest,
+    ) -> Result<ProcedureList, AppError> {
+        Err(dm_capability_not_supported("procedure metadata"))
+    }
+
+    async fn get_procedure(
+        &self,
+        _application: &Application,
+        _request: MetadataObjectRef,
+    ) -> Result<ProcedureMetadata, AppError> {
+        Err(dm_capability_not_supported("procedure detail metadata"))
+    }
+
+    async fn list_procedure_parameters(
+        &self,
+        _application: &Application,
+        _request: MetadataObjectRef,
+    ) -> Result<ProcedureParameterList, AppError> {
+        Err(dm_capability_not_supported("procedure parameter metadata"))
+    }
+
+    async fn list_triggers(
+        &self,
+        _application: &Application,
+        _request: ListTriggersRequest,
+    ) -> Result<TriggerList, AppError> {
+        Err(dm_capability_not_supported("trigger metadata"))
+    }
+
+    async fn get_trigger(
+        &self,
+        _application: &Application,
+        _request: MetadataObjectRef,
+    ) -> Result<TriggerMetadata, AppError> {
+        Err(dm_capability_not_supported("trigger detail metadata"))
+    }
+}
+
+#[async_trait]
+impl NativeTableDriver for DmNativeDriver {
+    async fn load_er_tables(
+        &self,
+        _application: &Application,
+        _datasource_id: &str,
+        _database_name: &str,
+        _schema_name: &str,
+    ) -> Result<Vec<EntityRelationTable>, AppError> {
+        Err(dm_capability_not_supported("entity relation metadata"))
+    }
+
+    async fn validate_column_reorder(
+        &self,
+        _application: &Application,
+        _datasource_id: &str,
+        _database_name: &str,
+        _table_name: &str,
+        _column_names: &[String],
+    ) -> Result<(), AppError> {
+        Err(dm_capability_not_supported("column reordering"))
+    }
+
+    async fn table_ddl(
+        &self,
+        _application: &Application,
+        _datasource_id: &str,
+        _database_name: &str,
+        _schema_name: &str,
+        _table_name: &str,
+    ) -> Result<String, AppError> {
+        Err(dm_capability_not_supported("table DDL"))
+    }
+
+    async fn start_table_preview(
+        &self,
+        application: &Application,
+        request: TablePreviewRequest,
+        row_limit: u32,
+    ) -> Result<TablePreviewAccepted, AppError> {
+        native_dm::start_table_preview(application, request, row_limit).await
+    }
+}
+
+fn dm_capability_not_supported(capability: &'static str) -> AppError {
+    AppError::invalid(
+        "native_driver_capability_not_supported",
+        format!("The DM driver does not implement {capability}"),
+    )
 }
 
 #[async_trait]
@@ -1106,8 +1453,8 @@ mod tests {
             &FAKE_POSTGRES_DESCRIPTOR
         }
 
-        fn connection(&self) -> &dyn NativeConnectionDriver {
-            self
+        fn connection(&self) -> Option<&dyn NativeConnectionDriver> {
+            Some(self)
         }
 
         fn dialect(&self) -> Option<&dyn NativeDialectDriver> {
@@ -1120,8 +1467,8 @@ mod tests {
             self.0
         }
 
-        fn connection(&self) -> &dyn NativeConnectionDriver {
-            self
+        fn connection(&self) -> Option<&dyn NativeConnectionDriver> {
+            Some(self)
         }
     }
 
@@ -1235,8 +1582,8 @@ mod tests {
                 &DESCRIPTOR
             }
 
-            fn connection(&self) -> &dyn NativeConnectionDriver {
-                self
+            fn connection(&self) -> Option<&dyn NativeConnectionDriver> {
+                Some(self)
             }
         }
 

@@ -263,12 +263,21 @@ impl Application {
                 )
             })?;
         let descriptor = driver.descriptor();
+        let artifact_required = driver.connection().is_none();
+        let driver_id = if artifact_required {
+            managed_jdbc_driver_for_descriptor(&self.inner.drivers, descriptor).map_or_else(
+                || descriptor.id.to_owned(),
+                |driver| driver.driver_id.clone(),
+            )
+        } else {
+            descriptor.id.to_owned()
+        };
         Ok(NativeDriverCompatibility {
             database_type: descriptor.database_types[0].to_owned(),
-            driver_id: descriptor.id.to_owned(),
+            driver_id,
             action,
             implementation: descriptor.implementation.to_owned(),
-            artifact_required: false,
+            artifact_required,
             changed: false,
         })
     }
@@ -321,7 +330,18 @@ pub(crate) fn native_driver_for_datasource_driver_id(
     registry.driver_for_datasource_driver_id(driver_id)
 }
 
-fn jdbc_driver_matches_descriptor(
+pub(crate) fn managed_jdbc_driver_for_descriptor<'a>(
+    managed_drivers: &'a [JdbcDriver],
+    descriptor: &NativeDriverDescriptor,
+) -> Option<&'a JdbcDriver> {
+    let mut matches = managed_drivers
+        .iter()
+        .filter(|driver| jdbc_driver_matches_descriptor(driver, descriptor));
+    let driver = matches.next()?;
+    matches.next().is_none().then_some(driver)
+}
+
+pub(crate) fn jdbc_driver_matches_descriptor(
     jdbc_driver: &JdbcDriver,
     descriptor: &NativeDriverDescriptor,
 ) -> bool {
@@ -340,9 +360,14 @@ fn jdbc_driver_matches_descriptor(
             (!alias.is_empty()).then_some(alias)
         })
         .any(|alias| {
-            compatibility_values
-                .iter()
-                .any(|value| value.to_ascii_lowercase().contains(&alias))
+            compatibility_values.iter().any(|value| {
+                let value = value.trim().to_ascii_lowercase();
+                value == alias
+                    || (alias.contains('.')
+                        && value
+                            .strip_prefix(&alias)
+                            .is_some_and(|suffix| suffix.starts_with('.')))
+            })
         })
 }
 
@@ -502,9 +527,29 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        CloneDatasourceRequest, jdbc_driver_from_descriptor, native_driver_for_datasource_driver_id,
+        CloneDatasourceRequest, jdbc_driver_from_descriptor, managed_jdbc_driver_for_descriptor,
+        native_driver_for_datasource_driver_id,
     };
-    use crate::{Application, native_driver::NativeDriverRegistry};
+    use crate::{
+        Application,
+        native_driver::{NativeDriver, NativeDriverRegistry},
+        native_driver_types::NativeDriverDescriptor,
+    };
+
+    struct JdbcOnlyDriver;
+
+    const JDBC_ONLY_DESCRIPTOR: NativeDriverDescriptor = NativeDriverDescriptor {
+        id: "jdbc-only",
+        implementation: "managed_jdbc",
+        database_types: &["JDBC_ONLY"],
+        compatibility_aliases: &["vendor.jdbc.Driver"],
+    };
+
+    impl NativeDriver for JdbcOnlyDriver {
+        fn descriptor(&self) -> &'static NativeDriverDescriptor {
+            &JDBC_ONLY_DESCRIPTOR
+        }
+    }
 
     #[derive(Debug, Default)]
     struct MemoryVault {
@@ -733,6 +778,41 @@ mod tests {
     }
 
     #[test]
+    fn jdbc_only_driver_is_not_advertised_as_a_standalone_native_driver() {
+        let registry = NativeDriverRegistry::try_new(vec![Arc::new(JdbcOnlyDriver)])
+            .expect("JDBC-only registry is valid");
+        let application = Application::with_native_drivers_for_test(registry);
+
+        assert!(application.list_drivers().items.is_empty());
+        let compatibility = application
+            .native_driver_compatibility("JDBC_ONLY", NativeDriverAction::Download)
+            .expect("JDBC-only compatibility resolves");
+        assert!(compatibility.artifact_required);
+        assert!(!compatibility.changed);
+    }
+
+    #[tokio::test]
+    async fn jdbc_only_connection_capability_falls_back_to_a_managed_driver_pack() {
+        let registry = NativeDriverRegistry::try_new(vec![Arc::new(JdbcOnlyDriver)])
+            .expect("JDBC-only registry is valid");
+        let application = Application::with_native_drivers_for_test(registry);
+        let error = application
+            .test_datasource_connection(
+                "jdbc-only",
+                DatasourceConnection {
+                    jdbc_url: "jdbc:vendor://localhost/test".to_owned(),
+                    properties: Vec::new(),
+                    read_only: true,
+                    ssh: None,
+                },
+            )
+            .await
+            .expect_err("a JDBC-only SPI delegates connection testing to the JDBC engine");
+
+        assert_eq!(error.api_error().code, "database_engine_unavailable");
+    }
+
+    #[test]
     fn native_descriptor_preserves_the_existing_mysql_jdbc_wire_shape() {
         let registry = NativeDriverRegistry::built_in();
         let descriptor = registry
@@ -771,5 +851,45 @@ mod tests {
             native_driver_for_datasource_driver_id(&registry, "managed-mysql", &managed_drivers)
                 .expect("managed MySQL descriptor resolves to the native implementation");
         assert_eq!(driver.descriptor().id, "mysql");
+    }
+
+    #[test]
+    fn managed_driver_selection_rejects_ambiguous_alias_matches() {
+        let managed = |driver_id: &str| JdbcDriver {
+            pack_id: format!("pack-{driver_id}"),
+            name: "Vendor JDBC".to_owned(),
+            version: "1".to_owned(),
+            driver_id: driver_id.to_owned(),
+            driver_class: "vendor.jdbc.Driver".to_owned(),
+            artifact_count: 1,
+            artifact_bytes: "1".to_owned(),
+        };
+
+        assert!(
+            managed_jdbc_driver_for_descriptor(
+                &[managed("managed-1"), managed("managed-2")],
+                &JDBC_ONLY_DESCRIPTOR,
+            )
+            .is_none(),
+            "an alias must not select an arbitrary managed driver"
+        );
+    }
+
+    #[test]
+    fn short_driver_alias_does_not_match_an_unrelated_name_substring() {
+        let unrelated = JdbcDriver {
+            pack_id: "admin-tools".to_owned(),
+            name: "Admin database".to_owned(),
+            version: "1".to_owned(),
+            driver_id: "managed-admin".to_owned(),
+            driver_class: "com.example.AdminDriver".to_owned(),
+            artifact_count: 1,
+            artifact_bytes: "1".to_owned(),
+        };
+
+        assert!(!super::jdbc_driver_matches_descriptor(
+            &unrelated,
+            &crate::native_dm::DM_DRIVER_DESCRIPTOR,
+        ));
     }
 }

@@ -416,7 +416,8 @@ reflectively from that loader. The binding is thread-local and restored after
 the call, so the Community loader does not gain the H2 driver and the bridge
 does not retain a driver loader after session cleanup.
 
-For table preview, Core applies a default of 200 and a maximum of 1,000 rows,
+For Community-generated table preview, Core applies a default of 200 and a
+maximum of 1,000 rows,
 parses the generated SQL, requires `is_select`, at most one projected SELECT
 statement, a SELECT prefix, and no semicolon, and only then submits it through
 the existing forced-read-only query service. Execution uses the same row limit,

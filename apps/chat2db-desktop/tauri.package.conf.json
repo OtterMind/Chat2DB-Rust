@@ -11,7 +11,7 @@
       "../../target/macos-runtime": "chat2db/java",
       "../../java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar": "chat2db/engine/chat2db-compat-runtime.jar",
       "../../target/community-h2-classpath": "chat2db/community-classpath",
-      "../../target/mysql-driver-packs": "chat2db/driver-packs",
+      "../../target/macos-driver-packs": "chat2db/driver-packs",
       "../../LICENSE": "chat2db/licenses/Chat2DB-Rust-LICENSE.txt",
       "../../third_party/chat2db-community/LICENSE": "chat2db/licenses/Chat2DB-Community-LICENSE.txt",
       "../../packaging/macos/THIRD_PARTY_NOTICES.md": "chat2db/licenses/THIRD_PARTY_NOTICES.md"

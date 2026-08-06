@@ -95,7 +95,8 @@ real-MySQL rerun pass with this Dashboard/Chart increment included.
 | AI agent | Rust | Provider adapters, tool loop, limits, compaction, and cancellation |
 | MCP and CLI | Rust | Adapters around the same product services and policy |
 | Native MySQL product slice | Rust / `mysql_async` | Connection and SSH, datasource lifecycle/portability, object metadata, typed SELECT binds, editable DML/DDL, Console, Dashboard/Chart refresh, routines/migration, transfer and class generation, accounts, schema diff, workspace state, Agent/CLI/MCP writes, cancellation, large values, and historical HTTP/IPC envelopes |
-| Compatibility databases and exact Community helpers | Java 17 | Existing SPI/plugins for non-MySQL databases plus Community parsing, formatting, completion, SQL builders, and plugin-specific behavior |
+| Hybrid DM product slice | Rust SPI plus generic Java JDBC | Rust owns DM metadata and preview behavior; the Java engine loads only the official DM JDBC JAR and streams typed JDBC results |
+| Remaining compatibility databases and exact Community helpers | Java 17 | Existing SPI/plugins for databases without a Rust-owned adapter plus Community parsing, formatting, completion, SQL builders, and plugin-specific behavior |
 | SQL parsing, formatting, and completion | Java 17 | Existing Java ANTLR grammars, parser behavior, formatter behavior, and completion |
 | Rust-to-Java IPC | Shared Protobuf contract | Length-prefixed frames over private stdin/stdout |
 
@@ -112,15 +113,16 @@ React in system WebView         React in browser
               <- owner-only local attachment <- rmcp stdio server <- MCP client
               -> SQLite dashboard/chart/workspace state and result store
               -> AI agent runtime
-              -> native MySQL connection / metadata / editable DDL / Console / chart refresh
-              -> Java process supervisor
+              -> Rust Driver SPI
+                 -> native MySQL / mysql_async
+                 -> DM metadata and preview adapter
+                    -> generic JDBC session bridge
+                       -> official dmJdbcDriver JAR
+              -> Java Community compatibility for unregistered database types
                  -> Protobuf stdin/stdout
-                 -> Java database compatibility engine
-                    -> plugin registry
-                    -> JDBC sessions and transactions
-                    -> metadata and SQL operations
-                    -> Java ANTLR parsers
-                    -> vendor driver
+                 -> fixed Community plugin registry
+                 -> plugin metadata, SQL builders, and ANTLR parsers
+                 -> isolated vendor JDBC drivers
 ```
 
 Only Rust exposes product transports. Java has no listening port. JDBC
@@ -150,8 +152,12 @@ cross-language acceptance gates pass.
 
 ## Database boundary
 
-Java/JDBC remains the compatibility implementation for other databases and for
-fixed Community parser, formatter, completion, builder, and plugin behavior.
+For DM, the Rust Driver SPI owns database-specific behavior and the project-owned
+Java process is only a generic JDBC transport for the official vendor JAR. It
+does not load Community's DM or Oracle plugins. The fixed Community runtime
+remains the compatibility implementation only for database types that do not
+have a registered Rust-owned driver, and for explicitly requested Community
+parser, formatter, completion, builder, and plugin behavior.
 The native route uses upstream `mysql_async 0.37.0` for the complete MySQL
 product data plane: connection and SSH, metadata, editable DML and DDL,
 Console, typed SELECT bind parameters, Dashboard/Chart refresh, routines,
@@ -203,6 +209,18 @@ The JDBC baseline implements:
 - prepared query and update execution with typed parameters;
 - typed row batches with row, byte, frame, and scalar limits;
 - credit flow control, cancellation, deadlines, and conservative outcomes.
+
+The unified Rust driver SPI also supports hybrid drivers whose
+database-specific behavior is owned by Rust while wire transport remains JDBC.
+DM is the first implementation: `DmNativeDriver` owns capability selection,
+catalog SQL, identifier validation, neutral metadata mapping, and bounded table
+preview construction. `datasource_session::jdbc_query` resolves the encrypted
+datasource, selects the unique managed DM pack, retains the lazy Java generation
+lease, forces read-only sessions, binds parameters, consumes credit-controlled
+typed batches, and closes the session. The Java engine only invokes the
+official `dm.jdbc.driver.DmDriver`; no Community DM/Oracle plugin or
+`CommunityPluginRegistry` call participates in this path. Unsupported DM SPI
+capabilities return `native_driver_capability_not_supported` explicitly.
 
 Stage 7B additionally implements:
 
@@ -410,16 +428,20 @@ qualified identifier. This generation step accepts no raw SQL, opens no JDBC
 session, and never executes the returned statement.
 
 Core applies the product default of 200 rows and rejects limits outside
-`1..=1000`. The current MySQL route safely quotes the database and table as two
-identifier segments and builds the bounded SELECT directly in Rust. Other
-drivers retain the Community builder and parser checks for `is_select`, one
-projected statement, a SELECT prefix, and no semicolon. Both routes pass the SQL
-to `start_read_query`, which dispatches MySQL to a native read-only transaction
-and other drivers to a forced-read-only JDBC session. It caps the result at the
-same row limit and 8 MiB, writes batches of at most 1 MiB, and retains the result
-for one hour. The accepted response carries the operation id, exact SQL, and
-effective row limit; normal operation events, cancellation, and retained-result
-paging remain unchanged.
+`1..=1000`. The MySQL route safely quotes the database and table as two
+identifier segments and builds the bounded SELECT directly in Rust. The DM
+route uses Rust-owned double-quoted schema/table identifiers and a bounded
+`LIMIT`; it does not invoke a Community builder or parser. Unregistered
+database types retain the Community builder and parser checks for `is_select`,
+one projected statement, a SELECT prefix, and no semicolon. A database type
+already registered in the Rust Driver SPI never falls through to Community: a
+missing capability returns `native_driver_capability_not_supported`.
+All routes pass the SQL to `start_read_query`: MySQL uses a native read-only
+transaction, while DM and other JDBC-backed drivers use a forced-read-only JDBC
+session. The result is capped at the same row limit and 8 MiB, written in
+batches of at most 1 MiB, and retained for one hour. The accepted response
+carries the operation id, exact SQL, and effective row limit; normal operation
+events, cancellation, and retained-result paging remain unchanged.
 
 Axum exposes `POST /api/v1/community/table-preview`; Tauri exposes
 `start_community_table_preview`; generated OpenAPI/TypeScript and both frontend
@@ -574,7 +596,8 @@ product UI from those intermediate slices with the exact original Community
 frontend while retaining the Rust capabilities behind explicit historical API
 adapters. Signing,
 installation, hot reload, downloading, compatibility selection, updates,
-rollback, and non-MySQL compatibility operations are not implemented.
+rollback, and compatibility operations beyond the implemented DM metadata and
+preview slice are not implemented.
 
 ## Local attachment and MCP boundary
 

@@ -51,6 +51,30 @@ fi
   "${repository_root}/third_party/community-h2-classpath.lock" \
   "3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c"
 
+driver_entry_count=0
+mysql_pack_found=false
+h2_pack_found=false
+while IFS= read -r -d '' driver_entry; do
+  driver_entry_count=$((driver_entry_count + 1))
+  driver_entry_name="$(basename "${driver_entry}")"
+  if [[ ! -d "${driver_entry}" || -L "${driver_entry}" ]]; then
+    echo "packaged driver-pack entry must be a non-symbolic directory: ${driver_entry_name}" >&2
+    exit 1
+  fi
+  case "${driver_entry_name}" in
+    01-mysql) mysql_pack_found=true ;;
+    02-h2-migration) h2_pack_found=true ;;
+    *)
+      echo "packaged driver-pack root contains an unauthorized entry: ${driver_entry_name}" >&2
+      exit 1
+      ;;
+  esac
+done < <(find "${driver_root}" -mindepth 1 -maxdepth 1 -print0)
+if [[ "${driver_entry_count}" -ne 2 || "${mysql_pack_found}" != true || "${h2_pack_found}" != true ]]; then
+  echo "packaged driver packs must contain exactly 01-mysql and 02-h2-migration" >&2
+  exit 1
+fi
+
 driver_manifest="${driver_root}/01-mysql/driver-pack.json"
 driver_jar="${driver_root}/01-mysql/mysql-connector-java-8.0.30.jar"
 require_file "${driver_manifest}"

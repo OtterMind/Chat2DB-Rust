@@ -131,3 +131,33 @@ driver IDs.
 
 Renaming the pack directory or changing display metadata does not change the
 ID; changing the driver class, artifact order, or artifact bytes does.
+
+## DM Driver Scope
+
+The local `dm-driver-pack` build target prepares a pinned DM JDBC `8.1.2.141`
+pack with driver class `dm.jdbc.driver.DmDriver`. The Rust `DmDriver` owns DM
+capability routing, metadata SQL, identifier validation, neutral metadata
+mapping, and bounded preview SQL through the unified native-driver SPI. Its
+connection and query operations use the generic managed JDBC session path.
+
+The Java compatibility runtime only discovers and loads the official DM JDBC
+JAR, opens the JDBC session, binds prepared parameters, and streams bounded
+typed results. DM does not use the fixed Community classpath,
+`CommunityPluginRegistry`, Community metadata DTOs, or the Community DM/Oracle
+plugins. The environment-gated `java_dm_product` test exercises the complete
+Rust-owned path against a real DM endpoint when configured and explicitly
+asserts that Community compatibility is disabled; without an endpoint it
+verifies Driver Pack loading and native SPI identity only.
+
+The public macOS package does not contain the DM JDBC JAR. Its archive has no
+LICENSE, NOTICE, EULA, or other verifiable redistribution grant, so bundling it
+requires separate written authorization. Local users can provide the verified
+JAR through `DM_JDBC_DRIVER_JAR` or let the preparation script fetch the pinned
+bytes for local use, then select the resulting root with
+`CHAT2DB_DRIVER_PACK_DIR`.
+
+Local preparation targets share `target/driver-packs`, which may contain MySQL,
+H2, and DM packs. macOS packaging instead rebuilds the independent
+`target/macos-driver-packs` root from an exact allowlist containing only
+`01-mysql` and `02-h2-migration`; package verification rejects DM and every
+other additional entry.

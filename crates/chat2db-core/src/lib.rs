@@ -19,6 +19,7 @@ mod mysql_schema_diff;
 mod mysql_workspace;
 mod native_administration_types;
 mod native_api_adapter;
+mod native_dm;
 mod native_driver;
 mod native_driver_types;
 mod native_mysql;
@@ -64,6 +65,11 @@ pub use large_value::{
     LargeValueType,
 };
 pub use legacy_community_import::LegacyCommunityImportOutcome;
+pub use native_driver_types::{
+    ColumnList, ColumnMetadata, DatabaseList, DatabaseMetadata, ListColumnsRequest,
+    ListDatabasesRequest, ListSchemasRequest, ListTablesRequest, MetadataScope, SchemaList,
+    SchemaMetadata, TableList, TableMetadata, TablePreviewAccepted, TablePreviewRequest, TableRef,
+};
 pub use operation::OperationSubscription;
 pub use query::{NativeConsoleCancellation, NativeConsoleRequest, NativeConsoleResult};
 pub use transfer::TransferArtifactDownload;
@@ -519,7 +525,7 @@ impl Application {
     #[must_use]
     pub fn list_drivers(&self) -> JdbcDriverList {
         let mut items = self.inner.drivers.clone();
-        for descriptor in self.inner.native_drivers.descriptors() {
+        for descriptor in self.inner.native_drivers.standalone_descriptors() {
             let descriptor = datasource_compatibility::jdbc_driver_from_descriptor(descriptor);
             if !items
                 .iter()
@@ -550,23 +556,12 @@ impl Application {
             ));
         }
         self.require_managed_driver(driver_id)?;
-        if let Some(driver) = self.native_driver_for_datasource_driver_id(driver_id) {
-            return driver.connection().test_connection(&connection).await;
+        if let Some(driver) = self.native_driver_for_datasource_driver_id(driver_id)
+            && let Some(connection_driver) = driver.connection()
+        {
+            return connection_driver.test_connection(&connection).await;
         }
-        let engine = self.require_engine().await?;
-        let session = datasource_session::open_datasource_session(
-            &engine,
-            datasource_session::ResolvedDatasourceConnection {
-                datasource_id: "connection-test".to_owned(),
-                datasource_revision: 0,
-                driver_id: driver_id.to_owned(),
-                datasource_name: "Connection test".to_owned(),
-                connection,
-            },
-            datasource_session::SessionReadOnly::Configured,
-        )
-        .await?;
-        session.close().await.map_err(AppError::from)
+        datasource_session::jdbc_test_connection(self, driver_id, connection).await
     }
 
     /// Lists secret-free datasource metadata.
@@ -660,9 +655,13 @@ impl Application {
     }
 
     fn require_managed_driver(&self, driver_id: &str) -> Result<(), AppError> {
-        if self
-            .native_driver_for_datasource_driver_id(driver_id)
-            .is_some()
+        if let Some(driver) = self.native_driver_for_datasource_driver_id(driver_id)
+            && (driver.connection().is_some()
+                || datasource_compatibility::managed_jdbc_driver_for_descriptor(
+                    &self.inner.drivers,
+                    driver.descriptor(),
+                )
+                .is_some())
         {
             return Ok(());
         }
@@ -723,9 +722,13 @@ impl Application {
         datasource_id: &str,
         driver_id: &str,
     ) -> Result<(), AppError> {
-        if self
-            .native_driver_for_datasource_driver_id(driver_id)
-            .is_some()
+        if let Some(driver) = self.native_driver_for_datasource_driver_id(driver_id)
+            && (driver.connection().is_some()
+                || datasource_compatibility::managed_jdbc_driver_for_descriptor(
+                    &self.inner.drivers,
+                    driver.descriptor(),
+                )
+                .is_some())
         {
             return Ok(());
         }
