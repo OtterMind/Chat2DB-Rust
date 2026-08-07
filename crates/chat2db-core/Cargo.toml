@@ -22,11 +22,14 @@ chat2db-storage = { path = "../chat2db-storage" }
 chrono.workspace = true
 csv.workspace = true
 directories.workspace = true
+futures-util.workspace = true
 hex.workspace = true
 mysql_async.workspace = true
+oracle-rs.workspace = true
 prost.workspace = true
 quick-xml.workspace = true
 russh.workspace = true
+rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha1.workspace = true
@@ -36,15 +39,15 @@ rustix.workspace = true
 tempfile = "3"
 thiserror.workspace = true
 tokio.workspace = true
+tokio-postgres.workspace = true
+tokio-postgres-rustls.workspace = true
 tokio-util.workspace = true
+tiberius.workspace = true
 tracing.workspace = true
 url.workspace = true
 uuid.workspace = true
 xls.workspace = true
 zip.workspace = true
-
-[dev-dependencies]
-futures-util.workspace = true
 
 [[test]]
 name = "java_h2_product"
