@@ -135,10 +135,10 @@ async fn assert_community_disabled(application: &Application) {
             database_type: "H2".to_owned(),
         })
         .await
-        .expect_err("unconfigured Community database metadata must stay disabled");
+        .expect_err("unknown datasource must fail before Community engine acquisition");
     assert_eq!(
         disabled_database_error.api_error().code,
-        "community_compatibility_disabled"
+        "datasource_not_found"
     );
     let disabled_table_error = application
         .list_community_tables(ListCommunityTablesRequest {
@@ -149,10 +149,10 @@ async fn assert_community_disabled(application: &Application) {
             table_name_pattern: "%".to_owned(),
         })
         .await
-        .expect_err("unconfigured Community table metadata must stay disabled");
+        .expect_err("unknown datasource must fail before Community engine acquisition");
     assert_eq!(
         disabled_table_error.api_error().code,
-        "community_compatibility_disabled"
+        "datasource_not_found"
     );
     let disabled_column_error = application
         .list_community_columns(ListCommunityColumnsRequest {
@@ -163,10 +163,10 @@ async fn assert_community_disabled(application: &Application) {
             table_name: "items".to_owned(),
         })
         .await
-        .expect_err("unconfigured Community column metadata must stay disabled");
+        .expect_err("unknown datasource must fail before Community engine acquisition");
     assert_eq!(
         disabled_column_error.api_error().code,
-        "community_compatibility_disabled"
+        "datasource_not_found"
     );
     let disabled_index_error = application
         .list_community_indexes(ListCommunityIndexesRequest {
@@ -177,10 +177,10 @@ async fn assert_community_disabled(application: &Application) {
             table_name: "items".to_owned(),
         })
         .await
-        .expect_err("unconfigured Community index metadata must stay disabled");
+        .expect_err("unknown datasource must fail before Community engine acquisition");
     assert_eq!(
         disabled_index_error.api_error().code,
-        "community_compatibility_disabled"
+        "datasource_not_found"
     );
 }
 
@@ -198,7 +198,7 @@ async fn runtime_host_open_keeps_java_dormant() {
         .expect("opening storage must not spawn the missing Java executable");
     assert_engine_available_on_demand(&host.application());
     let inventory = host.application().list_drivers();
-    assert_eq!(inventory.items.len(), 1);
+    assert_eq!(inventory.items.len(), 4);
     assert_native_mysql_driver(&inventory.items);
     host.shutdown()
         .await
@@ -233,7 +233,7 @@ async fn managed_h2_starts_on_demand_and_reloads_after_idle_shutdown() {
     let application = host.application();
     assert_engine_available_on_demand(&application);
     let inventory = application.list_drivers();
-    assert_eq!(inventory.items.len(), 2);
+    assert_eq!(inventory.items.len(), 5);
     assert_native_mysql_driver(&inventory.items);
     let installed = managed_driver(&inventory.items, "h2");
     assert_eq!(installed.pack_id, "h2");
@@ -429,7 +429,7 @@ async fn partial_managed_driver_preload_cleans_generation_and_releases_storage()
     ))
     .await
     .expect("driver discovery must not start Java");
-    assert_eq!(host.application().list_drivers().items.len(), 3);
+    assert_eq!(host.application().list_drivers().items.len(), 6);
     let error = host
         .acquire_engine()
         .await
@@ -451,7 +451,7 @@ async fn partial_managed_driver_preload_cleans_generation_and_releases_storage()
     ))
     .await
     .expect("storage and driver discovery must reopen immediately");
-    assert_eq!(host.application().list_drivers().items.len(), 2);
+    assert_eq!(host.application().list_drivers().items.len(), 5);
     let lease = host
         .acquire_engine()
         .await

@@ -3154,7 +3154,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn table_preview_command_maps_unavailable_engine_errors() {
+    async fn table_preview_command_maps_unavailable_storage_errors() {
         let error = start_community_table_preview_for(
             &Application::new(),
             StartCommunityTablePreviewRequest {
@@ -3167,9 +3167,9 @@ mod tests {
             },
         )
         .await
-        .expect_err("table preview without an engine must fail");
+        .expect_err("table preview without storage must fail");
 
-        assert_eq!(error.code, "database_engine_unavailable");
+        assert_eq!(error.code, "storage_unavailable");
     }
 
     #[tokio::test]
