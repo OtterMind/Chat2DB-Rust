@@ -906,8 +906,9 @@ mod tests {
             .port();
         let (shutdown, receiver) = oneshot::channel();
         let task = tokio::spawn(async move {
-            let _listener = listener;
+            let listener = listener;
             let _ = receiver.await;
+            drop(listener);
             shutdowns.fetch_add(1, Ordering::SeqCst);
             Ok(())
         });

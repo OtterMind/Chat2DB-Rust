@@ -287,6 +287,9 @@ impl Application {
 pub(crate) fn jdbc_driver_from_descriptor(descriptor: &NativeDriverDescriptor) -> JdbcDriver {
     let display_name = match descriptor.id.to_ascii_lowercase().as_str() {
         "mysql" => "MySQL".to_owned(),
+        "oracle" => "Oracle".to_owned(),
+        "postgresql" => "PostgreSQL".to_owned(),
+        "sqlserver" => "SQL Server".to_owned(),
         _ => descriptor
             .database_types
             .first()
@@ -311,17 +314,22 @@ pub(crate) fn native_driver_for_datasource_driver_id(
     datasource_driver_id: &str,
     managed_drivers: &[JdbcDriver],
 ) -> Option<Arc<dyn NativeDriver>> {
-    if let Some(driver) = registry.driver_for_datasource_driver_id(datasource_driver_id) {
-        return Some(driver);
-    }
-
     let managed_descriptor = managed_drivers.iter().find(|driver| {
         driver
             .driver_id
             .eq_ignore_ascii_case(datasource_driver_id.trim())
-    })?;
+    });
+    let Some(managed_descriptor) = managed_descriptor else {
+        let driver = registry.driver_for_datasource_driver_id(datasource_driver_id)?;
+        return (driver
+            .descriptor()
+            .id
+            .eq_ignore_ascii_case(datasource_driver_id.trim())
+            || driver.can_replace_managed_jdbc_datasource())
+        .then_some(driver);
+    };
     let mut matches = registry
-        .descriptors()
+        .managed_jdbc_replacement_descriptors()
         .filter(|descriptor| jdbc_driver_matches_descriptor(managed_descriptor, descriptor));
     let driver_id = matches.next()?.id;
     if matches.next().is_some() {
@@ -835,22 +843,128 @@ mod tests {
     }
 
     #[test]
+    fn native_descriptor_uses_product_display_names_for_new_relational_drivers() {
+        let descriptor = |id, implementation, database_type| NativeDriverDescriptor {
+            id,
+            implementation,
+            database_types: database_type,
+            compatibility_aliases: &[],
+        };
+
+        for (descriptor, expected_name) in [
+            (
+                descriptor("postgresql", "tokio-postgres", &["POSTGRESQL"]),
+                "PostgreSQL (native Rust)",
+            ),
+            (
+                descriptor("sqlserver", "tiberius", &["SQLSERVER"]),
+                "SQL Server (native Rust)",
+            ),
+            (
+                descriptor("oracle", "oracle-rs", &["ORACLE"]),
+                "Oracle (native Rust)",
+            ),
+        ] {
+            assert_eq!(jdbc_driver_from_descriptor(&descriptor).name, expected_name);
+        }
+    }
+
+    #[test]
     fn managed_jdbc_driver_id_resolves_through_the_datasource_compatibility_boundary() {
         let registry = NativeDriverRegistry::built_in();
-        let managed_drivers = vec![JdbcDriver {
-            pack_id: "mysql-connector-j".to_owned(),
-            name: "MySQL JDBC".to_owned(),
-            version: "9".to_owned(),
-            driver_id: "managed-mysql".to_owned(),
-            driver_class: "com.mysql.cj.jdbc.Driver".to_owned(),
-            artifact_count: 1,
-            artifact_bytes: "1".to_owned(),
-        }];
+        let managed_drivers = vec![
+            JdbcDriver {
+                pack_id: "mysql-connector-j".to_owned(),
+                name: "MySQL JDBC".to_owned(),
+                version: "9".to_owned(),
+                driver_id: "managed-mysql".to_owned(),
+                driver_class: "com.mysql.cj.jdbc.Driver".to_owned(),
+                artifact_count: 1,
+                artifact_bytes: "1".to_owned(),
+            },
+            JdbcDriver {
+                pack_id: "dm-jdbc".to_owned(),
+                name: "DM JDBC".to_owned(),
+                version: "8".to_owned(),
+                driver_id: "managed-dm".to_owned(),
+                driver_class: "dm.jdbc.driver.DmDriver".to_owned(),
+                artifact_count: 1,
+                artifact_bytes: "1".to_owned(),
+            },
+        ];
 
         let driver =
             native_driver_for_datasource_driver_id(&registry, "managed-mysql", &managed_drivers)
                 .expect("managed MySQL descriptor resolves to the native implementation");
         assert_eq!(driver.descriptor().id, "mysql");
+        let driver =
+            native_driver_for_datasource_driver_id(&registry, "managed-dm", &managed_drivers)
+                .expect("managed DM descriptor resolves to the opted-in native implementation");
+        assert_eq!(driver.descriptor().id, "dm");
+    }
+
+    #[test]
+    fn new_native_drivers_do_not_implicitly_replace_managed_jdbc_datasources() {
+        let registry = NativeDriverRegistry::built_in();
+        let managed_drivers = [
+            ("managed-postgresql", "PostgreSQL", "org.postgresql.Driver"),
+            (
+                "managed-sqlserver",
+                "SQL Server",
+                "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+            ),
+            ("managed-oracle", "Oracle", "oracle.jdbc.OracleDriver"),
+        ]
+        .into_iter()
+        .map(|(driver_id, name, driver_class)| JdbcDriver {
+            pack_id: format!("{driver_id}-pack"),
+            name: name.to_owned(),
+            version: "1".to_owned(),
+            driver_id: driver_id.to_owned(),
+            driver_class: driver_class.to_owned(),
+            artifact_count: 1,
+            artifact_bytes: "1".to_owned(),
+        })
+        .collect::<Vec<_>>();
+
+        for driver_id in ["managed-postgresql", "managed-sqlserver", "managed-oracle"] {
+            assert!(
+                native_driver_for_datasource_driver_id(&registry, driver_id, &managed_drivers)
+                    .is_none(),
+                "persisted {driver_id} JDBC datasource must keep its managed execution engine"
+            );
+        }
+    }
+
+    #[test]
+    fn jdbc_class_aliases_cannot_bypass_replacement_policy_without_managed_inventory() {
+        let registry = NativeDriverRegistry::built_in();
+        for jdbc_class in [
+            "org.postgresql.Driver",
+            "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+            "oracle.jdbc.OracleDriver",
+        ] {
+            assert!(
+                native_driver_for_datasource_driver_id(&registry, jdbc_class, &[]).is_none(),
+                "{jdbc_class} must not silently become a native datasource"
+            );
+        }
+
+        for native_driver_id in ["postgresql", "sqlserver", "oracle"] {
+            assert!(
+                native_driver_for_datasource_driver_id(&registry, native_driver_id, &[]).is_some(),
+                "the explicit native driver id {native_driver_id} must remain routable"
+            );
+        }
+        assert!(
+            native_driver_for_datasource_driver_id(&registry, "com.mysql", &[],).is_some(),
+            "MySQL explicitly opts into managed JDBC replacement"
+        );
+        assert!(
+            native_driver_for_datasource_driver_id(&registry, "dm.jdbc.driver.DmDriver", &[],)
+                .is_some(),
+            "DM explicitly opts into managed JDBC replacement"
+        );
     }
 
     #[test]

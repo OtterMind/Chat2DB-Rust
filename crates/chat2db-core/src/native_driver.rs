@@ -31,7 +31,10 @@ use crate::{
         TablePreviewAccepted, TablePreviewRequest, TriggerList, TriggerMetadata, ViewList,
     },
     native_mysql,
+    native_oracle::OracleNativeDriver,
+    native_postgres::PostgresNativeDriver,
     native_schema_diff_types::{SchemaDiffRequest, SchemaDiffSql},
+    native_sqlserver::SqlServerNativeDriver,
     operation::CancellationRequest,
     query::{
         DatabaseWriteError, NativeConsoleRequest, NativeConsoleResult, PreparedQuery,
@@ -348,6 +351,14 @@ pub(crate) trait NativeSchemaDiffDriver: Send + Sync {
 pub(crate) trait NativeDriver: Send + Sync {
     fn descriptor(&self) -> &'static NativeDriverDescriptor;
 
+    /// Whether this driver may transparently replace a persisted managed JDBC datasource.
+    ///
+    /// Native drivers default to an explicit opt-in migration boundary so adding a Rust driver
+    /// cannot silently change the execution engine of existing JDBC datasources.
+    fn can_replace_managed_jdbc_datasource(&self) -> bool {
+        false
+    }
+
     fn connection(&self) -> Option<&dyn NativeConnectionDriver> {
         None
     }
@@ -393,8 +404,14 @@ pub(crate) struct NativeDriverRegistry {
 
 impl NativeDriverRegistry {
     pub(crate) fn built_in() -> Self {
-        Self::try_new(vec![Arc::new(MysqlNativeDriver), Arc::new(DmNativeDriver)])
-            .expect("built-in native drivers must have unique identities")
+        Self::try_new(vec![
+            Arc::new(MysqlNativeDriver),
+            Arc::new(DmNativeDriver),
+            Arc::new(PostgresNativeDriver),
+            Arc::new(SqlServerNativeDriver),
+            Arc::new(OracleNativeDriver),
+        ])
+        .expect("built-in native drivers must have unique identities")
     }
 
     pub(crate) fn try_new(drivers: Vec<Arc<dyn NativeDriver>>) -> Result<Self, AppError> {
@@ -457,6 +474,7 @@ impl NativeDriverRegistry {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn descriptors(&self) -> impl Iterator<Item = &'static NativeDriverDescriptor> + '_ {
         self.drivers.iter().map(|driver| driver.descriptor())
     }
@@ -467,6 +485,15 @@ impl NativeDriverRegistry {
         self.drivers
             .iter()
             .filter(|driver| driver.connection().is_some())
+            .map(|driver| driver.descriptor())
+    }
+
+    pub(crate) fn managed_jdbc_replacement_descriptors(
+        &self,
+    ) -> impl Iterator<Item = &'static NativeDriverDescriptor> + '_ {
+        self.drivers
+            .iter()
+            .filter(|driver| driver.can_replace_managed_jdbc_datasource())
             .map(|driver| driver.descriptor())
     }
 
@@ -629,6 +656,10 @@ impl NativeDriver for MysqlNativeDriver {
         &MYSQL_DRIVER_DESCRIPTOR
     }
 
+    fn can_replace_managed_jdbc_datasource(&self) -> bool {
+        true
+    }
+
     fn connection(&self) -> Option<&dyn NativeConnectionDriver> {
         Some(self)
     }
@@ -669,6 +700,10 @@ impl NativeDriver for MysqlNativeDriver {
 impl NativeDriver for DmNativeDriver {
     fn descriptor(&self) -> &'static NativeDriverDescriptor {
         &native_dm::DM_DRIVER_DESCRIPTOR
+    }
+
+    fn can_replace_managed_jdbc_datasource(&self) -> bool {
+        true
     }
 
     fn metadata(&self) -> Option<&dyn NativeMetadataDriver> {
@@ -1412,6 +1447,9 @@ mod tests {
                 include_str!("native_driver_types.rs"),
             ),
             ("native_mysql.rs", include_str!("native_mysql.rs")),
+            ("native_oracle.rs", include_str!("native_oracle.rs")),
+            ("native_postgres.rs", include_str!("native_postgres.rs")),
+            ("native_sqlserver.rs", include_str!("native_sqlserver.rs")),
             (
                 "native_administration_types.rs",
                 include_str!("native_administration_types.rs"),
@@ -1542,6 +1580,22 @@ mod tests {
                 .is_some(),
             "persisted compatibility aliases must resolve to their native implementation"
         );
+    }
+
+    #[test]
+    fn built_in_registry_exposes_every_owned_database_driver() {
+        let registry = NativeDriverRegistry::built_in();
+        let ids = registry
+            .descriptors()
+            .map(|descriptor| descriptor.id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, ["mysql", "dm", "postgresql", "sqlserver", "oracle"]);
+        let replacement_ids = registry
+            .managed_jdbc_replacement_descriptors()
+            .map(|descriptor| descriptor.id)
+            .collect::<Vec<_>>();
+        assert_eq!(replacement_ids, ["mysql", "dm"]);
     }
 
     #[test]
