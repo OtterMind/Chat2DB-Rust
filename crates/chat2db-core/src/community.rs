@@ -1064,6 +1064,13 @@ impl Application {
         &self,
         request: PreviewCommunityRoutineInvocationRequest,
     ) -> Result<CommunityRoutineInvocationPreview, AppError> {
+        self.native_driver_for_database_type(&request.database_type)
+            .ok_or_else(|| {
+                AppError::invalid(
+                    "invalid_community_routine_invocation_request",
+                    "routine invocation preview requires a native Rust driver",
+                )
+            })?;
         let driver = self
             .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
             .await?
