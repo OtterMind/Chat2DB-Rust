@@ -2,11 +2,12 @@
 
 Source-available implementation of the Chat2DB Community hybrid runtime.
 
-Chat2DB Rust owns the product runtime in Rust, uses a native Rust path for the
-current MySQL browser and Console data plane, and retains the broader public Chat2DB
-Community database compatibility layer behind a supervised Java process. The
-repository is under active development and is not yet a stable end-user
-release.
+Chat2DB Rust owns the product runtime in Rust, uses native Rust paths for the
+MySQL, PostgreSQL, SQL Server, and Oracle browser and Console data planes, and
+uses a Rust-owned DM adapter over the generic JDBC bridge. The broader public
+Chat2DB Community database compatibility layer remains behind a supervised Java
+process. The repository is under active development and is not yet a stable
+end-user release.
 
 ## Clone
 
@@ -119,7 +120,19 @@ surface reached by the pinned Community frontend:
 - complete native MySQL datasource lifecycle, SSH tunneling, portability,
   metadata, editable DML and DDL, views and routines, transfer tasks, account
   administration, schema diff, pins, ER layout, workspace persistence, and
-  SQLite-backed Dashboard/Chart CRUD with native read-only chart refresh; and
+  SQLite-backed Dashboard/Chart CRUD with native read-only chart refresh;
+- native PostgreSQL through `tokio-postgres 0.7.18`, with connection and SSH,
+  retained queries and typed parameters, cancellation and limits, Console,
+  relational and programmability metadata, table DDL and preview, ER metadata,
+  and native schema/namespace/DML builders;
+- native SQL Server through `tiberius 0.12.3`, with the same relational
+  workbench slice, TDS-aware result handling, direct-batch Console semantics,
+  conservative write cancellation, and native schema/namespace/DML builders;
+- native Oracle through the pure-Rust `oracle-rs 0.1.7` protocol client, with
+  connection and SSH, retained queries, Console, metadata, DDL, preview, ER,
+  and native schema/namespace/DML builders without OCI, ODPI-C, JDBC, or Java;
+  unsupported lossy Oracle result types fail closed instead of fabricating
+  values; and
 - the pinned Community AI workspace routes plus confirmed Agent, CLI, and MCP
   writes, with explicit approval, read-only enforcement, single-statement
   validation, and conservative unknown-outcome handling.
@@ -161,16 +174,33 @@ output, `CHART` operation history, fixture cleanup, and Java dormant.
 The complete `rtk make verify` gate then passed with the Dashboard/Chart
 increment included.
 
+On 2026-08-07 the added native PostgreSQL, SQL Server, and Oracle paths passed
+real product verticals against PostgreSQL 17, Azure SQL Edge's SQL Server TDS
+endpoint, and Oracle Free 23 respectively. The verticals cover connection,
+metadata, retained query, Console, preview, DDL/dialect behavior, read-only
+enforcement, cancellation, bounded values, cleanup, and continuous proof that
+Java remained dormant. Core passed `357` all-target tests with `9` ignored plus
+strict Clippy under both the default toolchain and the minimum Rust `1.88.0`.
+For Oracle, `oracle-rs 0.1.7` has a fixed 100-row initial prefetch whose legacy
+decoder cannot safely expose `BINARY_FLOAT`, `BINARY_DOUBLE`, `ROWID`, or
+`UROWID`; those result columns return `oracle_result_type_not_supported` when
+the driver exposes their type, and the project does not fork or vendor the
+upstream crate.
+
 Stage 6 and the Stage 7A-7M foundations are complete. Web and desktop own the
 product runtime and publish its owner-only local endpoint; CLI and MCP attach to
 that host and never contact Java directly. The pinned Community frontend's
 complete MySQL workbench surface is mapped through the shared Axum/Tauri legacy
 dispatcher. Native MySQL connections, metadata, Console, mutations, transfer,
 class generation, accounts, schema diff, chart refresh, and workspace operations
-remain in Rust and do not acquire a Java lease. Dashboard and chart documents
-remain in SQLite. Community parser, formatter, completion, SQL-builder, and
-exact plugin compatibility operations remain Java-backed and start the
-supervised process only on demand.
+remain in Rust and do not acquire a Java lease. PostgreSQL, SQL Server, and
+Oracle connection, relational workbench, and dialect-builder operations also
+remain in Rust when their explicit native driver ids are persisted. Existing
+managed JDBC datasources continue through Java; registering a native driver
+never silently changes their execution engine. Dashboard and chart documents
+remain in SQLite. Community parser, formatter, completion, and exact plugin
+compatibility operations remain Java-backed and start the supervised process
+only on demand.
 
 The Console compatibility path uses SQLite migrations 3 and 4 for saved
 Consoles and durable execution history. Historical `/api/operation/saved/*`,
