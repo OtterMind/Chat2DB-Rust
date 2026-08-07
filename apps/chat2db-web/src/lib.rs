@@ -238,11 +238,21 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let inventory: JdbcDriverList = response_json(response).await;
-        assert_eq!(inventory.items.len(), 1);
-        let mysql = &inventory.items[0];
-        assert_eq!(mysql.driver_id, "mysql");
-        assert_eq!(mysql.driver_class, "rust:mysql_async");
-        assert_eq!(mysql.artifact_count, 0);
+        assert_eq!(inventory.items.len(), 4);
+        for (driver_id, driver_class) in [
+            ("mysql", "rust:mysql_async"),
+            ("postgresql", "rust:tokio-postgres"),
+            ("sqlserver", "rust:tiberius"),
+            ("oracle", "rust:oracle-rs"),
+        ] {
+            let driver = inventory
+                .items
+                .iter()
+                .find(|driver| driver.driver_id == driver_id)
+                .expect("every built-in native connection driver must be advertised");
+            assert_eq!(driver.driver_class, driver_class);
+            assert_eq!(driver.artifact_count, 0);
+        }
     }
 
     #[tokio::test]
@@ -959,7 +969,7 @@ mod tests {
                         "rowLimit": 200
                     }),
                 ),
-                "database_engine_unavailable",
+                "storage_unavailable",
             ),
             (
                 json_request(

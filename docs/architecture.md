@@ -95,6 +95,9 @@ real-MySQL rerun pass with this Dashboard/Chart increment included.
 | AI agent | Rust | Provider adapters, tool loop, limits, compaction, and cancellation |
 | MCP and CLI | Rust | Adapters around the same product services and policy |
 | Native MySQL product slice | Rust / `mysql_async` | Connection and SSH, datasource lifecycle/portability, object metadata, typed SELECT binds, editable DML/DDL, Console, Dashboard/Chart refresh, routines/migration, transfer and class generation, accounts, schema diff, workspace state, Agent/CLI/MCP writes, cancellation, large values, and historical HTTP/IPC envelopes |
+| Native PostgreSQL product slice | Rust / `tokio-postgres` | Connection and SSH, retained query and typed binds, Console, relational/programmability metadata, DDL, preview, ER, cancellation, limits, and native schema/namespace/DML builders |
+| Native SQL Server product slice | Rust / `tiberius` | Connection and SSH over TDS, retained query and typed binds, Console with direct-batch semantics, relational/programmability metadata, DDL, preview, ER, cancellation, limits, and native schema/namespace/DML builders |
+| Native Oracle product slice | Rust / `oracle-rs` | Pure-Rust Oracle protocol without OCI/ODPI-C/JDBC; connection and SSH, retained query and typed binds, Console, relational/programmability metadata, DDL, preview, ER, cancellation, limits, and native schema/namespace/DML builders |
 | Hybrid DM product slice | Rust SPI plus generic Java JDBC | Rust owns DM metadata and preview behavior; the Java engine loads only the official DM JDBC JAR and streams typed JDBC results |
 | Remaining compatibility databases and exact Community helpers | Java 17 | Existing SPI/plugins for databases without a Rust-owned adapter plus Community parsing, formatting, completion, SQL builders, and plugin-specific behavior |
 | SQL parsing, formatting, and completion | Java 17 | Existing Java ANTLR grammars, parser behavior, formatter behavior, and completion |
@@ -115,6 +118,9 @@ React in system WebView         React in browser
               -> AI agent runtime
               -> Rust Driver SPI
                  -> native MySQL / mysql_async
+                 -> native PostgreSQL / tokio-postgres
+                 -> native SQL Server / tiberius
+                 -> native Oracle / oracle-rs
                  -> DM metadata and preview adapter
                     -> generic JDBC session bridge
                        -> official dmJdbcDriver JAR
@@ -152,12 +158,17 @@ cross-language acceptance gates pass.
 
 ## Database boundary
 
-For DM, the Rust Driver SPI owns database-specific behavior and the project-owned
-Java process is only a generic JDBC transport for the official vendor JAR. It
-does not load Community's DM or Oracle plugins. The fixed Community runtime
-remains the compatibility implementation only for database types that do not
-have a registered Rust-owned driver, and for explicitly requested Community
-parser, formatter, completion, builder, and plugin behavior.
+For MySQL, PostgreSQL, SQL Server, and Oracle, the Rust Driver SPI owns the
+implemented database wire protocol and workbench behavior. For DM, the SPI owns
+database-specific behavior while the project-owned Java process is only a
+generic JDBC transport for the official vendor JAR; it does not load
+Community's DM or Oracle plugins. Existing persisted managed JDBC datasources
+do not switch engines merely because a native driver is registered. A native
+route is selected only by its explicit persisted driver id, except for MySQL
+and DM whose adapters deliberately opt into the existing managed-JDBC aliases.
+The fixed Community runtime remains the compatibility implementation for
+managed JDBC and unregistered database types, and for explicitly requested
+Community parser, formatter, completion, and plugin behavior.
 The native route uses upstream `mysql_async 0.37.0` for the complete MySQL
 product data plane: connection and SSH, metadata, editable DML and DDL,
 Console, typed SELECT bind parameters, Dashboard/Chart refresh, routines,
@@ -201,6 +212,33 @@ The native MySQL baseline implements:
   forced native MySQL read-only transaction, caps page 1 at 200 rows, returns
   Community-shaped response-only metadata, records `CHART` history, and rejects
   writes, multiple statements, locking reads, and server-file output.
+
+The additional native relational adapters implement the common connection,
+query/Console, metadata, table, routine, and dialect capabilities through the
+same registry and neutral Core models:
+
+- PostgreSQL uses `tokio-postgres 0.7.18` and Rustls. It supports JDBC/native
+  URL normalization, SSH, positional typed parameters, explicit read-only
+  transactions, retained results, script splitting, database/schema/table and
+  relation metadata, functions/procedures/triggers, table DDL/preview, ER, and
+  schema/namespace/DML builders.
+- SQL Server uses `tiberius 0.12.3` and Rustls over TDS. Direct unparameterized
+  batches preserve local temporary tables across Console statements, while
+  parameterized work uses the prepared path. Result-bearing writes, dispatch
+  failures, cancellation, and driver panics preserve conservative unknown-write
+  outcomes. Generated schema comments use the narrowly classified non-tabular
+  extended-property procedures; ordinary `EXEC` can still return rows.
+- Oracle uses `oracle-rs 0.1.7`, a pure-Rust protocol client with no OCI,
+  ODPI-C, JDBC, or Java dependency. The adapter supports service/SID URLs,
+  TCPS, SSH with the remote TLS identity, forced read-only transactions,
+  metadata, query/Console, LOBs, DDL/preview, ER, and dialect builders.
+  `oracle-rs` fixes the first query prefetch at 100 rows and its legacy first
+  batch decoder cannot safely expose `BINARY_FLOAT`, `BINARY_DOUBLE`, `ROWID`,
+  or `UROWID`. The adapter rejects those described result types with
+  `oracle_result_type_not_supported`; it neither guesses values nor vendors a
+  patched driver. Oracle Free 23 is runtime-tested, while the advertised
+  connection floor remains Oracle 12.1+ and is not claimed as exhaustively
+  runtime-tested.
 
 The JDBC baseline implements:
 

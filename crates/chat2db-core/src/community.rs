@@ -1,4 +1,4 @@
-use std::future::Future;
+use std::{future::Future, sync::Arc};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chat2db_contract::{
@@ -99,10 +99,48 @@ use crate::{
     AppError, Application,
     datasource_session::{SessionReadOnly, open_datasource_session, resolve_datasource_connection},
     engine_manager::EngineLease,
-    native_driver::native_capability_not_supported,
+    native_driver::{NativeDriver, native_capability_not_supported},
+    storage_call,
 };
 
 impl Application {
+    async fn native_driver_for_community_datasource(
+        &self,
+        datasource_id: &str,
+        database_type: &str,
+    ) -> Result<Option<Arc<dyn NativeDriver>>, AppError> {
+        let storage = self.require_storage()?;
+        let datasource_id = datasource_id.to_owned();
+        let datasource = storage_call(move || storage.get_datasource(&datasource_id))
+            .await?
+            .ok_or_else(|| {
+                AppError::not_found("datasource_not_found", "The datasource does not exist")
+            })?;
+        let Some(driver) = self.native_driver_for_datasource_driver_id(&datasource.driver_id)
+        else {
+            return Ok(None);
+        };
+        let database_type_matches = driver
+            .descriptor()
+            .database_types
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(database_type.trim()));
+        if database_type_matches {
+            return Ok(Some(driver));
+        }
+        if driver
+            .descriptor()
+            .id
+            .eq_ignore_ascii_case(datasource.driver_id.trim())
+        {
+            return Err(AppError::invalid(
+                "datasource_database_type_mismatch",
+                "The datasource native Rust driver does not support the requested database type",
+            ));
+        }
+        Ok(None)
+    }
+
     /// Lists the plugins discovered from the fixed Community classpath.
     ///
     /// # Errors
@@ -128,7 +166,10 @@ impl Application {
         &self,
         request: ListCommunitySchemasRequest,
     ) -> Result<CommunitySchemaList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "schema metadata")
             })?;
@@ -173,7 +214,10 @@ impl Application {
         &self,
         request: ListCommunityDatabasesRequest,
     ) -> Result<CommunityDatabaseList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "database metadata")
             })?;
@@ -217,7 +261,10 @@ impl Application {
         &self,
         request: ListCommunityTablesRequest,
     ) -> Result<CommunityTableList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "table metadata")
             })?;
@@ -271,7 +318,10 @@ impl Application {
         &self,
         request: ListCommunityColumnsRequest,
     ) -> Result<CommunityTableColumnList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "column metadata")
             })?;
@@ -377,7 +427,10 @@ impl Application {
         &self,
         request: ListCommunityIndexesRequest,
     ) -> Result<CommunityTableIndexList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             let metadata = driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "metadata")
             })?;
@@ -430,7 +483,10 @@ impl Application {
         &self,
         request: ListCommunityViewsRequest,
     ) -> Result<CommunityViewList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             let metadata = driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "metadata")
             })?;
@@ -484,7 +540,10 @@ impl Application {
         request: ListCommunityViewsRequest,
     ) -> Result<CommunityTable, AppError> {
         let view_name = request.view_name_pattern.clone();
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             let metadata = driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "metadata")
             })?;
@@ -515,7 +574,10 @@ impl Application {
         &self,
         request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityForeignKeyList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             let metadata = driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "metadata")
             })?;
@@ -568,7 +630,10 @@ impl Application {
         &self,
         request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityForeignKeyList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             let metadata = driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "metadata")
             })?;
@@ -621,7 +686,10 @@ impl Application {
         &self,
         request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityPrimaryKeyList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             let metadata = driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "metadata")
             })?;
@@ -674,7 +742,10 @@ impl Application {
         &self,
         request: ListCommunityFunctionsRequest,
     ) -> Result<CommunityFunctionList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             let metadata = driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "metadata")
             })?;
@@ -719,7 +790,10 @@ impl Application {
         &self,
         request: GetCommunityFunctionRequest,
     ) -> Result<CommunityFunction, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             let metadata = driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "metadata")
             })?;
@@ -770,7 +844,10 @@ impl Application {
         &self,
         request: GetCommunityFunctionRequest,
     ) -> Result<CommunityFunctionParameterList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             let metadata = driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "metadata")
             })?;
@@ -826,7 +903,10 @@ impl Application {
         &self,
         request: ListCommunityProceduresRequest,
     ) -> Result<CommunityProcedureList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             let metadata = driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "metadata")
             })?;
@@ -871,7 +951,10 @@ impl Application {
         &self,
         request: GetCommunityProcedureRequest,
     ) -> Result<CommunityProcedure, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             let metadata = driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "metadata")
             })?;
@@ -922,7 +1005,10 @@ impl Application {
         &self,
         request: GetCommunityProcedureRequest,
     ) -> Result<CommunityProcedureParameterList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             let metadata = driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "metadata")
             })?;
@@ -978,8 +1064,16 @@ impl Application {
         &self,
         request: PreviewCommunityRoutineInvocationRequest,
     ) -> Result<CommunityRoutineInvocationPreview, AppError> {
+        self.native_driver_for_database_type(&request.database_type)
+            .ok_or_else(|| {
+                AppError::invalid(
+                    "invalid_community_routine_invocation_request",
+                    "routine invocation preview requires a native Rust driver",
+                )
+            })?;
         let driver = self
-            .native_driver_for_database_type(&request.database_type)
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
             .ok_or_else(|| {
                 AppError::invalid(
                     "invalid_community_routine_invocation_request",
@@ -1041,7 +1135,8 @@ impl Application {
         request: CommunityRoutineMigrationRequest,
     ) -> Result<CommunityRoutineMigrationExecution, AppError> {
         let driver = self
-            .native_driver_for_database_type(&request.database_type)
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
             .ok_or_else(|| {
                 AppError::invalid(
                     "invalid_community_routine_migration_request",
@@ -1070,7 +1165,10 @@ impl Application {
         &self,
         request: ListCommunityTriggersRequest,
     ) -> Result<CommunityTriggerList, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             let metadata = driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "metadata")
             })?;
@@ -1115,7 +1213,10 @@ impl Application {
         &self,
         request: GetCommunityTriggerRequest,
     ) -> Result<CommunityTrigger, AppError> {
-        if let Some(driver) = self.native_driver_for_database_type(&request.database_type) {
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
             let metadata = driver.metadata().ok_or_else(|| {
                 native_capability_not_supported(&request.database_type, "metadata")
             })?;
@@ -1258,7 +1359,8 @@ impl Application {
             ));
         }
         if self
-            .native_driver_for_database_type(&request.database_type)
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
             .is_some()
         {
             let database_type = request.database_type.clone();
@@ -2397,9 +2499,10 @@ mod tests {
         CommunityPrimaryKey, CommunityProcedure, CommunityProcedureParameter, CommunitySchema,
         CommunitySqlAnalysis, CommunitySqlDiagnostic, CommunitySqlValidation, CommunityTable,
         CommunityTableColumn, CommunityTableIndex, CommunityTableIndexColumn, CommunityTrigger,
-        DatasourceConnection, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
-        ListCommunityIndexesRequest, ListCommunitySchemasRequest, ListCommunityTableKeysRequest,
-        ListCommunityTablesRequest, ListCommunityViewsRequest,
+        CreateDatasourceRequest, DatasourceConnection, ListCommunityColumnsRequest,
+        ListCommunityDatabasesRequest, ListCommunityIndexesRequest, ListCommunitySchemasRequest,
+        ListCommunityTableKeysRequest, ListCommunityTablesRequest, ListCommunityViewsRequest,
+        StartCommunityTablePreviewRequest,
     };
     use chat2db_java_bridge::{
         CommunityDatabase as BridgeCommunityDatabase,
@@ -3457,42 +3560,147 @@ mod tests {
         );
         let storage = Storage::open(directory.path(), vault).expect("test storage must open");
         let application = Application::with_storage(storage);
-        let database_engine_error = application
+        let database_error = application
             .list_community_databases(database_request())
             .await
-            .expect_err("database metadata requires the engine");
-        assert_eq!(database_engine_error.kind(), AppErrorKind::Unavailable);
-        assert_eq!(
-            database_engine_error.api_error().code,
-            "database_engine_unavailable"
-        );
-        let table_engine_error = application
+            .expect_err("database metadata requires an existing datasource");
+        assert_eq!(database_error.kind(), AppErrorKind::NotFound);
+        assert_eq!(database_error.api_error().code, "datasource_not_found");
+        let table_error = application
             .list_community_tables(table_request())
             .await
-            .expect_err("table metadata requires the engine");
-        assert_eq!(table_engine_error.kind(), AppErrorKind::Unavailable);
-        assert_eq!(
-            table_engine_error.api_error().code,
-            "database_engine_unavailable"
-        );
-        let column_engine_error = application
+            .expect_err("table metadata requires an existing datasource");
+        assert_eq!(table_error.kind(), AppErrorKind::NotFound);
+        assert_eq!(table_error.api_error().code, "datasource_not_found");
+        let column_error = application
             .list_community_columns(column_request())
             .await
-            .expect_err("column metadata requires the engine");
-        assert_eq!(column_engine_error.kind(), AppErrorKind::Unavailable);
-        assert_eq!(
-            column_engine_error.api_error().code,
-            "database_engine_unavailable"
-        );
-        let index_engine_error = application
+            .expect_err("column metadata requires an existing datasource");
+        assert_eq!(column_error.kind(), AppErrorKind::NotFound);
+        assert_eq!(column_error.api_error().code, "datasource_not_found");
+        let index_error = application
             .list_community_indexes(index_request())
             .await
-            .expect_err("index metadata requires the engine");
-        assert_eq!(index_engine_error.kind(), AppErrorKind::Unavailable);
-        assert_eq!(
-            index_engine_error.api_error().code,
-            "database_engine_unavailable"
+            .expect_err("index metadata requires an existing datasource");
+        assert_eq!(index_error.kind(), AppErrorKind::NotFound);
+        assert_eq!(index_error.api_error().code, "datasource_not_found");
+    }
+
+    #[tokio::test]
+    async fn explicit_native_datasource_rejects_mismatched_community_database_type() {
+        let directory = TempDir::new().expect("temporary data directory must open");
+        let vault = Arc::new(
+            EncryptedFileVault::new(directory.path(), [0x5d; 32]).expect("test vault must open"),
         );
+        let storage = Storage::open(directory.path(), vault).expect("test storage must open");
+        let application = Application::with_storage(storage);
+        let datasource = application
+            .create_datasource(CreateDatasourceRequest {
+                name: "Native PostgreSQL".to_owned(),
+                driver_id: "postgresql".to_owned(),
+                connection: Some(DatasourceConnection {
+                    jdbc_url: "jdbc:postgresql://127.0.0.1:1/app".to_owned(),
+                    properties: Vec::new(),
+                    read_only: false,
+                    ssh: None,
+                }),
+            })
+            .await
+            .expect("native datasource must persist");
+
+        let metadata_error = application
+            .list_community_databases(ListCommunityDatabasesRequest {
+                datasource_id: datasource.id.clone(),
+                database_type: "ORACLE".to_owned(),
+            })
+            .await
+            .expect_err("mismatched metadata type must fail closed");
+        assert_eq!(metadata_error.kind(), AppErrorKind::InvalidRequest);
+        assert_eq!(
+            metadata_error.api_error().code,
+            "datasource_database_type_mismatch"
+        );
+
+        let preview_error = application
+            .start_community_table_preview(StartCommunityTablePreviewRequest {
+                datasource_id: datasource.id,
+                database_type: "ORACLE".to_owned(),
+                database_name: "app".to_owned(),
+                schema_name: "APP".to_owned(),
+                table_name: "items".to_owned(),
+                row_limit: Some(10),
+            })
+            .await
+            .expect_err("mismatched preview type must fail closed");
+        assert_eq!(preview_error.kind(), AppErrorKind::InvalidRequest);
+        assert_eq!(
+            preview_error.api_error().code,
+            "datasource_database_type_mismatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_relational_datasources_keep_java_metadata_and_preview_routes() {
+        let directory = TempDir::new().expect("temporary data directory must open");
+        let vault = Arc::new(
+            EncryptedFileVault::new(directory.path(), [0x6d; 32]).expect("test vault must open"),
+        );
+        let storage = Storage::open(directory.path(), vault).expect("test storage must open");
+        let application = Application::with_storage(storage);
+
+        for (driver_class, database_type, jdbc_url) in [
+            (
+                "org.postgresql.Driver",
+                "POSTGRESQL",
+                "jdbc:postgresql://127.0.0.1:1/app",
+            ),
+            (
+                "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+                "SQLSERVER",
+                "jdbc:sqlserver://127.0.0.1:1;databaseName=app;encrypt=false",
+            ),
+            (
+                "oracle.jdbc.OracleDriver",
+                "ORACLE",
+                "jdbc:oracle:thin:@127.0.0.1:1/FREEPDB1",
+            ),
+        ] {
+            let datasource = application
+                .create_datasource(CreateDatasourceRequest {
+                    name: format!("Managed {database_type}"),
+                    driver_id: driver_class.to_owned(),
+                    connection: Some(DatasourceConnection {
+                        jdbc_url: jdbc_url.to_owned(),
+                        properties: Vec::new(),
+                        read_only: false,
+                        ssh: None,
+                    }),
+                })
+                .await
+                .expect("legacy managed datasource must persist");
+
+            let metadata_error = application
+                .list_community_databases(ListCommunityDatabasesRequest {
+                    datasource_id: datasource.id.clone(),
+                    database_type: database_type.to_owned(),
+                })
+                .await
+                .expect_err("managed metadata must route to the unavailable Java engine");
+            assert_unavailable(&metadata_error, "database_engine_unavailable");
+
+            let preview_error = application
+                .start_community_table_preview(StartCommunityTablePreviewRequest {
+                    datasource_id: datasource.id,
+                    database_type: database_type.to_owned(),
+                    database_name: "app".to_owned(),
+                    schema_name: "public".to_owned(),
+                    table_name: "items".to_owned(),
+                    row_limit: Some(10),
+                })
+                .await
+                .expect_err("managed preview must route to the unavailable Java engine");
+            assert_unavailable(&preview_error, "database_engine_unavailable");
+        }
     }
 
     #[tokio::test]
@@ -3529,24 +3737,29 @@ mod tests {
         let view_error = application
             .list_community_views(view_request())
             .await
-            .expect_err("view metadata requires the engine");
-        assert_unavailable(&view_error, "database_engine_unavailable");
+            .expect_err("view metadata requires an existing datasource");
+        assert_not_found(&view_error, "datasource_not_found");
         for error in [
             application
                 .list_community_imported_keys(key_request())
                 .await
-                .expect_err("imported-key metadata requires the engine"),
+                .expect_err("imported-key metadata requires an existing datasource"),
             application
                 .list_community_exported_keys(key_request())
                 .await
-                .expect_err("exported-key metadata requires the engine"),
+                .expect_err("exported-key metadata requires an existing datasource"),
             application
                 .list_community_primary_keys(key_request())
                 .await
-                .expect_err("primary-key metadata requires the engine"),
+                .expect_err("primary-key metadata requires an existing datasource"),
         ] {
-            assert_unavailable(&error, "database_engine_unavailable");
+            assert_not_found(&error, "datasource_not_found");
         }
+    }
+
+    fn assert_not_found(error: &AppError, code: &str) {
+        assert_eq!(error.kind(), AppErrorKind::NotFound);
+        assert_eq!(error.api_error().code, code);
     }
 
     fn assert_unavailable(error: &AppError, code: &str) {
