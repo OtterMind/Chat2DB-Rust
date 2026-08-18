@@ -165,7 +165,7 @@
                                 </java>
                                 <condition property="runtime.version.valid">
                                     <matches string="${runtime.version.output}"
-                                             pattern="^chat2db-java-compat ${project.version} \(protocol 1\.0\)\s*$"/>
+                                             pattern="^chat2db-java-compat ${project.version} \(protocol 1\.1\)\s*$"/>
                                 </condition>
                                 <fail unless="runtime.version.valid"
                                       message="Packaged runtime did not publish the expected manifest version"/>

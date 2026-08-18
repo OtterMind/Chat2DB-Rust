@@ -13,7 +13,10 @@ import ai.chat2db.rust.compat.protocol.v1.ClientHello;
 import ai.chat2db.rust.compat.protocol.v1.CompleteCommunitySqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.Ping;
 import ai.chat2db.rust.compat.protocol.v1.ProtocolVersion;
+import ai.chat2db.rust.compat.protocol.v1.Quiesce;
+import ai.chat2db.rust.compat.protocol.v1.QuiescenceSnapshot;
 import ai.chat2db.rust.compat.protocol.v1.RequestMeta;
+import ai.chat2db.rust.compat.protocol.v1.Resume;
 import ai.chat2db.rust.compat.protocol.v1.ServerEnvelope;
 import ai.chat2db.rust.compat.protocol.v1.Shutdown;
 import com.google.protobuf.MessageLite;
@@ -55,7 +58,7 @@ class ProtocolLoopTest {
         assertEquals(3, result.responses().size());
         ServerEnvelope serverHello = result.responses().get(0);
         assertEquals(ServerEnvelope.PayloadCase.HELLO, serverHello.getPayloadCase());
-        assertEquals(version(1, 0), serverHello.getHello().getSelectedVersion());
+        assertEquals(version(1, 1), serverHello.getHello().getSelectedVersion());
         assertEquals(
                 expectedCapabilities(),
                 serverHello.getHello().getCapabilitiesList());
@@ -70,8 +73,195 @@ class ProtocolLoopTest {
         ServerEnvelope shutdownAck = result.responses().get(2);
         assertEquals(ServerEnvelope.PayloadCase.SHUTDOWN_ACK, shutdownAck.getPayloadCase());
         assertResponseMeta(shutdownAck, "shutdown");
-        assertTrue(result.diagnostics().contains("handshake accepted protocol=1.0"));
+        assertTrue(result.diagnostics().contains("handshake accepted protocol=1.1"));
         assertTrue(result.diagnostics().contains("shutdown accepted request_id=shutdown"));
+    }
+
+    @Test
+    void parksRejectsBusinessRequestsAndResumesTheSameGeneration() throws Exception {
+        ClientEnvelope quiesce = quiesce("quiesce", 7, 1, 100);
+        ClientEnvelope parkedBusiness = ClientEnvelope.newBuilder()
+                .setMeta(meta("parked-business"))
+                .setCancelOperation(CancelOperationRequest.newBuilder()
+                        .setTargetRequestId("not-active"))
+                .build();
+        ClientEnvelope parkedPing = ClientEnvelope.newBuilder()
+                .setMeta(meta("parked-ping"))
+                .setPing(Ping.newBuilder().setNonce(55))
+                .build();
+        ClientEnvelope resume = resume("resume", 7, 1, 101);
+        ClientEnvelope resumedBusiness = ClientEnvelope.newBuilder()
+                .setMeta(meta("resumed-business"))
+                .setCancelOperation(CancelOperationRequest.newBuilder()
+                        .setTargetRequestId("not-active"))
+                .build();
+        ClientEnvelope shutdown = ClientEnvelope.newBuilder()
+                .setMeta(meta("shutdown"))
+                .setShutdown(Shutdown.getDefaultInstance())
+                .build();
+
+        RunResult result = run(
+                hello(
+                        "hello",
+                        List.of(version(1, 1)),
+                        List.of(ProtocolLoop.PARK_CAPABILITY)),
+                quiesce,
+                parkedBusiness,
+                parkedPing,
+                resume,
+                resumedBusiness,
+                shutdown);
+
+        assertEquals(CompatibilityRuntime.EXIT_OK, result.exitCode());
+        assertEquals(7, result.responses().size());
+        ServerEnvelope quiesceAck = result.responses().get(1);
+        assertEquals(ServerEnvelope.PayloadCase.QUIESCE_ACK, quiesceAck.getPayloadCase());
+        assertEquals(7, quiesceAck.getQuiesceAck().getGeneration());
+        assertEquals(1, quiesceAck.getQuiesceAck().getEpoch());
+        assertEquals(100, quiesceAck.getQuiesceAck().getNonce());
+        assertEquals(
+                QuiescenceSnapshot.getDefaultInstance(),
+                quiesceAck.getQuiesceAck().getSnapshot());
+
+        ServerEnvelope parkedFailure = result.responses().get(2);
+        assertEquals("lifecycle.parked", parkedFailure.getError().getCode());
+        assertTrue(parkedFailure.getError().getRetryable());
+        assertFalse(parkedFailure.getError().getFatal());
+
+        assertEquals(ServerEnvelope.PayloadCase.PONG, result.responses().get(3).getPayloadCase());
+        assertEquals(55, result.responses().get(3).getPong().getNonce());
+
+        ServerEnvelope resumeAck = result.responses().get(4);
+        assertEquals(ServerEnvelope.PayloadCase.RESUME_ACK, resumeAck.getPayloadCase());
+        assertEquals(7, resumeAck.getResumeAck().getGeneration());
+        assertEquals(1, resumeAck.getResumeAck().getEpoch());
+        assertEquals(101, resumeAck.getResumeAck().getNonce());
+        assertEquals(
+                ServerEnvelope.PayloadCase.OPERATION_CANCELLED,
+                result.responses().get(5).getPayloadCase());
+        assertEquals(
+                ServerEnvelope.PayloadCase.SHUTDOWN_ACK,
+                result.responses().get(6).getPayloadCase());
+    }
+
+    @Test
+    void shutdownRemainsAvailableWhileParked() throws Exception {
+        RunResult result = run(
+                hello(
+                        "hello",
+                        List.of(version(1, 1)),
+                        List.of(ProtocolLoop.PARK_CAPABILITY)),
+                quiesce("quiesce", 8, 1, 110),
+                ClientEnvelope.newBuilder()
+                        .setMeta(meta("shutdown"))
+                        .setShutdown(Shutdown.getDefaultInstance())
+                        .build());
+
+        assertEquals(
+                ServerEnvelope.PayloadCase.QUIESCE_ACK,
+                result.responses().get(1).getPayloadCase());
+        assertEquals(
+                ServerEnvelope.PayloadCase.SHUTDOWN_ACK,
+                result.responses().get(2).getPayloadCase());
+        assertEquals(CompatibilityRuntime.EXIT_OK, result.exitCode());
+    }
+
+    @Test
+    void refusesParkWhileSessionsOperationsOrControlTasksRemain() throws Exception {
+        List<QuiescenceSnapshot> blockers = List.of(
+                QuiescenceSnapshot.newBuilder().setActiveSessions(1).build(),
+                QuiescenceSnapshot.newBuilder()
+                        .setActiveOperations(1)
+                        .setPendingCancellations(1)
+                        .build(),
+                QuiescenceSnapshot.newBuilder()
+                        .setActiveControlTasks(1)
+                        .setQueuedControlTasks(1)
+                        .build(),
+                QuiescenceSnapshot.newBuilder()
+                        .setPendingOutboundFrames(1)
+                        .build());
+        for (QuiescenceSnapshot blocker : blockers) {
+            RunResult result = runWithSnapshot(
+                    blocker,
+                    hello(
+                            "hello",
+                            List.of(version(1, 1)),
+                            List.of(ProtocolLoop.PARK_CAPABILITY)),
+                    quiesce("quiesce", 9, 1, 200),
+                    ClientEnvelope.newBuilder()
+                            .setMeta(meta("shutdown"))
+                            .setShutdown(Shutdown.getDefaultInstance())
+                            .build());
+
+            ServerEnvelope failure = result.responses().get(1);
+            assertEquals("lifecycle.quiesce_blocked", failure.getError().getCode());
+            assertTrue(failure.getError().getRetryable());
+            assertFalse(failure.getError().getFatal());
+            assertSnapshotMetadata(failure, blocker);
+            assertEquals(
+                    ServerEnvelope.PayloadCase.SHUTDOWN_ACK,
+                    result.responses().get(2).getPayloadCase());
+        }
+    }
+
+    @Test
+    void keepsParkOutsideProtocolVersionOneZero() throws Exception {
+        RunResult result = run(
+                hello(
+                        "hello",
+                        List.of(version(1, 0)),
+                        List.of(ProtocolLoop.SHUTDOWN_CAPABILITY)),
+                quiesce("quiesce", 3, 1, 10),
+                ClientEnvelope.newBuilder()
+                        .setMeta(meta("shutdown"))
+                        .setShutdown(Shutdown.getDefaultInstance())
+                        .build());
+
+        assertEquals(version(1, 0), result.responses().get(0).getHello().getSelectedVersion());
+        assertFalse(result.responses()
+                .get(0)
+                .getHello()
+                .getCapabilitiesList()
+                .contains(ProtocolLoop.PARK_CAPABILITY));
+        assertEquals(
+                "lifecycle.park_not_negotiated",
+                result.responses().get(1).getError().getCode());
+        assertEquals(
+                ServerEnvelope.PayloadCase.SHUTDOWN_ACK,
+                result.responses().get(2).getPayloadCase());
+    }
+
+    @Test
+    void resumeRequiresTheParkGenerationEpochAndAFreshNonce() throws Exception {
+        RunResult result = run(
+                hello(
+                        "hello",
+                        List.of(version(1, 1)),
+                        List.of(ProtocolLoop.PARK_CAPABILITY)),
+                quiesce("quiesce", 11, 4, 300),
+                resume("wrong-generation", 12, 4, 301),
+                resume("wrong-epoch", 11, 5, 302),
+                resume("reused-nonce", 11, 4, 300),
+                resume("resume", 11, 4, 303),
+                quiesce("stale-quiesce", 11, 4, 304),
+                ClientEnvelope.newBuilder()
+                        .setMeta(meta("shutdown"))
+                        .setShutdown(Shutdown.getDefaultInstance())
+                        .build());
+
+        assertEquals(
+                "lifecycle.generation_mismatch",
+                result.responses().get(2).getError().getCode());
+        assertEquals("lifecycle.epoch_mismatch", result.responses().get(3).getError().getCode());
+        assertEquals("lifecycle.nonce_reused", result.responses().get(4).getError().getCode());
+        assertEquals(
+                ServerEnvelope.PayloadCase.RESUME_ACK,
+                result.responses().get(5).getPayloadCase());
+        assertEquals("lifecycle.stale_epoch", result.responses().get(6).getError().getCode());
+        assertEquals(
+                ServerEnvelope.PayloadCase.SHUTDOWN_ACK,
+                result.responses().get(7).getPayloadCase());
     }
 
     @Test
@@ -224,7 +414,7 @@ class ProtocolLoopTest {
         ServerEnvelope response = result.responses().get(0);
         assertEquals("protocol.unsupported_version", response.getError().getCode());
         assertTrue(response.getError().getFatal());
-        assertEquals("1.0", response.getError().getMetadataOrThrow("supportedVersions"));
+        assertEquals("1.0,1.1", response.getError().getMetadataOrThrow("supportedVersions"));
         assertResponseMeta(response, "hello");
     }
 
@@ -380,7 +570,7 @@ class ProtocolLoopTest {
 
     private static RunResult run(ClientEnvelope... requests) throws Exception {
         return runWithRuntime(
-                new RuntimeInfo("chat2db-java-compat", "test", 1, 0),
+                new RuntimeInfo("chat2db-java-compat", "test", 1, 1),
                 "engine-test",
                 requests);
     }
@@ -397,6 +587,28 @@ class ProtocolLoopTest {
     private static RunResult runWithRuntime(
             RuntimeInfo runtimeInfo, String engineInstanceId, ClientEnvelope... requests)
             throws Exception {
+        return runWithProbe(
+                runtimeInfo,
+                engineInstanceId,
+                JdbcRuntime::quiescenceSnapshot,
+                requests);
+    }
+
+    private static RunResult runWithSnapshot(
+            QuiescenceSnapshot snapshot, ClientEnvelope... requests) throws Exception {
+        return runWithProbe(
+                new RuntimeInfo("chat2db-java-compat", "test", 1, 1),
+                "engine-test",
+                runtime -> snapshot,
+                requests);
+    }
+
+    private static RunResult runWithProbe(
+            RuntimeInfo runtimeInfo,
+            String engineInstanceId,
+            ProtocolLoop.QuiescenceProbe quiescenceProbe,
+            ClientEnvelope... requests)
+            throws Exception {
         ByteArrayOutputStream inputFrames = new ByteArrayOutputStream();
         for (ClientEnvelope request : requests) {
             FrameCodec.writeFrame(inputFrames, request);
@@ -409,9 +621,11 @@ class ProtocolLoopTest {
                 runtimeInfo,
                 engineInstanceId,
                 () -> nanoTime.getAndAdd(5_000_000),
-                new PrintStream(diagnosticOutput, true, StandardCharsets.UTF_8));
+                new PrintStream(diagnosticOutput, true, StandardCharsets.UTF_8),
+                quiescenceProbe);
 
-        int exitCode = loop.serve(new ByteArrayInputStream(inputFrames.toByteArray()), protocolOutput);
+        int exitCode = loop.serve(
+                new ByteArrayInputStream(inputFrames.toByteArray()), protocolOutput);
         return new RunResult(
                 exitCode,
                 decodeResponses(protocolOutput.toByteArray()),
@@ -435,6 +649,28 @@ class ProtocolLoopTest {
         Future<ServerEnvelope> response = executor.submit(
                 () -> FrameCodec.readFrame(input, ServerEnvelope.parser()).orElseThrow());
         return response.get(5, TimeUnit.SECONDS);
+    }
+
+    private static ClientEnvelope quiesce(
+            String requestId, long generation, long epoch, long nonce) {
+        return ClientEnvelope.newBuilder()
+                .setMeta(meta(requestId))
+                .setQuiesce(Quiesce.newBuilder()
+                        .setGeneration(generation)
+                        .setEpoch(epoch)
+                        .setNonce(nonce))
+                .build();
+    }
+
+    private static ClientEnvelope resume(
+            String requestId, long generation, long epoch, long nonce) {
+        return ClientEnvelope.newBuilder()
+                .setMeta(meta(requestId))
+                .setResume(Resume.newBuilder()
+                        .setGeneration(generation)
+                        .setEpoch(epoch)
+                        .setNonce(nonce))
+                .build();
     }
 
     private static ClientEnvelope hello(
@@ -478,6 +714,28 @@ class ProtocolLoopTest {
         assertEquals("trace-" + requestId, response.getMeta().getTraceId());
         assertEquals(0, response.getMeta().getSequence());
         assertTrue(response.getMeta().getTerminal());
+    }
+
+    private static void assertSnapshotMetadata(
+            ServerEnvelope response, QuiescenceSnapshot snapshot) {
+        assertEquals(
+                Integer.toUnsignedString(snapshot.getActiveSessions()),
+                response.getError().getMetadataOrThrow("active_sessions"));
+        assertEquals(
+                Integer.toUnsignedString(snapshot.getActiveOperations()),
+                response.getError().getMetadataOrThrow("active_operations"));
+        assertEquals(
+                Integer.toUnsignedString(snapshot.getActiveControlTasks()),
+                response.getError().getMetadataOrThrow("active_control_tasks"));
+        assertEquals(
+                Integer.toUnsignedString(snapshot.getQueuedControlTasks()),
+                response.getError().getMetadataOrThrow("queued_control_tasks"));
+        assertEquals(
+                Integer.toUnsignedString(snapshot.getPendingCancellations()),
+                response.getError().getMetadataOrThrow("pending_cancellations"));
+        assertEquals(
+                Integer.toUnsignedString(snapshot.getPendingOutboundFrames()),
+                response.getError().getMetadataOrThrow("pending_outbound_frames"));
     }
 
     private record RunResult(int exitCode, List<ServerEnvelope> responses, String diagnostics) {

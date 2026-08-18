@@ -9,7 +9,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 /// Current process-protocol major version.
 pub const PROTOCOL_MAJOR: u32 = 1;
 /// Current process-protocol minor version.
-pub const PROTOCOL_MINOR: u32 = 0;
+pub const PROTOCOL_MINOR: u32 = 1;
 /// Minimum configurable receive limit for one process frame.
 pub const MIN_FRAME_BYTES: usize = 1024;
 /// Maximum accepted Protobuf payload size for one process frame.

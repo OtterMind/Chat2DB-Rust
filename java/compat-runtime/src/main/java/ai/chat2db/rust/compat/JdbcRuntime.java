@@ -62,6 +62,7 @@ import ai.chat2db.rust.compat.protocol.v1.ParseCommunitySqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.QueryCompleted;
 import ai.chat2db.rust.compat.protocol.v1.QueryOptions;
 import ai.chat2db.rust.compat.protocol.v1.QueryStarted;
+import ai.chat2db.rust.compat.protocol.v1.QuiescenceSnapshot;
 import ai.chat2db.rust.compat.protocol.v1.RequestMeta;
 import ai.chat2db.rust.compat.protocol.v1.RollbackTransactionRequest;
 import ai.chat2db.rust.compat.protocol.v1.RowBatch;
@@ -114,6 +115,9 @@ final class JdbcRuntime implements AutoCloseable {
     private final PrintStream diagnostics;
     private final Duration shutdownTimeout;
     private final Duration cancellationSettleTimeout;
+    private final Object controlTaskLock = new Object();
+    private int activeControlTasks;
+    private int queuedControlTasks;
     private volatile boolean closed;
 
     JdbcRuntime(ProtocolWriter writer, PrintStream diagnostics) {
@@ -160,44 +164,89 @@ final class JdbcRuntime implements AutoCloseable {
         if (closed) {
             throw RuntimeFailure.conflict("database.runtime_closed", "the JDBC runtime is closing");
         }
+        synchronized (controlTaskLock) {
+            queuedControlTasks++;
+        }
         try {
             controlWorkers.execute(() -> {
-                ServerEnvelope response;
                 try {
-                    validateDeadline(meta);
-                    response = call.execute();
-                } catch (RuntimeFailure failure) {
-                    failure = attachSessionState(meta, failure);
-                    diagnostics.printf(
-                            "[compat-runtime] JDBC request failed code=%s request_id=%s%n",
-                            failure.code(),
-                            meta.getRequestId());
-                    response = ProtocolResponses.failure(
-                            meta, 0, failure, writer.peerMaximumFrameBytes());
-                } catch (RuntimeException | LinkageError failure) {
-                    RuntimeFailure translated = attachSessionState(
-                            meta,
-                            RuntimeFailure.internal(
-                                    "database.control_internal_failure",
-                                    "the JDBC control operation failed internally",
-                                    failure));
-                    response = ProtocolResponses.failure(
-                            meta, 0, translated, writer.peerMaximumFrameBytes());
-                }
-                if (response != null) {
+                    controlTaskStarted();
+                    ServerEnvelope response;
                     try {
-                        writer.write(fitControlResponse(meta, response));
-                    } catch (IOException failure) {
+                        validateDeadline(meta);
+                        response = call.execute();
+                    } catch (RuntimeFailure failure) {
+                        failure = attachSessionState(meta, failure);
                         diagnostics.printf(
-                                "[compat-runtime] asynchronous response failed code=protocol.write_failed request_id=%s%n",
+                                "[compat-runtime] JDBC request failed code=%s request_id=%s%n",
+                                failure.code(),
                                 meta.getRequestId());
+                        response = ProtocolResponses.failure(
+                                meta, 0, failure, writer.peerMaximumFrameBytes());
+                    } catch (RuntimeException | LinkageError failure) {
+                        RuntimeFailure translated = attachSessionState(
+                                meta,
+                                RuntimeFailure.internal(
+                                        "database.control_internal_failure",
+                                        "the JDBC control operation failed internally",
+                                        failure));
+                        response = ProtocolResponses.failure(
+                                meta, 0, translated, writer.peerMaximumFrameBytes());
                     }
+                    if (response != null) {
+                        try {
+                            writer.write(fitControlResponse(meta, response));
+                        } catch (IOException failure) {
+                            diagnostics.printf(
+                                    "[compat-runtime] asynchronous response failed code=protocol.write_failed request_id=%s%n",
+                                    meta.getRequestId());
+                        }
+                    }
+                } finally {
+                    controlTaskFinished();
                 }
             });
         } catch (RuntimeException rejected) {
+            controlTaskRejected();
             throw RuntimeFailure.conflict(
                     "database.control_worker_unavailable",
                     "no JDBC control worker is currently available");
+        }
+    }
+
+    QuiescenceSnapshot quiescenceSnapshot() {
+        int activeTasks;
+        int queuedTasks;
+        synchronized (controlTaskLock) {
+            activeTasks = activeControlTasks;
+            queuedTasks = queuedControlTasks;
+        }
+        return QuiescenceSnapshot.newBuilder()
+                .setActiveSessions(sessions.activeCount())
+                .setActiveOperations(operations.activeCount())
+                .setActiveControlTasks(activeTasks)
+                .setQueuedControlTasks(queuedTasks)
+                .setPendingCancellations(operations.pendingCancellationCount())
+                .setPendingOutboundFrames(writer.pendingOutboundFrames())
+                .build();
+    }
+
+    private void controlTaskStarted() {
+        synchronized (controlTaskLock) {
+            queuedControlTasks--;
+            activeControlTasks++;
+        }
+    }
+
+    private void controlTaskFinished() {
+        synchronized (controlTaskLock) {
+            activeControlTasks--;
+        }
+    }
+
+    private void controlTaskRejected() {
+        synchronized (controlTaskLock) {
+            queuedControlTasks--;
         }
     }
 

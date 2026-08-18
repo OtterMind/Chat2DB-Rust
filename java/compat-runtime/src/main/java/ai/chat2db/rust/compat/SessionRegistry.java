@@ -120,6 +120,10 @@ final class SessionRegistry implements AutoCloseable {
         return session;
     }
 
+    synchronized int activeCount() {
+        return sessions.size();
+    }
+
     void close(String sessionId) throws RuntimeFailure {
         JdbcSession session = require(sessionId);
         try {

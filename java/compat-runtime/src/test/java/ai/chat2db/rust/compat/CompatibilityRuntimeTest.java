@@ -24,7 +24,7 @@ class CompatibilityRuntimeTest {
 
         assertEquals(CompatibilityRuntime.EXIT_OK, exitCode);
         assertEquals(
-                "chat2db-java-compat development (protocol 1.0)" + System.lineSeparator(),
+                "chat2db-java-compat development (protocol 1.1)" + System.lineSeparator(),
                 standardOutput.toString(StandardCharsets.UTF_8));
         assertEquals("", standardError.toString(StandardCharsets.UTF_8));
     }

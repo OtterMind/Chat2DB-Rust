@@ -49,6 +49,7 @@ class OperationRegistryTest {
                     CancelDisposition.CANCEL_DISPOSITION_ACCEPTED,
                     registry.cancel("cancel-query"));
             assertTrue(cancelStarted.await(2, TimeUnit.SECONDS));
+            assertEquals(1, registry.pendingCancellationCount());
 
             Future<RuntimeFailure> terminal = waiter.submit(() -> {
                 try {
@@ -65,6 +66,7 @@ class OperationRegistryTest {
             RuntimeFailure failure = terminal.get(2, TimeUnit.SECONDS);
             assertEquals("database.cancel_failed", failure.code());
             assertEquals(JdbcSession.State.BROKEN, session.state());
+            assertEquals(0, registry.pendingCancellationCount());
             registry.finish(operation);
         } finally {
             releaseCancel.countDown();

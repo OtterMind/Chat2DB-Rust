@@ -38,6 +38,8 @@ message ClientEnvelope {
     ClientHello hello = 10;
     Ping ping = 11;
     Shutdown shutdown = 12;
+    Quiesce quiesce = 13;
+    Resume resume = 14;
     LoadDriverRequest load_driver = 100;
     UnloadDriverRequest unload_driver = 101;
     OpenSessionRequest open_session = 110;
@@ -85,6 +87,8 @@ message ServerEnvelope {
     ServerHello hello = 10;
     Pong pong = 11;
     ShutdownAck shutdown_ack = 12;
+    QuiesceAck quiesce_ack = 13;
+    ResumeAck resume_ack = 14;
     EngineError error = 15;
     DriverLoaded driver_loaded = 100;
     DriverUnloaded driver_unloaded = 101;
@@ -159,6 +163,40 @@ message Shutdown {
 }
 
 message ShutdownAck {}
+
+message Quiesce {
+  uint64 generation = 1;
+  uint64 epoch = 2;
+  uint64 nonce = 3;
+}
+
+message Resume {
+  uint64 generation = 1;
+  uint64 epoch = 2;
+  uint64 nonce = 3;
+}
+
+message QuiescenceSnapshot {
+  uint32 active_sessions = 1;
+  uint32 active_operations = 2;
+  uint32 active_control_tasks = 3;
+  uint32 queued_control_tasks = 4;
+  uint32 pending_cancellations = 5;
+  uint32 pending_outbound_frames = 6;
+}
+
+message QuiesceAck {
+  uint64 generation = 1;
+  uint64 epoch = 2;
+  uint64 nonce = 3;
+  QuiescenceSnapshot snapshot = 4;
+}
+
+message ResumeAck {
+  uint64 generation = 1;
+  uint64 epoch = 2;
+  uint64 nonce = 3;
+}
 
 message EngineError {
   string code = 1;

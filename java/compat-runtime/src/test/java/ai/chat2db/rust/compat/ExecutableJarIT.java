@@ -73,7 +73,9 @@ class ExecutableJarIT {
             assertEquals(1, serverHello.getHello().getSelectedVersion().getMajor());
             assertEquals(0, serverHello.getHello().getSelectedVersion().getMinor());
             assertEquals(
-                    ProtocolLoop.capabilities(isCommunityCompatibilityConfigured()),
+                    ProtocolLoop.capabilities(
+                            isCommunityCompatibilityConfigured(),
+                            serverHello.getHello().getSelectedVersion()),
                     serverHello.getHello().getCapabilitiesList());
 
             FrameCodec.writeFrame(
