@@ -453,6 +453,21 @@ impl Application {
         self.inner.engine.acquire().await
     }
 
+    /// Starts a managed Java generation without sending a business request.
+    ///
+    /// Static engines are already running and disabled engines have nothing to
+    /// prewarm, so both complete successfully without acquiring a lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns an availability or startup error when a managed engine cannot be acquired.
+    pub async fn prewarm_engine(&self) -> Result<(), AppError> {
+        if matches!(&self.inner.engine, EngineProvider::Managed(_)) {
+            drop(self.acquire_engine().await?);
+        }
+        Ok(())
+    }
+
     pub(crate) async fn require_engine(&self) -> Result<EngineLease, AppError> {
         self.acquire_engine().await
     }
@@ -1015,6 +1030,15 @@ impl RuntimeHost {
         self.application.acquire_engine().await
     }
 
+    /// Starts managed Java and immediately releases the acquired lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns an availability or startup error when the managed engine cannot start.
+    pub async fn prewarm_engine(&self) -> Result<(), AppError> {
+        self.application.prewarm_engine().await
+    }
+
     /// Cancels active operations, shuts down the Java process, and joins tasks.
     ///
     /// # Errors
@@ -1053,6 +1077,18 @@ fn engine_health(engine: &EngineProvider) -> ComponentHealth {
         Some(EngineManagerStatus::Ready(EngineState::Ready { .. })) => {
             (ComponentState::Ready, "Ready".to_owned())
         }
+        Some(EngineManagerStatus::Quiescing { .. }) => (
+            ComponentState::Ready,
+            "Preparing Java for standby".to_owned(),
+        ),
+        Some(EngineManagerStatus::Parked { .. }) => (
+            ComponentState::Ready,
+            "Java is parked; ready to resume".to_owned(),
+        ),
+        Some(EngineManagerStatus::Resuming { .. }) => (
+            ComponentState::Ready,
+            "Resuming Java from standby".to_owned(),
+        ),
         Some(EngineManagerStatus::Stopping {
             reason: EngineStopReason::Idle,
             ..
@@ -1125,6 +1161,18 @@ fn community_health(engine: &EngineProvider) -> ComponentHealth {
                 "Fixed Community plugin, metadata, builder, and parser services ready".to_owned(),
             )
         }
+        Some(EngineManagerStatus::Quiescing { .. }) => (
+            ComponentState::Ready,
+            "Preparing Community compatibility for standby".to_owned(),
+        ),
+        Some(EngineManagerStatus::Parked { .. }) => (
+            ComponentState::Ready,
+            "Community compatibility is parked; ready to resume".to_owned(),
+        ),
+        Some(EngineManagerStatus::Resuming { .. }) => (
+            ComponentState::Ready,
+            "Resuming Community compatibility from standby".to_owned(),
+        ),
         Some(EngineManagerStatus::Stopping {
             reason: EngineStopReason::Idle,
             ..
@@ -1260,6 +1308,14 @@ mod tests {
             .find(|component| component.id == "community-compatibility")
             .expect("Community compatibility health must be explicit");
         assert_eq!(community.state, ComponentState::Disabled);
+    }
+
+    #[tokio::test]
+    async fn prewarm_without_configured_engine_is_a_noop() {
+        Application::new()
+            .prewarm_engine()
+            .await
+            .expect("a disabled engine has nothing to prewarm");
     }
 
     #[derive(Debug)]

@@ -284,9 +284,11 @@ async fn managed_h2_starts_on_demand_and_reloads_after_idle_shutdown() {
         .expect("managed H2 query must be accepted");
     let result_id = wait_for_result(&application, &accepted.operation_id).await;
     assert_result_page(&application, &result_id).await;
+    let escaped_client = first_lease.client().clone();
+    drop(first_lease);
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_engine_running(&application);
-    drop(first_lease);
+    drop(escaped_client);
 
     wait_for_engine_idle(&application).await;
     let second_lease = host
@@ -310,6 +312,61 @@ async fn managed_h2_starts_on_demand_and_reloads_after_idle_shutdown() {
         .await
         .expect("runtime host must shut down with the managed driver");
     assert_directory_empty(&driver_runtime_directory);
+}
+
+#[tokio::test]
+async fn managed_h2_parks_and_resumes_before_hard_idle_reap() {
+    let engine_jar = required_jar("CHAT2DB_JAVA_ENGINE_JAR");
+    let h2_jar = required_jar("CHAT2DB_H2_DRIVER_JAR");
+    let directory = TempDir::new().expect("temporary runtime directory");
+    let driver_pack_root = directory.path().join("driver-packs");
+    write_driver_pack(&driver_pack_root, "01-h2", "h2", H2_DRIVER_CLASS, &h2_jar);
+
+    let engine = EngineConfig::new(EngineCommand::java_jar("java", engine_jar)).with_timeouts(
+        Duration::from_secs(10),
+        Duration::from_secs(10),
+        Duration::from_secs(5),
+    );
+    let config = RuntimeConfig::new(engine)
+        .with_data_dir(directory.path().join("data"))
+        .with_driver_pack_dir(&driver_pack_root)
+        .with_vault_master_key_base64(STANDARD.encode([0x5a; 32]))
+        .with_engine_idle_timeout(Duration::from_secs(2));
+    let mut host = RuntimeHost::open(config)
+        .await
+        .expect("managed runtime opens without starting Java");
+
+    let first = host
+        .acquire_engine()
+        .await
+        .expect("preloaded Java generation starts");
+    let first_generation = first.generation();
+    drop(first);
+    wait_for_engine_parked(&host.application()).await;
+
+    let resumed = host
+        .acquire_engine()
+        .await
+        .expect("parked Java generation resumes");
+    assert_eq!(
+        resumed.generation(),
+        first_generation,
+        "cooperative resume must preserve the Java generation"
+    );
+    drop(resumed);
+
+    wait_for_engine_idle(&host.application()).await;
+    let restarted = host
+        .acquire_engine()
+        .await
+        .expect("hard-idle reap permits a fresh Java generation");
+    assert_ne!(
+        restarted.generation(),
+        first_generation,
+        "hard idle must fully reap rather than revive the old generation"
+    );
+    drop(restarted);
+    host.shutdown().await.expect("managed runtime shuts down");
 }
 
 #[tokio::test]
@@ -778,6 +835,25 @@ async fn wait_for_engine_idle(application: &Application) {
     })
     .await
     .expect("managed Java must become idle before the test deadline");
+}
+
+async fn wait_for_engine_parked(application: &Application) {
+    tokio::time::timeout(EVENT_TIMEOUT, async {
+        loop {
+            let parked = application
+                .health()
+                .components
+                .into_iter()
+                .find(|component| component.id == "database-engine")
+                .is_some_and(|component| component.detail == "Java is parked; ready to resume");
+            if parked {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("managed Java must enter cooperative park before hard idle");
 }
 
 fn managed_runtime_config(
