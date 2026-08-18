@@ -126,7 +126,7 @@ pub struct EngineLease {
 
 impl EngineLease {
     fn managed(
-        client: EngineClient,
+        client: &EngineClient,
         generation: u64,
         commands: mpsc::UnboundedSender<ManagerCommand>,
     ) -> Self {
@@ -885,7 +885,11 @@ async fn run_manager(mut context: ManagerContext) {
                 state: terminal,
             } => {
                 state = match state {
-                    ManagerState::Running(running) if running.generation == generation => {
+                    ManagerState::Running(running)
+                    | ManagerState::Parked {
+                        running,
+                        park_epoch: _,
+                    } if running.generation == generation => {
                         let error = terminal_engine_error(&terminal);
                         context
                             .status
@@ -902,36 +906,8 @@ async fn run_manager(mut context: ManagerContext) {
                         running,
                         park_epoch: _,
                         waiters,
-                    } if running.generation == generation => {
-                        let error = terminal_engine_error(&terminal);
-                        context
-                            .status
-                            .send_replace(EngineManagerStatus::Failed(error));
-                        begin_stop(
-                            running,
-                            EngineStopReason::Crashed,
-                            context.commands.clone(),
-                            waiters,
-                            &context.status,
-                        )
                     }
-                    ManagerState::Parked {
-                        running,
-                        park_epoch: _,
-                    } if running.generation == generation => {
-                        let error = terminal_engine_error(&terminal);
-                        context
-                            .status
-                            .send_replace(EngineManagerStatus::Failed(error));
-                        begin_stop(
-                            running,
-                            EngineStopReason::Crashed,
-                            context.commands.clone(),
-                            Vec::new(),
-                            &context.status,
-                        )
-                    }
-                    ManagerState::Resuming {
+                    | ManagerState::Resuming {
                         running,
                         park_epoch: _,
                         waiters,
@@ -1126,6 +1102,11 @@ fn start_host_shutdown(
             running,
             park_epoch: _,
             waiters,
+        }
+        | ManagerState::Resuming {
+            running,
+            park_epoch: _,
+            waiters,
         } => {
             fail_waiters(waiters, &runtime_shutting_down());
             begin_stop(
@@ -1146,20 +1127,6 @@ fn start_host_shutdown(
             Vec::new(),
             status,
         ),
-        ManagerState::Resuming {
-            running,
-            park_epoch: _,
-            waiters,
-        } => {
-            fail_waiters(waiters, &runtime_shutting_down());
-            begin_stop(
-                running,
-                EngineStopReason::HostShutdown,
-                commands.clone(),
-                Vec::new(),
-                status,
-            )
-        }
         ManagerState::Stopping {
             generation,
             reason,
@@ -1185,11 +1152,8 @@ fn issue_lease(
     }
     running.idle_epoch = running.idle_epoch.wrapping_add(1);
     running.leases = running.leases.saturating_add(1);
-    let lease = EngineLease::managed(
-        running.supervisor.client(),
-        running.generation,
-        commands.clone(),
-    );
+    let client = running.supervisor.client();
+    let lease = EngineLease::managed(&client, running.generation, commands.clone());
     let _ = reply.send(Ok(lease));
 }
 

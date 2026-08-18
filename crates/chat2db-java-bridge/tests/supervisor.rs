@@ -997,6 +997,44 @@ async fn jdbc_unary_driver_session_transaction_and_update_round_trip() {
 }
 
 #[tokio::test]
+async fn transaction_retains_the_client_keepalive_after_other_handles_drop() {
+    let supervisor =
+        EngineSupervisor::spawn(fast_config(fixture_command(&["--jdbc-stream=normal"])))
+            .await
+            .expect("JDBC fixture must handshake");
+    let lease_token = Arc::new(());
+    let released = Arc::downgrade(&lease_token);
+    let client = supervisor.client().with_keepalive(Arc::clone(&lease_token));
+    drop(lease_token);
+    let driver = client
+        .driver_client()
+        .expect("ready engine must create a driver client");
+    let session = driver
+        .open_session(fixture_session_config("fixture-driver"))
+        .await
+        .expect("session open must succeed");
+    let transaction = session
+        .begin_transaction(TransactionOptions::default())
+        .await
+        .expect("transaction begin must succeed");
+
+    drop(session);
+    drop(driver);
+    drop(client);
+    assert!(
+        released.upgrade().is_some(),
+        "a live transaction must retain the manager lease token"
+    );
+
+    drop(transaction);
+    assert!(
+        released.upgrade().is_none(),
+        "the lease token must release after the final transaction drops"
+    );
+    supervisor.shutdown().await.expect("shutdown must succeed");
+}
+
+#[tokio::test]
 async fn query_stream_delivers_typed_events_in_order() {
     let supervisor =
         EngineSupervisor::spawn(fast_config(fixture_command(&["--jdbc-stream=normal"])))

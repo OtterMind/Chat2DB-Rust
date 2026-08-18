@@ -711,8 +711,8 @@ struct EngineInner {
 impl EngineClient {
     /// Returns a client clone that retains an owner-defined lifetime token.
     ///
-    /// Handles derived from this client clone it internally, so the token is
-    /// retained by JDBC drivers, sessions, transactions, and query streams.
+    /// The token propagates through cloned clients and the `DriverClient`,
+    /// `Session`, `Transaction`, and `QueryStream` handles derived from them.
     #[must_use]
     pub fn with_keepalive<T>(&self, guard: Arc<T>) -> Self
     where

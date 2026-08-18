@@ -43,6 +43,22 @@ fn managed_driver<'a>(drivers: &'a [JdbcDriver], pack_id: &str) -> &'a JdbcDrive
         })
 }
 
+fn assert_managed_h2_driver(drivers: &[JdbcDriver], managed_h2_jar: &Path) -> String {
+    let installed = managed_driver(drivers, "h2");
+    assert_eq!(installed.pack_id, "h2");
+    assert_eq!(installed.version, "test");
+    assert_eq!(installed.driver_class, H2_DRIVER_CLASS);
+    assert_eq!(installed.artifact_count, 1);
+    assert_eq!(
+        installed.artifact_bytes,
+        fs::metadata(managed_h2_jar)
+            .expect("managed H2 metadata")
+            .len()
+            .to_string()
+    );
+    installed.driver_id.clone()
+}
+
 struct H2ProductHarness {
     _directory: TempDir,
     host: RuntimeHost,
@@ -235,23 +251,12 @@ async fn managed_h2_starts_on_demand_and_reloads_after_idle_shutdown() {
     let inventory = application.list_drivers();
     assert_eq!(inventory.items.len(), 5);
     assert_native_mysql_driver(&inventory.items);
-    let installed = managed_driver(&inventory.items, "h2");
-    assert_eq!(installed.pack_id, "h2");
-    assert_eq!(installed.version, "test");
-    assert_eq!(installed.driver_class, H2_DRIVER_CLASS);
-    assert_eq!(installed.artifact_count, 1);
-    assert_eq!(
-        installed.artifact_bytes,
-        fs::metadata(&managed_h2_jar)
-            .expect("managed H2 metadata")
-            .len()
-            .to_string()
-    );
+    let driver_id = assert_managed_h2_driver(&inventory.items, &managed_h2_jar);
 
     let datasource = application
         .create_datasource(CreateDatasourceRequest {
             name: "Stage 7 managed H2".to_owned(),
-            driver_id: installed.driver_id.clone(),
+            driver_id,
             connection: Some(DatasourceConnection {
                 jdbc_url: "jdbc:h2:mem:stage7_managed;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=TRUE"
                     .to_owned(),
