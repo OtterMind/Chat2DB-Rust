@@ -373,6 +373,17 @@ impl DesktopState {
     }
 }
 
+fn spawn_engine_prewarm<F>(prewarm: F)
+where
+    F: std::future::Future<Output = Result<(), AppError>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        if let Err(error) = prewarm.await {
+            tracing::warn!(%error, "Java engine prewarm failed");
+        }
+    });
+}
+
 /// Startup or shutdown failure for the desktop host.
 #[derive(Debug)]
 pub enum DesktopError {
@@ -482,10 +493,12 @@ fn spawn_desktop_runtime_initialization<R: tauri::Runtime>(
             Ok(state) => {
                 let state = Arc::new(state);
                 if app_handle.manage(Arc::clone(&state)) {
+                    let prewarm_application = state.application.clone();
                     task_startup.mark_ready(state);
                     if let Err(error) = app_handle.emit(DESKTOP_RUNTIME_READY_EVENT, ()) {
                         tracing::warn!(%error, "desktop runtime ready event failed");
                     }
+                    spawn_engine_prewarm(async move { prewarm_application.prewarm_engine().await });
                 } else {
                     let message =
                         "Chat2DB desktop runtime state was registered more than once".to_owned();
@@ -2755,7 +2768,7 @@ mod tests {
         ffi::OsString,
         fs::{self, File},
         path::PathBuf,
-        sync::Arc,
+        sync::{Arc, atomic::AtomicU64},
     };
 
     use chat2db_contract::{
@@ -2767,20 +2780,34 @@ mod tests {
         StartCommunityTablePreviewRequest, ValidateCommunitySqlRequest,
     };
     use chat2db_core::{AppError, Application, NativeConsoleCancellation};
-    use tokio::sync::oneshot;
+    use tokio::sync::{Mutex, oneshot};
 
     use super::{
         BUNDLED_COMMUNITY_CLASSPATH, BUNDLED_DRIVER_PACKS, BUNDLED_JAVA_BIN,
-        BUNDLED_JAVA_ENGINE_JAR, BundledRuntimeResources, DesktopError, DesktopStartup, FilePath,
-        LegacySqlCancellationRegistry, RuntimeResourceOverrides, SubscriptionRegistry,
-        agent_stream_message, build_community_dml_for, build_community_namespace_sql_for,
-        client_command_response, complete_community_sql_for, decode_client_message,
-        format_community_sql_for, legacy_ai_push_message, legacy_file_extensions,
-        legacy_request_for, legacy_selected_file, legacy_sql_push_message,
-        legacy_sql_rowless_payload, operation_stream_message, parse_after_sequence,
-        resolve_runtime_resource_paths, start_community_table_preview_for,
-        validate_community_sql_for, validate_java_engine_jar, validate_optional_os_env,
+        BUNDLED_JAVA_ENGINE_JAR, BundledRuntimeResources, DesktopError, DesktopStartup,
+        DesktopState, FilePath, LegacySqlCancellationRegistry, LegacySqlDirectoryRegistry,
+        RuntimeResourceOverrides, SubscriptionRegistry, agent_stream_message,
+        build_community_dml_for, build_community_namespace_sql_for, client_command_response,
+        complete_community_sql_for, decode_client_message, format_community_sql_for,
+        legacy_ai_push_message, legacy_file_extensions, legacy_request_for, legacy_selected_file,
+        legacy_sql_push_message, legacy_sql_rowless_payload, operation_stream_message,
+        parse_after_sequence, resolve_runtime_resource_paths, spawn_engine_prewarm,
+        start_community_table_preview_for, validate_community_sql_for, validate_java_engine_jar,
+        validate_optional_os_env,
     };
+
+    fn test_desktop_state() -> Arc<DesktopState> {
+        Arc::new(DesktopState {
+            application: Application::new(),
+            local_server: Mutex::new(None),
+            runtime_host: Mutex::new(None),
+            legacy_sql_directories: LegacySqlDirectoryRegistry::default(),
+            legacy_sql_cancellations: LegacySqlCancellationRegistry::default(),
+            subscriptions: SubscriptionRegistry::default(),
+            next_legacy_execution_id: AtomicU64::new(1),
+            next_subscription_id: AtomicU64::new(1),
+        })
+    }
 
     fn complete_app_bundle() -> (tempfile::TempDir, PathBuf, BundledRuntimeResources) {
         let directory = tempfile::tempdir().expect("temporary app bundle");
@@ -2849,6 +2876,54 @@ mod tests {
             .await
             .expect("shutdown must not wait for a blocked initialization")
             .expect("pending initialization shutdown must succeed");
+    }
+
+    #[tokio::test]
+    async fn desktop_ready_does_not_wait_for_engine_prewarm() {
+        let startup = DesktopStartup::new();
+        let state = test_desktop_state();
+        let expected_state = Arc::clone(&state);
+        let (prewarm_started, prewarm_start) = oneshot::channel();
+        let (release_prewarm, prewarm_release) = oneshot::channel();
+
+        startup.mark_ready(state);
+        spawn_engine_prewarm(async move {
+            let _ = prewarm_started.send(());
+            let _ = prewarm_release.await;
+            Ok(())
+        });
+        prewarm_start.await.expect("prewarm task must start");
+
+        let ready = tokio::time::timeout(std::time::Duration::from_secs(1), startup.ready())
+            .await
+            .expect("desktop readiness must not wait for prewarm")
+            .expect("desktop must remain ready while prewarm is pending");
+        assert!(Arc::ptr_eq(&ready, &expected_state));
+        let _ = release_prewarm.send(());
+    }
+
+    #[tokio::test]
+    async fn engine_prewarm_failure_does_not_change_desktop_ready() {
+        let startup = DesktopStartup::new();
+        let state = test_desktop_state();
+        let expected_state = Arc::clone(&state);
+        let (prewarm_finished, prewarm_finish) = oneshot::channel();
+
+        startup.mark_ready(state);
+        spawn_engine_prewarm(async move {
+            let _ = prewarm_finished.send(());
+            Err(AppError::unavailable(
+                "engine_prewarm_failed",
+                "synthetic prewarm failure",
+            ))
+        });
+        prewarm_finish.await.expect("prewarm task must finish");
+
+        let ready = startup
+            .ready()
+            .await
+            .expect("prewarm failure must not change desktop readiness");
+        assert!(Arc::ptr_eq(&ready, &expected_state));
     }
 
     #[test]
