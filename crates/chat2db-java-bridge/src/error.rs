@@ -234,6 +234,7 @@ pub(crate) enum PendingFailure {
         outcome: DeliveryOutcome,
     },
     InvalidRequest(String),
+    Protocol(String),
     Remote(Box<wire::EngineError>),
 }
 
@@ -251,6 +252,7 @@ impl PendingFailure {
                 outcome,
             },
             Self::InvalidRequest(message) => BridgeError::InvalidRequest(message),
+            Self::Protocol(message) => BridgeError::Protocol(message),
             Self::Remote(error) => match RemoteEngineError::try_from(*error) {
                 Ok(error) => error.into(),
                 Err(message) => BridgeError::Protocol(message),

@@ -5,8 +5,9 @@ use chat2db_java_bridge::{
     BridgeError, BuildCommunityNamespaceSqlRequest, BuildCommunityTablePreviewSqlRequest,
     CancelDisposition, CommunityClasspath, CommunityNamespaceSqlOperation, DeliveryOutcome,
     DriverArtifact, DriverSpec, EngineClient, EngineCommand, EngineConfig, EngineState,
-    EngineSupervisor, JdbcValue, QueryEvent, QueryOptions, QueryRequest, SESSION_JDBC_CAPABILITY,
-    Session, SessionConfig, SessionState, TransactionOptions, UpdateRequest,
+    EngineSupervisor, JdbcValue, PARK_CAPABILITY, QueryEvent, QueryOptions, QueryRequest,
+    QuiescenceSnapshot, SESSION_JDBC_CAPABILITY, Session, SessionConfig, SessionState,
+    TransactionOptions, UpdateRequest,
 };
 
 const COMMUNITY_COMMIT: &str = "3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c";
@@ -58,6 +59,149 @@ async fn handshakes_pings_and_reaps_after_shutdown() {
             .expect("shutdown must be idempotent")
             .success
     );
+}
+
+#[tokio::test]
+async fn quiesces_and_resumes_the_negotiated_generation() {
+    let supervisor = EngineSupervisor::spawn(fast_config(fixture_command(&[])))
+        .await
+        .expect("fixture must handshake");
+    let EngineState::Ready { identity, .. } = supervisor.state() else {
+        panic!("fixture must be ready");
+    };
+    assert_eq!(
+        identity.protocol_version,
+        ProtocolVersion { major: 1, minor: 1 }
+    );
+    assert!(
+        identity
+            .capabilities
+            .iter()
+            .any(|capability| capability == PARK_CAPABILITY)
+    );
+
+    let client = supervisor.client();
+    let snapshot = client
+        .quiesce(7, Duration::from_secs(1))
+        .await
+        .expect("quiesce acknowledgement must validate");
+    assert_eq!(snapshot, QuiescenceSnapshot::default());
+    client
+        .resume(7, Duration::from_secs(1))
+        .await
+        .expect("resume acknowledgement must validate");
+
+    supervisor.shutdown().await.expect("shutdown must succeed");
+}
+
+#[tokio::test]
+async fn park_capability_is_checked_when_the_lifecycle_api_is_called() {
+    let supervisor =
+        EngineSupervisor::spawn(fast_config(fixture_command(&["--without-park-capability"])))
+            .await
+            .expect("fixture must handshake without optional park support");
+
+    let error = supervisor
+        .client()
+        .quiesce(1, Duration::from_secs(1))
+        .await
+        .expect_err("missing park capability must reject quiesce locally");
+    assert!(matches!(
+        error,
+        BridgeError::MissingCapability(capability) if capability == PARK_CAPABILITY
+    ));
+    assert!(matches!(supervisor.state(), EngineState::Ready { .. }));
+    supervisor.shutdown().await.expect("shutdown must succeed");
+}
+
+#[tokio::test]
+async fn wrong_quiesce_ack_is_request_scoped_for_manager_fallback() {
+    let supervisor = EngineSupervisor::spawn(fast_config(fixture_command(&[
+        "--lifecycle=wrong-quiesce-ack",
+    ])))
+    .await
+    .expect("fixture must handshake");
+
+    let error = supervisor
+        .client()
+        .quiesce(3, Duration::from_secs(1))
+        .await
+        .expect_err("wrong acknowledgement payload must fail quiesce");
+    assert!(matches!(
+        error,
+        BridgeError::Protocol(message) if message.contains("unexpected response payload")
+    ));
+    assert!(matches!(supervisor.state(), EngineState::Ready { .. }));
+    supervisor.shutdown().await.expect("shutdown must succeed");
+}
+
+#[tokio::test]
+async fn stale_quiesce_epoch_is_rejected_without_implicit_reap() {
+    let supervisor = EngineSupervisor::spawn(fast_config(fixture_command(&[
+        "--lifecycle=stale-quiesce-epoch",
+    ])))
+    .await
+    .expect("fixture must handshake");
+
+    let error = supervisor
+        .client()
+        .quiesce(9, Duration::from_secs(1))
+        .await
+        .expect_err("stale acknowledgement epoch must fail quiesce");
+    assert!(matches!(
+        error,
+        BridgeError::Protocol(message) if message.contains("epoch 8")
+    ));
+    assert!(matches!(supervisor.state(), EngineState::Ready { .. }));
+    supervisor.shutdown().await.expect("shutdown must succeed");
+}
+
+#[tokio::test]
+async fn wrong_resume_nonce_is_rejected_without_implicit_reap() {
+    let supervisor = EngineSupervisor::spawn(fast_config(fixture_command(&[
+        "--lifecycle=wrong-resume-nonce",
+    ])))
+    .await
+    .expect("fixture must handshake");
+    let client = supervisor.client();
+    client
+        .quiesce(11, Duration::from_secs(1))
+        .await
+        .expect("quiesce must succeed before resume");
+
+    let error = client
+        .resume(11, Duration::from_secs(1))
+        .await
+        .expect_err("wrong acknowledgement nonce must fail resume");
+    assert!(matches!(
+        error,
+        BridgeError::Protocol(message) if message.contains("nonce")
+    ));
+    assert!(matches!(supervisor.state(), EngineState::Ready { .. }));
+    supervisor.shutdown().await.expect("shutdown must succeed");
+}
+
+#[tokio::test]
+async fn quiesce_timeout_is_request_scoped_for_manager_fallback() {
+    let supervisor =
+        EngineSupervisor::spawn(fast_config(fixture_command(&["--lifecycle=hang-quiesce"])))
+            .await
+            .expect("fixture must handshake");
+
+    let error = supervisor
+        .client()
+        .quiesce(13, Duration::from_millis(50))
+        .await
+        .expect_err("missing quiesce acknowledgement must time out");
+    assert!(matches!(
+        error,
+        BridgeError::RequestTimeout {
+            outcome: DeliveryOutcome::Unknown,
+            ..
+        }
+    ));
+    assert!(matches!(supervisor.state(), EngineState::Ready { .. }));
+    supervisor.shutdown().await.expect("shutdown must succeed");
 }
 
 #[tokio::test]
