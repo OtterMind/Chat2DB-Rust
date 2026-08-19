@@ -79,7 +79,7 @@ fn jdbc_query_input_round_trips_with_typed_parameters() {
     assert_eq!(decoded, request);
     assert_eq!(
         current_version(),
-        wire::ProtocolVersion { major: 1, minor: 0 }
+        wire::ProtocolVersion { major: 1, minor: 1 }
     );
 }
 
