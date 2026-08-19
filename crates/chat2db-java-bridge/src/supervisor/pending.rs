@@ -114,20 +114,120 @@ pub(super) enum ControlEffect {
 }
 
 #[derive(Clone, Debug)]
+pub(super) enum LifecycleExpectation {
+    Quiesce {
+        generation: u64,
+        epoch: u64,
+        nonce: u64,
+    },
+    Resume {
+        generation: u64,
+        epoch: u64,
+        nonce: u64,
+    },
+}
+
+impl LifecycleExpectation {
+    fn validate(&self, payload: &wire::server_envelope::Payload) -> Result<(), String> {
+        if matches!(payload, wire::server_envelope::Payload::Error(_)) {
+            return Ok(());
+        }
+        match (self, payload) {
+            (
+                Self::Quiesce {
+                    generation,
+                    epoch,
+                    nonce,
+                },
+                wire::server_envelope::Payload::QuiesceAck(ack),
+            ) => {
+                validate_lifecycle_ack(
+                    "quiesce",
+                    *generation,
+                    *epoch,
+                    *nonce,
+                    ack.generation,
+                    ack.epoch,
+                    ack.nonce,
+                )?;
+                if ack.snapshot.is_none() {
+                    return Err("quiesce acknowledgement did not include a snapshot".to_owned());
+                }
+                Ok(())
+            }
+            (
+                Self::Resume {
+                    generation,
+                    epoch,
+                    nonce,
+                },
+                wire::server_envelope::Payload::ResumeAck(ack),
+            ) => validate_lifecycle_ack(
+                "resume",
+                *generation,
+                *epoch,
+                *nonce,
+                ack.generation,
+                ack.epoch,
+                ack.nonce,
+            ),
+            (Self::Quiesce { .. }, _) => {
+                Err("quiesce request received an unexpected response payload".to_owned())
+            }
+            (Self::Resume { .. }, _) => {
+                Err("resume request received an unexpected response payload".to_owned())
+            }
+        }
+    }
+}
+
+fn validate_lifecycle_ack(
+    operation: &str,
+    expected_generation: u64,
+    expected_epoch: u64,
+    expected_nonce: u64,
+    generation: u64,
+    epoch: u64,
+    nonce: u64,
+) -> Result<(), String> {
+    if generation != expected_generation {
+        return Err(format!(
+            "{operation} acknowledgement generation {generation} did not match request generation {expected_generation}"
+        ));
+    }
+    if epoch != expected_epoch {
+        return Err(format!(
+            "{operation} acknowledgement epoch {epoch} did not match request epoch {expected_epoch}"
+        ));
+    }
+    if nonce != expected_nonce {
+        return Err(format!(
+            "{operation} acknowledgement nonce did not match the request"
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
 pub(super) enum PendingLane {
     Retireable,
     FatalOnUnknown,
     Stream,
     Control(ControlEffect),
+    Lifecycle(LifecycleExpectation),
 }
 
 impl PendingLane {
     pub(super) const fn consumes_normal_slot(&self) -> bool {
-        !matches!(self, Self::Control(_))
+        !matches!(self, Self::Control(_) | Self::Lifecycle(_))
     }
 
     const fn unknown_outcome_is_fatal(&self) -> bool {
         matches!(self, Self::FatalOnUnknown | Self::Stream | Self::Control(_))
+    }
+
+    const fn invalid_response_is_request_scoped(&self) -> bool {
+        matches!(self, Self::Lifecycle(_))
     }
 }
 
@@ -339,7 +439,19 @@ impl PendingRequests {
                         meta.request_id
                     ));
                 }
-                self.apply_control_response(&request.lane, &payload)?;
+                if let Err(message) = self.apply_lane_response(&request.lane, &payload) {
+                    if request.lane.invalid_response_is_request_scoped() {
+                        let PendingKind::Unary {
+                            response: sender, ..
+                        } = request.kind
+                        else {
+                            unreachable!("the unary branch must retain a unary response sender");
+                        };
+                        let _ = sender.send(Err(PendingFailure::Protocol(message)));
+                        return Ok(());
+                    }
+                    return Err(message);
+                }
                 let PendingKind::Unary {
                     response: sender, ..
                 } = request.kind
@@ -418,7 +530,7 @@ impl PendingRequests {
         Ok(())
     }
 
-    fn apply_control_response(
+    fn apply_lane_response(
         &mut self,
         lane: &PendingLane,
         payload: &wire::server_envelope::Payload,
@@ -461,6 +573,7 @@ impl PendingRequests {
                 }
                 self.cancelling_targets.remove(target_request_id);
             }
+            PendingLane::Lifecycle(expectation) => expectation.validate(payload)?,
             PendingLane::Retireable | PendingLane::FatalOnUnknown | PendingLane::Stream => {}
         }
         Ok(())
@@ -475,7 +588,10 @@ impl PendingRequests {
             PendingLane::Control(ControlEffect::Cancel { target_request_id }) => {
                 self.cancelling_targets.remove(target_request_id);
             }
-            PendingLane::Retireable | PendingLane::FatalOnUnknown | PendingLane::Stream => {}
+            PendingLane::Lifecycle(_)
+            | PendingLane::Retireable
+            | PendingLane::FatalOnUnknown
+            | PendingLane::Stream => {}
         }
     }
 
@@ -3567,5 +3683,125 @@ mod tests {
             ))
             .expect("first cancel must complete");
         assert!(insert_cancel(&mut pending, "cancel-3").is_ok());
+    }
+
+    #[test]
+    fn lifecycle_ack_validation_covers_every_echoed_field_and_payload() {
+        let expectation = LifecycleExpectation::Quiesce {
+            generation: 7,
+            epoch: 11,
+            nonce: 13,
+        };
+        let quiesce_ack = |generation, epoch, nonce, snapshot| {
+            wire::server_envelope::Payload::QuiesceAck(wire::QuiesceAck {
+                generation,
+                epoch,
+                nonce,
+                snapshot,
+            })
+        };
+
+        assert!(
+            expectation
+                .validate(&quiesce_ack(
+                    7,
+                    11,
+                    13,
+                    Some(wire::QuiescenceSnapshot::default()),
+                ))
+                .is_ok()
+        );
+        for (payload, expected_message) in [
+            (
+                quiesce_ack(8, 11, 13, Some(wire::QuiescenceSnapshot::default())),
+                "generation",
+            ),
+            (
+                quiesce_ack(7, 10, 13, Some(wire::QuiescenceSnapshot::default())),
+                "epoch",
+            ),
+            (
+                quiesce_ack(7, 11, 14, Some(wire::QuiescenceSnapshot::default())),
+                "nonce",
+            ),
+            (quiesce_ack(7, 11, 13, None), "snapshot"),
+            (
+                wire::server_envelope::Payload::ResumeAck(wire::ResumeAck {
+                    generation: 7,
+                    epoch: 11,
+                    nonce: 13,
+                }),
+                "unexpected response payload",
+            ),
+        ] {
+            assert!(
+                expectation
+                    .validate(&payload)
+                    .expect_err("invalid lifecycle acknowledgement must fail")
+                    .contains(expected_message)
+            );
+        }
+    }
+
+    #[test]
+    fn lifecycle_lane_routes_concurrent_acks_by_request_correlation() {
+        let mut pending = PendingRequests::new();
+        let insert = |pending: &mut PendingRequests, request_id: &str, generation, epoch, nonce| {
+            let (response, receiver) = oneshot::channel();
+            assert!(
+                pending
+                    .insert(
+                        request_id.to_owned(),
+                        format!("trace-{request_id}"),
+                        None,
+                        PendingSink::Unary {
+                            response,
+                            session_state: None,
+                        },
+                        Instant::now() + Duration::from_secs(1),
+                        PendingLane::Lifecycle(LifecycleExpectation::Quiesce {
+                            generation,
+                            epoch,
+                            nonce,
+                        }),
+                    )
+                    .is_ok(),
+                "lifecycle request must register"
+            );
+            receiver
+        };
+        let mut first = insert(&mut pending, "lifecycle-1", 1, 10, 100);
+        let mut second = insert(&mut pending, "lifecycle-2", 1, 20, 200);
+
+        pending
+            .route_response(response(
+                "lifecycle-2",
+                0,
+                true,
+                wire::server_envelope::Payload::QuiesceAck(wire::QuiesceAck {
+                    generation: 1,
+                    epoch: 20,
+                    nonce: 200,
+                    snapshot: Some(wire::QuiescenceSnapshot::default()),
+                }),
+            ))
+            .expect("second lifecycle acknowledgement must route first");
+        pending
+            .route_response(response(
+                "lifecycle-1",
+                0,
+                true,
+                wire::server_envelope::Payload::QuiesceAck(wire::QuiesceAck {
+                    generation: 1,
+                    epoch: 10,
+                    nonce: 100,
+                    snapshot: Some(wire::QuiescenceSnapshot::default()),
+                }),
+            ))
+            .expect("first lifecycle acknowledgement must route second");
+
+        assert!(matches!(first.try_recv(), Ok(Ok(_))));
+        assert!(matches!(second.try_recv(), Ok(Ok(_))));
+        assert!(pending.is_empty());
     }
 }

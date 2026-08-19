@@ -174,7 +174,9 @@ class JdbcProtocolLoopTest {
             ServerEnvelope hello = harness.read();
             assertEquals(ServerEnvelope.PayloadCase.HELLO, hello.getPayloadCase());
             assertEquals(
-                    ProtocolLoop.capabilities(isCommunityCompatibilityConfigured()),
+                    ProtocolLoop.capabilities(
+                            isCommunityCompatibilityConfigured(),
+                            hello.getHello().getSelectedVersion()),
                     hello.getHello().getCapabilitiesList());
 
             harness.send(ClientEnvelope.newBuilder()

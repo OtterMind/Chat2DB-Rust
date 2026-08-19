@@ -18,7 +18,8 @@ use tokio::{
 
 use crate::{
     BridgeError, DeliveryOutcome, EngineCommand, EngineIdentity, EngineState, PingReply,
-    ProcessExit, StderrSnapshot, state::SessionStateCell, stderr_tail::StderrTail,
+    ProcessExit, QuiescenceSnapshot, StderrSnapshot, state::SessionStateCell,
+    stderr_tail::StderrTail,
 };
 
 use self::actor::{
@@ -26,7 +27,7 @@ use self::actor::{
 };
 use self::{
     jdbc::EngineBinding,
-    pending::{ControlEffect, PendingLane, PendingSink, QueryBudgets},
+    pending::{ControlEffect, LifecycleExpectation, PendingLane, PendingSink, QueryBudgets},
 };
 
 mod actor;
@@ -71,6 +72,8 @@ pub use jdbc::{
 
 const PING_CAPABILITY: &str = "lifecycle.ping.v1";
 const SHUTDOWN_CAPABILITY: &str = "lifecycle.shutdown.v1";
+/// Cooperative Java-engine park/resume support introduced by protocol 1.1.
+pub const PARK_CAPABILITY: &str = "lifecycle.park.v1";
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -585,6 +588,7 @@ impl EngineSupervisor {
             control: control_sender.clone(),
             state: state_receiver,
             request_counter: AtomicU64::new(1),
+            lifecycle_nonce: AtomicU64::new(1),
             request_timeout: config.request_timeout,
             shutdown_timeout: config.shutdown_timeout,
             stream_event_capacity: config.stream_event_capacity,
@@ -592,7 +596,10 @@ impl EngineSupervisor {
             stderr_tail,
             shutdown_lock: Mutex::new(()),
         });
-        let client = EngineClient { inner };
+        let client = EngineClient {
+            inner,
+            keepalive_guards: Vec::new(),
+        };
 
         let identity = match client.handshake(&config).await {
             Ok(identity) => identity,
@@ -681,6 +688,7 @@ impl Drop for EngineSupervisor {
 #[derive(Clone)]
 pub struct EngineClient {
     inner: Arc<EngineInner>,
+    keepalive_guards: Vec<Arc<dyn Send + Sync>>,
 }
 
 struct EngineInner {
@@ -691,6 +699,7 @@ struct EngineInner {
     control: mpsc::UnboundedSender<ActorControl>,
     state: watch::Receiver<EngineState>,
     request_counter: AtomicU64,
+    lifecycle_nonce: AtomicU64,
     request_timeout: Duration,
     shutdown_timeout: Duration,
     stream_event_capacity: usize,
@@ -700,6 +709,24 @@ struct EngineInner {
 }
 
 impl EngineClient {
+    /// Returns a client clone that retains an owner-defined lifetime token.
+    ///
+    /// The token propagates through cloned clients and the `DriverClient`,
+    /// `Session`, `Transaction`, and `QueryStream` handles derived from them.
+    #[must_use]
+    pub fn with_keepalive<T>(&self, guard: Arc<T>) -> Self
+    where
+        T: Send + Sync + 'static,
+    {
+        let guard: Arc<dyn Send + Sync> = guard;
+        let mut keepalive_guards = self.keepalive_guards.clone();
+        keepalive_guards.push(guard);
+        Self {
+            inner: Arc::clone(&self.inner),
+            keepalive_guards,
+        }
+    }
+
     /// Returns the current process state.
     #[must_use]
     pub fn state(&self) -> EngineState {
@@ -753,6 +780,89 @@ impl EngineClient {
                 self.terminate_protocol_failure(error.to_string()).await;
                 Err(error)
             }
+        }
+    }
+
+    /// Asks the current generation to prove that it can be parked safely.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when parking was not negotiated, the engine is not
+    /// ready, the request times out, or the acknowledgement does not match the
+    /// generation, epoch, nonce, and request correlation sent by this client.
+    pub async fn quiesce(
+        &self,
+        epoch: u64,
+        request_timeout: Duration,
+    ) -> Result<QuiescenceSnapshot, BridgeError> {
+        let generation = self.lifecycle_generation()?;
+        let nonce = self.next_lifecycle_nonce();
+        let response = self
+            .send_request_inner(
+                wire::client_envelope::Payload::Quiesce(wire::Quiesce {
+                    generation,
+                    epoch,
+                    nonce,
+                }),
+                None,
+                None,
+                request_timeout,
+                false,
+                PendingLane::Lifecycle(LifecycleExpectation::Quiesce {
+                    generation,
+                    epoch,
+                    nonce,
+                }),
+            )
+            .await?;
+        let Some(wire::server_envelope::Payload::QuiesceAck(ack)) = response.payload else {
+            return Err(BridgeError::Protocol(
+                "quiesce request received an unexpected response payload".to_owned(),
+            ));
+        };
+        let snapshot = ack.snapshot.ok_or_else(|| {
+            BridgeError::Protocol("quiesce acknowledgement did not include a snapshot".to_owned())
+        })?;
+        Ok(snapshot.into())
+    }
+
+    /// Resumes a parked generation under the same manager-owned epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when parking was not negotiated, the engine is not
+    /// ready, the request times out, or the acknowledgement does not match the
+    /// generation, epoch, nonce, and request correlation sent by this client.
+    pub async fn resume(&self, epoch: u64, request_timeout: Duration) -> Result<(), BridgeError> {
+        let generation = self.lifecycle_generation()?;
+        let nonce = self.next_lifecycle_nonce();
+        let response = self
+            .send_request_inner(
+                wire::client_envelope::Payload::Resume(wire::Resume {
+                    generation,
+                    epoch,
+                    nonce,
+                }),
+                None,
+                None,
+                request_timeout,
+                false,
+                PendingLane::Lifecycle(LifecycleExpectation::Resume {
+                    generation,
+                    epoch,
+                    nonce,
+                }),
+            )
+            .await?;
+        if matches!(
+            response.payload,
+            Some(wire::server_envelope::Payload::ResumeAck(_))
+        ) {
+            Ok(())
+        } else {
+            Err(BridgeError::Protocol(
+                "resume request received an unexpected response payload".to_owned(),
+            ))
         }
     }
 
@@ -976,7 +1086,7 @@ impl EngineClient {
         self.validate_outbound_frame(&request)?;
         let (response_sender, response_receiver) = oneshot::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
-        let control_lane = matches!(lane, PendingLane::Control(_));
+        let control_lane = !lane.consumes_normal_slot();
         let command = ActorCommand::Request(Box::new(RequestCommand {
             request,
             response: PendingSink::Unary {
@@ -1220,6 +1330,32 @@ impl EngineClient {
                 state: state.label(),
             }),
         }
+    }
+
+    fn lifecycle_generation(&self) -> Result<u64, BridgeError> {
+        let (generation, identity) = match self.state() {
+            EngineState::Ready {
+                generation,
+                identity,
+            } => (generation, identity),
+            state => {
+                return Err(BridgeError::NotReady {
+                    state: state.label(),
+                });
+            }
+        };
+        if !identity
+            .capabilities
+            .iter()
+            .any(|provided| provided == PARK_CAPABILITY)
+        {
+            return Err(BridgeError::MissingCapability(PARK_CAPABILITY.to_owned()));
+        }
+        Ok(generation)
+    }
+
+    fn next_lifecycle_nonce(&self) -> u64 {
+        self.inner.lifecycle_nonce.fetch_add(1, Ordering::Relaxed)
     }
 
     fn validate_outbound_frame(&self, request: &wire::ClientEnvelope) -> Result<(), BridgeError> {

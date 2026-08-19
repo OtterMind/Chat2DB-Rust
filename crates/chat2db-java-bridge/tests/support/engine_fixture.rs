@@ -4,6 +4,7 @@ use std::{
 };
 
 use chat2db_engine_protocol::{MAX_FRAME_BYTES, current_version, read_frame, wire, write_frame};
+use chat2db_java_bridge::PARK_CAPABILITY;
 use prost::Message;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
@@ -49,6 +50,8 @@ struct Options {
     exit_on_update: bool,
     exit_on_commit: bool,
     hang: HangBehavior,
+    lifecycle: LifecycleBehavior,
+    omit_park_capability: bool,
     write_journal: Option<PathBuf>,
 }
 
@@ -88,6 +91,16 @@ enum HangBehavior {
     Update,
     GrantCredits,
     Cancel,
+}
+
+#[derive(Default, PartialEq, Eq)]
+enum LifecycleBehavior {
+    #[default]
+    Normal,
+    WrongQuiesceAck,
+    StaleQuiesceEpoch,
+    WrongResumeNonce,
+    HangQuiesce,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -152,6 +165,7 @@ async fn run(options: Options) -> Result<u8, Box<dyn std::error::Error>> {
         options.max_receive_frame_bytes,
         options.jdbc.is_some(),
         options.community != CommunityBehavior::None,
+        !options.omit_park_capability,
     )
     .await?
     {
@@ -210,6 +224,51 @@ async fn run(options: Options) -> Result<u8, Box<dyn std::error::Error>> {
             }
             Some(wire::client_envelope::Payload::Shutdown(_)) => {
                 return handle_shutdown(&mut output, &meta, &options.shutdown).await;
+            }
+            Some(wire::client_envelope::Payload::Quiesce(quiesce)) => {
+                if options.lifecycle == LifecycleBehavior::HangQuiesce {
+                    eprintln!("fixture ignored quiesce request");
+                    continue;
+                }
+                let payload = if options.lifecycle == LifecycleBehavior::WrongQuiesceAck {
+                    wire::server_envelope::Payload::ResumeAck(wire::ResumeAck {
+                        generation: quiesce.generation,
+                        epoch: quiesce.epoch,
+                        nonce: quiesce.nonce,
+                    })
+                } else {
+                    wire::server_envelope::Payload::QuiesceAck(wire::QuiesceAck {
+                        generation: quiesce.generation,
+                        epoch: if options.lifecycle == LifecycleBehavior::StaleQuiesceEpoch {
+                            quiesce.epoch.wrapping_sub(1)
+                        } else {
+                            quiesce.epoch
+                        },
+                        nonce: quiesce.nonce,
+                        snapshot: Some(wire::QuiescenceSnapshot::default()),
+                    })
+                };
+                write_response(&mut output, &meta, payload, 0, true, None).await?;
+            }
+            Some(wire::client_envelope::Payload::Resume(resume)) => {
+                let nonce = if options.lifecycle == LifecycleBehavior::WrongResumeNonce {
+                    resume.nonce.wrapping_add(1)
+                } else {
+                    resume.nonce
+                };
+                write_response(
+                    &mut output,
+                    &meta,
+                    wire::server_envelope::Payload::ResumeAck(wire::ResumeAck {
+                        generation: resume.generation,
+                        epoch: resume.epoch,
+                        nonce,
+                    }),
+                    0,
+                    true,
+                    None,
+                )
+                .await?;
             }
             Some(wire::client_envelope::Payload::Hello(_)) => {
                 write_error(
@@ -599,6 +658,7 @@ async fn perform_handshake<R, W>(
     max_receive_frame_bytes: Option<u32>,
     jdbc_enabled: bool,
     community_enabled: bool,
+    park_enabled: bool,
 ) -> Result<HandshakeResult, Box<dyn std::error::Error>>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -631,6 +691,9 @@ where
         return Ok(HandshakeResult::Exit(3));
     }
     let mut capabilities = vec![PING_CAPABILITY.to_owned(), SHUTDOWN_CAPABILITY.to_owned()];
+    if park_enabled {
+        capabilities.push(PARK_CAPABILITY.to_owned());
+    }
     if jdbc_enabled {
         capabilities.extend(JDBC_CAPABILITIES.map(str::to_owned));
     }
@@ -985,6 +1048,7 @@ impl Options {
                 "--hang-on-update" => options.hang = HangBehavior::Update,
                 "--hang-on-grant-credits" => options.hang = HangBehavior::GrantCredits,
                 "--hang-on-cancel" => options.hang = HangBehavior::Cancel,
+                "--without-park-capability" => options.omit_park_capability = true,
                 _ => {
                     if let Some(value) = argument.strip_prefix("--stderr-bytes=") {
                         options.stderr_bytes = value.parse().expect("stderr byte count must parse");
@@ -1017,6 +1081,14 @@ impl Options {
                             "wrong-commit" => CommunityBehavior::WrongCommit,
                             "hang-catalog" => CommunityBehavior::HangCatalog,
                             _ => panic!("unknown Community fixture behavior: {value}"),
+                        };
+                    } else if let Some(value) = argument.strip_prefix("--lifecycle=") {
+                        options.lifecycle = match value {
+                            "wrong-quiesce-ack" => LifecycleBehavior::WrongQuiesceAck,
+                            "stale-quiesce-epoch" => LifecycleBehavior::StaleQuiesceEpoch,
+                            "wrong-resume-nonce" => LifecycleBehavior::WrongResumeNonce,
+                            "hang-quiesce" => LifecycleBehavior::HangQuiesce,
+                            _ => panic!("unknown lifecycle fixture behavior: {value}"),
                         };
                     } else if let Some(value) = argument.strip_prefix("--write-journal=") {
                         options.write_journal = Some(PathBuf::from(value));

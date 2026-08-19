@@ -1,16 +1,24 @@
 use std::{fmt, ops::Deref, sync::Arc, time::Duration};
 
 use chat2db_contract::JdbcDriver;
-use chat2db_java_bridge::{EngineClient, EngineConfig, EngineState, EngineSupervisor};
+use chat2db_java_bridge::{
+    BridgeError, EngineClient, EngineConfig, EngineState, EngineSupervisor, PARK_CAPABILITY,
+    QuiescenceSnapshot,
+};
 use tokio::{
     sync::{mpsc, oneshot, watch},
     task::JoinHandle,
+    time::Instant,
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::{AppError, driver_pack, driver_pack::PreparedDriverPacks};
 
 pub(crate) const DEFAULT_ENGINE_IDLE_TIMEOUT: Duration = Duration::from_secs(3 * 60);
+const DEFAULT_ENGINE_HOT_IDLE_DELAY: Duration = Duration::from_secs(15);
+const DEFAULT_ENGINE_QUIESCE_TIMEOUT: Duration = Duration::from_secs(2);
+const DEFAULT_ENGINE_RESUME_TIMEOUT: Duration = Duration::from_secs(1);
+const DEFAULT_ENGINE_POST_RESUME_HOT_FLOOR: Duration = Duration::from_secs(30);
 const DEFAULT_ENGINE_SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
 type AcquireReply = oneshot::Sender<Result<EngineLease, AppError>>;
@@ -22,6 +30,15 @@ pub(crate) enum EngineManagerStatus {
     Idle,
     Starting,
     Ready(EngineState),
+    Quiescing {
+        generation: u64,
+    },
+    Parked {
+        generation: u64,
+    },
+    Resuming {
+        generation: u64,
+    },
     Stopping {
         generation: u64,
         reason: EngineStopReason,
@@ -36,6 +53,7 @@ pub(crate) enum EngineManagerStatus {
 pub(crate) enum EngineStopReason {
     Idle,
     Crashed,
+    LifecycleFailure,
     HostShutdown,
 }
 
@@ -108,16 +126,17 @@ pub struct EngineLease {
 
 impl EngineLease {
     fn managed(
-        client: EngineClient,
+        client: &EngineClient,
         generation: u64,
         commands: mpsc::UnboundedSender<ManagerCommand>,
     ) -> Self {
+        let release = Arc::new(ReleaseOnDrop {
+            generation,
+            commands,
+        });
         Self {
-            client,
-            release: Some(Arc::new(ReleaseOnDrop {
-                generation,
-                commands,
-            })),
+            client: client.with_keepalive(Arc::clone(&release)),
+            release: Some(release),
         }
     }
 
@@ -335,6 +354,20 @@ enum ManagerCommand {
         generation: u64,
         epoch: u64,
     },
+    HotIdleExpired {
+        generation: u64,
+        epoch: u64,
+    },
+    QuiesceFinished {
+        generation: u64,
+        park_epoch: u64,
+        result: Result<QuiescenceSnapshot, BridgeError>,
+    },
+    ResumeFinished {
+        generation: u64,
+        park_epoch: u64,
+        result: Result<(), BridgeError>,
+    },
     DrainExpired {
         generation: u64,
         epoch: u64,
@@ -363,6 +396,20 @@ enum ManagerState {
         cancellation: CancellationToken,
     },
     Running(RunningGeneration),
+    Quiescing {
+        running: RunningGeneration,
+        park_epoch: u64,
+        waiters: Vec<AcquireReply>,
+    },
+    Parked {
+        running: RunningGeneration,
+        park_epoch: u64,
+    },
+    Resuming {
+        running: RunningGeneration,
+        park_epoch: u64,
+        waiters: Vec<AcquireReply>,
+    },
     Stopping {
         generation: u64,
         reason: EngineStopReason,
@@ -376,6 +423,8 @@ struct RunningGeneration {
     supervisor: EngineSupervisor,
     leases: usize,
     idle_epoch: u64,
+    park_epoch: u64,
+    hot_floor_until: Option<Instant>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -428,6 +477,55 @@ async fn run_manager(mut context: ManagerContext) {
                         issue_lease(&mut running, reply, &context.commands);
                         ManagerState::Running(running)
                     }
+                    ManagerState::Quiescing {
+                        mut running,
+                        park_epoch,
+                        mut waiters,
+                    } => {
+                        if !reply.is_closed() {
+                            invalidate_idle(&mut running);
+                            waiters.push(reply);
+                        }
+                        ManagerState::Quiescing {
+                            running,
+                            park_epoch,
+                            waiters,
+                        }
+                    }
+                    ManagerState::Parked {
+                        mut running,
+                        park_epoch,
+                    } => {
+                        if reply.is_closed() {
+                            ManagerState::Parked {
+                                running,
+                                park_epoch,
+                            }
+                        } else {
+                            invalidate_idle(&mut running);
+                            begin_resume(
+                                running,
+                                park_epoch,
+                                vec![reply],
+                                context.commands.clone(),
+                                &context.status,
+                            )
+                        }
+                    }
+                    ManagerState::Resuming {
+                        running,
+                        park_epoch,
+                        mut waiters,
+                    } => {
+                        if !reply.is_closed() {
+                            waiters.push(reply);
+                        }
+                        ManagerState::Resuming {
+                            running,
+                            park_epoch,
+                            waiters,
+                        }
+                    }
                     ManagerState::Stopping {
                         generation,
                         reason,
@@ -453,7 +551,6 @@ async fn run_manager(mut context: ManagerContext) {
                     {
                         running.leases -= 1;
                         if running.leases == 0 {
-                            running.idle_epoch = running.idle_epoch.wrapping_add(1);
                             if shutting_down {
                                 begin_stop(
                                     running,
@@ -463,12 +560,7 @@ async fn run_manager(mut context: ManagerContext) {
                                     &context.status,
                                 )
                             } else {
-                                schedule_idle(
-                                    generation,
-                                    running.idle_epoch,
-                                    context.idle_timeout,
-                                    context.commands.clone(),
-                                );
+                                schedule_idle_cycle(&mut running, &context);
                                 ManagerState::Running(running)
                             }
                         } else {
@@ -544,18 +636,14 @@ async fn run_manager(mut context: ManagerContext) {
                             supervisor,
                             leases: 0,
                             idle_epoch: 0,
+                            park_epoch: 0,
+                            hot_floor_until: None,
                         };
                         for waiter in waiters {
                             issue_lease(&mut running, waiter, &context.commands);
                         }
                         if running.leases == 0 {
-                            running.idle_epoch = running.idle_epoch.wrapping_add(1);
-                            schedule_idle(
-                                generation,
-                                running.idle_epoch,
-                                context.idle_timeout,
-                                context.commands.clone(),
-                            );
+                            schedule_idle_cycle(&mut running, &context);
                         }
                         state = ManagerState::Running(running);
                     }
@@ -575,6 +663,19 @@ async fn run_manager(mut context: ManagerContext) {
                     }
                 }
             }
+            ManagerCommand::HotIdleExpired { generation, epoch } => {
+                state = match state {
+                    ManagerState::Running(running)
+                        if !shutting_down
+                            && running.generation == generation
+                            && running.idle_epoch == epoch
+                            && running.leases == 0 =>
+                    {
+                        begin_quiesce(running, context.commands.clone(), &context.status)
+                    }
+                    other => other,
+                };
+            }
             ManagerCommand::IdleExpired { generation, epoch } => {
                 state = match state {
                     ManagerState::Running(running)
@@ -591,7 +692,174 @@ async fn run_manager(mut context: ManagerContext) {
                             &context.status,
                         )
                     }
+                    ManagerState::Quiescing {
+                        running,
+                        park_epoch,
+                        waiters,
+                    } if !shutting_down
+                        && running.generation == generation
+                        && running.idle_epoch == epoch
+                        && waiters.is_empty() =>
+                    {
+                        tracing::debug!(
+                            generation,
+                            park_epoch,
+                            "hard idle expired while quiescing"
+                        );
+                        begin_stop(
+                            running,
+                            EngineStopReason::Idle,
+                            context.commands.clone(),
+                            waiters,
+                            &context.status,
+                        )
+                    }
+                    ManagerState::Parked {
+                        running,
+                        park_epoch,
+                    } if !shutting_down
+                        && running.generation == generation
+                        && running.idle_epoch == epoch =>
+                    {
+                        tracing::debug!(generation, park_epoch, "hard idle expired while parked");
+                        begin_stop(
+                            running,
+                            EngineStopReason::Idle,
+                            context.commands.clone(),
+                            Vec::new(),
+                            &context.status,
+                        )
+                    }
                     other => other,
+                };
+            }
+            ManagerCommand::QuiesceFinished {
+                generation,
+                park_epoch,
+                result,
+            } => {
+                let ManagerState::Quiescing {
+                    running,
+                    park_epoch: active_park_epoch,
+                    mut waiters,
+                } = state
+                else {
+                    continue;
+                };
+                if running.generation != generation || active_park_epoch != park_epoch {
+                    state = ManagerState::Quiescing {
+                        running,
+                        park_epoch: active_park_epoch,
+                        waiters,
+                    };
+                    continue;
+                }
+                retain_open_waiters(&mut waiters);
+                state = match result {
+                    Ok(snapshot) => {
+                        tracing::debug!(
+                            generation,
+                            park_epoch,
+                            ?snapshot,
+                            "Java generation entered cooperative park"
+                        );
+                        if waiters.is_empty() {
+                            context
+                                .status
+                                .send_replace(EngineManagerStatus::Parked { generation });
+                            ManagerState::Parked {
+                                running,
+                                park_epoch,
+                            }
+                        } else {
+                            begin_resume(
+                                running,
+                                park_epoch,
+                                waiters,
+                                context.commands.clone(),
+                                &context.status,
+                            )
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            generation,
+                            park_epoch,
+                            "Java generation failed to quiesce; reaping it"
+                        );
+                        let reason = if waiters.is_empty() {
+                            EngineStopReason::Idle
+                        } else {
+                            EngineStopReason::LifecycleFailure
+                        };
+                        begin_stop(
+                            running,
+                            reason,
+                            context.commands.clone(),
+                            waiters,
+                            &context.status,
+                        )
+                    }
+                };
+            }
+            ManagerCommand::ResumeFinished {
+                generation,
+                park_epoch,
+                result,
+            } => {
+                let ManagerState::Resuming {
+                    mut running,
+                    park_epoch: active_park_epoch,
+                    mut waiters,
+                } = state
+                else {
+                    continue;
+                };
+                if running.generation != generation || active_park_epoch != park_epoch {
+                    state = ManagerState::Resuming {
+                        running,
+                        park_epoch: active_park_epoch,
+                        waiters,
+                    };
+                    continue;
+                }
+                retain_open_waiters(&mut waiters);
+                state = match result {
+                    Ok(()) => {
+                        running.hot_floor_until =
+                            Some(Instant::now() + DEFAULT_ENGINE_POST_RESUME_HOT_FLOOR);
+                        context
+                            .status
+                            .send_replace(EngineManagerStatus::Ready(running.supervisor.state()));
+                        for waiter in waiters {
+                            issue_lease(&mut running, waiter, &context.commands);
+                        }
+                        if running.leases == 0 {
+                            schedule_idle_cycle(&mut running, &context);
+                        }
+                        ManagerState::Running(running)
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            generation,
+                            park_epoch,
+                            "Java generation failed to resume; reaping it before restart"
+                        );
+                        let reason = if waiters.is_empty() {
+                            EngineStopReason::Idle
+                        } else {
+                            EngineStopReason::LifecycleFailure
+                        };
+                        begin_stop(
+                            running,
+                            reason,
+                            context.commands.clone(),
+                            waiters,
+                            &context.status,
+                        )
+                    }
                 };
             }
             ManagerCommand::DrainExpired { generation, epoch } => {
@@ -617,7 +885,11 @@ async fn run_manager(mut context: ManagerContext) {
                 state: terminal,
             } => {
                 state = match state {
-                    ManagerState::Running(running) if running.generation == generation => {
+                    ManagerState::Running(running)
+                    | ManagerState::Parked {
+                        running,
+                        park_epoch: _,
+                    } if running.generation == generation => {
                         let error = terminal_engine_error(&terminal);
                         context
                             .status
@@ -627,6 +899,28 @@ async fn run_manager(mut context: ManagerContext) {
                             EngineStopReason::Crashed,
                             context.commands.clone(),
                             Vec::new(),
+                            &context.status,
+                        )
+                    }
+                    ManagerState::Quiescing {
+                        running,
+                        park_epoch: _,
+                        waiters,
+                    }
+                    | ManagerState::Resuming {
+                        running,
+                        park_epoch: _,
+                        waiters,
+                    } if running.generation == generation => {
+                        let error = terminal_engine_error(&terminal);
+                        context
+                            .status
+                            .send_replace(EngineManagerStatus::Failed(error));
+                        begin_stop(
+                            running,
+                            EngineStopReason::Crashed,
+                            context.commands.clone(),
+                            waiters,
                             &context.status,
                         )
                     }
@@ -641,7 +935,7 @@ async fn run_manager(mut context: ManagerContext) {
                 let ManagerState::Stopping {
                     generation: active_generation,
                     reason: active_reason,
-                    waiters,
+                    mut waiters,
                 } = state
                 else {
                     continue;
@@ -651,6 +945,7 @@ async fn run_manager(mut context: ManagerContext) {
                     state = ManagerState::Cold;
                     continue;
                 }
+                retain_open_waiters(&mut waiters);
                 if shutting_down {
                     fail_waiters(waiters, &runtime_shutting_down());
                     let shutdown_result = if reason == EngineStopReason::Crashed {
@@ -672,6 +967,11 @@ async fn run_manager(mut context: ManagerContext) {
                             context
                                 .status
                                 .send_replace(EngineManagerStatus::Failed(crashed_engine_error()));
+                        }
+                        Ok(()) if reason == EngineStopReason::LifecycleFailure => {
+                            context.status.send_replace(EngineManagerStatus::Failed(
+                                lifecycle_engine_error(),
+                            ));
                         }
                         Ok(()) => {}
                         Err(error) => {
@@ -798,6 +1098,35 @@ fn start_host_shutdown(
             );
             ManagerState::Running(running)
         }
+        ManagerState::Quiescing {
+            running,
+            park_epoch: _,
+            waiters,
+        }
+        | ManagerState::Resuming {
+            running,
+            park_epoch: _,
+            waiters,
+        } => {
+            fail_waiters(waiters, &runtime_shutting_down());
+            begin_stop(
+                running,
+                EngineStopReason::HostShutdown,
+                commands.clone(),
+                Vec::new(),
+                status,
+            )
+        }
+        ManagerState::Parked {
+            running,
+            park_epoch: _,
+        } => begin_stop(
+            running,
+            EngineStopReason::HostShutdown,
+            commands.clone(),
+            Vec::new(),
+            status,
+        ),
         ManagerState::Stopping {
             generation,
             reason,
@@ -823,12 +1152,83 @@ fn issue_lease(
     }
     running.idle_epoch = running.idle_epoch.wrapping_add(1);
     running.leases = running.leases.saturating_add(1);
-    let lease = EngineLease::managed(
-        running.supervisor.client(),
-        running.generation,
-        commands.clone(),
-    );
+    let client = running.supervisor.client();
+    let lease = EngineLease::managed(&client, running.generation, commands.clone());
     let _ = reply.send(Ok(lease));
+}
+
+fn invalidate_idle(running: &mut RunningGeneration) {
+    running.idle_epoch = running.idle_epoch.wrapping_add(1);
+}
+
+fn begin_quiesce(
+    mut running: RunningGeneration,
+    commands: mpsc::UnboundedSender<ManagerCommand>,
+    status: &watch::Sender<EngineManagerStatus>,
+) -> ManagerState {
+    running.park_epoch = running.park_epoch.wrapping_add(1).max(1);
+    let generation = running.generation;
+    let park_epoch = running.park_epoch;
+    status.send_replace(EngineManagerStatus::Quiescing { generation });
+    let client = running.supervisor.client();
+    let quiesce = tokio::spawn(async move {
+        client
+            .quiesce(park_epoch, DEFAULT_ENGINE_QUIESCE_TIMEOUT)
+            .await
+    });
+    tokio::spawn(async move {
+        let result = quiesce.await.unwrap_or_else(|error| {
+            tracing::error!(%error, generation, park_epoch, "Java quiesce task failed to join");
+            Err(BridgeError::SupervisorTask(format!(
+                "Java quiesce task failed to join: {error}"
+            )))
+        });
+        let _ = commands.send(ManagerCommand::QuiesceFinished {
+            generation,
+            park_epoch,
+            result,
+        });
+    });
+    ManagerState::Quiescing {
+        running,
+        park_epoch,
+        waiters: Vec::new(),
+    }
+}
+
+fn begin_resume(
+    running: RunningGeneration,
+    park_epoch: u64,
+    waiters: Vec<AcquireReply>,
+    commands: mpsc::UnboundedSender<ManagerCommand>,
+    status: &watch::Sender<EngineManagerStatus>,
+) -> ManagerState {
+    let generation = running.generation;
+    status.send_replace(EngineManagerStatus::Resuming { generation });
+    let client = running.supervisor.client();
+    let resume = tokio::spawn(async move {
+        client
+            .resume(park_epoch, DEFAULT_ENGINE_RESUME_TIMEOUT)
+            .await
+    });
+    tokio::spawn(async move {
+        let result = resume.await.unwrap_or_else(|error| {
+            tracing::error!(%error, generation, park_epoch, "Java resume task failed to join");
+            Err(BridgeError::SupervisorTask(format!(
+                "Java resume task failed to join: {error}"
+            )))
+        });
+        let _ = commands.send(ManagerCommand::ResumeFinished {
+            generation,
+            park_epoch,
+            result,
+        });
+    });
+    ManagerState::Resuming {
+        running,
+        park_epoch,
+        waiters,
+    }
 }
 
 fn begin_stop(
@@ -980,6 +1380,52 @@ fn schedule_idle(
     });
 }
 
+fn schedule_idle_cycle(running: &mut RunningGeneration, context: &ManagerContext) {
+    invalidate_idle(running);
+    let epoch = running.idle_epoch;
+    schedule_idle(
+        running.generation,
+        epoch,
+        context.idle_timeout,
+        context.commands.clone(),
+    );
+    if !supports_cooperative_park(running) {
+        return;
+    }
+
+    let base_delay = DEFAULT_ENGINE_HOT_IDLE_DELAY.min(context.idle_timeout / 2);
+    let floor_delay = running
+        .hot_floor_until
+        .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+        .unwrap_or_default();
+    schedule_hot_idle(
+        running.generation,
+        epoch,
+        base_delay.max(floor_delay),
+        context.commands.clone(),
+    );
+}
+
+fn supports_cooperative_park(running: &RunningGeneration) -> bool {
+    matches!(
+        running.supervisor.state(),
+        EngineState::Ready { identity, .. }
+            if identity.capabilities.iter().any(|capability| capability == PARK_CAPABILITY)
+    )
+}
+
+fn schedule_hot_idle(
+    generation: u64,
+    epoch: u64,
+    timeout: Duration,
+    commands: mpsc::UnboundedSender<ManagerCommand>,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(timeout).await;
+        let _ = commands.send(ManagerCommand::HotIdleExpired { generation, epoch });
+    });
+}
+
 fn schedule_drain(
     generation: u64,
     epoch: u64,
@@ -996,6 +1442,10 @@ fn fail_waiters(waiters: Vec<AcquireReply>, error: &AppError) {
     for waiter in waiters {
         let _ = waiter.send(Err(error.clone()));
     }
+}
+
+fn retain_open_waiters(waiters: &mut Vec<AcquireReply>) {
+    waiters.retain(|waiter| !waiter.is_closed());
 }
 
 fn finish_shutdown(
@@ -1044,5 +1494,12 @@ fn crashed_engine_error() -> AppError {
     AppError::unavailable(
         "database_engine_unavailable",
         "The database compatibility engine crashed",
+    )
+}
+
+fn lifecycle_engine_error() -> AppError {
+    AppError::unavailable(
+        "database_engine_unavailable",
+        "The database compatibility engine could not safely leave standby",
     )
 }

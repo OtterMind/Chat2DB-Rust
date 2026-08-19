@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    fmt::Write as _,
+    fmt::{self, Write as _},
     fs::File,
     io::Read,
     path::{Path, PathBuf},
@@ -872,14 +872,41 @@ pub enum CancelDisposition {
     UnknownRequest,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct Transaction {
+    _client: EngineClient,
     id: String,
     isolation: TransactionIsolation,
     read_only: bool,
     session_id: String,
     binding: EngineBinding,
 }
+
+impl fmt::Debug for Transaction {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Transaction")
+            .field("_client", &"<keepalive>")
+            .field("id", &self.id)
+            .field("isolation", &self.isolation)
+            .field("read_only", &self.read_only)
+            .field("session_id", &self.session_id)
+            .field("binding", &self.binding)
+            .finish()
+    }
+}
+
+impl PartialEq for Transaction {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.isolation == other.isolation
+            && self.read_only == other.read_only
+            && self.session_id == other.session_id
+            && self.binding == other.binding
+    }
+}
+
+impl Eq for Transaction {}
 
 impl Transaction {
     #[must_use]
@@ -1208,6 +1235,7 @@ impl Session {
                 .await;
         }
         Ok(Transaction {
+            _client: self.client.clone(),
             id: started.transaction_id,
             isolation,
             read_only: started.read_only,

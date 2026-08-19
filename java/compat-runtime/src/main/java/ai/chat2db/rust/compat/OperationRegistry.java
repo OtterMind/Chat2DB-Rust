@@ -206,6 +206,16 @@ final class OperationRegistry implements AutoCloseable {
         operation.deferOwnershipRelease(cleanup, () -> completeNow(operation));
     }
 
+    int activeCount() {
+        return active.size();
+    }
+
+    int pendingCancellationCount() {
+        return (int) active.values().stream()
+                .filter(QueryOperation::hasPendingCancellationCleanup)
+                .count();
+    }
+
     @Override
     public void close() {
         close(Duration.ofSeconds(5));
@@ -477,6 +487,10 @@ final class OperationRegistry implements AutoCloseable {
 
         synchronized boolean hasPendingCancellation() {
             return cancellationPending;
+        }
+
+        synchronized boolean hasPendingCancellationCleanup() {
+            return cancellationPending || (ownershipDeferred && !deferredCleanupFinished);
         }
 
         void deferOwnershipRelease(Runnable cleanup, Runnable completion) {

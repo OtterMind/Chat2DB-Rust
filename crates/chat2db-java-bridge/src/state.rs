@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use chat2db_engine_protocol::wire::ProtocolVersion;
+use chat2db_engine_protocol::wire::{self, ProtocolVersion};
 
 /// JDBC session state reported after lifecycle and transaction operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,4 +159,28 @@ impl EngineState {
 pub struct PingReply {
     pub nonce: u64,
     pub uptime_millis: u64,
+}
+
+/// Java-owned work that must be absent before an engine generation can park.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct QuiescenceSnapshot {
+    pub active_sessions: u32,
+    pub active_operations: u32,
+    pub active_control_tasks: u32,
+    pub queued_control_tasks: u32,
+    pub pending_cancellations: u32,
+    pub pending_outbound_frames: u32,
+}
+
+impl From<wire::QuiescenceSnapshot> for QuiescenceSnapshot {
+    fn from(snapshot: wire::QuiescenceSnapshot) -> Self {
+        Self {
+            active_sessions: snapshot.active_sessions,
+            active_operations: snapshot.active_operations,
+            active_control_tasks: snapshot.active_control_tasks,
+            queued_control_tasks: snapshot.queued_control_tasks,
+            pending_cancellations: snapshot.pending_cancellations,
+            pending_outbound_frames: snapshot.pending_outbound_frames,
+        }
+    }
 }

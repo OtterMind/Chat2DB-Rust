@@ -7,7 +7,12 @@ import ai.chat2db.rust.compat.protocol.v1.ErrorCategory;
 import ai.chat2db.rust.compat.protocol.v1.OperationOutcome;
 import ai.chat2db.rust.compat.protocol.v1.Pong;
 import ai.chat2db.rust.compat.protocol.v1.ProtocolVersion;
+import ai.chat2db.rust.compat.protocol.v1.Quiesce;
+import ai.chat2db.rust.compat.protocol.v1.QuiesceAck;
+import ai.chat2db.rust.compat.protocol.v1.QuiescenceSnapshot;
 import ai.chat2db.rust.compat.protocol.v1.RequestMeta;
+import ai.chat2db.rust.compat.protocol.v1.Resume;
+import ai.chat2db.rust.compat.protocol.v1.ResumeAck;
 import ai.chat2db.rust.compat.protocol.v1.ResponseMeta;
 import ai.chat2db.rust.compat.protocol.v1.ServerEnvelope;
 import ai.chat2db.rust.compat.protocol.v1.ServerHello;
@@ -30,9 +35,10 @@ import java.util.stream.Collectors;
 final class ProtocolLoop {
 
     static final int PROTOCOL_MAJOR = 1;
-    static final int PROTOCOL_MINOR = 0;
+    static final int PROTOCOL_MINOR = 1;
     static final String PING_CAPABILITY = "lifecycle.ping.v1";
     static final String SHUTDOWN_CAPABILITY = "lifecycle.shutdown.v1";
+    static final String PARK_CAPABILITY = "lifecycle.park.v1";
     static final String EXTERNAL_DRIVER_CAPABILITY = "driver.external-jar.v1";
     static final String JDBC_SESSION_CAPABILITY = "session.jdbc.v1";
     static final String TYPED_QUERY_CAPABILITY = "query.typed-batches.v1";
@@ -74,16 +80,24 @@ final class ProtocolLoop {
             COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
             COMMUNITY_SQL_BUILDER_CAPABILITY,
             COMMUNITY_SQL_PARSER_CAPABILITY);
-    private static final List<ProtocolVersion> SUPPORTED_VERSIONS = List.of(version(1, 0));
+    private static final List<ProtocolVersion> SUPPORTED_VERSIONS =
+            List.of(version(1, 0), version(1, 1));
 
     private final RuntimeInfo runtimeInfo;
     private final String engineInstanceId;
     private final LongSupplier nanoTime;
     private final long startedAtNanos;
     private final PrintStream diagnostics;
+    private final QuiescenceProbe quiescenceProbe;
 
     private State state = State.NEW;
     private int peerMaximumFrameBytes = FrameCodec.MAX_FRAME_BYTES;
+    private boolean parkCapabilityNegotiated;
+    private boolean generationBound;
+    private long boundGeneration;
+    private long lastParkEpoch;
+    private long parkedEpoch;
+    private long parkedQuiesceNonce;
 
     ProtocolLoop(PrintStream diagnostics) {
         this(RuntimeInfo.current(), UUID.randomUUID().toString(), System::nanoTime, diagnostics);
@@ -94,11 +108,26 @@ final class ProtocolLoop {
             String engineInstanceId,
             LongSupplier nanoTime,
             PrintStream diagnostics) {
+        this(
+                runtimeInfo,
+                engineInstanceId,
+                nanoTime,
+                diagnostics,
+                JdbcRuntime::quiescenceSnapshot);
+    }
+
+    ProtocolLoop(
+            RuntimeInfo runtimeInfo,
+            String engineInstanceId,
+            LongSupplier nanoTime,
+            PrintStream diagnostics,
+            QuiescenceProbe quiescenceProbe) {
         this.runtimeInfo = runtimeInfo;
         this.engineInstanceId = engineInstanceId;
         this.nanoTime = nanoTime;
         this.startedAtNanos = nanoTime.getAsLong();
         this.diagnostics = diagnostics;
+        this.quiescenceProbe = quiescenceProbe;
     }
 
     int serve(InputStream input, OutputStream output) throws IOException {
@@ -169,10 +198,21 @@ final class ProtocolLoop {
             return handshake(meta, envelope.getHello(), writer, jdbcRuntime);
         }
 
+        if (state == State.PARKED && !allowedWhileParked(envelope.getPayloadCase())) {
+            return lifecycleError(
+                    meta,
+                    "lifecycle.parked",
+                    "the Java compatibility runtime is parked",
+                    ErrorCategory.ERROR_CATEGORY_UNAVAILABLE,
+                    true);
+        }
+
         try {
             return switch (envelope.getPayloadCase()) {
                 case PING -> pong(meta, envelope.getPing().getNonce());
                 case SHUTDOWN -> shutdown(meta);
+                case QUIESCE -> quiesce(meta, envelope.getQuiesce(), jdbcRuntime);
+                case RESUME -> resume(meta, envelope.getResume());
                 case LOAD_DRIVER -> {
                     jdbcRuntime.schedule(
                             meta, () -> jdbcRuntime.loadDriver(meta, envelope.getLoadDriver()));
@@ -462,8 +502,9 @@ final class ProtocolLoop {
                     versionsDisplay(SUPPORTED_VERSIONS));
         }
 
-        List<String> capabilities =
-                capabilities(jdbcRuntime.communityCompatibilityConfigured());
+        ProtocolVersion negotiated = selectedVersion.orElseThrow();
+        List<String> capabilities = capabilities(
+                jdbcRuntime.communityCompatibilityConfigured(), negotiated);
         Set<String> missingCapabilities = new LinkedHashSet<>(hello.getRequiredCapabilitiesList());
         missingCapabilities.removeAll(capabilities);
         if (!missingCapabilities.isEmpty()) {
@@ -479,7 +520,7 @@ final class ProtocolLoop {
         }
 
         state = State.READY;
-        ProtocolVersion negotiated = selectedVersion.orElseThrow();
+        parkCapabilityNegotiated = supportsPark(negotiated);
         diagnostics.printf(
                 "[compat-runtime] handshake accepted protocol=%d.%d%n",
                 negotiated.getMajor(),
@@ -500,10 +541,19 @@ final class ProtocolLoop {
     }
 
     static List<String> capabilities(boolean communityCompatibilityConfigured) {
-        if (!communityCompatibilityConfigured) {
-            return BASE_CAPABILITIES;
-        }
+        return capabilities(
+                communityCompatibilityConfigured, version(PROTOCOL_MAJOR, PROTOCOL_MINOR));
+    }
+
+    static List<String> capabilities(
+            boolean communityCompatibilityConfigured, ProtocolVersion negotiatedVersion) {
         List<String> capabilities = new ArrayList<>(BASE_CAPABILITIES);
+        if (supportsPark(negotiatedVersion)) {
+            capabilities.add(2, PARK_CAPABILITY);
+        }
+        if (!communityCompatibilityConfigured) {
+            return List.copyOf(capabilities);
+        }
         capabilities.add(COMMUNITY_SQL_VALIDATION_CAPABILITY);
         capabilities.add(COMMUNITY_SQL_FORMATTER_CAPABILITY);
         capabilities.add(COMMUNITY_SQL_COMPLETION_CAPABILITY);
@@ -511,6 +561,195 @@ final class ProtocolLoop {
         capabilities.add(COMMUNITY_NAMESPACE_BUILDER_CAPABILITY);
         capabilities.add(COMMUNITY_DQL_BUILDER_CAPABILITY);
         return List.copyOf(capabilities);
+    }
+
+    private static boolean supportsPark(ProtocolVersion version) {
+        return version.getMajor() == 1 && version.getMinor() >= 1;
+    }
+
+    private static boolean allowedWhileParked(ClientEnvelope.PayloadCase payload) {
+        return payload == ClientEnvelope.PayloadCase.PING
+                || payload == ClientEnvelope.PayloadCase.RESUME
+                || payload == ClientEnvelope.PayloadCase.SHUTDOWN;
+    }
+
+    private Dispatch quiesce(RequestMeta meta, Quiesce request, JdbcRuntime jdbcRuntime) {
+        if (!parkCapabilityNegotiated) {
+            return lifecycleError(
+                    meta,
+                    "lifecycle.park_not_negotiated",
+                    "cooperative park requires protocol 1.1 and lifecycle.park.v1",
+                    ErrorCategory.ERROR_CATEGORY_PROTOCOL,
+                    false);
+        }
+        if (state != State.READY) {
+            return lifecycleError(
+                    meta,
+                    "lifecycle.not_ready",
+                    "the Java compatibility runtime is not ready to park",
+                    ErrorCategory.ERROR_CATEGORY_PROTOCOL,
+                    false);
+        }
+        if (generationBound && request.getGeneration() != boundGeneration) {
+            return lifecycleError(
+                    meta,
+                    "lifecycle.generation_mismatch",
+                    "quiesce generation does not match the bound engine generation",
+                    ErrorCategory.ERROR_CATEGORY_PROTOCOL,
+                    false);
+        }
+        if (Long.compareUnsigned(request.getEpoch(), lastParkEpoch) <= 0) {
+            return lifecycleError(
+                    meta,
+                    "lifecycle.stale_epoch",
+                    "quiesce epoch must increase for each park cycle",
+                    ErrorCategory.ERROR_CATEGORY_PROTOCOL,
+                    false);
+        }
+        if (!generationBound) {
+            generationBound = true;
+            boundGeneration = request.getGeneration();
+        }
+
+        QuiescenceSnapshot snapshot = quiescenceProbe.snapshot(jdbcRuntime);
+        if (!isQuiescent(snapshot)) {
+            return quiesceBlocked(meta, snapshot);
+        }
+
+        lastParkEpoch = request.getEpoch();
+        parkedEpoch = request.getEpoch();
+        parkedQuiesceNonce = request.getNonce();
+        state = State.PARKED;
+        diagnostics.printf(
+                "[compat-runtime] quiesce accepted generation=%s epoch=%s request_id=%s%n",
+                Long.toUnsignedString(boundGeneration),
+                Long.toUnsignedString(parkedEpoch),
+                meta.getRequestId());
+        QuiesceAck ack = QuiesceAck.newBuilder()
+                .setGeneration(request.getGeneration())
+                .setEpoch(request.getEpoch())
+                .setNonce(request.getNonce())
+                .setSnapshot(snapshot)
+                .build();
+        return response(response(meta).setQuiesceAck(ack).build());
+    }
+
+    private Dispatch resume(RequestMeta meta, Resume request) {
+        if (!parkCapabilityNegotiated) {
+            return lifecycleError(
+                    meta,
+                    "lifecycle.park_not_negotiated",
+                    "cooperative park requires protocol 1.1 and lifecycle.park.v1",
+                    ErrorCategory.ERROR_CATEGORY_PROTOCOL,
+                    false);
+        }
+        if (state != State.PARKED) {
+            return lifecycleError(
+                    meta,
+                    "lifecycle.not_parked",
+                    "the Java compatibility runtime is not parked",
+                    ErrorCategory.ERROR_CATEGORY_PROTOCOL,
+                    false);
+        }
+        if (!generationBound || request.getGeneration() != boundGeneration) {
+            return lifecycleError(
+                    meta,
+                    "lifecycle.generation_mismatch",
+                    "resume generation does not match the parked engine generation",
+                    ErrorCategory.ERROR_CATEGORY_PROTOCOL,
+                    false);
+        }
+        if (request.getEpoch() != parkedEpoch) {
+            return lifecycleError(
+                    meta,
+                    "lifecycle.epoch_mismatch",
+                    "resume epoch does not match the active park cycle",
+                    ErrorCategory.ERROR_CATEGORY_PROTOCOL,
+                    false);
+        }
+        if (request.getNonce() == parkedQuiesceNonce) {
+            return lifecycleError(
+                    meta,
+                    "lifecycle.nonce_reused",
+                    "resume nonce must differ from the quiesce nonce",
+                    ErrorCategory.ERROR_CATEGORY_PROTOCOL,
+                    false);
+        }
+
+        state = State.READY;
+        diagnostics.printf(
+                "[compat-runtime] resume accepted generation=%s epoch=%s request_id=%s%n",
+                Long.toUnsignedString(boundGeneration),
+                Long.toUnsignedString(parkedEpoch),
+                meta.getRequestId());
+        ResumeAck ack = ResumeAck.newBuilder()
+                .setGeneration(request.getGeneration())
+                .setEpoch(request.getEpoch())
+                .setNonce(request.getNonce())
+                .build();
+        return response(response(meta).setResumeAck(ack).build());
+    }
+
+    private static boolean isQuiescent(QuiescenceSnapshot snapshot) {
+        return snapshot.getActiveSessions() == 0
+                && snapshot.getActiveOperations() == 0
+                && snapshot.getActiveControlTasks() == 0
+                && snapshot.getQueuedControlTasks() == 0
+                && snapshot.getPendingCancellations() == 0
+                && snapshot.getPendingOutboundFrames() == 0;
+    }
+
+    private Dispatch quiesceBlocked(RequestMeta meta, QuiescenceSnapshot snapshot) {
+        EngineError error = EngineError.newBuilder()
+                .setCode("lifecycle.quiesce_blocked")
+                .setMessage("the Java compatibility runtime still owns active work")
+                .setCategory(ErrorCategory.ERROR_CATEGORY_UNAVAILABLE)
+                .setRetryable(true)
+                .setFatal(false)
+                .setOutcome(OperationOutcome.OPERATION_OUTCOME_NOT_APPLICABLE)
+                .putMetadata(
+                        "active_sessions",
+                        Integer.toUnsignedString(snapshot.getActiveSessions()))
+                .putMetadata(
+                        "active_operations",
+                        Integer.toUnsignedString(snapshot.getActiveOperations()))
+                .putMetadata(
+                        "active_control_tasks",
+                        Integer.toUnsignedString(snapshot.getActiveControlTasks()))
+                .putMetadata(
+                        "queued_control_tasks",
+                        Integer.toUnsignedString(snapshot.getQueuedControlTasks()))
+                .putMetadata(
+                        "pending_cancellations",
+                        Integer.toUnsignedString(snapshot.getPendingCancellations()))
+                .putMetadata(
+                        "pending_outbound_frames",
+                        Integer.toUnsignedString(snapshot.getPendingOutboundFrames()))
+                .build();
+        diagnostics.printf(
+                "[compat-runtime] quiesce blocked generation=%s epoch=%s request_id=%s%n",
+                generationBound ? Long.toUnsignedString(boundGeneration) : "unbound",
+                Long.toUnsignedString(lastParkEpoch),
+                meta.getRequestId());
+        return response(response(meta).setError(error).build());
+    }
+
+    private Dispatch lifecycleError(
+            RequestMeta meta,
+            String code,
+            String message,
+            ErrorCategory category,
+            boolean retryable) {
+        EngineError error = EngineError.newBuilder()
+                .setCode(code)
+                .setMessage(message)
+                .setCategory(category)
+                .setRetryable(retryable)
+                .setFatal(false)
+                .setOutcome(OperationOutcome.OPERATION_OUTCOME_NOT_APPLICABLE)
+                .build();
+        diagnostics.printf("[compat-runtime] lifecycle error code=%s%n", code);
+        return response(response(meta).setError(error).build());
     }
 
     private Dispatch pong(RequestMeta meta, long nonce) {
@@ -627,9 +866,15 @@ final class ProtocolLoop {
     private enum State {
         NEW,
         READY,
+        PARKED,
         CLOSED
     }
 
     private record Dispatch(ServerEnvelope response, boolean terminate, int exitCode) {
+    }
+
+    @FunctionalInterface
+    interface QuiescenceProbe {
+        QuiescenceSnapshot snapshot(JdbcRuntime runtime);
     }
 }

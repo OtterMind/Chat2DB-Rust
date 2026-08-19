@@ -24,6 +24,7 @@ final class ProtocolWriter implements AutoCloseable {
             new AtomicInteger(FrameCodec.MAX_FRAME_BYTES);
     private final AtomicReference<IOException> failure = new AtomicReference<>();
     private final AtomicBoolean closing = new AtomicBoolean();
+    private final AtomicInteger pendingOutboundFrames = new AtomicInteger();
     private final Thread writerThread;
 
     ProtocolWriter(OutputStream output) {
@@ -38,6 +39,10 @@ final class ProtocolWriter implements AutoCloseable {
 
     int peerMaximumFrameBytes() {
         return peerMaximumFrameBytes.get();
+    }
+
+    int pendingOutboundFrames() {
+        return pendingOutboundFrames.get();
     }
 
     void write(ServerEnvelope envelope) throws IOException {
@@ -59,8 +64,13 @@ final class ProtocolWriter implements AutoCloseable {
                     "response frame does not fit the negotiated peer limit");
         }
         WriteRequest request = WriteRequest.message(envelope, beforeWrite);
-        put(request);
-        await(request.completion);
+        pendingOutboundFrames.incrementAndGet();
+        try {
+            put(request);
+            await(request.completion);
+        } finally {
+            pendingOutboundFrames.decrementAndGet();
+        }
     }
 
     void checkHealth() throws IOException {

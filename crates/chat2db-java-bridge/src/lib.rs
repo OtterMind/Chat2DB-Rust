@@ -11,7 +11,8 @@ pub use error::{
     BridgeError, DatabaseErrorCause, DatabaseErrorDetail, DeliveryOutcome, RemoteEngineError,
 };
 pub use state::{
-    EngineIdentity, EngineState, PingReply, ProcessExit, SessionState, StderrSnapshot,
+    EngineIdentity, EngineState, PingReply, ProcessExit, QuiescenceSnapshot, SessionState,
+    StderrSnapshot,
 };
 pub use supervisor::{
     BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest,
@@ -38,8 +39,9 @@ pub use supervisor::{
     DatabaseProduct, DriverArtifact, DriverClient, DriverSpec, EngineClient, EngineConfig,
     EngineSupervisor, FLOW_CREDIT_CAPABILITY, JdbcColumn, JdbcParameter, JdbcRow, JdbcValue,
     JdbcValueType, LoadedDriver, MAX_DRIVER_ARTIFACT_BYTES, MAX_DRIVER_ARTIFACTS,
-    MAX_DRIVER_TOTAL_BYTES, OPERATION_CANCEL_CAPABILITY, QUERY_TYPED_BATCHES_CAPABILITY,
-    QueryCompleted, QueryEvent, QueryOptions, QueryRequest, QueryStarted, QueryStream, RowBatch,
-    SESSION_JDBC_CAPABILITY, Session, SessionConfig, TRANSACTION_LOCAL_CAPABILITY, Transaction,
-    TransactionIsolation, TransactionOptions, UPDATE_JDBC_CAPABILITY, UpdateRequest, UpdateResult,
+    MAX_DRIVER_TOTAL_BYTES, OPERATION_CANCEL_CAPABILITY, PARK_CAPABILITY,
+    QUERY_TYPED_BATCHES_CAPABILITY, QueryCompleted, QueryEvent, QueryOptions, QueryRequest,
+    QueryStarted, QueryStream, RowBatch, SESSION_JDBC_CAPABILITY, Session, SessionConfig,
+    TRANSACTION_LOCAL_CAPABILITY, Transaction, TransactionIsolation, TransactionOptions,
+    UPDATE_JDBC_CAPABILITY, UpdateRequest, UpdateResult,
 };
