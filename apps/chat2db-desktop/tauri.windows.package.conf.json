@@ -12,8 +12,8 @@
       "../../java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar": "chat2db/engine/chat2db-compat-runtime.jar",
       "../../target/community-h2-classpath": "chat2db/community-classpath",
       "../../target/windows-driver-packs": "chat2db/driver-packs",
-      "../../LICENSE": "chat2db/licenses/Chat2DB-Rust-LICENSE.txt",
-      "../../third_party/chat2db-community/LICENSE": "chat2db/licenses/Chat2DB-Community-LICENSE.txt",
+      "../../target/windows-license-resources/Chat2DB-Rust-LICENSE.txt": "chat2db/licenses/Chat2DB-Rust-LICENSE.txt",
+      "../../target/windows-license-resources/Chat2DB-Community-LICENSE.txt": "chat2db/licenses/Chat2DB-Community-LICENSE.txt",
       "../../packaging/macos/THIRD_PARTY_NOTICES.md": "chat2db/licenses/THIRD_PARTY_NOTICES.md"
     },
     "windows": {

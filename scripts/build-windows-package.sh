@@ -5,6 +5,7 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 desktop_root="${repository_root}/apps/chat2db-desktop"
 build_target="${CHAT2DB_WINDOWS_BUILD_TARGET:-${repository_root}/target/windows-package-build}"
 package_directory="${repository_root}/target/windows-package"
+license_resource_directory="${repository_root}/target/windows-license-resources"
 
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) ;;
@@ -36,11 +37,20 @@ if [[ -L "${build_target}" || ( -e "${build_target}" && ! -d "${build_target}" )
   exit 1
 fi
 
+rm -rf -- "${license_resource_directory}"
+mkdir -p -- "${license_resource_directory}"
+cp -- "${repository_root}/LICENSE" \
+  "${license_resource_directory}/Chat2DB-Rust-LICENSE.txt"
+cp -- "${repository_root}/third_party/chat2db-community/LICENSE" \
+  "${license_resource_directory}/Chat2DB-Community-LICENSE.txt"
+
 for path in \
   "${repository_root}/target/windows-runtime/bin/java.exe" \
   "${repository_root}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar" \
   "${repository_root}/target/community-h2-classpath" \
   "${repository_root}/target/windows-driver-packs" \
+  "${license_resource_directory}/Chat2DB-Rust-LICENSE.txt" \
+  "${license_resource_directory}/Chat2DB-Community-LICENSE.txt" \
   "${repository_root}/apps/frontend/dist"; do
   if [[ ! -e "${path}" ]]; then
     echo "package prerequisite is missing: ${path}" >&2
