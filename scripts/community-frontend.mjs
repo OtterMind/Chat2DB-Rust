@@ -89,6 +89,16 @@ function replaceDirectory(target) {
   mkdirSync(target, { recursive: true });
 }
 
+function tarPath(target) {
+  if (process.platform !== 'win32') {
+    return target;
+  }
+
+  const normalized = target.replaceAll('\\', '/');
+  const drivePath = normalized.match(/^([A-Za-z]):\/(.*)$/);
+  return drivePath ? `/${drivePath[1].toLowerCase()}/${drivePath[2]}` : normalized;
+}
+
 function verifySource() {
   if (!existsSync(join(SUBMODULE_DIR, '.git'))) {
     fail(`submodule is unavailable; run git submodule update --init --recursive ${lock.submodulePath}`);
@@ -138,7 +148,7 @@ function exportSource(destination) {
     ],
     { cwd: SUBMODULE_DIR },
   );
-  run('tar', ['-xf', archivePath, '--strip-components=1', '-C', destination]);
+  run('tar', ['-xf', tarPath(archivePath), '--strip-components=1', '-C', tarPath(destination)]);
   rmSync(archivePath, { force: true });
 }
 
