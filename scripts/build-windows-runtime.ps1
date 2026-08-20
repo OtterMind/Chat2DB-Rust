@@ -42,7 +42,6 @@ if (-not $modules) {
 
 New-Item -ItemType Directory -Force -Path $targetRoot | Out-Null
 Remove-SafeDirectory $stagingDirectory
-New-Item -ItemType Directory -Force -Path $stagingDirectory | Out-Null
 
 & $jlink `
     --module-path $jmods `
