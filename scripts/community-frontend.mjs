@@ -89,16 +89,6 @@ function replaceDirectory(target) {
   mkdirSync(target, { recursive: true });
 }
 
-function tarPath(target) {
-  if (process.platform !== 'win32') {
-    return target;
-  }
-
-  const normalized = target.replaceAll('\\', '/');
-  const drivePath = normalized.match(/^([A-Za-z]):\/(.*)$/);
-  return drivePath ? `/${drivePath[1].toLowerCase()}/${drivePath[2]}` : normalized;
-}
-
 function verifySource() {
   if (!existsSync(join(SUBMODULE_DIR, '.git'))) {
     fail(`submodule is unavailable; run git submodule update --init --recursive ${lock.submodulePath}`);
@@ -135,20 +125,27 @@ function verifySource() {
 function exportSource(destination) {
   replaceDirectory(destination);
   mkdirSync(VERSION_ROOT, { recursive: true });
-  const archivePath = join(VERSION_ROOT, `source-${process.pid}.tar`);
+  const archiveName = `source-${process.pid}.tar`;
+  const archivePath = join(VERSION_ROOT, archiveName);
+  const archiveOutput = relative(SUBMODULE_DIR, archivePath).split(sep).join('/');
   rmSync(archivePath, { force: true });
   run(
     'git',
     [
+      '-C',
+      SUBMODULE_DIR,
       'archive',
       '--format=tar',
-      `--output=${archivePath}`,
+      `--output=${archiveOutput}`,
       lock.commit,
       lock.sourcePath,
     ],
-    { cwd: SUBMODULE_DIR },
+    { cwd: VERSION_ROOT },
   );
-  run('tar', ['-xf', tarPath(archivePath), '--strip-components=1', '-C', tarPath(destination)]);
+  const destinationPath = relative(VERSION_ROOT, destination).split(sep).join('/');
+  run('tar', ['-xf', archiveName, '--strip-components=1', '-C', destinationPath], {
+    cwd: VERSION_ROOT,
+  });
   rmSync(archivePath, { force: true });
 }
 
