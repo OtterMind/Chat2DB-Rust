@@ -19,6 +19,9 @@
     "windows": {
       "webviewInstallMode": {
         "type": "embedBootstrapper"
+      },
+      "wix": {
+        "fipsCompliant": true
       }
     }
   }
