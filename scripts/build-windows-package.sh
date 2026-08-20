@@ -66,6 +66,7 @@ mkdir -p "${build_target}"
   CARGO_TARGET_DIR="${build_target}" \
   RUSTUP_TOOLCHAIN="${rust_toolchain}" \
   CI=true cargo tauri build \
+    --verbose \
     --config tauri.windows.package.conf.json \
     --bundles nsis,msi \
     --ci \
