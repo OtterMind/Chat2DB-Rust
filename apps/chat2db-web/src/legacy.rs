@@ -89,7 +89,6 @@ const DEFAULT_PREVIEW_PAGE_SIZE: u32 = 200;
 const DEFAULT_SQL_PAGE_SIZE: u32 = 200;
 const MAX_METADATA_PAGE_SIZE: u32 = 100_000;
 const MAX_PREVIEW_ROWS: u32 = 1_000;
-const MAX_SQL_ROWS: u32 = 10_000;
 const LARGE_VALUE_CHUNK_SIZE: u32 = 256 * 1024;
 const LARGE_VALUE_FALLBACK_PREVIEW_BYTES: usize = 64 * 1024;
 const RESULT_PAGE_MAX_BYTES: u64 = 8 * 1024 * 1024;
@@ -6088,12 +6087,6 @@ fn sql_page_window(request: &LegacySqlExecuteRequest) -> LegacyResult<(u32, u32)
             "requested page is outside the SQL result window",
         )
     })?;
-    if offset >= MAX_SQL_ROWS || row_limit > MAX_SQL_ROWS {
-        return Err(LegacyFailure::invalid(
-            "invalid_sql_execute_request",
-            "SQL results are limited to the first 10000 rows",
-        ));
-    }
     Ok((offset, row_limit))
 }
 
@@ -10479,6 +10472,44 @@ mod tests {
 
         fn delete(&self, _reference: &SecretRef) -> Result<(), SecretVaultError> {
             Ok(())
+        }
+    }
+
+    #[test]
+    fn sql_paging_allows_pages_beyond_the_previous_ten_thousand_row_window() {
+        let request: LegacySqlExecuteRequest = serde_json::from_value(serde_json::json!({
+            "dataSourceId": "mysql-local",
+            "sql": "select 1",
+            "pageNo": 100_000,
+            "pageSize": 1_000,
+        }))
+        .expect("SQL request must decode");
+
+        assert_eq!(
+            sql_page_window(&request).expect("page must be accepted"),
+            (99_999_000, 100_000_000)
+        );
+    }
+
+    #[test]
+    fn sql_paging_still_rejects_invalid_or_overflowing_windows() {
+        for payload in [
+            serde_json::json!({
+                "dataSourceId": "mysql-local",
+                "sql": "select 1",
+                "pageNo": 0,
+                "pageSize": 1_000,
+            }),
+            serde_json::json!({
+                "dataSourceId": "mysql-local",
+                "sql": "select 1",
+                "pageNo": u32::MAX,
+                "pageSize": 100_000,
+            }),
+        ] {
+            let request: LegacySqlExecuteRequest =
+                serde_json::from_value(payload).expect("SQL request must decode");
+            assert!(sql_page_window(&request).is_err());
         }
     }
 
