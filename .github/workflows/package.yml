@@ -1,4 +1,4 @@
-name: Package
+name: Desktop Packages
 
 on:
   push:
@@ -15,12 +15,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: package-${{ github.ref }}
+  group: desktop-packages-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   macos:
-    name: macOS ${{ matrix.artifact_name }} package
+    name: macOS ${{ matrix.arch }}
     strategy:
       fail-fast: false
       matrix:
@@ -87,7 +87,7 @@ jobs:
       - name: Upload macOS package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: Chat2DB-Rust-${{ matrix.artifact_name }}-${{ github.sha }}
+          name: Chat2DB-Rust-Desktop-${{ matrix.artifact_name }}-${{ github.sha }}
           path: |
             target/macos-package/*.zip
             target/macos-package/*.dmg
@@ -98,7 +98,7 @@ jobs:
           retention-days: 7
 
   windows:
-    name: Windows x86_64 NSIS and MSI package
+    name: Windows x86_64
     runs-on: windows-latest
     timeout-minutes: 150
     steps:
@@ -169,7 +169,7 @@ jobs:
       - name: Upload Windows installers
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: Chat2DB-Rust-windows-x86_64-${{ github.sha }}
+          name: Chat2DB-Rust-Desktop-windows-x86_64-${{ github.sha }}
           path: |
             target/windows-package/*.exe
             target/windows-package/*.msi
@@ -180,7 +180,7 @@ jobs:
           retention-days: 7
 
   linux:
-    name: Linux ${{ matrix.artifact_name }} packages
+    name: Linux ${{ matrix.arch }}
     strategy:
       fail-fast: false
       matrix:
@@ -253,7 +253,7 @@ jobs:
       - name: Upload Linux packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: Chat2DB-Rust-${{ matrix.artifact_name }}-${{ github.sha }}
+          name: Chat2DB-Rust-Desktop-${{ matrix.artifact_name }}-${{ github.sha }}
           path: |
             target/linux-package/*.AppImage
             target/linux-package/*.deb
@@ -265,7 +265,7 @@ jobs:
           retention-days: 7
 
   notify-feishu:
-    name: Notify Feishu
+    name: Feishu notification
     if: ${{ always() }}
     needs: [macos, windows, linux]
     runs-on: ubuntu-latest
@@ -283,7 +283,7 @@ jobs:
             echo "FEISHU_WEBHOOK_URL is not configured; skipping notification"
             exit 0
           fi
-          message="$(printf 'Chat2DB Rust Package\nWorkflow: %s\nCommit: %s\nmacOS: %s\nWindows: %s\nLinux: %s\n%s' \
+          message="$(printf 'Chat2DB Rust Desktop Packages\nWorkflow: %s\nCommit: %s\nmacOS: %s\nWindows: %s\nLinux: %s\n%s' \
             "${GITHUB_WORKFLOW}" "${COMMIT_SHA}" "${MACOS_RESULT}" "${WINDOWS_RESULT}" "${LINUX_RESULT}" "${RUN_URL}")"
           payload="$(jq -n --arg text "${message}" '{msg_type: "text", content: {text: $text}}')"
           curl --fail-with-body --silent --show-error --retry 3 \
