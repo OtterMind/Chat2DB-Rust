@@ -74,7 +74,10 @@ mkdir -p "${build_target}"
   # themselves instead of mounting their AppImage runtime.
   # linuxdeploy's bundled strip cannot handle modern RELR relocations in
   # Ubuntu's WebKitGTK libraries; keep those libraries intact in AppImage.
-  APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=true ARCH="${appimage_arch}" \
+  # libjvm.so is already supplied by the bundled jlink runtime. It is a
+  # private dependency of libjawt.so and must not be resolved as a system lib.
+  APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=true \
+    LINUXDEPLOY_EXCLUDED_LIBRARIES="libjvm.so" ARCH="${appimage_arch}" \
     CARGO_TARGET_DIR="${build_target}" RUSTUP_TOOLCHAIN="${rust_toolchain}" CI=true \
     cargo tauri build --verbose --config tauri.linux.package.conf.json \
       --bundles appimage,deb,rpm --ci --ignore-version-mismatches -- --locked
