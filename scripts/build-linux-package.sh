@@ -61,7 +61,10 @@ rm -rf -- "${build_target}"
 mkdir -p "${build_target}"
 (
   cd "${desktop_root}"
-  CARGO_TARGET_DIR="${build_target}" RUSTUP_TOOLCHAIN="${rust_toolchain}" CI=true \
+  # GitHub's ARM64 runners do not expose FUSE; force AppImage tools to extract
+  # themselves instead of mounting their AppImage runtime.
+  APPIMAGE_EXTRACT_AND_RUN=1 \
+    CARGO_TARGET_DIR="${build_target}" RUSTUP_TOOLCHAIN="${rust_toolchain}" CI=true \
     cargo tauri build --config tauri.linux.package.conf.json \
       --bundles appimage,deb,rpm --ci --ignore-version-mismatches -- --locked
 )
