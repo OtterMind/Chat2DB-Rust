@@ -202,7 +202,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            fakeroot file libappindicator3-dev libsecret-1-dev \
+            fakeroot file libappindicator3-dev libsecret-1-dev xdg-utils \
             libwebkit2gtk-4.1-dev librsvg2-dev patchelf rpm
       - name: Verify runner architecture
         run: test "$(uname -m)" = "${{ matrix.arch }}"
