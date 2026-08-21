@@ -76,7 +76,7 @@ mkdir -p "${build_target}"
   # Ubuntu's WebKitGTK libraries; keep those libraries intact in AppImage.
   APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=true ARCH="${appimage_arch}" \
     CARGO_TARGET_DIR="${build_target}" RUSTUP_TOOLCHAIN="${rust_toolchain}" CI=true \
-    cargo tauri build --config tauri.linux.package.conf.json \
+    cargo tauri build --verbose --config tauri.linux.package.conf.json \
       --bundles appimage,deb,rpm --ci --ignore-version-mismatches -- --locked
 )
 
