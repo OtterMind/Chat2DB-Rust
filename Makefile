@@ -6,7 +6,8 @@
 	native-mysql-integration native-mysql-direct-integration native-mysql-ssh-integration \
 	community-product-mysql-integration \
 	frontend-deps frontend-source frontend desktop generate-contracts check-contracts \
-	macos-runtime macos-driver-packs macos-package-java macos-package macos-package-verify
+	macos-runtime macos-driver-packs macos-package-java macos-package macos-package-verify \
+	linux-runtime linux-driver-packs linux-package-java linux-package linux-package-verify
 
 JAVA_ENGINE_JAR := $(CURDIR)/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar
 H2_DRIVER_JAR := $(CURDIR)/java/compat-runtime/target/test-drivers/h2-2.3.232.jar
@@ -208,3 +209,21 @@ macos-package: macos-package-java macos-driver-packs frontend macos-runtime
 
 macos-package-verify:
 	./scripts/verify-macos-package.sh
+
+linux-runtime:
+	./scripts/build-linux-runtime.sh
+
+linux-driver-packs:
+	./scripts/prepare-linux-driver-packs.sh
+
+linux-package-java: community-h2-classpath
+	$(MAKE) java
+
+linux-package: linux-package-java linux-driver-packs frontend linux-runtime
+	./scripts/build-linux-package.sh
+
+linux-package-verify:
+	@test -d target/linux-package
+	@test -n "$$(find target/linux-package -name '*.AppImage' -print -quit)"
+	@test -n "$$(find target/linux-package -name '*.deb' -print -quit)"
+	@test -n "$$(find target/linux-package -name '*.rpm' -print -quit)"

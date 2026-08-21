@@ -25,6 +25,19 @@ For an existing checkout, initialize the same pinned source with:
 git submodule update --init --recursive
 ```
 
+## Desktop package targets
+
+The unified GitHub Actions `Package` workflow builds the same desktop runtime
+for every platform supported by Chat2DB Community:
+
+- macOS ARM64 and x86_64, with `.app.zip` and `.dmg` artifacts;
+- Windows x86_64, with NSIS `.exe` and MSI installers; and
+- Linux x86_64 and ARM64, with AppImage, `.deb`, and `.rpm` artifacts.
+
+macOS builds are ad-hoc signed for test packages by default. A manual run with
+`publish_authorized_artifact=true` enables the configured Developer ID signing
+and notarization path.
+
 ## Current state
 
 The repository has completed Stages 1 through 6, the first thirteen

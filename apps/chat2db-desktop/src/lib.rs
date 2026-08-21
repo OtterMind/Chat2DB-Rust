@@ -97,6 +97,24 @@ struct BundledRuntimeResources {
 }
 
 impl BundledRuntimeResources {
+    fn from_resource_dir(resource_dir: &Path) -> Option<Self> {
+        if !resource_dir.is_absolute() {
+            return None;
+        }
+        Some(Self::from_resource_root(resource_dir.join("chat2db")))
+    }
+
+    fn from_resource_root(resource_root: PathBuf) -> Self {
+        Self {
+            java_bin: resource_root.join("java").join("bin").join("java"),
+            java_engine_jar: resource_root
+                .join("engine")
+                .join("chat2db-compat-runtime.jar"),
+            community_classpath_dir: resource_root.join("community-classpath"),
+            driver_pack_dir: resource_root.join("driver-packs"),
+        }
+    }
+
     fn from_executable(executable: &Path) -> Option<Self> {
         let macos_dir = executable.parent()?;
         if macos_dir.file_name() != Some(OsStr::new("MacOS")) {
@@ -111,15 +129,9 @@ impl BundledRuntimeResources {
             return None;
         }
 
-        let resource_root = contents_dir.join("Resources").join("chat2db");
-        Some(Self {
-            java_bin: resource_root.join("java").join("bin").join("java"),
-            java_engine_jar: resource_root
-                .join("engine")
-                .join("chat2db-compat-runtime.jar"),
-            community_classpath_dir: resource_root.join("community-classpath"),
-            driver_pack_dir: resource_root.join("driver-packs"),
-        })
+        Some(Self::from_resource_root(
+            contents_dir.join("Resources").join("chat2db"),
+        ))
     }
 }
 
@@ -323,8 +335,8 @@ impl SubscriptionRegistry {
 }
 
 impl DesktopState {
-    async fn open_from_environment() -> Result<Self, DesktopError> {
-        let runtime_config = runtime_config_from_environment()?;
+    async fn open_from_environment(resource_dir: Option<&Path>) -> Result<Self, DesktopError> {
+        let runtime_config = runtime_config_from_environment(resource_dir)?;
         let mut runtime_host = RuntimeHost::open(runtime_config)
             .await
             .map_err(DesktopError::runtime)?;
@@ -488,8 +500,9 @@ fn spawn_desktop_runtime_initialization<R: tauri::Runtime>(
     startup: &Arc<DesktopStartup>,
 ) {
     let task_startup = Arc::clone(startup);
+    let resource_dir = app_handle.path().resource_dir().ok();
     let initialization = tauri::async_runtime::spawn(async move {
-        match DesktopState::open_from_environment().await {
+        match DesktopState::open_from_environment(resource_dir.as_deref()).await {
             Ok(state) => {
                 let state = Arc::new(state);
                 if app_handle.manage(Arc::clone(&state)) {
@@ -629,7 +642,9 @@ pub fn run() -> Result<i32, DesktopError> {
     Ok(exit_code)
 }
 
-fn runtime_config_from_environment() -> Result<RuntimeConfig, DesktopError> {
+fn runtime_config_from_environment(
+    resource_dir: Option<&Path>,
+) -> Result<RuntimeConfig, DesktopError> {
     let resource_overrides = RuntimeResourceOverrides {
         java_engine_jar: optional_nonempty_os_env(JAVA_ENGINE_JAR_ENV)?,
         java_bin: optional_nonempty_os_env(JAVA_BIN_ENV)?,
@@ -637,8 +652,11 @@ fn runtime_config_from_environment() -> Result<RuntimeConfig, DesktopError> {
         driver_pack_dir: optional_nonempty_os_env(DRIVER_PACK_DIR_ENV)?,
     };
     let current_executable = env::current_exe().ok();
-    let resources =
-        resolve_runtime_resource_paths(current_executable.as_deref(), resource_overrides)?;
+    let resources = resolve_runtime_resource_paths(
+        current_executable.as_deref(),
+        resource_dir,
+        resource_overrides,
+    )?;
     let mut engine = EngineConfig::new(EngineCommand::java_jar(
         resources.java_bin,
         resources.java_engine_jar,
@@ -668,9 +686,12 @@ fn runtime_config_from_environment() -> Result<RuntimeConfig, DesktopError> {
 
 fn resolve_runtime_resource_paths(
     executable: Option<&Path>,
+    resource_dir: Option<&Path>,
     overrides: RuntimeResourceOverrides,
 ) -> Result<RuntimeResourcePaths, DesktopError> {
-    let bundled = executable.and_then(BundledRuntimeResources::from_executable);
+    let bundled = resource_dir
+        .and_then(BundledRuntimeResources::from_resource_dir)
+        .or_else(|| executable.and_then(BundledRuntimeResources::from_executable));
 
     let java_bin = match overrides.java_bin {
         Some(java_bin) => java_bin,
@@ -3334,9 +3355,43 @@ mod tests {
     fn macos_app_bundle_supplies_all_default_runtime_resources() {
         let (_directory, executable, bundled) = complete_app_bundle();
 
-        let resolved =
-            resolve_runtime_resource_paths(Some(&executable), RuntimeResourceOverrides::default())
-                .expect("complete app bundle must resolve");
+        let resolved = resolve_runtime_resource_paths(
+            Some(&executable),
+            None,
+            RuntimeResourceOverrides::default(),
+        )
+        .expect("complete app bundle must resolve");
+
+        assert_eq!(resolved.java_bin, bundled.java_bin.into_os_string());
+        assert_eq!(resolved.java_engine_jar, bundled.java_engine_jar);
+        assert_eq!(
+            resolved.community_classpath_dir,
+            Some(bundled.community_classpath_dir)
+        );
+        assert_eq!(resolved.driver_pack_dir, Some(bundled.driver_pack_dir));
+    }
+
+    #[test]
+    fn tauri_resource_directory_supplies_non_macos_runtime_resources() {
+        let directory = tempfile::tempdir().expect("temporary resource directory");
+        let resource_dir = directory.path().join("resources");
+        let bundled = BundledRuntimeResources::from_resource_dir(&resource_dir)
+            .expect("absolute resource directory must resolve");
+        fs::create_dir_all(bundled.java_bin.parent().expect("Java binary parent"))
+            .expect("bundled Java directory");
+        File::create(&bundled.java_bin).expect("bundled Java binary");
+        fs::create_dir_all(bundled.java_engine_jar.parent().expect("engine JAR parent"))
+            .expect("bundled engine directory");
+        File::create(&bundled.java_engine_jar).expect("bundled engine JAR");
+        fs::create_dir_all(&bundled.community_classpath_dir).expect("bundled Community classpath");
+        fs::create_dir_all(&bundled.driver_pack_dir).expect("bundled driver packs");
+
+        let resolved = resolve_runtime_resource_paths(
+            None,
+            Some(&resource_dir),
+            RuntimeResourceOverrides::default(),
+        )
+        .expect("Tauri resource directory must resolve");
 
         assert_eq!(resolved.java_bin, bundled.java_bin.into_os_string());
         assert_eq!(resolved.java_engine_jar, bundled.java_engine_jar);
@@ -3373,6 +3428,7 @@ mod tests {
 
         let resolved = resolve_runtime_resource_paths(
             Some(&executable),
+            None,
             RuntimeResourceOverrides {
                 java_bin: Some(java_bin.clone().into_os_string()),
                 java_engine_jar: Some(java_engine_jar.clone().into_os_string()),
@@ -3415,6 +3471,7 @@ mod tests {
 
             let error = resolve_runtime_resource_paths(
                 Some(&executable),
+                None,
                 RuntimeResourceOverrides::default(),
             )
             .expect_err("missing bundled resource must fail closed");
@@ -3436,7 +3493,11 @@ mod tests {
             .join("chat2db-desktop");
 
         assert!(matches!(
-            resolve_runtime_resource_paths(Some(&executable), RuntimeResourceOverrides::default()),
+            resolve_runtime_resource_paths(
+                Some(&executable),
+                None,
+                RuntimeResourceOverrides::default(),
+            ),
             Err(DesktopError::MissingJavaEngineJar)
         ));
     }
