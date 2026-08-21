@@ -175,3 +175,30 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+
+  notify-feishu:
+    name: Notify Feishu
+    if: ${{ always() }}
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send package result to Feishu
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          if [[ -z "${FEISHU_WEBHOOK_URL}" ]]; then
+            echo "FEISHU_WEBHOOK_URL is not configured; skipping notification"
+            exit 0
+          fi
+
+          message="$(printf 'Chat2DB Rust Package\nWorkflow: %s\nCommit: %s\nmacOS: %s\nWindows: %s\n%s' \
+            "${GITHUB_WORKFLOW}" "${COMMIT_SHA}" "${MACOS_RESULT}" "${WINDOWS_RESULT}" "${RUN_URL}")"
+          payload="$(jq -n --arg text "${message}" '{msg_type: "text", content: {text: $text}}')"
+          curl --fail-with-body --silent --show-error --retry 3 \
+            --header 'Content-Type: application/json' \
+            --data "${payload}" \
+            "${FEISHU_WEBHOOK_URL}"
