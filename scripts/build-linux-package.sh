@@ -57,13 +57,24 @@ if [[ "${rust_version}" != rustc\ 1.88.0\ * ]]; then
   exit 1
 fi
 
+case "$(uname -m)" in
+  x86_64) appimage_arch="x86_64" ;;
+  aarch64) appimage_arch="aarch64" ;;
+  *)
+    echo "unsupported Linux package architecture: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
 rm -rf -- "${build_target}"
 mkdir -p "${build_target}"
 (
   cd "${desktop_root}"
   # GitHub's ARM64 runners do not expose FUSE; force AppImage tools to extract
   # themselves instead of mounting their AppImage runtime.
-  APPIMAGE_EXTRACT_AND_RUN=1 \
+  # linuxdeploy's bundled strip cannot handle modern RELR relocations in
+  # Ubuntu's WebKitGTK libraries; keep those libraries intact in AppImage.
+  APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=true ARCH="${appimage_arch}" \
     CARGO_TARGET_DIR="${build_target}" RUSTUP_TOOLCHAIN="${rust_toolchain}" CI=true \
     cargo tauri build --config tauri.linux.package.conf.json \
       --bundles appimage,deb,rpm --ci --ignore-version-mismatches -- --locked
