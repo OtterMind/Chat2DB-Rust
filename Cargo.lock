@@ -891,6 +891,7 @@ dependencies = [
  "chat2db-runtime",
  "clap",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing-subscriber",
 ]

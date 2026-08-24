@@ -289,7 +289,7 @@ fn spawn_runtime_process(
         .arg("--background-child")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::null());
     configure_background_process(&mut command);
     command.spawn().map_err(Into::into)
 }
