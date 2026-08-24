@@ -29,7 +29,9 @@ reaps Java. A later request starts a new generation and reloads every staged
 driver pack. Axum serves JSON, SSE, and
 the exact pinned original Community Umi/React SPA; Tauri exposes commands and
 per-subscription channels without a localhost product server. Both hosts also publish an owner-only local endpoint
-for the CLI and MCP process. That same `Application` owns query and Agent run
+for the CLI and MCP process. When neither host is running, the CLI can launch a
+headless `RuntimeHost` plus `LocalServer` from the same binary without Tauri,
+WebKit, or HTTP. That same `Application` owns query and Agent run
 execution, replay, cancellation, and write-permission decisions. Strict local
 managed driver packs and immutable inventory are implemented. A fixed Community
 5.3.0 submodule now supplies a real H2 compatibility slice for plugin discovery,
@@ -62,8 +64,9 @@ list, so an ENUM/SET member containing `UNSIGNED` is not misclassified. Its view
 metadata route returns the original six-field creation form without querying an
 existing view.
 Signing, distribution, the remaining dialect estate, broader historical API
-coverage, and packaging remain target components. CLI and MCP attach to a
-running host rather than composing a second product runtime.
+coverage, and packaging remain target components. MCP attaches to a running
+host. CLI defaults to attach-or-start and owns a temporary headless host only
+when no compatible local host exists.
 
 Runtime-tested: yes for the Stage 7M MySQL product vertical. On 2026-07-27 the
 complete stored-datasource path passed against MySQL 8.4, from real Community
@@ -124,6 +127,12 @@ React in system WebView         React in browser
                  -> DM metadata and preview adapter
                     -> generic JDBC session bridge
                        -> official dmJdbcDriver JAR
+
+Headless CLI
+  -> reuse owner-only local attachment when available
+  -> otherwise spawn chat2db runtime serve
+     -> RuntimeHost + LocalServer
+     -> no Tauri / WebKit / HTTP listener
               -> Java Community compatibility for unregistered database types
                  -> Protobuf stdin/stdout
                  -> fixed Community plugin registry
@@ -639,8 +648,9 @@ preview slice are not implemented.
 
 ## Local attachment and MCP boundary
 
-Web and desktop start `LocalServer` with the same `Application` used by their
-primary transport and fail startup if the local endpoint cannot be secured.
+Web, desktop, and the headless CLI host start `LocalServer` with the same
+`Application` used by their delivery adapter and fail startup if the local
+endpoint cannot be secured.
 Unix uses an owner-only Unix-domain socket and peer credentials. Windows uses
 an owner-only named pipe plus owner-validated endpoint metadata. Both platforms
 publish a versioned endpoint record in the process-owned data directory,
@@ -651,8 +661,13 @@ The local protocol exposes health, secret-free datasource listing,
 forced-read-only query start, operation snapshot, idempotent cancellation,
 row/byte-bounded result paging, and one explicitly confirmed MySQL write. The
 CLI maps these operations to structured JSON commands and requires
-`--confirm-write` for the write command. It does not start another product
-runtime or contact Java directly.
+`--confirm-write` for the write command. Its default `--host auto` mode first
+probes the owner-only endpoint, then spawns its own `runtime serve` child only
+when no host responds. `--host attach` disables automatic startup. The headless
+host uses the shared runtime resource resolver, protects active requests and
+queries from idle shutdown, and exits after 60 idle seconds by default. It does
+not create a GUI and starts Java only if the selected operation requires a Java
+compatibility capability.
 
 `chat2db-mcp` uses `rmcp` 2.2 over standard stdio and maps six tools onto the
 same `LocalClient`: `list_datasources`, `query_database`,
@@ -711,10 +726,10 @@ Agent-run tool or JDBC bind-parameter input.
 
 ## Packaging target
 
-The desktop package contains the Tauri/Rust product, React assets, a private Java
-compatibility JAR, a jlink-minimized Java 17 runtime, and a small signed core
-driver pack. Long-tail driver packs are signed, versioned, downloaded on demand,
-and independently rollback-capable.
+The desktop package contains the Tauri/Rust product, the matching headless
+`chat2db` CLI, React assets, a private Java compatibility JAR, a jlink-minimized
+Java 17 runtime, and a small signed core driver pack. Long-tail driver packs are
+signed, versioned, downloaded on demand, and independently rollback-capable.
 
 The installed-size target is 30% to 45% below the equivalent Community package.
 This is an acceptance target, not a measured current result.

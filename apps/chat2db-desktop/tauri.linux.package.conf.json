@@ -12,6 +12,7 @@
       "../../java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar": "chat2db/engine/chat2db-compat-runtime.jar",
       "../../target/community-h2-classpath": "chat2db/community-classpath",
       "../../target/linux-driver-packs": "chat2db/driver-packs",
+      "../../target/linux-cli/chat2db": "chat2db/bin/chat2db",
       "../../target/linux-license-resources/Chat2DB-Rust-LICENSE.txt": "chat2db/licenses/Chat2DB-Rust-LICENSE.txt",
       "../../target/linux-license-resources/Chat2DB-Community-LICENSE.txt": "chat2db/licenses/Chat2DB-Community-LICENSE.txt",
       "../../packaging/macos/THIRD_PARTY_NOTICES.md": "chat2db/licenses/THIRD_PARTY_NOTICES.md"

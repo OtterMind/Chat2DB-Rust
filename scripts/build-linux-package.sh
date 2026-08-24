@@ -68,6 +68,15 @@ esac
 
 rm -rf -- "${build_target}"
 mkdir -p "${build_target}"
+cli_build_target="${repository_root}/target/linux-cli-build"
+cli_resource_directory="${repository_root}/target/linux-cli"
+rm -rf -- "${cli_build_target}"
+rm -rf -- "${cli_resource_directory}"
+mkdir -p -- "${cli_resource_directory}"
+CARGO_TARGET_DIR="${cli_build_target}" RUSTUP_TOOLCHAIN="${rust_toolchain}" \
+  cargo build -p chat2db-cli --release --locked
+cp -- "${cli_build_target}/release/chat2db" "${cli_resource_directory}/chat2db"
+chmod 755 "${cli_resource_directory}/chat2db"
 (
   cd "${desktop_root}"
   # GitHub's ARM64 runners do not expose FUSE; force AppImage tools to extract
@@ -110,6 +119,7 @@ cp -- "${appimage_artifacts[0]}" "${deb_artifacts[0]}" "${rpm_artifacts[0]}" "${
     echo "target=linux"
     echo "rust_toolchain=${rust_toolchain}"
     echo "tauri_cli=$(cargo tauri --version)"
+    echo "embedded_cli=chat2db/bin/chat2db"
     echo "appimage=$(basename "${appimage_artifacts[0]}")"
     echo "deb=$(basename "${deb_artifacts[0]}")"
     echo "rpm=$(basename "${rpm_artifacts[0]}")"

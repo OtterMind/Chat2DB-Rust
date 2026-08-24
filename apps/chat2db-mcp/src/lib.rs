@@ -440,6 +440,8 @@ impl McpServer {
     }
 }
 
+// rmcp 2.2 generates an immediately-ready async trait method here.
+#[allow(unknown_lints, clippy::unused_async_trait_impl)]
 #[tool_handler]
 impl ServerHandler for McpServer {
     fn get_info(&self) -> ServerInfo {
@@ -732,51 +734,58 @@ mod tests {
             info
         }
 
-        async fn create_elicitation(
+        fn create_elicitation(
             &self,
             request: ElicitRequestParams,
             _context: RequestContext<RoleClient>,
-        ) -> Result<ElicitResult, rmcp::ErrorData> {
-            let ElicitRequestParams::FormElicitationParams {
-                message,
-                requested_schema,
-                ..
-            } = request
-            else {
-                return Err(rmcp::ErrorData::invalid_params(
-                    "database write approval requires form elicitation",
-                    None,
-                ));
-            };
-            assert!(requested_schema.properties.contains_key("confirm"));
-            assert!(
-                requested_schema
-                    .required
-                    .as_ref()
-                    .is_some_and(|required| required.iter().any(|field| field == "confirm"))
-            );
-            self.messages.lock().expect("messages lock").push(message);
-            let decision = self
-                .decisions
-                .lock()
-                .expect("decisions lock")
-                .pop_front()
-                .unwrap_or(ApprovalDecision::Cancel);
-            if matches!(decision, ApprovalDecision::ProtocolError) {
-                return Err(rmcp::ErrorData::internal_error(
-                    "elicitation transport failed",
-                    None,
-                ));
-            }
-            Ok(match decision {
-                ApprovalDecision::Confirm(confirm) => ElicitResult::new(ElicitationAction::Accept)
-                    .with_content(serde_json::json!({ "confirm": confirm })),
-                ApprovalDecision::Decline => ElicitResult::new(ElicitationAction::Decline),
-                ApprovalDecision::Cancel => ElicitResult::new(ElicitationAction::Cancel),
-                ApprovalDecision::InvalidContent => ElicitResult::new(ElicitationAction::Accept)
-                    .with_content(serde_json::json!({ "confirm": "not-a-boolean" })),
-                ApprovalDecision::ProtocolError => unreachable!("returned above"),
-            })
+        ) -> impl std::future::Future<Output = Result<ElicitResult, rmcp::ErrorData>> + Send
+        {
+            std::future::ready((|| {
+                let ElicitRequestParams::FormElicitationParams {
+                    message,
+                    requested_schema,
+                    ..
+                } = request
+                else {
+                    return Err(rmcp::ErrorData::invalid_params(
+                        "database write approval requires form elicitation",
+                        None,
+                    ));
+                };
+                assert!(requested_schema.properties.contains_key("confirm"));
+                assert!(
+                    requested_schema
+                        .required
+                        .as_ref()
+                        .is_some_and(|required| required.iter().any(|field| field == "confirm"))
+                );
+                self.messages.lock().expect("messages lock").push(message);
+                let decision = self
+                    .decisions
+                    .lock()
+                    .expect("decisions lock")
+                    .pop_front()
+                    .unwrap_or(ApprovalDecision::Cancel);
+                if matches!(decision, ApprovalDecision::ProtocolError) {
+                    return Err(rmcp::ErrorData::internal_error(
+                        "elicitation transport failed",
+                        None,
+                    ));
+                }
+                Ok(match decision {
+                    ApprovalDecision::Confirm(confirm) => {
+                        ElicitResult::new(ElicitationAction::Accept)
+                            .with_content(serde_json::json!({ "confirm": confirm }))
+                    }
+                    ApprovalDecision::Decline => ElicitResult::new(ElicitationAction::Decline),
+                    ApprovalDecision::Cancel => ElicitResult::new(ElicitationAction::Cancel),
+                    ApprovalDecision::InvalidContent => {
+                        ElicitResult::new(ElicitationAction::Accept)
+                            .with_content(serde_json::json!({ "confirm": "not-a-boolean" }))
+                    }
+                    ApprovalDecision::ProtocolError => unreachable!("returned above"),
+                })
+            })())
         }
     }
 

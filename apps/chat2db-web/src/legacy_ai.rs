@@ -1753,7 +1753,9 @@ fn extract_binary_text(bytes: &[u8]) -> String {
         output.push_str(&String::from_utf8_lossy(&ascii));
     }
     let utf16 = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .collect::<Vec<_>>();
     let decoded = String::from_utf16_lossy(&utf16);

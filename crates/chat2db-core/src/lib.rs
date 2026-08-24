@@ -799,6 +799,11 @@ impl Application {
         self.inner.operations.cancel(id).await
     }
 
+    /// Returns the number of process-local database operations still running.
+    pub async fn active_operation_count(&self) -> usize {
+        self.inner.operations.active_count().await
+    }
+
     /// Atomically obtains replay events and a live operation subscription.
     ///
     /// # Errors

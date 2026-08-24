@@ -42,8 +42,7 @@ struct MysqlTestConfig {
 impl MysqlTestConfig {
     fn from_environment() -> Option<Self> {
         let required = std::env::var("MYSQL_TEST_REQUIRED")
-            .ok()
-            .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE"));
+            .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE"));
         let configured = REQUIRED_MYSQL_ENV
             .iter()
             .filter(|name| std::env::var_os(name).is_some())

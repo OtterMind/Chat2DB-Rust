@@ -1,11 +1,13 @@
 //! Tauri IPC delivery adapter for the `Chat2DB` desktop product.
 
+// Tauri serializes the stable ApiError value directly at every command boundary.
+#![allow(clippy::result_large_err)]
+
 mod legacy_files;
 
 use std::{
     collections::HashMap,
-    env,
-    ffi::{OsStr, OsString},
+    ffi::OsStr,
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -40,12 +42,9 @@ use chat2db_contract::{
     StartCommunityTablePreviewRequest, StartQueryRequest, UpdateAgentSessionRequest,
     UpdateDatasourceRequest, UpdateProviderProfileRequest, ValidateCommunitySqlRequest,
 };
-use chat2db_core::{
-    AppError, Application, NativeConsoleCancellation, RuntimeConfig, RuntimeHost,
-    load_fixed_community_classpath,
-};
-use chat2db_java_bridge::{BridgeError, EngineCommand, EngineConfig};
+use chat2db_core::{AppError, Application, NativeConsoleCancellation, RuntimeConfig, RuntimeHost};
 use chat2db_local::{LocalError, LocalServer};
+use chat2db_runtime::{RuntimeConfigError, RuntimeOptions};
 use legacy_files::{
     LegacyCreateSqlDirectoryChildRequest, LegacyOpenSqlDirectoryRequest, LegacyReadFileRequest,
     LegacyRenameSqlDirectoryChildRequest, LegacySaveFileRequest, LegacySaveSqlDirectoryFileRequest,
@@ -57,83 +56,9 @@ use tauri::{Emitter, Manager, State, WebviewWindow, ipc::Channel};
 use tauri_plugin_dialog::{DialogExt, FilePath, MessageDialogKind};
 use tokio::sync::{Mutex, oneshot, watch};
 
-const DATA_DIR_ENV: &str = "CHAT2DB_DATA_DIR";
-const DRIVER_PACK_DIR_ENV: &str = "CHAT2DB_DRIVER_PACK_DIR";
-const COMMUNITY_CLASSPATH_DIR_ENV: &str = "CHAT2DB_COMMUNITY_CLASSPATH_DIR";
-const JAVA_BIN_ENV: &str = "CHAT2DB_JAVA_BIN";
-const JAVA_ENGINE_JAR_ENV: &str = "CHAT2DB_JAVA_ENGINE_JAR";
-const VAULT_MASTER_KEY_ENV: &str = "CHAT2DB_VAULT_MASTER_KEY";
-
-const BUNDLED_JAVA_BIN: &str = "Java binary";
-const BUNDLED_JAVA_ENGINE_JAR: &str = "compatibility-engine JAR";
-const BUNDLED_COMMUNITY_CLASSPATH: &str = "Community classpath";
-const BUNDLED_DRIVER_PACKS: &str = "driver packs";
 const COMMUNITY_JAVA_MESSAGE_EVENT: &str = "chat2db://java-message";
 const DESKTOP_RUNTIME_READY_EVENT: &str = "chat2db://runtime-ready";
 const DESKTOP_RUNTIME_FAILED_EVENT: &str = "chat2db://runtime-failed";
-
-#[derive(Debug, Default)]
-struct RuntimeResourceOverrides {
-    java_bin: Option<OsString>,
-    java_engine_jar: Option<OsString>,
-    community_classpath_dir: Option<OsString>,
-    driver_pack_dir: Option<OsString>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct RuntimeResourcePaths {
-    java_bin: OsString,
-    java_engine_jar: PathBuf,
-    community_classpath_dir: Option<PathBuf>,
-    driver_pack_dir: Option<PathBuf>,
-}
-
-#[derive(Debug)]
-struct BundledRuntimeResources {
-    java_bin: PathBuf,
-    java_engine_jar: PathBuf,
-    community_classpath_dir: PathBuf,
-    driver_pack_dir: PathBuf,
-}
-
-impl BundledRuntimeResources {
-    fn from_resource_dir(resource_dir: &Path) -> Option<Self> {
-        if !resource_dir.is_absolute() {
-            return None;
-        }
-        Some(Self::from_resource_root(resource_dir.join("chat2db")))
-    }
-
-    fn from_resource_root(resource_root: PathBuf) -> Self {
-        Self {
-            java_bin: resource_root.join("java").join("bin").join("java"),
-            java_engine_jar: resource_root
-                .join("engine")
-                .join("chat2db-compat-runtime.jar"),
-            community_classpath_dir: resource_root.join("community-classpath"),
-            driver_pack_dir: resource_root.join("driver-packs"),
-        }
-    }
-
-    fn from_executable(executable: &Path) -> Option<Self> {
-        let macos_dir = executable.parent()?;
-        if macos_dir.file_name() != Some(OsStr::new("MacOS")) {
-            return None;
-        }
-        let contents_dir = macos_dir.parent()?;
-        if contents_dir.file_name() != Some(OsStr::new("Contents")) {
-            return None;
-        }
-        let app_dir = contents_dir.parent()?;
-        if app_dir.extension() != Some(OsStr::new("app")) {
-            return None;
-        }
-
-        Some(Self::from_resource_root(
-            contents_dir.join("Resources").join("chat2db"),
-        ))
-    }
-}
 
 struct DesktopState {
     application: Application,
@@ -399,20 +324,7 @@ where
 /// Startup or shutdown failure for the desktop host.
 #[derive(Debug)]
 pub enum DesktopError {
-    MissingJavaEngineJar,
-    EmptyEnvironmentVariable(&'static str),
-    InvalidJavaEngineJar(PathBuf),
-    JavaEngineJarMetadata {
-        path: PathBuf,
-        source: std::io::Error,
-    },
-    InvalidBundledResource {
-        resource: &'static str,
-        expected: &'static str,
-        path: PathBuf,
-    },
-    InvalidVaultMasterKeyEncoding,
-    CommunityClasspath(Box<BridgeError>),
+    RuntimeConfiguration(Box<RuntimeConfigError>),
     Local(Box<LocalError>),
     Runtime(Box<AppError>),
     Tauri(Box<tauri::Error>),
@@ -435,42 +347,7 @@ impl DesktopError {
 impl std::fmt::Display for DesktopError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::MissingJavaEngineJar => write!(
-                formatter,
-                "{JAVA_ENGINE_JAR_ENV} is required and must point to the compatibility-engine JAR"
-            ),
-            Self::EmptyEnvironmentVariable(name) => {
-                write!(formatter, "{name} must not be empty when configured")
-            }
-            Self::InvalidJavaEngineJar(path) => write!(
-                formatter,
-                "{JAVA_ENGINE_JAR_ENV} does not point to a regular file: {}",
-                path.display()
-            ),
-            Self::JavaEngineJarMetadata { path, source } => write!(
-                formatter,
-                "unable to inspect {JAVA_ENGINE_JAR_ENV} at {}: {source}",
-                path.display()
-            ),
-            Self::InvalidBundledResource {
-                resource,
-                expected,
-                path,
-            } => write!(
-                formatter,
-                "bundled {resource} is missing or is not a {expected}: {}",
-                path.display()
-            ),
-            Self::InvalidVaultMasterKeyEncoding => write!(
-                formatter,
-                "{VAULT_MASTER_KEY_ENV} must be UTF-8 standard base64 for exactly 32 bytes"
-            ),
-            Self::CommunityClasspath(error) => {
-                write!(
-                    formatter,
-                    "fixed Community classpath failed validation: {error}"
-                )
-            }
+            Self::RuntimeConfiguration(error) => write!(formatter, "{error}"),
             Self::Local(error) => write!(formatter, "local attachment failed: {error}"),
             Self::Runtime(error) => write!(formatter, "Chat2DB runtime failed: {error}"),
             Self::Tauri(error) => write!(formatter, "Tauri desktop failed: {error}"),
@@ -481,16 +358,10 @@ impl std::fmt::Display for DesktopError {
 impl std::error::Error for DesktopError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::JavaEngineJarMetadata { source, .. } => Some(source),
-            Self::CommunityClasspath(error) => Some(error.as_ref()),
+            Self::RuntimeConfiguration(error) => Some(error.as_ref()),
             Self::Local(error) => Some(error.as_ref()),
             Self::Runtime(error) => Some(error.as_ref()),
             Self::Tauri(error) => Some(error.as_ref()),
-            Self::MissingJavaEngineJar
-            | Self::EmptyEnvironmentVariable(_)
-            | Self::InvalidJavaEngineJar(_)
-            | Self::InvalidBundledResource { .. }
-            | Self::InvalidVaultMasterKeyEncoding => None,
         }
     }
 }
@@ -645,158 +516,13 @@ pub fn run() -> Result<i32, DesktopError> {
 fn runtime_config_from_environment(
     resource_dir: Option<&Path>,
 ) -> Result<RuntimeConfig, DesktopError> {
-    let resource_overrides = RuntimeResourceOverrides {
-        java_engine_jar: optional_nonempty_os_env(JAVA_ENGINE_JAR_ENV)?,
-        java_bin: optional_nonempty_os_env(JAVA_BIN_ENV)?,
-        community_classpath_dir: optional_nonempty_os_env(COMMUNITY_CLASSPATH_DIR_ENV)?,
-        driver_pack_dir: optional_nonempty_os_env(DRIVER_PACK_DIR_ENV)?,
-    };
-    let current_executable = env::current_exe().ok();
-    let resources = resolve_runtime_resource_paths(
-        current_executable.as_deref(),
+    let current_executable = std::env::current_exe().ok();
+    chat2db_runtime::runtime_config_from_environment(RuntimeOptions {
+        data_dir: None,
+        executable: current_executable.as_deref(),
         resource_dir,
-        resource_overrides,
-    )?;
-    let mut engine = EngineConfig::new(EngineCommand::java_jar(
-        resources.java_bin,
-        resources.java_engine_jar,
-    ));
-    if let Some(community_classpath_dir) = resources.community_classpath_dir {
-        let classpath = load_fixed_community_classpath(community_classpath_dir)
-            .map_err(|error| DesktopError::CommunityClasspath(Box::new(error)))?;
-        engine = engine.with_community_classpath(classpath);
-    }
-    let mut config = RuntimeConfig::new(engine);
-
-    if let Some(data_dir) = optional_nonempty_os_env(DATA_DIR_ENV)? {
-        config = config.with_data_dir(PathBuf::from(data_dir));
-    }
-    if let Some(driver_pack_dir) = resources.driver_pack_dir {
-        config = config.with_driver_pack_dir(driver_pack_dir);
-    }
-    match env::var(VAULT_MASTER_KEY_ENV) {
-        Ok(master_key) => config = config.with_vault_master_key_base64(master_key),
-        Err(env::VarError::NotPresent) => {}
-        Err(env::VarError::NotUnicode(_)) => {
-            return Err(DesktopError::InvalidVaultMasterKeyEncoding);
-        }
-    }
-    Ok(config)
-}
-
-fn resolve_runtime_resource_paths(
-    executable: Option<&Path>,
-    resource_dir: Option<&Path>,
-    overrides: RuntimeResourceOverrides,
-) -> Result<RuntimeResourcePaths, DesktopError> {
-    let bundled = resource_dir
-        .and_then(BundledRuntimeResources::from_resource_dir)
-        .or_else(|| executable.and_then(BundledRuntimeResources::from_executable));
-
-    let java_bin = match overrides.java_bin {
-        Some(java_bin) => java_bin,
-        None => match bundled.as_ref() {
-            Some(resources) => {
-                validate_bundled_file(BUNDLED_JAVA_BIN, &resources.java_bin)?;
-                resources.java_bin.clone().into_os_string()
-            }
-            None => OsString::from("java"),
-        },
-    };
-    let java_engine_jar = match overrides.java_engine_jar {
-        Some(java_engine_jar) => {
-            let path = PathBuf::from(java_engine_jar);
-            validate_java_engine_jar(&path)?;
-            path
-        }
-        None => match bundled.as_ref() {
-            Some(resources) => {
-                validate_bundled_file(BUNDLED_JAVA_ENGINE_JAR, &resources.java_engine_jar)?;
-                resources.java_engine_jar.clone()
-            }
-            None => return Err(DesktopError::MissingJavaEngineJar),
-        },
-    };
-    let community_classpath_dir = match overrides.community_classpath_dir {
-        Some(directory) => Some(PathBuf::from(directory)),
-        None => match bundled.as_ref() {
-            Some(resources) => {
-                validate_bundled_directory(
-                    BUNDLED_COMMUNITY_CLASSPATH,
-                    &resources.community_classpath_dir,
-                )?;
-                Some(resources.community_classpath_dir.clone())
-            }
-            None => None,
-        },
-    };
-    let driver_pack_dir = match overrides.driver_pack_dir {
-        Some(directory) => Some(PathBuf::from(directory)),
-        None => match bundled.as_ref() {
-            Some(resources) => {
-                validate_bundled_directory(BUNDLED_DRIVER_PACKS, &resources.driver_pack_dir)?;
-                Some(resources.driver_pack_dir.clone())
-            }
-            None => None,
-        },
-    };
-
-    Ok(RuntimeResourcePaths {
-        java_bin,
-        java_engine_jar,
-        community_classpath_dir,
-        driver_pack_dir,
     })
-}
-
-fn optional_nonempty_os_env(name: &'static str) -> Result<Option<OsString>, DesktopError> {
-    validate_optional_os_env(name, env::var_os(name))
-}
-
-fn validate_optional_os_env(
-    name: &'static str,
-    value: Option<OsString>,
-) -> Result<Option<OsString>, DesktopError> {
-    match value {
-        Some(value) if value.is_empty() => Err(DesktopError::EmptyEnvironmentVariable(name)),
-        value => Ok(value),
-    }
-}
-
-fn validate_java_engine_jar(path: &Path) -> Result<(), DesktopError> {
-    match fs::metadata(path) {
-        Ok(metadata) if metadata.is_file() => Ok(()),
-        Ok(_) => Err(DesktopError::InvalidJavaEngineJar(path.to_path_buf())),
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            Err(DesktopError::InvalidJavaEngineJar(path.to_path_buf()))
-        }
-        Err(source) => Err(DesktopError::JavaEngineJarMetadata {
-            path: path.to_path_buf(),
-            source,
-        }),
-    }
-}
-
-fn validate_bundled_file(resource: &'static str, path: &Path) -> Result<(), DesktopError> {
-    match fs::metadata(path) {
-        Ok(metadata) if metadata.is_file() => Ok(()),
-        Ok(_) | Err(_) => Err(DesktopError::InvalidBundledResource {
-            resource,
-            expected: "regular file",
-            path: path.to_path_buf(),
-        }),
-    }
-}
-
-fn validate_bundled_directory(resource: &'static str, path: &Path) -> Result<(), DesktopError> {
-    match fs::metadata(path) {
-        Ok(metadata) if metadata.is_dir() => Ok(()),
-        Ok(_) | Err(_) => Err(DesktopError::InvalidBundledResource {
-            resource,
-            expected: "directory",
-            path: path.to_path_buf(),
-        }),
-    }
+    .map_err(|error| DesktopError::RuntimeConfiguration(Box::new(error)))
 }
 
 fn api_error(error: &AppError) -> ApiError {
@@ -2786,9 +2512,7 @@ async fn result_page(
 #[cfg(test)]
 mod tests {
     use std::{
-        ffi::OsString,
         fs::{self, File},
-        path::PathBuf,
         sync::{Arc, atomic::AtomicU64},
     };
 
@@ -2804,17 +2528,14 @@ mod tests {
     use tokio::sync::{Mutex, oneshot};
 
     use super::{
-        BUNDLED_COMMUNITY_CLASSPATH, BUNDLED_DRIVER_PACKS, BUNDLED_JAVA_BIN,
-        BUNDLED_JAVA_ENGINE_JAR, BundledRuntimeResources, DesktopError, DesktopStartup,
-        DesktopState, FilePath, LegacySqlCancellationRegistry, LegacySqlDirectoryRegistry,
-        RuntimeResourceOverrides, SubscriptionRegistry, agent_stream_message,
+        DesktopStartup, DesktopState, FilePath, LegacySqlCancellationRegistry,
+        LegacySqlDirectoryRegistry, SubscriptionRegistry, agent_stream_message,
         build_community_dml_for, build_community_namespace_sql_for, client_command_response,
         complete_community_sql_for, decode_client_message, format_community_sql_for,
         legacy_ai_push_message, legacy_file_extensions, legacy_request_for, legacy_selected_file,
         legacy_sql_push_message, legacy_sql_rowless_payload, operation_stream_message,
-        parse_after_sequence, resolve_runtime_resource_paths, spawn_engine_prewarm,
-        start_community_table_preview_for, validate_community_sql_for, validate_java_engine_jar,
-        validate_optional_os_env,
+        parse_after_sequence, spawn_engine_prewarm, start_community_table_preview_for,
+        validate_community_sql_for,
     };
 
     fn test_desktop_state() -> Arc<DesktopState> {
@@ -2828,38 +2549,6 @@ mod tests {
             next_legacy_execution_id: AtomicU64::new(1),
             next_subscription_id: AtomicU64::new(1),
         })
-    }
-
-    fn complete_app_bundle() -> (tempfile::TempDir, PathBuf, BundledRuntimeResources) {
-        let directory = tempfile::tempdir().expect("temporary app bundle");
-        let executable = directory
-            .path()
-            .join("Chat2DB.app")
-            .join("Contents")
-            .join("MacOS")
-            .join("chat2db-desktop");
-        fs::create_dir_all(executable.parent().expect("bundle executable parent"))
-            .expect("bundle executable directory");
-        File::create(&executable).expect("bundle executable");
-
-        let resources = BundledRuntimeResources::from_executable(&executable)
-            .expect("synthetic executable must be recognized as an app bundle");
-        fs::create_dir_all(resources.java_bin.parent().expect("Java binary parent"))
-            .expect("bundled Java directory");
-        File::create(&resources.java_bin).expect("bundled Java binary");
-        fs::create_dir_all(
-            resources
-                .java_engine_jar
-                .parent()
-                .expect("engine JAR parent"),
-        )
-        .expect("bundled engine directory");
-        File::create(&resources.java_engine_jar).expect("bundled engine JAR");
-        fs::create_dir_all(&resources.community_classpath_dir)
-            .expect("bundled Community classpath");
-        fs::create_dir_all(&resources.driver_pack_dir).expect("bundled driver packs");
-
-        (directory, executable, resources)
     }
 
     #[tokio::test]
@@ -3331,190 +3020,6 @@ mod tests {
         let error = parse_after_sequence(Some("invalid".to_owned()))
             .expect_err("invalid sequence must fail");
         assert_eq!(error.code, "invalid_last_event_id");
-    }
-
-    #[test]
-    fn java_engine_path_must_be_a_regular_file() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        assert!(matches!(
-            validate_java_engine_jar(directory.path()),
-            Err(DesktopError::InvalidJavaEngineJar(_))
-        ));
-
-        let jar = directory.path().join("engine.jar");
-        File::create(&jar).expect("engine fixture");
-        validate_java_engine_jar(&jar).expect("regular file must pass");
-
-        assert!(matches!(
-            validate_java_engine_jar(&directory.path().join("missing-engine.jar")),
-            Err(DesktopError::InvalidJavaEngineJar(_))
-        ));
-    }
-
-    #[test]
-    fn macos_app_bundle_supplies_all_default_runtime_resources() {
-        let (_directory, executable, bundled) = complete_app_bundle();
-
-        let resolved = resolve_runtime_resource_paths(
-            Some(&executable),
-            None,
-            RuntimeResourceOverrides::default(),
-        )
-        .expect("complete app bundle must resolve");
-
-        assert_eq!(resolved.java_bin, bundled.java_bin.into_os_string());
-        assert_eq!(resolved.java_engine_jar, bundled.java_engine_jar);
-        assert_eq!(
-            resolved.community_classpath_dir,
-            Some(bundled.community_classpath_dir)
-        );
-        assert_eq!(resolved.driver_pack_dir, Some(bundled.driver_pack_dir));
-    }
-
-    #[test]
-    fn tauri_resource_directory_supplies_non_macos_runtime_resources() {
-        let directory = tempfile::tempdir().expect("temporary resource directory");
-        let resource_dir = directory.path().join("resources");
-        let bundled = BundledRuntimeResources::from_resource_dir(&resource_dir)
-            .expect("absolute resource directory must resolve");
-        fs::create_dir_all(bundled.java_bin.parent().expect("Java binary parent"))
-            .expect("bundled Java directory");
-        File::create(&bundled.java_bin).expect("bundled Java binary");
-        fs::create_dir_all(bundled.java_engine_jar.parent().expect("engine JAR parent"))
-            .expect("bundled engine directory");
-        File::create(&bundled.java_engine_jar).expect("bundled engine JAR");
-        fs::create_dir_all(&bundled.community_classpath_dir).expect("bundled Community classpath");
-        fs::create_dir_all(&bundled.driver_pack_dir).expect("bundled driver packs");
-
-        let resolved = resolve_runtime_resource_paths(
-            None,
-            Some(&resource_dir),
-            RuntimeResourceOverrides::default(),
-        )
-        .expect("Tauri resource directory must resolve");
-
-        assert_eq!(resolved.java_bin, bundled.java_bin.into_os_string());
-        assert_eq!(resolved.java_engine_jar, bundled.java_engine_jar);
-        assert_eq!(
-            resolved.community_classpath_dir,
-            Some(bundled.community_classpath_dir)
-        );
-        assert_eq!(resolved.driver_pack_dir, Some(bundled.driver_pack_dir));
-    }
-
-    #[test]
-    fn environment_paths_override_missing_app_bundle_resources() {
-        let directory = tempfile::tempdir().expect("temporary app bundle");
-        let executable = directory
-            .path()
-            .join("Chat2DB.app")
-            .join("Contents")
-            .join("MacOS")
-            .join("chat2db-desktop");
-        fs::create_dir_all(executable.parent().expect("bundle executable parent"))
-            .expect("bundle executable directory");
-        File::create(&executable).expect("bundle executable");
-
-        let overrides_root = directory.path().join("overrides");
-        let java_bin = overrides_root.join("java");
-        let java_engine_jar = overrides_root.join("engine.jar");
-        let community_classpath_dir = overrides_root.join("community-classpath");
-        let driver_pack_dir = overrides_root.join("driver-packs");
-        fs::create_dir_all(&overrides_root).expect("override root");
-        File::create(&java_bin).expect("override Java binary");
-        File::create(&java_engine_jar).expect("override engine JAR");
-        fs::create_dir_all(&community_classpath_dir).expect("override Community classpath");
-        fs::create_dir_all(&driver_pack_dir).expect("override driver packs");
-
-        let resolved = resolve_runtime_resource_paths(
-            Some(&executable),
-            None,
-            RuntimeResourceOverrides {
-                java_bin: Some(java_bin.clone().into_os_string()),
-                java_engine_jar: Some(java_engine_jar.clone().into_os_string()),
-                community_classpath_dir: Some(community_classpath_dir.clone().into_os_string()),
-                driver_pack_dir: Some(driver_pack_dir.clone().into_os_string()),
-            },
-        )
-        .expect("environment overrides must not require bundled fallbacks");
-
-        assert_eq!(resolved.java_bin, java_bin.into_os_string());
-        assert_eq!(resolved.java_engine_jar, java_engine_jar);
-        assert_eq!(
-            resolved.community_classpath_dir,
-            Some(community_classpath_dir)
-        );
-        assert_eq!(resolved.driver_pack_dir, Some(driver_pack_dir));
-    }
-
-    #[test]
-    fn app_bundle_reports_each_missing_runtime_resource() {
-        for missing_resource in [
-            BUNDLED_JAVA_BIN,
-            BUNDLED_JAVA_ENGINE_JAR,
-            BUNDLED_COMMUNITY_CLASSPATH,
-            BUNDLED_DRIVER_PACKS,
-        ] {
-            let (_directory, executable, bundled) = complete_app_bundle();
-            let (missing_path, is_directory) = match missing_resource {
-                BUNDLED_JAVA_BIN => (bundled.java_bin, false),
-                BUNDLED_JAVA_ENGINE_JAR => (bundled.java_engine_jar, false),
-                BUNDLED_COMMUNITY_CLASSPATH => (bundled.community_classpath_dir, true),
-                BUNDLED_DRIVER_PACKS => (bundled.driver_pack_dir, true),
-                _ => unreachable!("all bundled resources are covered"),
-            };
-            if is_directory {
-                fs::remove_dir_all(&missing_path).expect("remove bundled directory");
-            } else {
-                fs::remove_file(&missing_path).expect("remove bundled file");
-            }
-
-            let error = resolve_runtime_resource_paths(
-                Some(&executable),
-                None,
-                RuntimeResourceOverrides::default(),
-            )
-            .expect_err("missing bundled resource must fail closed");
-            assert!(matches!(
-                error,
-                DesktopError::InvalidBundledResource { resource, path, .. }
-                    if resource == missing_resource && path == missing_path
-            ));
-        }
-    }
-
-    #[test]
-    fn development_executable_still_requires_java_engine_environment() {
-        let directory = tempfile::tempdir().expect("temporary development layout");
-        let executable = directory
-            .path()
-            .join("target")
-            .join("debug")
-            .join("chat2db-desktop");
-
-        assert!(matches!(
-            resolve_runtime_resource_paths(
-                Some(&executable),
-                None,
-                RuntimeResourceOverrides::default(),
-            ),
-            Err(DesktopError::MissingJavaEngineJar)
-        ));
-    }
-
-    #[test]
-    fn optional_path_environment_rejects_explicit_empty_values() {
-        assert!(matches!(
-            validate_optional_os_env("CHAT2DB_DRIVER_PACK_DIR", Some(OsString::new())),
-            Err(DesktopError::EmptyEnvironmentVariable(
-                "CHAT2DB_DRIVER_PACK_DIR"
-            ))
-        ));
-        assert_eq!(
-            validate_optional_os_env("CHAT2DB_DRIVER_PACK_DIR", None)
-                .expect("missing optional variable must be accepted"),
-            None
-        );
     }
 
     #[test]

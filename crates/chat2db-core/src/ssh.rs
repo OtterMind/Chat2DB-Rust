@@ -245,11 +245,13 @@ struct HostKeyHandler {
 impl client::Handler for HostKeyHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(
+    fn check_server_key(
         &mut self,
         server_public_key: &ssh_key::PublicKey,
-    ) -> Result<bool, Self::Error> {
-        keys::check_known_hosts(&self.host, self.port, server_public_key).map_err(Into::into)
+    ) -> impl std::future::Future<Output = Result<bool, Self::Error>> + Send {
+        std::future::ready(
+            keys::check_known_hosts(&self.host, self.port, server_public_key).map_err(Into::into),
+        )
     }
 }
 

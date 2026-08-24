@@ -1,4 +1,12 @@
-use std::{fs, io, path::Path, time::Duration};
+use std::{
+    fs, io,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chat2db_contract::ApiError;
@@ -25,6 +33,13 @@ pub struct LocalServer {
     data_dir: std::path::PathBuf,
     metadata: EndpointMetadata,
     lock: Option<fs::File>,
+    activity: Arc<LocalActivity>,
+}
+
+#[derive(Debug, Default)]
+struct LocalActivity {
+    revision: AtomicU64,
+    active_requests: AtomicUsize,
 }
 
 impl std::fmt::Debug for LocalServer {
@@ -75,6 +90,7 @@ impl LocalServer {
         let cancellation = CancellationToken::new();
         let task_cancellation = cancellation.clone();
         let task_metadata = metadata.clone();
+        let activity = Arc::new(LocalActivity::default());
         let task = runtime.spawn(run(
             listener,
             application,
@@ -82,6 +98,7 @@ impl LocalServer {
             task_cancellation,
             data_dir.clone(),
             task_metadata,
+            Arc::clone(&activity),
         ));
         Ok(Self {
             cancellation,
@@ -89,7 +106,20 @@ impl LocalServer {
             data_dir,
             metadata,
             lock: Some(lock),
+            activity,
         })
+    }
+
+    /// Monotonically increases whenever a local client request is accepted.
+    #[must_use]
+    pub fn activity_revision(&self) -> u64 {
+        self.activity.revision.load(Ordering::Acquire)
+    }
+
+    /// Returns local attachment requests that have not finished responding.
+    #[must_use]
+    pub fn active_request_count(&self) -> usize {
+        self.activity.active_requests.load(Ordering::Acquire)
     }
 
     /// Stops accepting clients, terminates active attachment requests, and
@@ -140,6 +170,7 @@ async fn run(
     cancellation: CancellationToken,
     data_dir: std::path::PathBuf,
     metadata: EndpointMetadata,
+    activity: Arc<LocalActivity>,
 ) -> Result<(), LocalError> {
     let _discovery = DiscoveryGuard { data_dir, metadata };
     let mut connections = JoinSet::new();
@@ -154,8 +185,12 @@ async fn run(
             () = cancellation.cancelled() => break,
             accepted = listener.accept() => accepted,
         }?;
+        activity.revision.fetch_add(1, Ordering::AcqRel);
+        activity.active_requests.fetch_add(1, Ordering::AcqRel);
         let application = application.clone();
+        let request_counter = Arc::clone(&activity);
         connections.spawn(async move {
+            let _request_guard = ActiveRequestGuard(request_counter);
             if let Err(error) = handle_connection(accepted, application, token).await {
                 tracing::warn!(%error, "local attachment request failed");
             }
@@ -165,6 +200,14 @@ async fn run(
     while connections.join_next().await.is_some() {}
     listener.cleanup();
     Ok(())
+}
+
+struct ActiveRequestGuard(Arc<LocalActivity>);
+
+impl Drop for ActiveRequestGuard {
+    fn drop(&mut self) {
+        self.0.active_requests.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 async fn handle_connection(

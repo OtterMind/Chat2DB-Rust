@@ -8,6 +8,7 @@ java_bin="${resource_root}/java/bin/java"
 engine_jar="${resource_root}/engine/chat2db-compat-runtime.jar"
 community_classpath="${resource_root}/community-classpath"
 driver_root="${resource_root}/driver-packs"
+cli_binary="${resource_root}/bin/chat2db"
 binary="${app_path}/Contents/MacOS/chat2db-desktop"
 module_file="${repository_root}/packaging/macos/jlink-modules.txt"
 
@@ -37,12 +38,13 @@ require_file "${java_bin}"
 require_file "${engine_jar}"
 require_directory "${community_classpath}"
 require_directory "${driver_root}"
+require_file "${cli_binary}"
 require_file "${resource_root}/licenses/Chat2DB-Rust-LICENSE.txt"
 require_file "${resource_root}/licenses/Chat2DB-Community-LICENSE.txt"
 require_file "${resource_root}/licenses/THIRD_PARTY_NOTICES.md"
 
-if [[ ! -x "${binary}" || ! -x "${java_bin}" ]]; then
-  echo "packaged desktop and Java binaries must be executable" >&2
+if [[ ! -x "${binary}" || ! -x "${java_bin}" || ! -x "${cli_binary}" ]]; then
+  echo "packaged desktop, CLI, and Java binaries must be executable" >&2
   exit 1
 fi
 
@@ -121,6 +123,10 @@ if ! lipo -archs "${java_bin}" | tr ' ' '\n' | grep -Fxq "${host_arch}"; then
   echo "Java runtime does not contain host architecture ${host_arch}" >&2
   exit 1
 fi
+if ! lipo -archs "${cli_binary}" | tr ' ' '\n' | grep -Fxq "${host_arch}"; then
+  echo "embedded CLI does not contain host architecture ${host_arch}" >&2
+  exit 1
+fi
 
 codesign --verify --deep --strict --verbose=2 "${app_path}"
 if [[ "${CHAT2DB_REQUIRE_DEVELOPER_ID_SIGNATURE:-false}" == true ]]; then
@@ -167,6 +173,7 @@ if [[ "${CHAT2DB_REQUIRE_DEVELOPER_ID_SIGNATURE:-false}" == true ]]; then
   }
 
   verify_developer_id_code "${app_path}" "package" "${APPLE_TEAM_ID:-}"
+  verify_developer_id_code "${cli_binary}" "embedded CLI" "${APPLE_TEAM_ID:-}"
 
   runtime_macho_count=0
   while IFS= read -r -d '' runtime_file; do

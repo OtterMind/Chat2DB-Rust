@@ -19,8 +19,10 @@ Stage 3 completion means the versioned Rust-Java bridge can load an external
 JDBC driver, own sessions and local transactions, execute updates, and stream
 typed query batches under explicit limits, credits, deadlines, and
 cancellation. Stage 5 composes that bridge into the Web and desktop product
-hosts. Stage 6 adds CLI and MCP adapters that attach to one of those running
-hosts and do not own another product runtime.
+hosts. Stage 6 adds CLI and MCP adapters around the owner-only local endpoint.
+The current CLI extends that foundation with attach-or-start behavior: it owns
+the same `RuntimeHost` in a temporary headless child when Web and desktop are
+absent. MCP remains attachment-only.
 
 The current production host supersedes the original eager Stage 5 bootstrap.
 `RuntimeHost::open` now opens storage and verifies/stages driver packs without
@@ -72,8 +74,8 @@ bound to the exact tool call and argument digest. Axum exposes the lifecycle as
 JSON plus replay/live SSE; Tauri exposes matching commands and independent
 channels; the frontend has matching HTTP/Tauri observers with bounded recovery.
 
-Web and desktop start the same owner-only local attachment around their shared
-`Application`. The JSON CLI exposes health, datasource listing,
+Web, desktop, and the CLI-owned headless host start the same owner-only local
+attachment around their shared `Application`. The JSON CLI exposes health, datasource listing,
 forced-read-only query start/status/cancel, bounded retained-result pages, and
 one MySQL write command gated by `--confirm-write`. The `rmcp` stdio server
 exposes the matching five datasource/query lifecycle tools plus
@@ -85,6 +87,12 @@ returns only an operation id and requires polling and paging. MCP retention is
 capped at 10,000 rows, 16 MiB, and 900 seconds; pages are capped at 1,000 rows
 and 512 KiB. MCP accepts no JDBC bind-parameter input and exposes no Agent-run
 tool.
+
+CLI defaults to `--host auto`: it attaches to a compatible Web, desktop, or
+headless host and spawns `runtime serve` when none exists. The headless process
+does not initialize Tauri, WebKit, or Axum, remains alive while local requests
+or queries are active, and exits after 60 idle seconds. `--host attach` keeps
+the previous attachment-only contract.
 
 Stage 7A implements strict local JDBC driver-pack discovery, bounded artifact
 hashing, immutable inventory through Core, Axum, Tauri, and generated frontend

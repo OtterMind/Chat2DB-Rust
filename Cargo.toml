@@ -12,6 +12,7 @@ members = [
     "crates/chat2db-java-bridge",
     "crates/chat2db-local",
     "crates/chat2db-local-ipc-windows",
+    "crates/chat2db-runtime",
     "crates/chat2db-storage",
 ]
 
