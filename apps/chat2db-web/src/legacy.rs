@@ -10435,7 +10435,7 @@ async fn large_cell_download_handler(
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Write as _, sync::Arc};
+    use std::sync::Arc;
 
     use axum::{
         body::Body,

@@ -1,5 +1,8 @@
 //! Tauri IPC delivery adapter for the `Chat2DB` desktop product.
 
+// Tauri serializes the stable ApiError value directly at every command boundary.
+#![allow(clippy::result_large_err)]
+
 mod legacy_files;
 
 use std::{
