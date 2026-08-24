@@ -3470,8 +3470,10 @@ fn decode_postgres_numeric(raw: &[u8]) -> Result<String, AppError> {
         .ok_or_else(|| postgres_scalar_too_large(raw.len()))?;
     ensure_postgres_scalar_size(maximum_display_bytes)?;
     let digits = raw[8..]
-        .chunks_exact(2)
-        .map(read_u16)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| read_u16(pair))
         .collect::<Result<Vec<_>, _>>()?;
     if digits.iter().any(|digit| *digit > 9_999) {
         return Err(result_decode_error());

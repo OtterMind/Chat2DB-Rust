@@ -619,7 +619,7 @@ fn parse_jdbc_oracle_target(
     if target.is_empty() || target.starts_with('(') {
         return Err(invalid_connection_url());
     }
-    let (target, query) = target.split_once('?').map_or((target, ""), |parts| parts);
+    let (target, query) = target.split_once('?').unwrap_or((target, ""));
     let target = target.trim_start_matches('/');
     if target.is_empty() || (!target.contains('/') && target.matches(':').count() != 2) {
         return Err(invalid_connection_url());

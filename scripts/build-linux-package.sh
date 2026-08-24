@@ -68,12 +68,14 @@ esac
 
 rm -rf -- "${build_target}"
 mkdir -p "${build_target}"
+cli_build_target="${repository_root}/target/linux-cli-build"
 cli_resource_directory="${repository_root}/target/linux-cli"
+rm -rf -- "${cli_build_target}"
 rm -rf -- "${cli_resource_directory}"
 mkdir -p -- "${cli_resource_directory}"
-CARGO_TARGET_DIR="${build_target}" RUSTUP_TOOLCHAIN="${rust_toolchain}" \
+CARGO_TARGET_DIR="${cli_build_target}" RUSTUP_TOOLCHAIN="${rust_toolchain}" \
   cargo build -p chat2db-cli --release --locked
-cp -- "${build_target}/release/chat2db" "${cli_resource_directory}/chat2db"
+cp -- "${cli_build_target}/release/chat2db" "${cli_resource_directory}/chat2db"
 chmod 755 "${cli_resource_directory}/chat2db"
 (
   cd "${desktop_root}"
