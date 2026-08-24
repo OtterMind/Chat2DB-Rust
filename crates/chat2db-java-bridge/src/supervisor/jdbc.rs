@@ -1147,9 +1147,8 @@ impl Session {
         &self.binding.engine_instance_id
     }
 
-    #[allow(clippy::unused_async)]
-    pub async fn state(&self) -> SessionState {
-        self.state.get()
+    pub fn state(&self) -> std::future::Ready<SessionState> {
+        std::future::ready(self.state.get())
     }
 
     /// Closes the session, rolling back any active local transaction.
