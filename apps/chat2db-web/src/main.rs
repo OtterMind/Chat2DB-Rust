@@ -1,15 +1,14 @@
 use std::{env, ffi::OsString, io, net::SocketAddr, path::PathBuf, process::ExitCode};
 
-use chat2db_core::{RuntimeConfig, RuntimeHost, load_fixed_community_classpath};
-use chat2db_java_bridge::{EngineCommand, EngineConfig};
+use chat2db_core::{RuntimeConfig, RuntimeHost};
 use chat2db_local::LocalServer;
+use chat2db_runtime::RuntimeOptions;
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1:4200";
 const DEFAULT_FRONTEND_DIR: &str = "apps/frontend/dist";
-const COMMUNITY_CLASSPATH_DIR_ENV: &str = "CHAT2DB_COMMUNITY_CLASSPATH_DIR";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -85,37 +84,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn runtime_config_from_env() -> Result<RuntimeConfig, Box<dyn std::error::Error>> {
-    let engine_jar = PathBuf::from(required_nonempty_os_env("CHAT2DB_JAVA_ENGINE_JAR")?);
-    let java =
-        optional_nonempty_os_env("CHAT2DB_JAVA_BIN")?.unwrap_or_else(|| OsString::from("java"));
-    let mut engine = EngineConfig::new(EngineCommand::java_jar(java, engine_jar));
-    if let Some(community_classpath_dir) = optional_nonempty_os_env(COMMUNITY_CLASSPATH_DIR_ENV)? {
-        engine = engine.with_community_classpath(load_fixed_community_classpath(PathBuf::from(
-            community_classpath_dir,
-        ))?);
-    }
-    let mut config = RuntimeConfig::new(engine);
-
-    if let Some(data_dir) = optional_nonempty_os_env("CHAT2DB_DATA_DIR")? {
-        config = config.with_data_dir(PathBuf::from(data_dir));
-    }
-    if let Some(driver_pack_dir) = optional_nonempty_os_env("CHAT2DB_DRIVER_PACK_DIR")? {
-        config = config.with_driver_pack_dir(PathBuf::from(driver_pack_dir));
-    }
-    if let Some(master_key) = optional_unicode_env("CHAT2DB_VAULT_MASTER_KEY")? {
-        config = config.with_vault_master_key_base64(master_key);
-    }
-
-    Ok(config)
-}
-
-fn required_nonempty_os_env(name: &'static str) -> Result<OsString, io::Error> {
-    optional_nonempty_os_env(name)?.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{name} is required and must not be empty"),
-        )
+    let executable = env::current_exe().ok();
+    chat2db_runtime::runtime_config_from_environment(RuntimeOptions {
+        data_dir: None,
+        executable: executable.as_deref(),
+        resource_dir: None,
     })
+    .map_err(Into::into)
 }
 
 fn optional_nonempty_os_env(name: &'static str) -> Result<Option<OsString>, io::Error> {
@@ -126,14 +101,6 @@ fn optional_nonempty_os_env(name: &'static str) -> Result<Option<OsString>, io::
             format!("{name} must not be empty when configured"),
         )),
         Some(value) => Ok(Some(value)),
-    }
-}
-
-fn optional_unicode_env(name: &'static str) -> Result<Option<String>, env::VarError> {
-    match env::var(name) {
-        Ok(value) => Ok(Some(value)),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(error @ env::VarError::NotUnicode(_)) => Err(error),
     }
 }
 

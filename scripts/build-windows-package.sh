@@ -71,6 +71,12 @@ fi
 
 rm -rf -- "${build_target}"
 mkdir -p "${build_target}"
+cli_resource_directory="${repository_root}/target/windows-cli"
+rm -rf -- "${cli_resource_directory}"
+mkdir -p -- "${cli_resource_directory}"
+CARGO_TARGET_DIR="${build_target}" RUSTUP_TOOLCHAIN="${rust_toolchain}" \
+  cargo build -p chat2db-cli --release --locked
+cp -- "${build_target}/release/chat2db.exe" "${cli_resource_directory}/chat2db.exe"
 (
   cd "${desktop_root}"
   CARGO_TARGET_DIR="${build_target}" \
@@ -113,6 +119,7 @@ cp -- "${msi_artifacts[0]}" "${package_directory}/"
     echo "target=windows"
     echo "rust_toolchain=${rust_toolchain}"
     echo "tauri_cli=$(cargo tauri --version)"
+    echo "embedded_cli=chat2db/bin/chat2db.exe"
     echo "nsis=$(basename "${nsis_artifacts[0]}")"
     echo "msi=$(basename "${msi_artifacts[0]}")"
   } > BUILD-MANIFEST.txt

@@ -239,6 +239,24 @@ impl OperationHub {
         }
     }
 
+    pub(crate) async fn active_count(&self) -> usize {
+        let entries = self
+            .inner
+            .operations
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut active = 0;
+        for entry in entries {
+            if entry.state.lock().await.status == OperationStatus::Running {
+                active += 1;
+            }
+        }
+        active
+    }
+
     pub(crate) async fn started(&self, id: &str) -> Result<(), AppError> {
         self.emit(id, OperationEvent::Started).await
     }

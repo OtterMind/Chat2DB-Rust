@@ -1,0 +1,20 @@
+[package]
+name = "chat2db-runtime"
+description = "Shared runtime resource and host configuration for Chat2DB Rust delivery modes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+chat2db-core = { path = "../chat2db-core" }
+chat2db-java-bridge = { path = "../chat2db-java-bridge" }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

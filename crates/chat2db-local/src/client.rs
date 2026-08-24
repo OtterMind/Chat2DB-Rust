@@ -33,6 +33,12 @@ impl LocalClient {
         }
     }
 
+    /// Returns the product data directory used for endpoint discovery.
+    #[must_use]
+    pub fn data_dir(&self) -> &std::path::Path {
+        &self.data_dir
+    }
+
     /// Discovers the operating system's standard `Chat2DB` data directory.
     ///
     /// # Errors

@@ -34,6 +34,9 @@ for every platform supported by Chat2DB Community:
 - Windows x86_64, with NSIS `.exe` and MSI installers; and
 - Linux x86_64 and ARM64, with AppImage, `.deb`, and `.rpm` artifacts.
 
+Every desktop package embeds the matching `chat2db` headless CLI beside the
+shared Java, Community-classpath, and driver-pack resources.
+
 macOS builds are ad-hoc signed for test packages by default. A manual run with
 `publish_authorized_artifact=true` enables the configured Developer ID signing
 and notarization path.
@@ -201,8 +204,10 @@ the driver exposes their type, and the project does not fork or vendor the
 upstream crate.
 
 Stage 6 and the Stage 7A-7M foundations are complete. Web and desktop own the
-product runtime and publish its owner-only local endpoint; CLI and MCP attach to
-that host and never contact Java directly. The pinned Community frontend's
+product runtime and publish its owner-only local endpoint. The CLI first
+attaches to either host and automatically starts the same Rust core in a
+headless process when no host is available; MCP remains attachment-only. Neither
+adapter contacts Java directly. The pinned Community frontend's
 complete MySQL workbench surface is mapped through the shared Axum/Tauri legacy
 dispatcher. Native MySQL connections, metadata, Console, mutations, transfer,
 class generation, accounts, schema diff, chart refresh, and workspace operations
@@ -244,6 +249,7 @@ React / TypeScript              CLI / MCP client
                                   -> owner-only local attachment
                     \            /
                      -> Rust product runtime
+                        CLI may start this headlessly
   -> framed Protobuf IPC
   -> private Java compatibility engine
   -> Chat2DB plugins + JDBC + Java ANTLR
@@ -401,11 +407,17 @@ or modify the `third_party/chat2db-community` submodule worktree.
 `CHAT2DB_BIND` also requires `CHAT2DB_ACCESS_TOKEN` with at least 32 bytes.
 
 The running Web or desktop host also publishes the owner-only local endpoint
-used by CLI and MCP. Point either adapter at the same profile explicitly when
-the default data directory is not used:
+used by CLI and MCP. The CLI defaults to `--host auto`: it reuses that endpoint
+when available, otherwise launches `runtime serve` without Tauri, WebKit, or an
+HTTP listener. The automatically started host exits after 60 idle seconds and
+stays alive while requests or database operations are active. Use
+`--host attach` to require an already-running host. Point either adapter at the
+same profile explicitly when the default data directory is not used:
 
 ```bash
 cargo run -p chat2db-cli -- --data-dir /path/to/profile datasources
+cargo run -p chat2db-cli -- --host attach --data-dir /path/to/profile status
+cargo run -p chat2db-cli -- --data-dir /path/to/profile runtime serve
 cargo run -p chat2db-mcp -- --data-dir /path/to/profile
 ```
 
@@ -432,6 +444,7 @@ crates/
   chat2db-java-bridge/ supervised Java process client
   chat2db-local/     owner-only CLI/MCP attachment protocol
   chat2db-local-ipc-windows/ Windows named-pipe and ACL implementation
+  chat2db-runtime/   shared packaged-resource and runtime configuration
   chat2db-storage/   SQLite state, secret references, and retained results
 proto/               canonical Rust-Java process schema
 java/

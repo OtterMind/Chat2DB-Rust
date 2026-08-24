@@ -886,10 +886,13 @@ name = "chat2db-cli"
 version = "0.1.0"
 dependencies = [
  "chat2db-contract",
+ "chat2db-core",
  "chat2db-local",
+ "chat2db-runtime",
  "clap",
  "serde_json",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -953,8 +956,8 @@ dependencies = [
  "cap-std",
  "chat2db-contract",
  "chat2db-core",
- "chat2db-java-bridge",
  "chat2db-local",
+ "chat2db-runtime",
  "chat2db-web",
  "encoding_rs",
  "serde",
@@ -1049,6 +1052,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "chat2db-runtime"
+version = "0.1.0"
+dependencies = [
+ "chat2db-core",
+ "chat2db-java-bridge",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "chat2db-storage"
 version = "0.1.0"
 dependencies = [
@@ -1080,6 +1093,7 @@ dependencies = [
  "chat2db-core",
  "chat2db-java-bridge",
  "chat2db-local",
+ "chat2db-runtime",
  "chat2db-storage",
  "chrono",
  "futures-util",
