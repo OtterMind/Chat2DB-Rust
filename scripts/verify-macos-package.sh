@@ -5,6 +5,7 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app_path="${1:-${repository_root}/target/macos-package-build/release/bundle/macos/Chat2DB Rust.app}"
 resource_root="${app_path}/Contents/Resources/chat2db"
 java_bin="${resource_root}/java/bin/java"
+jvm_library="${resource_root}/java/lib/server/libjvm.dylib"
 engine_jar="${resource_root}/engine/chat2db-compat-runtime.jar"
 community_classpath="${resource_root}/community-classpath"
 driver_root="${resource_root}/driver-packs"
@@ -35,6 +36,7 @@ fi
 require_directory "${app_path}"
 require_file "${binary}"
 require_file "${java_bin}"
+require_file "${jvm_library}"
 require_file "${engine_jar}"
 require_directory "${community_classpath}"
 require_directory "${driver_root}"
@@ -174,6 +176,17 @@ if [[ "${CHAT2DB_REQUIRE_DEVELOPER_ID_SIGNATURE:-false}" == true ]]; then
 
   verify_developer_id_code "${app_path}" "package" "${APPLE_TEAM_ID:-}"
   verify_developer_id_code "${cli_binary}" "embedded CLI" "${APPLE_TEAM_ID:-}"
+
+  jvm_entitlements="$(codesign -d --entitlements :- "${jvm_library}" 2>/dev/null)"
+  for required_entitlement in \
+    com.apple.security.cs.allow-jit \
+    com.apple.security.cs.allow-unsigned-executable-memory \
+    com.apple.security.cs.disable-library-validation; do
+    if ! grep -Fq "<key>${required_entitlement}</key>" <<<"${jvm_entitlements}"; then
+      echo "packaged JVM is missing required entitlement ${required_entitlement}" >&2
+      exit 1
+    fi
+  done
 
   runtime_macho_count=0
   while IFS= read -r -d '' runtime_file; do
