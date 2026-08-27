@@ -139,19 +139,9 @@ cp -- "${cli_build_target}/release/chat2db" "${cli_resource_directory}/chat2db"
 chmod 755 "${cli_resource_directory}/chat2db"
 sign_developer_id_code "${cli_resource_directory}/chat2db"
 
-signed_runtime_macho_count=0
-while IFS= read -r -d '' runtime_file; do
-  if [[ "$(file -b "${runtime_file}")" != *"Mach-O"* ]]; then
-    continue
-  fi
-  sign_developer_id_code "${runtime_file}"
-  signed_runtime_macho_count=$((signed_runtime_macho_count + 1))
-done < <(find "${repository_root}/target/macos-runtime" -type f -print0)
-if [[ "${signed_runtime_macho_count}" -eq 0 ]]; then
-  echo "macOS Java runtime contains no Mach-O code to sign" >&2
-  exit 1
-fi
-echo "Signed ${signed_runtime_macho_count} macOS Java runtime binaries"
+# Preserve Temurin's Developer ID signatures and JVM entitlements. Re-signing
+# the jlink output without the vendor entitlements prevents the JVM from
+# enabling JIT write protection on a normal SIP-enabled macOS installation.
 
 staged_resource_root="${build_target}/release/chat2db"
 if [[ -L "${staged_resource_root}" || ( -e "${staged_resource_root}" && ! -d "${staged_resource_root}" ) ]]; then
