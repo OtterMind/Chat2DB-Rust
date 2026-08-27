@@ -114,7 +114,7 @@ cp -- "${appimage_artifacts[0]}" "${deb_artifacts[0]}" "${rpm_artifacts[0]}" "${
   cd "${package_directory}"
   sha256sum ./*.AppImage ./*.deb ./*.rpm > SHA256SUMS
   {
-    echo "Chat2DB Rust Linux test package"
+    echo "Chat2DB Rust Linux package"
     echo "architecture=$(uname -m)"
     echo "target=linux"
     echo "rust_toolchain=${rust_toolchain}"

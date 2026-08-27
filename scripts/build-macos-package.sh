@@ -96,6 +96,38 @@ if [[ "${rust_version}" != rustc\ 1.88.0\ * ]]; then
   exit 1
 fi
 
+signing_identity="${APPLE_SIGNING_IDENTITY:-}"
+signing_keychain="${CHAT2DB_SIGNING_KEYCHAIN:-}"
+notary_profile="${CHAT2DB_NOTARY_KEYCHAIN_PROFILE:-}"
+expected_team_id="${APPLE_TEAM_ID:-}"
+if [[ -z "${signing_identity}" || "${signing_identity}" == "-" ]]; then
+  echo "macOS packaging requires a Developer ID signing identity" >&2
+  exit 1
+fi
+if [[ -z "${signing_keychain}" || "${signing_keychain}" != /* || ! -f "${signing_keychain}" || -L "${signing_keychain}" ]]; then
+  echo "macOS packaging requires a safe signing keychain" >&2
+  exit 1
+fi
+if [[ -z "${notary_profile}" ]]; then
+  echo "macOS packaging requires a notarytool keychain profile" >&2
+  exit 1
+fi
+if [[ -z "${expected_team_id}" ]]; then
+  echo "macOS packaging requires APPLE_TEAM_ID" >&2
+  exit 1
+fi
+
+sign_developer_id_code() {
+  local code_path="$1"
+  codesign --force \
+    --options runtime \
+    --sign "${signing_identity}" \
+    --keychain "${signing_keychain}" \
+    --timestamp \
+    "${code_path}"
+  codesign --verify --strict --verbose=2 "${code_path}"
+}
+
 cli_build_target="${repository_root}/target/macos-cli-build"
 cli_resource_directory="${repository_root}/target/macos-cli"
 rm -rf -- "${cli_build_target}"
@@ -105,6 +137,21 @@ CARGO_TARGET_DIR="${cli_build_target}" RUSTUP_TOOLCHAIN="${rust_toolchain}" \
   cargo build -p chat2db-cli --release --locked
 cp -- "${cli_build_target}/release/chat2db" "${cli_resource_directory}/chat2db"
 chmod 755 "${cli_resource_directory}/chat2db"
+sign_developer_id_code "${cli_resource_directory}/chat2db"
+
+signed_runtime_macho_count=0
+while IFS= read -r -d '' runtime_file; do
+  if [[ "$(file -b "${runtime_file}")" != *"Mach-O"* ]]; then
+    continue
+  fi
+  sign_developer_id_code "${runtime_file}"
+  signed_runtime_macho_count=$((signed_runtime_macho_count + 1))
+done < <(find "${repository_root}/target/macos-runtime" -type f -print0)
+if [[ "${signed_runtime_macho_count}" -eq 0 ]]; then
+  echo "macOS Java runtime contains no Mach-O code to sign" >&2
+  exit 1
+fi
+echo "Signed ${signed_runtime_macho_count} macOS Java runtime binaries"
 
 staged_resource_root="${build_target}/release/chat2db"
 if [[ -L "${staged_resource_root}" || ( -e "${staged_resource_root}" && ! -d "${staged_resource_root}" ) ]]; then
@@ -133,41 +180,15 @@ if [[ ! -d "${app_path}" || -L "${app_path}" ]]; then
   exit 1
 fi
 
-signing_identity="${APPLE_SIGNING_IDENTITY:--}"
-signing_keychain="${CHAT2DB_SIGNING_KEYCHAIN:-}"
-notary_profile="${CHAT2DB_NOTARY_KEYCHAIN_PROFILE:-}"
-expected_team_id="${APPLE_TEAM_ID:-}"
-notarization_enabled=false
 notarization_status="not-submitted"
-distribution_status="internal-test-only"
+distribution_status="developer-id-signed"
 
-if [[ -n "${notary_profile}" ]]; then
-  if [[ "${signing_identity}" == "-" ]]; then
-    echo "notarization requires a Developer ID signing identity" >&2
-    exit 1
-  fi
-  if [[ -z "${signing_keychain}" || "${signing_keychain}" != /* || ! -f "${signing_keychain}" || -L "${signing_keychain}" ]]; then
-    echo "notarization requires a safe signing keychain" >&2
-    exit 1
-  fi
-  if [[ -z "${expected_team_id}" ]]; then
-    echo "notarization requires APPLE_TEAM_ID" >&2
-    exit 1
-  fi
-  notarization_enabled=true
-fi
-
-if [[ "${signing_identity}" == "-" ]]; then
-  codesign --force --deep --sign - --timestamp=none "${app_path}"
+# Tauri signs the application bundle after copying the pre-signed CLI and Java
+# runtime resources. Do not deep re-sign the app, which would replace nested
+# hardened-runtime signatures and their trusted timestamps.
+CHAT2DB_REQUIRE_DEVELOPER_ID_SIGNATURE=true \
+  APPLE_TEAM_ID="${expected_team_id}" \
   "${repository_root}/scripts/verify-macos-package.sh" "${app_path}"
-else
-  # Tauri owns the only Developer ID signing pass so nested runtime
-  # entitlements and signatures are not destroyed by a deep re-sign.
-  CHAT2DB_REQUIRE_DEVELOPER_ID_SIGNATURE=true \
-    APPLE_TEAM_ID="${expected_team_id}" \
-    "${repository_root}/scripts/verify-macos-package.sh" "${app_path}"
-  distribution_status="developer-id-signed"
-fi
 
 notarize_artifact() {
   local artifact_path="$1"
@@ -218,35 +239,27 @@ verify_developer_id_signature() {
 
 verify_packaged_app() {
   local packaged_app="$1"
-  if [[ "${signing_identity}" == "-" ]]; then
-    "${repository_root}/scripts/verify-macos-package.sh" "${packaged_app}"
-  else
-    CHAT2DB_REQUIRE_DEVELOPER_ID_SIGNATURE=true \
-      APPLE_TEAM_ID="${expected_team_id}" \
-      "${repository_root}/scripts/verify-macos-package.sh" "${packaged_app}"
-  fi
-  if [[ "${notarization_enabled}" == true ]]; then
-    xcrun stapler validate "${packaged_app}"
-    spctl --assess --type execute --verbose=4 "${packaged_app}"
-  fi
-}
-
-if [[ "${notarization_enabled}" == true ]]; then
-  notary_directory="$(mktemp -d "${target_root}/.chat2db-notary.XXXXXX")"
-  notary_app_zip="${notary_directory}/Chat2DB-Rust.app.zip"
-  ditto -c -k --sequesterRsrc --keepParent "${app_path}" "${notary_app_zip}"
-  notarize_artifact "${notary_app_zip}"
-  xcrun stapler staple "${app_path}"
-  xcrun stapler validate "${app_path}"
-  spctl --assess --type execute --verbose=4 "${app_path}"
-  rm -rf -- "${notary_directory}"
-  notary_directory=""
   CHAT2DB_REQUIRE_DEVELOPER_ID_SIGNATURE=true \
     APPLE_TEAM_ID="${expected_team_id}" \
-    "${repository_root}/scripts/verify-macos-package.sh" "${app_path}"
-  notarization_status="accepted"
-  distribution_status="developer-id-notarized"
-fi
+    "${repository_root}/scripts/verify-macos-package.sh" "${packaged_app}"
+  xcrun stapler validate "${packaged_app}"
+  spctl --assess --type execute --verbose=4 "${packaged_app}"
+}
+
+notary_directory="$(mktemp -d "${target_root}/.chat2db-notary.XXXXXX")"
+notary_app_zip="${notary_directory}/Chat2DB-Rust.app.zip"
+ditto -c -k --sequesterRsrc --keepParent "${app_path}" "${notary_app_zip}"
+notarize_artifact "${notary_app_zip}"
+xcrun stapler staple "${app_path}"
+xcrun stapler validate "${app_path}"
+spctl --assess --type execute --verbose=4 "${app_path}"
+rm -rf -- "${notary_directory}"
+notary_directory=""
+CHAT2DB_REQUIRE_DEVELOPER_ID_SIGNATURE=true \
+  APPLE_TEAM_ID="${expected_team_id}" \
+  "${repository_root}/scripts/verify-macos-package.sh" "${app_path}"
+notarization_status="accepted"
+distribution_status="developer-id-notarized"
 
 version="$(awk '
   /^\[workspace.package\]$/ { in_package = 1; next }
@@ -296,21 +309,12 @@ hdiutil create \
 rm -rf -- "${staging_directory}"
 staging_directory=""
 
-if [[ "${signing_identity}" != "-" ]]; then
-  if [[ -n "${signing_keychain}" ]]; then
-    codesign --force --sign "${signing_identity}" --keychain "${signing_keychain}" --timestamp "${dmg_path}"
-  else
-    codesign --force --sign "${signing_identity}" --timestamp "${dmg_path}"
-  fi
-  verify_developer_id_signature "${dmg_path}" "macOS DMG"
-fi
-
-if [[ "${notarization_enabled}" == true ]]; then
-  notarize_artifact "${dmg_path}"
-  xcrun stapler staple "${dmg_path}"
-  xcrun stapler validate "${dmg_path}"
-  spctl --assess --type open --context context:primary-signature --verbose=4 "${dmg_path}"
-fi
+codesign --force --sign "${signing_identity}" --keychain "${signing_keychain}" --timestamp "${dmg_path}"
+verify_developer_id_signature "${dmg_path}" "macOS DMG"
+notarize_artifact "${dmg_path}"
+xcrun stapler staple "${dmg_path}"
+xcrun stapler validate "${dmg_path}"
+spctl --assess --type open --context context:primary-signature --verbose=4 "${dmg_path}"
 hdiutil verify "${dmg_path}"
 
 verification_directory="$(mktemp -d "${target_root}/.chat2db-dmg-verify.XXXXXX")"
@@ -335,7 +339,7 @@ signing_authority="$(awk -F= '/^Authority=/ { print $2; exit }' <<<"${signature_
 signing_team_id="${signing_team_id:-none}"
 signing_authority="${signing_authority:-adhoc}"
 cat > "${package_directory}/BUILD-MANIFEST.txt" <<EOF
-Chat2DB Rust macOS test package
+Chat2DB Rust macOS package
 version=${version}
 architecture=${artifact_arch}
 git_commit=${git_commit}

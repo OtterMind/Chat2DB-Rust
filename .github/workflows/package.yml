@@ -4,12 +4,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      publish_authorized_artifact:
-        description: Sign and notarize macOS packages with the configured Apple credentials
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -69,7 +63,6 @@ jobs:
       - name: Install pinned Tauri CLI
         run: cargo install tauri-cli --version 2.8.4 --locked
       - name: Configure Developer ID signing and notarization
-        if: ${{ inputs.publish_authorized_artifact == true }}
         env:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}

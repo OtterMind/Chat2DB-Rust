@@ -116,7 +116,7 @@ cp -- "${msi_artifacts[0]}" "${package_directory}/"
   cd "${package_directory}"
   sha256sum ./*.exe ./*.msi > SHA256SUMS
   {
-    echo "Chat2DB Rust Windows test package"
+    echo "Chat2DB Rust Windows package"
     echo "architecture=x86_64"
     echo "target=windows"
     echo "rust_toolchain=${rust_toolchain}"
