@@ -37,9 +37,9 @@ for every platform supported by Chat2DB Community:
 Every desktop package embeds the matching `chat2db` headless CLI beside the
 shared Java, Community-classpath, and driver-pack resources.
 
-macOS builds are ad-hoc signed for test packages by default. A manual run with
-`publish_authorized_artifact=true` enables the configured Developer ID signing
-and notarization path.
+macOS packages are always signed with the configured Developer ID Application
+identity and notarized by Apple before upload. Packaging fails closed when the
+signing or notarization configuration is unavailable.
 
 ## Current state
 

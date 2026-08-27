@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-This local test package contains the exact original Chat2DB Community frontend
+This desktop package contains the exact original Chat2DB Community frontend
 and fixed Java compatibility classpath pinned by this repository. Their source
 revision, artifact names, byte lengths, and SHA-256 digests are recorded in:
 
