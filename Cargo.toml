@@ -21,7 +21,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["OtterMind"]
-license-file = "LICENSE"
+license = "Apache-2.0"
 repository = "https://github.com/OtterMind/Chat2DB-Rust"
 
 [workspace.dependencies]
