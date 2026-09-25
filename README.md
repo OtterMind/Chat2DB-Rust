@@ -465,7 +465,7 @@ Do not report vulnerabilities in public issues. Follow
 
 ## License
 
-Chat2DB Rust is source-available under `LicenseRef-Chat2DB`. See
+Chat2DB Rust is licensed under the Apache License 2.0. See
 [`LICENSE`](LICENSE) for the complete terms. The pinned Chat2DB Community
 submodule and other third-party components remain subject to their own license
 terms and notices.
