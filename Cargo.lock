@@ -863,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "chat2db-agent"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -883,7 +883,7 @@ dependencies = [
 
 [[package]]
 name = "chat2db-cli"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "chat2db-contract",
  "chat2db-core",
@@ -898,7 +898,7 @@ dependencies = [
 
 [[package]]
 name = "chat2db-contract"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -907,7 +907,7 @@ dependencies = [
 
 [[package]]
 name = "chat2db-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "aes 0.8.4",
  "async-trait",
@@ -952,7 +952,7 @@ dependencies = [
 
 [[package]]
 name = "chat2db-desktop"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "cap-std",
  "chat2db-contract",
@@ -977,7 +977,7 @@ dependencies = [
 
 [[package]]
 name = "chat2db-engine-protocol"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "prost",
  "prost-build",
@@ -988,7 +988,7 @@ dependencies = [
 
 [[package]]
 name = "chat2db-java-bridge"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "chat2db-engine-protocol",
  "prost",
@@ -1001,7 +1001,7 @@ dependencies = [
 
 [[package]]
 name = "chat2db-local"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
  "chat2db-contract",
@@ -1026,7 +1026,7 @@ dependencies = [
 
 [[package]]
 name = "chat2db-local-ipc-windows"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "tokio",
  "windows-sys 0.61.2",
@@ -1034,7 +1034,7 @@ dependencies = [
 
 [[package]]
 name = "chat2db-mcp"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "chat2db-contract",
  "chat2db-core",
@@ -1054,7 +1054,7 @@ dependencies = [
 
 [[package]]
 name = "chat2db-runtime"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "chat2db-core",
  "chat2db-java-bridge",
@@ -1064,7 +1064,7 @@ dependencies = [
 
 [[package]]
 name = "chat2db-storage"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "aes-gcm 0.10.3",
  "base64 0.22.1",
@@ -1086,7 +1086,7 @@ dependencies = [
 
 [[package]]
 name = "chat2db-web"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "axum",
  "base64 0.22.1",

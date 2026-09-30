@@ -37,6 +37,8 @@ for every platform supported by Chat2DB Community:
 Every desktop package embeds the matching `chat2db` headless CLI beside the
 shared Java, Community-classpath, and driver-pack resources.
 
+Product versions and tagged Draft Releases follow [the release guide](docs/releases.md).
+
 macOS packages are always signed with the configured Developer ID Application
 identity and notarized by Apple before upload. Packaging fails closed when the
 signing or notarization configuration is unavailable.

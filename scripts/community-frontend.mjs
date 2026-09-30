@@ -13,6 +13,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { productVersion } from './product-version.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = resolve(SCRIPT_DIR, '..');
@@ -219,7 +220,7 @@ function build() {
       'build:web:community',
       '--app_port=4200',
       '--public_path=./',
-      '--app_version=0.1.0',
+      `--app_version=${productVersion()}`,
     ],
     worktree,
   );
@@ -252,7 +253,7 @@ function dev() {
     {
       UMI_ENV: 'community',
       APP_NAME: 'chat2db-community',
-      APP_VERSION: '0.1.0',
+      APP_VERSION: productVersion(),
       DISABLE_MFSU: 'true',
       HOST: '127.0.0.1',
       UMI_DEV_SERVER_COMPRESS: 'none',
