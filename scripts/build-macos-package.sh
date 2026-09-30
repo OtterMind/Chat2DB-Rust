@@ -3,6 +3,8 @@ set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 desktop_root="${repository_root}/apps/chat2db-desktop"
+node "${repository_root}/scripts/product-version.mjs" --check
+version="$(node "${repository_root}/scripts/product-version.mjs")"
 build_target="${CHAT2DB_MACOS_BUILD_TARGET:-${repository_root}/target/macos-package-build}"
 app_path="${build_target}/release/bundle/macos/Chat2DB Rust.app"
 package_directory="${repository_root}/target/macos-package"
@@ -250,21 +252,6 @@ CHAT2DB_REQUIRE_DEVELOPER_ID_SIGNATURE=true \
   "${repository_root}/scripts/verify-macos-package.sh" "${app_path}"
 notarization_status="accepted"
 distribution_status="developer-id-notarized"
-
-version="$(awk '
-  /^\[workspace.package\]$/ { in_package = 1; next }
-  /^\[/ { in_package = 0 }
-  in_package && /^version[[:space:]]*=/ {
-    gsub(/[[:space:]\"]/ , "", $0)
-    sub(/^version=/, "", $0)
-    print
-    exit
-  }
-' "${repository_root}/Cargo.toml")"
-if [[ -z "${version}" ]]; then
-  echo "could not resolve workspace package version" >&2
-  exit 1
-fi
 
 case "${package_directory}" in
   "${repository_root}/target/macos-package") ;;

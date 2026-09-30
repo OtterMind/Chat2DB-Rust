@@ -1,4 +1,4 @@
-.PHONY: verify rust rust-process-tests java ipc-integration jdbc-h2-integration \
+.PHONY: verify release-tools rust rust-process-tests java ipc-integration jdbc-h2-integration \
 	community-h2-classpath community-h2-reproducibility community-java-h2-integration \
 	community-h2-integration \
 	community-product-h2-integration product-h2-integration mysql-driver-pack h2-driver-pack dm-driver-pack \
@@ -17,10 +17,14 @@ MYSQL_TEST_HOST ?= 127.0.0.1
 MYSQL_TEST_PORT ?= 3306
 MYSQL_TEST_JDBC_PARAMETERS ?= sslMode=DISABLED&allowPublicKeyRetrieval=true&serverTimezone=UTC&zeroDateTimeBehavior=CONVERT_TO_NULL&tinyInt1isBit=false
 
-verify: rust rust-process-tests java ipc-integration jdbc-h2-integration \
+verify: release-tools rust rust-process-tests java ipc-integration jdbc-h2-integration \
 	community-java-h2-integration community-h2-integration \
 	community-product-h2-integration product-h2-integration \
 	dm-driver-pack-integration dm-product-integration frontend desktop
+
+release-tools:
+	node scripts/product-version.mjs --check
+	node --test scripts/product-version.test.mjs scripts/prepare-release.test.mjs
 
 rust:
 	cargo fmt --all --check

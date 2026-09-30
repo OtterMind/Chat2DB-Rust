@@ -3,6 +3,8 @@ set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 desktop_root="${repository_root}/apps/chat2db-desktop"
+node "${repository_root}/scripts/product-version.mjs" --check
+version="$(node "${repository_root}/scripts/product-version.mjs")"
 build_target="${CHAT2DB_WINDOWS_BUILD_TARGET:-${repository_root}/target/windows-package-build}"
 package_directory="${repository_root}/target/windows-package"
 license_resource_directory="${repository_root}/target/windows-license-resources"
@@ -117,6 +119,9 @@ cp -- "${msi_artifacts[0]}" "${package_directory}/"
   sha256sum ./*.exe ./*.msi > SHA256SUMS
   {
     echo "Chat2DB Rust Windows package"
+    echo "version=${version}"
+    echo "git_commit=$(git -C "${repository_root}" rev-parse HEAD)"
+    echo "community_commit=$(git -C "${repository_root}/third_party/chat2db-community" rev-parse HEAD)"
     echo "architecture=x86_64"
     echo "target=windows"
     echo "rust_toolchain=${rust_toolchain}"

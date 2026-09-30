@@ -3,6 +3,8 @@ set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 desktop_root="${repository_root}/apps/chat2db-desktop"
+node "${repository_root}/scripts/product-version.mjs" --check
+version="$(node "${repository_root}/scripts/product-version.mjs")"
 build_target="${CHAT2DB_LINUX_BUILD_TARGET:-${repository_root}/target/linux-package-build}"
 package_directory="${repository_root}/target/linux-package"
 license_resource_directory="${repository_root}/target/linux-license-resources"
@@ -115,6 +117,9 @@ cp -- "${appimage_artifacts[0]}" "${deb_artifacts[0]}" "${rpm_artifacts[0]}" "${
   sha256sum ./*.AppImage ./*.deb ./*.rpm > SHA256SUMS
   {
     echo "Chat2DB Rust Linux package"
+    echo "version=${version}"
+    echo "git_commit=$(git -C "${repository_root}" rev-parse HEAD)"
+    echo "community_commit=$(git -C "${repository_root}/third_party/chat2db-community" rev-parse HEAD)"
     echo "architecture=$(uname -m)"
     echo "target=linux"
     echo "rust_toolchain=${rust_toolchain}"
