@@ -29,6 +29,9 @@ jobs:
       - name: Require an annotated release tag on main
         if: github.ref_type == 'tag'
         run: |
+          # actions/checkout resolves the tag ref to GITHUB_SHA after fetching it.
+          # Restore the remote tag object before checking that this is annotated.
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
           test "$(git cat-file -t "$GITHUB_REF")" = tag
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
