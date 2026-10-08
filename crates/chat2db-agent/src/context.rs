@@ -42,6 +42,9 @@ impl fmt::Debug for SummaryError {
 }
 
 /// Optional summarization boundary used only for complete historical turns.
+// `async_trait` stamps `#[must_use]` on the generated boxed futures, which
+// `clippy::double_must_use` rejects because the type is already `#[must_use]`.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ContextCompactor: Send + Sync {
     async fn summarize(
@@ -475,7 +478,7 @@ mod tests {
     #[test]
     fn adjacent_users_are_not_a_complete_compaction_turn() {
         let messages = vec![Message::system("s"), Message::user("a"), Message::user("b")];
-        assert!(compactable_turns(&messages).is_empty());
+        assert_eq!(compactable_turns(&messages).len(), 0);
     }
 
     #[test]
@@ -491,7 +494,7 @@ mod tests {
             ),
             Message::user("latest"),
         ];
-        assert!(compactable_turns(&messages).is_empty());
+        assert_eq!(compactable_turns(&messages).len(), 0);
     }
 
     #[test]
@@ -524,7 +527,7 @@ mod tests {
             Message::text(Role::Assistant, "terminal"),
             Message::user("latest"),
         ];
-        assert!(compactable_turns(&missing).is_empty());
+        assert_eq!(compactable_turns(&missing).len(), 0);
 
         let duplicate_call =
             ToolCall::new("duplicate", "query", serde_json::json!({})).expect("valid call");
@@ -548,7 +551,7 @@ mod tests {
             Message::text(Role::Assistant, "terminal"),
             Message::user("latest"),
         ];
-        assert!(compactable_turns(&duplicate).is_empty());
+        assert_eq!(compactable_turns(&duplicate).len(), 0);
     }
 
     #[test]

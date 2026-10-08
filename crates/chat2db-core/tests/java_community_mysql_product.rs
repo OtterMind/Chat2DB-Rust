@@ -691,7 +691,10 @@ async fn verify_sql_tools(application: &Application, datasource_id: &str, databa
         .await
         .expect("Core must invoke real MySQL SQL validation");
     assert!(!validation.valid);
-    assert!(!validation.diagnostics.is_empty());
+    assert!(
+        !validation.diagnostics.is_empty(),
+        "invalid SQL must report diagnostics"
+    );
 
     let source_sql = "select id,label from items where id=1";
     let formatted = application

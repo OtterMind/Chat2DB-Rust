@@ -4377,7 +4377,7 @@ mod tests {
         assert_eq!(messages[0].ordinal, 0);
         assert_eq!(messages[0].role, AgentMessageRole::System);
         assert_eq!(messages[0].content_json, message_json("rules"));
-        assert!(!messages[0].id.is_empty());
+        assert_ne!(messages[0].id, "");
         assert!(messages[0].run_id.is_none());
 
         let appended = storage
@@ -4870,7 +4870,8 @@ mod tests {
             storage
                 .list_agent_messages(&session.id, 0, 10)
                 .expect("messages list")
-                .is_empty()
+                .is_empty(),
+            "rejected messages must not be persisted"
         );
     }
 
@@ -6175,7 +6176,8 @@ mod tests {
             storage
                 .list_agent_messages(&session.id, 0, 10)
                 .expect("messages list")
-                .is_empty()
+                .is_empty(),
+            "rejected messages must not be persisted"
         );
 
         storage

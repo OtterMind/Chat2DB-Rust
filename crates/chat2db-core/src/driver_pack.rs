@@ -753,7 +753,7 @@ mod tests {
         let directory = TempDir::new().expect("temporary directory");
         let prepared =
             discover_test(&directory.path().join("missing")).expect("missing root is optional");
-        assert!(prepared.inventory().is_empty());
+        assert_eq!(prepared.inventory().len(), 0);
     }
 
     #[test]

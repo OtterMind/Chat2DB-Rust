@@ -490,7 +490,8 @@ async fn verify_native_workspace_metadata(
             .await
             .expect("table pins must relist")
             .items
-            .is_empty()
+            .is_empty(),
+        "an unpinned table must disappear from the listing"
     );
     assert_java_dormant(application);
 }
@@ -530,7 +531,7 @@ async fn verify_native_metadata(
         })
         .await
         .expect("MySQL schema route must stay native");
-    assert!(schemas.items.is_empty());
+    assert_eq!(schemas.items.len(), 0);
 
     let tables = application
         .list_community_tables(ListCommunityTablesRequest {

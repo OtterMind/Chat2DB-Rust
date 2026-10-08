@@ -1827,7 +1827,7 @@ mod tests {
             .read_result_page(&metadata.id, PageRequest::default())
             .expect("empty page reads");
         assert_eq!(page.schema, schema());
-        assert!(page.rows.is_empty());
+        assert_eq!(page.rows.len(), 0);
         assert!(!page.has_more);
     }
 

@@ -594,7 +594,7 @@ mod tests {
             database_query.sql,
             "SELECT NAME AS DATABASE_NAME FROM V$DATABASE"
         );
-        assert!(database_query.parameters.is_empty());
+        assert_eq!(database_query.parameters.len(), 0);
 
         let table_query = list_tables_query("APP' OR 1=1 --", "Order_%")
             .expect("quoted schema names are valid metadata values");

@@ -1193,7 +1193,8 @@ mod tests {
                 .expect("dashboard reads")
                 .expect("dashboard exists")
                 .chart_ids
-                .is_empty()
+                .is_empty(),
+            "a default dashboard must not define charts"
         );
         assert!(
             storage

@@ -1034,7 +1034,7 @@ mod tests {
 
         assert!(request.error_continue);
         assert_eq!(request.result_set_id, None);
-        assert!(request.database_name.is_empty());
+        assert_eq!(request.database_name, "");
     }
 
     #[test]
