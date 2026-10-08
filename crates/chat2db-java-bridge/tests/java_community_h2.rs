@@ -780,7 +780,7 @@ async fn verify_programmability_metadata(
         .list_function_parameters(session, "H2", database_name, "APP", "ADD_ONE", None)
         .await
         .expect("H2Meta must list function parameters");
-    assert!(function_parameters.is_empty());
+    assert_eq!(function_parameters.len(), 0);
 
     let procedures = community
         .list_procedures(session, "H2", database_name, "APP", None)
@@ -971,14 +971,17 @@ async fn verify_parser(community: &CommunityClient) {
         .expect("Community parser must validate well-formed SQL");
     assert!(valid.valid);
     assert_eq!(valid.statements.len(), 1);
-    assert!(valid.diagnostics.is_empty());
+    assert_eq!(valid.diagnostics.len(), 0);
 
     let invalid = community
         .validate_sql("H2", "SELECT FROM;")
         .await
         .expect("Community parser must return bounded syntax diagnostics");
     assert!(!invalid.valid);
-    assert!(!invalid.diagnostics.is_empty());
+    assert!(
+        !invalid.diagnostics.is_empty(),
+        "invalid SQL must report diagnostics"
+    );
     assert!(
         invalid
             .diagnostics

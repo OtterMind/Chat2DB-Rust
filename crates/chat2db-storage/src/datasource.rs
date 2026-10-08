@@ -1130,7 +1130,8 @@ mod tests {
             storage
                 .list_datasources()
                 .expect("datasources list")
-                .is_empty()
+                .is_empty(),
+            "a rolled back create must not leave datasources behind"
         );
         assert!(vault.values.lock().expect("vault lock").is_empty());
         assert_eq!(storage.reconcile_secrets().expect("queue reads").pending, 0);

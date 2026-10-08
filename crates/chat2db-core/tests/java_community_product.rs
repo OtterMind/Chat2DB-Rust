@@ -48,7 +48,10 @@ async fn product_services_invoke_the_fixed_community_h2_compatibility_slice() {
         .await
         .expect("Core SQL validation must not require a datasource or JDBC session");
     assert!(!validation.valid);
-    assert!(!validation.diagnostics.is_empty());
+    assert!(
+        !validation.diagnostics.is_empty(),
+        "invalid SQL must report diagnostics"
+    );
 
     let formatted = application
         .format_community_sql(FormatCommunitySqlRequest {
@@ -1095,7 +1098,7 @@ async fn verify_trigger_metadata(
         })
         .await
         .expect("escaped H2 trigger-list identifiers must remain a safe metadata query");
-    assert!(injected_list.items.is_empty());
+    assert_eq!(injected_list.items.len(), 0);
     for trigger_name in ["MISSING_TRIGGER", "AUDIT_TRIGGER' OR '1'='1"] {
         let error = application
             .get_community_trigger(GetCommunityTriggerRequest {

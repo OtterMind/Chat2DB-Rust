@@ -344,7 +344,10 @@ impl CommunityClasspath {
     }
 
     /// Returns the canonical JARs in deterministic classpath order.
-    #[must_use]
+    // A bare `#[must_use]` satisfies `clippy::must_use_candidate` on Rust 1.88
+    // but fails `clippy::double_must_use` on Rust 1.99; the explicit reason
+    // satisfies both.
+    #[must_use = "the canonical classpath order must be consumed"]
     pub fn artifacts(&self) -> impl ExactSizeIterator<Item = &Path> {
         self.artifacts
             .iter()
@@ -2777,6 +2780,9 @@ fn validate_metadata_session(
     Ok(())
 }
 
+// `AtomicU64::fetch_update` is deprecated in favour of `try_update`, which is
+// unstable before Rust 1.95 while the workspace MSRV is 1.88.
+#[allow(deprecated)]
 fn next_sql_completion_datasource_scope() -> Result<u64, BridgeError> {
     NEXT_SQL_COMPLETION_DATASOURCE_SCOPE
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, next_java_long_scope)

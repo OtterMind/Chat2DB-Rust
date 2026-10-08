@@ -198,7 +198,7 @@ async fn verify_oversized_scalar_cleanup(
     datasource_id: &str,
     data_dir: &Path,
 ) {
-    assert!(retained_result_files(data_dir).is_empty());
+    assert_eq!(retained_result_files(data_dir).len(), 0);
     let scalar_bytes = wire::JdbcProtocolLimit::MaxScalarBytes as usize + 1;
     let query = application
         .start_query(StartQueryRequest {

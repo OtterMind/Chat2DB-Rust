@@ -261,8 +261,8 @@ async fn verify_database_and_schema_metadata(
         .items
         .first()
         .expect("Oracle must expose its current database");
-    assert!(!database.name.is_empty());
-    assert!(!database.owner.is_empty());
+    assert_ne!(database.name, "");
+    assert_ne!(database.owner, "");
 
     let schemas = application
         .list_community_schemas(ListCommunitySchemasRequest {

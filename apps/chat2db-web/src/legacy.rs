@@ -11186,12 +11186,12 @@ mod tests {
 
         let column = &request.new_table.column_list[0];
         assert_eq!(column.primary_key_order, 0);
-        assert!(column.comment.is_empty());
-        assert!(column.char_set_name.is_empty());
+        assert_eq!(column.comment, "");
+        assert_eq!(column.char_set_name, "");
         let index = &request.new_table.index_list[0];
-        assert!(index.index_type.is_empty());
-        assert!(index.comment.is_empty());
-        assert!(index.column_list[0].index_name.is_empty());
+        assert_eq!(index.index_type, "");
+        assert_eq!(index.comment, "");
+        assert_eq!(index.column_list[0].index_name, "");
     }
 
     #[test]
