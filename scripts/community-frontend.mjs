@@ -90,21 +90,42 @@ function replaceDirectory(target) {
   mkdirSync(target, { recursive: true });
 }
 
+function hasLockedCommit() {
+  const result = spawnSync('git', ['-C', SUBMODULE_DIR, 'cat-file', '-e', `${lock.commit}^{commit}`]);
+  return result.status === 0;
+}
+
+// The submodule checkout tracks the Java compatibility baseline recorded in
+// `third_party/community-h2-classpath.lock`, so the locked frontend commit is
+// fetched into the submodule object store instead of being checked out.
+function ensureLockedCommit() {
+  if (hasLockedCommit()) {
+    return;
+  }
+  spawnSync('git', ['-C', SUBMODULE_DIR, 'fetch', '--no-tags', 'origin', lock.commit], {
+    stdio: 'inherit',
+  });
+  if (!hasLockedCommit()) {
+    run('git', [
+      '-C',
+      SUBMODULE_DIR,
+      'fetch',
+      '--no-tags',
+      'origin',
+      '+refs/heads/*:refs/remotes/origin/*',
+      '+refs/tags/*:refs/tags/*',
+    ]);
+  }
+  if (!hasLockedCommit()) {
+    fail(`locked Community commit ${lock.commit} is unavailable in ${lock.submodulePath}`);
+  }
+}
+
 function verifySource() {
   if (!existsSync(join(SUBMODULE_DIR, '.git'))) {
     fail(`submodule is unavailable; run git submodule update --init --recursive ${lock.submodulePath}`);
   }
-
-  const indexedSubmodule = capture('git', ['ls-files', '--stage', '--', lock.submodulePath]);
-  const expectedIndex = `160000 ${lock.commit} 0\t${lock.submodulePath}`;
-  if (indexedSubmodule !== expectedIndex) {
-    fail(`repository index must pin ${lock.submodulePath} at ${lock.commit}`);
-  }
-
-  const commit = capture('git', ['rev-parse', 'HEAD'], SUBMODULE_DIR);
-  if (commit !== lock.commit) {
-    fail(`submodule HEAD is ${commit}; expected ${lock.commit}`);
-  }
+  ensureLockedCommit();
 
   const tree = capture('git', ['rev-parse', `${lock.commit}:${lock.sourcePath}`], SUBMODULE_DIR);
   if (tree !== lock.tree) {
@@ -120,10 +141,11 @@ function verifySource() {
     fail(`submodule worktree is not clean:\n${status}`);
   }
 
-  return { commit, tree };
+  return { commit: lock.commit, tree };
 }
 
-function exportSource(destination) {
+function exportSource(destination, sourcePath = lock.sourcePath) {
+  ensureLockedCommit();
   replaceDirectory(destination);
   mkdirSync(VERSION_ROOT, { recursive: true });
   const archiveName = `source-${process.pid}.tar`;
@@ -139,7 +161,7 @@ function exportSource(destination) {
       '--format=tar',
       `--output=${archiveOutput}`,
       lock.commit,
-      lock.sourcePath,
+      sourcePath,
     ],
     { cwd: VERSION_ROOT },
   );
@@ -148,6 +170,12 @@ function exportSource(destination) {
     cwd: VERSION_ROOT,
   });
   rmSync(archivePath, { force: true });
+}
+
+// Upstream's community boundary check scans the sibling server tree, so every
+// exported worktree needs the monorepo layout next to it.
+function exportCommunityServer() {
+  exportSource(join(VERSION_ROOT, 'work', 'chat2db-community-server'), 'chat2db-community-server');
 }
 
 function runYarn(args, cwd, env = {}) {
@@ -179,6 +207,7 @@ function ensureDependencies() {
 
 function createWorktree(name) {
   ensureDependencies();
+  exportCommunityServer();
   const worktree = join(VERSION_ROOT, 'work', name);
   exportSource(worktree);
   symlinkSync(
@@ -199,17 +228,12 @@ function setupUmi(worktree) {
 function test() {
   const worktree = createWorktree('test');
   setupUmi(worktree);
-  runYarn(['test:chat-answer-update'], worktree);
+  // Upstream deleted the other per-behavior scripts this step used to pin.
+  // `prebuild:web:community` now runs the full upstream test battery before
+  // every community build, so only the surviving checks stay pinned here.
   runYarn(['test:tree-title-highlight'], worktree);
-  runYarn(['test:deep-clone'], worktree);
   runYarn(['test:ai-model-select'], worktree);
   runYarn(['test:export-connections'], worktree);
-  runYarn(['test:host-file-transfer'], worktree);
-  runYarn(['test:canvas-lifecycle'], worktree);
-  runYarn(['test:result-error-boundary'], worktree);
-  runYarn(['test:result-resource-activity'], worktree);
-  runYarn(['test:result-table-lifecycle'], worktree);
-  runYarn(['test:workspace-resource-activity'], worktree);
 }
 
 function build() {

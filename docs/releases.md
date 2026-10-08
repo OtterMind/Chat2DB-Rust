@@ -25,7 +25,10 @@ commit in `main`. The tag annotation records:
 
 - `source_repository`: `OtterMind/Chat2DB-Rust`;
 - `source_commit`: the complete release commit SHA;
-- `community_ref`: the pinned submodule commit;
+- `community_ref`: the locked frontend commit from
+  `scripts/community-frontend.lock.json` (the Community revision shipped as the
+  visible UI; the Java compatibility baseline stays recorded in
+  `third_party/community-h2-classpath.lock`);
 - `package_repository`: `OtterMind/Chat2DB-Rust`;
 - `workflow_ref`: the complete release commit SHA;
 - `product_workflow`: `.github/workflows/package.yml`; and
