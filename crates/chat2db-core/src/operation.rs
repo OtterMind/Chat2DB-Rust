@@ -313,6 +313,9 @@ impl OperationHub {
         state.journal.push_back(envelope.clone());
         let _ = entry.live.send(envelope);
         if state.status != OperationStatus::Running {
+            // `AtomicU64::fetch_update` is deprecated in favour of `try_update`,
+            // which is unstable before Rust 1.95 while the workspace MSRV is 1.88.
+            #[allow(deprecated)]
             let terminal_order = self
                 .inner
                 .next_terminal_order

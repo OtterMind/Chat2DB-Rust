@@ -186,7 +186,7 @@ mod tests {
             "refreshCycle": {"unit": "seconds", "value": 30}
         }))
         .expect("dashboard request decodes");
-        assert!(request.chart_ids.is_empty());
+        assert_eq!(request.chart_ids.len(), 0);
         let encoded = serde_json::to_value(request).expect("dashboard request encodes");
         assert_eq!(encoded["name"], "Sales");
         assert_eq!(encoded["refreshCycle"]["value"], 30);

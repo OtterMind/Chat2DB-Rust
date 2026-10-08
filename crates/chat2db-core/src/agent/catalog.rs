@@ -545,7 +545,8 @@ mod tests {
                 .await
                 .expect("sessions list after delete")
                 .items
-                .is_empty()
+                .is_empty(),
+            "a deleted session must not be listed"
         );
         let missing = application
             .list_agent_messages(&updated.id, "0", "10")

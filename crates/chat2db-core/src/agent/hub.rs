@@ -504,6 +504,9 @@ impl AgentRunHub {
 
     async fn mark_terminal(&self, entry: &AgentRunEntry) {
         cancel_current_permission(entry).await;
+        // `AtomicU64::fetch_update` is deprecated in favour of `try_update`,
+        // which is unstable before Rust 1.95 while the workspace MSRV is 1.88.
+        #[allow(deprecated)]
         let order = self
             .inner
             .next_terminal_order

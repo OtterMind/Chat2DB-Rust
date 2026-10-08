@@ -13,6 +13,9 @@ pub type ProviderEventStream =
     Pin<Box<dyn Stream<Item = Result<ProviderEvent, ProviderError>> + Send + 'static>>;
 
 /// Direct model-provider boundary used by the agent loop.
+// `async_trait` stamps `#[must_use]` on the generated boxed futures, which
+// `clippy::double_must_use` rejects because the type is already `#[must_use]`.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Provider: Send + Sync {
     /// Identifies the wire family without exposing its DTOs.

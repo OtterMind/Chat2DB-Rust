@@ -107,6 +107,9 @@ impl Default for AgentLimits {
 }
 
 /// Host boundary for executing one already-validated tool call.
+// `async_trait` stamps `#[must_use]` on the generated boxed futures, which
+// `clippy::double_must_use` rejects because the type is already `#[must_use]`.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
     /// Implementations receive cancellation and must return one bounded

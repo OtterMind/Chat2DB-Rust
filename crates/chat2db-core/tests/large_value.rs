@@ -282,7 +282,7 @@ fn binary_chunks_round_trip_and_range_validation_is_closed() {
         .read_chunk("execution-1", token(&preview), 13, 1)
         .expect("offset at the end should be valid");
     assert!(eof.eof);
-    assert!(eof.value.is_empty());
+    assert_eq!(eof.value.len(), 0);
 }
 
 #[test]

@@ -791,7 +791,7 @@ mod tests {
             .expect("JDBC-only registry is valid");
         let application = Application::with_native_drivers_for_test(registry);
 
-        assert!(application.list_drivers().items.is_empty());
+        assert_eq!(application.list_drivers().items.len(), 0);
         let compatibility = application
             .native_driver_compatibility("JDBC_ONLY", NativeDriverAction::Download)
             .expect("JDBC-only compatibility resolves");

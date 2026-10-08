@@ -1597,7 +1597,7 @@ async fn verify_transfer_routes(
         entry
             .read_to_string(&mut contents)
             .expect("generated class entry must be UTF-8");
-        assert!(!contents.is_empty());
+        assert_ne!(contents, "");
     }
 
     let generated = directory.join("generated-classes");

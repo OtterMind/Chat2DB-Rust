@@ -522,7 +522,10 @@ async fn collect_rows(session: &Session, sql: &str) -> Vec<JdbcRow> {
         match next_event(&mut stream).await {
             QueryEvent::Started(metadata) => {
                 assert!(!started, "query metadata must be emitted once");
-                assert!(!metadata.columns.is_empty());
+                assert!(
+                    !metadata.columns.is_empty(),
+                    "query metadata must carry columns"
+                );
                 started = true;
             }
             QueryEvent::Batch(batch) => rows.extend(batch.rows),
