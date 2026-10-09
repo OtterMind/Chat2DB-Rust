@@ -183,6 +183,13 @@ pub struct LegacyAiSessionDeleteRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LegacyAiSessionRenameRequest {
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LegacyAiMessagesQuery {
     session_id: String,
 }
@@ -662,6 +669,38 @@ pub async fn delete_session(application: &Application, id: &str) -> Result<(), L
     Ok(())
 }
 
+/// Renames one durable Community AI session through revision CAS.
+///
+/// # Errors
+///
+/// Returns validation, lookup, revision, or storage failures.
+pub async fn rename_session(
+    application: &Application,
+    id: &str,
+    title: &str,
+) -> Result<(), LegacyAiFailure> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(LegacyAiFailure::invalid(
+            "invalid_ai_request",
+            "title must not be empty",
+        ));
+    }
+    let session = application.get_agent_session(id.trim()).await?;
+    application
+        .update_agent_session(
+            &session.id,
+            UpdateAgentSessionRequest {
+                expected_revision: session.revision.clone(),
+                title: title.to_owned(),
+                provider_id: session.provider_id.clone(),
+                datasource_id: session.datasource_id.clone(),
+            },
+        )
+        .await?;
+    Ok(())
+}
+
 /// Lists provider profiles that have usable credentials as frontend model options.
 ///
 /// # Errors
@@ -1088,6 +1127,23 @@ pub async fn dispatch(
                 .unwrap_or_else(|_| internal_failure_value()),
             )
         }
+        ("post", "/api/v3/ai/chat/history/session/rename") => {
+            let request = serde_json::from_value::<LegacyAiSessionRenameRequest>(message);
+            let result = match request {
+                Ok(request) => rename_session(application, &request.id, &request.title).await,
+                Err(_) => Err(LegacyAiFailure::invalid(
+                    "invalid_ai_request",
+                    "id and title must not be empty",
+                )),
+            };
+            Some(
+                serde_json::to_value(match result {
+                    Ok(()) => LegacyAiEnvelope::success(()),
+                    Err(error) => LegacyAiEnvelope::failure(error),
+                })
+                .unwrap_or_else(|_| internal_failure_value()),
+            )
+        }
         ("get", "/api/v3/ai/model/options") => Some(
             serde_json::to_value(match model_options(application).await {
                 Ok(data) => LegacyAiEnvelope::success(data),
@@ -1185,6 +1241,10 @@ pub(crate) fn routes() -> Router<Application> {
         .route(
             "/api/v3/ai/chat/history/session/delete",
             post(delete_session_handler),
+        )
+        .route(
+            "/api/v3/ai/chat/history/session/rename",
+            post(rename_session_handler),
         )
         .route("/api/v3/ai/model/options", get(model_options_handler))
         .route("/api/v3/ai/model/list", get(model_catalog_handler))
@@ -1308,6 +1368,21 @@ async fn delete_session_handler(
             Ok(()) => LegacyAiEnvelope::success(()),
             Err(error) => LegacyAiEnvelope::failure(error),
         })
+        .unwrap_or_else(|_| internal_failure_value()),
+    )
+}
+
+async fn rename_session_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyAiSessionRenameRequest>,
+) -> Json<serde_json::Value> {
+    Json(
+        serde_json::to_value(
+            match rename_session(&application, &request.id, &request.title).await {
+                Ok(()) => LegacyAiEnvelope::success(()),
+                Err(error) => LegacyAiEnvelope::failure(error),
+            },
+        )
         .unwrap_or_else(|_| internal_failure_value()),
     )
 }
@@ -1978,7 +2053,7 @@ mod tests {
     };
     use chat2db_contract::{
         AgentEvent, AgentEventEnvelope, AgentPermissionRequest, ApiError,
-        CreateProviderProfileRequest, ProviderKind,
+        CreateAgentSessionRequest, CreateProviderProfileRequest, ProviderKind,
     };
     use chat2db_core::Application;
     use chat2db_storage::{SecretRef, SecretValue, SecretVault, SecretVaultError, Storage};
@@ -2453,5 +2528,55 @@ mod tests {
                 .expect("CSV content")
                 .contains("alpha")
         );
+    }
+
+    #[tokio::test]
+    async fn session_rename_route_updates_the_visible_title() {
+        let fixture = test_application();
+        let profile = fixture
+            .application
+            .create_provider_profile(CreateProviderProfileRequest {
+                name: "Rename provider".to_owned(),
+                kind: ProviderKind::OpenAiCompatible,
+                base_url: "https://provider.example/v1".to_owned(),
+                model: "mock-model".to_owned(),
+                context_window_tokens: "4096".to_owned(),
+                max_output_tokens: "1024".to_owned(),
+                credentials: None,
+            })
+            .await
+            .expect("provider profile must be created");
+        let session = fixture
+            .application
+            .create_agent_session(CreateAgentSessionRequest {
+                title: "First title".to_owned(),
+                provider_id: profile.id,
+                datasource_id: None,
+                system_prompt: None,
+            })
+            .await
+            .expect("session must be created");
+        let application = routes().with_state(fixture.application);
+
+        let renamed = application
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/v3/ai/chat/history/session/rename",
+                &serde_json::json!({ "id": session.id, "title": "Renamed title" }),
+            ))
+            .await
+            .expect("rename route must respond");
+        assert_eq!(response_json(renamed).await["success"], true);
+
+        let sessions = application
+            .oneshot(empty_request(
+                Method::GET,
+                "/api/v3/ai/chat/history/sessions",
+            ))
+            .await
+            .expect("session list must respond");
+        let sessions = response_json(sessions).await;
+        assert_eq!(sessions["data"][0]["title"], "Renamed title");
     }
 }

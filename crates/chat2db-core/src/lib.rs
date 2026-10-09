@@ -13,6 +13,7 @@ mod error;
 mod large_value;
 mod legacy_community_import;
 mod mysql_account;
+mod mysql_active_transaction;
 mod mysql_dashboard;
 pub mod mysql_ddl;
 mod mysql_schema_diff;
@@ -672,6 +673,28 @@ impl Application {
         .map(convert::datasource)
     }
 
+    /// Replaces only the identity colour of one datasource.
+    ///
+    /// The colour is presentation metadata and does not participate in the
+    /// revision CAS used for public datasource fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, not-found, availability, or storage failures.
+    pub async fn update_datasource_identity_color(
+        &self,
+        id: &str,
+        identity_color: Option<String>,
+    ) -> Result<Datasource, AppError> {
+        let storage = self.require_storage()?;
+        let id = id.to_owned();
+        storage_call(move || {
+            storage.update_datasource_identity_color(&id, identity_color.as_deref())
+        })
+        .await
+        .map(convert::datasource)
+    }
+
     fn require_managed_driver(&self, driver_id: &str) -> Result<(), AppError> {
         if let Some(driver) = self.native_driver_for_datasource_driver_id(driver_id)
             && (driver.connection().is_some()
@@ -839,6 +862,26 @@ impl Application {
     }
 
     /// Stops work admission and requests cancellation of active queries and agent runs.
+    /// Stops accepting new transfer work while the product prepares to exit.
+    ///
+    /// # Errors
+    ///
+    /// Returns availability failures only.
+    pub async fn prepare_user_exit(&self) -> Result<(), AppError> {
+        *self.inner.accepting_work.lock().await = false;
+        Ok(())
+    }
+
+    /// Re-enables transfer work after a cancelled exit.
+    ///
+    /// # Errors
+    ///
+    /// Returns availability failures only.
+    pub async fn abort_user_exit(&self) -> Result<(), AppError> {
+        *self.inner.accepting_work.lock().await = true;
+        Ok(())
+    }
+
     pub async fn begin_shutdown(&self) {
         let mut accepting_work = self.inner.accepting_work.lock().await;
         if !*accepting_work {

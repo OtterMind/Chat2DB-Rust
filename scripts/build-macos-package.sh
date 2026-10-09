@@ -308,7 +308,7 @@ verification_directory=""
   shasum -a 256 -- "$(basename "${zip_path}")" "$(basename "${dmg_path}")" > SHA256SUMS
 )
 git_commit="$(git -C "${repository_root}" rev-parse HEAD)"
-community_commit="$(git -C "${repository_root}/third_party/chat2db-community" rev-parse HEAD)"
+community_commit="$(node -e 'process.stdout.write(require(process.argv[1]).commit)' "${repository_root}/scripts/community-frontend.lock.json")"
 app_kib="$(du -sk "${app_path}" | awk '{ print $1 }')"
 signature_details="$(codesign -dv --verbose=4 "${app_path}" 2>&1)"
 signing_team_id="$(awk -F= '/^TeamIdentifier=/ { print $2; exit }' <<<"${signature_details}")"

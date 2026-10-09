@@ -64,6 +64,7 @@ impl Application {
             ssh: projected.ssh,
             has_secret,
             revision: record.revision.to_string(),
+            identity_color: record.identity_color,
         })
     }
 

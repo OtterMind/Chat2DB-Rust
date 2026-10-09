@@ -162,6 +162,56 @@ fn read_csv(
     Ok(ImportedTable { columns, rows })
 }
 
+/// Lists worksheet names of one spreadsheet file, empty for other formats.
+pub(crate) fn worksheet_names(
+    path: &Path,
+    format: TransferFileFormat,
+) -> Result<Vec<String>, AppError> {
+    match format {
+        TransferFileFormat::Csv | TransferFileFormat::Sql => Ok(Vec::new()),
+        TransferFileFormat::Xls | TransferFileFormat::Xlsx => {
+            if format == TransferFileFormat::Xlsx {
+                validate_xlsx_archive(path)?;
+            }
+            let file = File::open(path).map_err(|_| {
+                AppError::not_found(
+                    "import_file_not_found",
+                    "The selected import file could not be opened",
+                )
+            })?;
+            let workbook = match format {
+                TransferFileFormat::Xls => xls::core::xls::read(file),
+                TransferFileFormat::Xlsx => xls::core::xlsx::read(file),
+                TransferFileFormat::Csv | TransferFileFormat::Sql => unreachable!(),
+            }
+            .map_err(format_error)?;
+            Ok(workbook
+                .sheets
+                .iter()
+                .map(|sheet| sheet.name.clone())
+                .collect())
+        }
+    }
+}
+
+/// Reads a row-bounded preview with string-encoded cells.
+pub(crate) fn read_tabular_preview(
+    path: &Path,
+    format: TransferFileFormat,
+    contains_header: bool,
+    limit: usize,
+) -> Result<(Vec<String>, Vec<Vec<String>>), AppError> {
+    let mut table = read_tabular_file(path, format, contains_header, TabularImportEncoding::Plain)?;
+    let columns = table.columns.take().unwrap_or_default();
+    table.rows.truncate(limit);
+    let rows = table
+        .rows
+        .into_iter()
+        .map(|row| row.iter().map(encode_tabular_value).collect())
+        .collect();
+    Ok((columns, rows))
+}
+
 fn read_spreadsheet(
     path: &Path,
     format: TransferFileFormat,

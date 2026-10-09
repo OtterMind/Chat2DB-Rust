@@ -7211,6 +7211,13 @@
             "type": "string",
             "description": "Opaque datasource id."
           },
+          "identityColor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional `#RRGGBB` identity colour shown by the connection tree."
+          },
           "name": {
             "type": "string",
             "description": "User-visible datasource name."

@@ -47,7 +47,11 @@ The current product frontend is not the former repository-owned replacement
 workbench. The build exports a locked Community frontend commit that retains
 the original pages, components, interactions, and styles while applying a
 reviewable host-transport patch for CSP-safe callbacks and Web/Desktop file
-flows. `scripts/community-frontend.lock.json` binds both commit and tree. Web maps its historical `/api`
+flows. `scripts/community-frontend.lock.json` binds both commit and tree, and is
+independent of the submodule checkout: `third_party/chat2db-community` stays on
+the Java compatibility baseline recorded in
+`third_party/community-h2-classpath.lock`, while the locked frontend commit is
+fetched into the submodule object store and archived from there. Web maps its historical `/api`
 contract through Axum; desktop maps the existing `window.javaQuery` contract
 through one Tauri `legacy_request` command. Both paths call the same Rust
 legacy dispatcher. The implemented product slice covers native MySQL connection

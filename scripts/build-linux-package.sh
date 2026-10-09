@@ -119,7 +119,7 @@ cp -- "${appimage_artifacts[0]}" "${deb_artifacts[0]}" "${rpm_artifacts[0]}" "${
     echo "Chat2DB Rust Linux package"
     echo "version=${version}"
     echo "git_commit=$(git -C "${repository_root}" rev-parse HEAD)"
-    echo "community_commit=$(git -C "${repository_root}/third_party/chat2db-community" rev-parse HEAD)"
+    echo "community_commit=$(node -e 'process.stdout.write(require(process.argv[1]).commit)' "${repository_root}/scripts/community-frontend.lock.json")"
     echo "architecture=$(uname -m)"
     echo "target=linux"
     echo "rust_toolchain=${rust_toolchain}"

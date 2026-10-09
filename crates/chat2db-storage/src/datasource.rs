@@ -63,6 +63,8 @@ pub struct DatasourceRecord {
     pub created_at_ms: i64,
     /// Last update time as Unix epoch milliseconds.
     pub updated_at_ms: i64,
+    /// Optional `#RRGGBB` identity colour shown by the connection tree.
+    pub identity_color: Option<String>,
 }
 
 impl std::fmt::Debug for DatasourceRecord {
@@ -76,6 +78,7 @@ impl std::fmt::Debug for DatasourceRecord {
             .field("revision", &self.revision)
             .field("created_at_ms", &self.created_at_ms)
             .field("updated_at_ms", &self.updated_at_ms)
+            .field("identity_color", &self.identity_color)
             .finish()
     }
 }
@@ -128,6 +131,7 @@ impl Storage {
             revision: 1,
             created_at_ms: timestamp,
             updated_at_ms: timestamp,
+            identity_color: None,
         };
 
         let mutation = (|| -> Result<(), StorageError> {
@@ -189,7 +193,7 @@ impl Storage {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
             "SELECT id, name, driver_id, secret_ref,
-                    revision, created_at_ms, updated_at_ms
+                    revision, created_at_ms, updated_at_ms, identity_color
              FROM datasources ORDER BY created_at_ms, id",
         )?;
         let rows = statement.query_map([], raw_datasource)?;
@@ -249,6 +253,7 @@ impl Storage {
             revision: next_revision,
             created_at_ms: current.created_at_ms,
             updated_at_ms: timestamp,
+            identity_color: current.identity_color.clone(),
         };
 
         let mutation = (|| -> Result<(), StorageError> {
@@ -307,6 +312,35 @@ impl Storage {
                 self.reconcile_update_commit(&current, &expected, staged_reference.as_ref(), error)
             }
         }
+    }
+
+    /// Replaces only the identity colour of one datasource.
+    ///
+    /// The colour is presentation metadata, so it does not participate in the
+    /// revision CAS used for public fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, not-found, or `SQLite` failures.
+    pub fn update_datasource_identity_color(
+        &self,
+        id: &str,
+        identity_color: Option<&str>,
+    ) -> Result<DatasourceRecord, StorageError> {
+        let identity_color = validate_identity_color(identity_color)?;
+        let timestamp = now_millis()?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
+            "UPDATE datasources SET identity_color = ?1, updated_at_ms = ?2 WHERE id = ?3",
+            params![identity_color, timestamp, id],
+        )?;
+        if changed == 0 {
+            return Err(StorageError::DatasourceNotFound(id.to_owned()));
+        }
+        transaction.commit()?;
+        self.get_datasource(id)?
+            .ok_or_else(|| StorageError::DatasourceNotFound(id.to_owned()))
     }
 
     /// Deletes a datasource using revision CAS and retires its vault reference.
@@ -624,7 +658,30 @@ fn validate_datasource(name: &str, driver_id: &str) -> Result<(), StorageError> 
     Ok(())
 }
 
-type RawDatasource = (String, String, String, Option<String>, i64, i64, i64);
+/// Normalizes the optional `#RRGGBB` identity colour.
+fn validate_identity_color(value: Option<&str>) -> Result<Option<String>, StorageError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let hex = value.strip_prefix('#').unwrap_or_default();
+    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(StorageError::InvalidDatasource(
+            "identity colour must use the #RRGGBB form",
+        ));
+    }
+    Ok(Some(format!("#{}", hex.to_ascii_uppercase())))
+}
+
+type RawDatasource = (
+    String,
+    String,
+    String,
+    Option<String>,
+    i64,
+    i64,
+    i64,
+    Option<String>,
+);
 
 fn raw_datasource(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawDatasource> {
     Ok((
@@ -635,11 +692,12 @@ fn raw_datasource(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawDatasource> {
         row.get(4)?,
         row.get(5)?,
         row.get(6)?,
+        row.get(7)?,
     ))
 }
 
 fn decode_datasource(raw: RawDatasource) -> Result<DatasourceRecord, StorageError> {
-    let (id, name, driver_id, secret_ref, revision, created, updated) = raw;
+    let (id, name, driver_id, secret_ref, revision, created, updated, identity_color) = raw;
     Ok(DatasourceRecord {
         id,
         name,
@@ -649,6 +707,7 @@ fn decode_datasource(raw: RawDatasource) -> Result<DatasourceRecord, StorageErro
             .map_err(|_| StorageError::NumericRange("datasource revision"))?,
         created_at_ms: created,
         updated_at_ms: updated,
+        identity_color,
     })
 }
 
@@ -659,7 +718,7 @@ fn load_datasource(
     let raw = connection
         .query_row(
             "SELECT id, name, driver_id, secret_ref,
-                    revision, created_at_ms, updated_at_ms
+                    revision, created_at_ms, updated_at_ms, identity_color
              FROM datasources WHERE id = ?1",
             [id],
             raw_datasource,

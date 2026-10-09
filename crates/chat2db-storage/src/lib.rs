@@ -76,7 +76,7 @@ const DATABASE_FILE: &str = "chat2db.sqlite3";
 const LOCK_FILE: &str = ".chat2db.lock";
 const RESULTS_DIRECTORY: &str = "results";
 const ARTIFACTS_DIRECTORY: &str = "artifacts";
-const CURRENT_SCHEMA_VERSION: i64 = 8;
+const CURRENT_SCHEMA_VERSION: i64 = 9;
 
 #[cfg(test)]
 #[derive(Clone, Copy)]
@@ -446,6 +446,13 @@ fn migrate(connection: &Connection) -> Result<(), StorageError> {
         apply_migration(
             connection,
             include_str!("../migrations/008_community_dashboard.sql"),
+        )?;
+        version = 8;
+    }
+    if version == 8 {
+        apply_migration(
+            connection,
+            include_str!("../migrations/009_community_client_routes.sql"),
         )?;
     }
     Ok(())

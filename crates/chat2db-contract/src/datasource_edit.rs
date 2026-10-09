@@ -31,6 +31,9 @@ pub struct DatasourceEditProjection {
     pub has_secret: bool,
     /// Monotonic revision encoded as a decimal integer.
     pub revision: String,
+    /// Optional `#RRGGBB` identity colour shown by the connection tree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity_color: Option<String>,
 }
 
 impl Debug for DatasourceEditProjection {
@@ -47,6 +50,7 @@ impl Debug for DatasourceEditProjection {
             .field("ssh", &self.ssh)
             .field("has_secret", &self.has_secret)
             .field("revision", &self.revision)
+            .field("identity_color", &self.identity_color)
             .finish()
     }
 }
@@ -72,6 +76,7 @@ mod tests {
             ssh: None,
             has_secret: true,
             revision: "3".to_owned(),
+            identity_color: None,
         };
 
         let json = serde_json::to_string(&projection).expect("projection serializes");

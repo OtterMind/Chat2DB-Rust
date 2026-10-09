@@ -92,6 +92,7 @@ pub(crate) fn datasource(record: storage::DatasourceRecord) -> contract::Datasou
         revision: record.revision.to_string(),
         created_at_ms: record.created_at_ms.to_string(),
         updated_at_ms: record.updated_at_ms.to_string(),
+        identity_color: record.identity_color,
     }
 }
 

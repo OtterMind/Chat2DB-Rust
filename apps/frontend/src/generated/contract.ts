@@ -1865,6 +1865,8 @@ export interface components {
             hasSecret: boolean;
             /** @description Opaque datasource id. */
             id: string;
+            /** @description Optional `#RRGGBB` identity colour shown by the connection tree. */
+            identityColor?: string | null;
             /** @description User-visible datasource name. */
             name: string;
             /** @description Monotonic revision encoded as a decimal integer. */
