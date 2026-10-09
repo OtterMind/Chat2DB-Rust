@@ -263,6 +263,25 @@ pub struct LegacySupportedDatabase {
     pub icon: Option<String>,
 }
 
+/// Identity-colour update posted by the retained Community connection tree.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyIdentityColorRequest {
+    pub id: LegacyIdentifier,
+    #[serde(default)]
+    pub identity_color: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyIdentityColorResponse {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity_color: Option<String>,
+    pub environment_id: u64,
+    pub environment: LegacyEnvironment,
+}
+
 #[derive(Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LegacyConnectionProperty {
@@ -332,6 +351,8 @@ pub struct LegacyDatasourceResponse {
     pub support_schema: bool,
     pub has_secret: bool,
     pub revision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity_color: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -454,6 +475,64 @@ pub struct LegacyTaskListQuery {
     pub page_size: u32,
     #[serde(default)]
     pub task_status: String,
+}
+
+/// Task-center query posted by the newer Community import/export panel.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyImportExportTaskQuery {
+    #[serde(default = "default_page_no")]
+    pub page_no: u32,
+    #[serde(default = "default_page_size")]
+    pub page_size: u32,
+    #[serde(default)]
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyImportExportTaskIdQuery {
+    pub task_id: LegacyIdentifier,
+}
+
+/// One task-center row in the shape the newer Community panel expects.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyImportExportTask {
+    pub id: i64,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub task_type: String,
+    pub status: String,
+    pub progress: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<LegacyImportExportTaskTarget>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
+    pub created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<i64>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyImportExportTaskTarget {
+    pub data_source_id: String,
+    pub database_name: String,
+    pub schema_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2967,6 +3046,126 @@ pub(crate) async fn legacy_transfer_task_download(
     Ok(application
         .transfer_task_artifact_download(legacy_transfer_task_id(id)?)
         .await?)
+}
+
+fn import_export_task_status(status: TransferTaskStatus) -> &'static str {
+    match status {
+        TransferTaskStatus::Queued => "PENDING",
+        TransferTaskStatus::Running => "RUNNING",
+        TransferTaskStatus::Succeeded => "SUCCESS",
+        TransferTaskStatus::Failed | TransferTaskStatus::Interrupted => "FAILED",
+        TransferTaskStatus::Cancelled => "CANCELLED",
+    }
+}
+
+fn import_export_status_filter(value: &str) -> LegacyResult<Vec<TransferTaskStatus>> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "" => Ok(Vec::new()),
+        "PENDING" => Ok(vec![TransferTaskStatus::Queued]),
+        "RUNNING" => Ok(vec![TransferTaskStatus::Running]),
+        "SUCCESS" => Ok(vec![TransferTaskStatus::Succeeded]),
+        "FAILED" => Ok(vec![
+            TransferTaskStatus::Failed,
+            TransferTaskStatus::Interrupted,
+        ]),
+        "CANCELLED" => Ok(vec![TransferTaskStatus::Cancelled]),
+        _ => Err(LegacyFailure::invalid(
+            "invalid_task_status",
+            "status is not supported",
+        )),
+    }
+}
+
+fn import_export_task_type(kind: TransferTaskKind) -> &'static str {
+    match kind {
+        TransferTaskKind::ImportFile => "DATA_FILE_IMPORT",
+        TransferTaskKind::ExportSql => "SQL_EXPORT",
+        TransferTaskKind::ExportFile => "TABLE_DATA_EXPORT",
+    }
+}
+
+fn legacy_epoch_millis(value: &str) -> i64 {
+    value.parse().unwrap_or_default()
+}
+
+fn import_export_task(task: TransferTask) -> LegacyImportExportTask {
+    let error_message = task
+        .error_log
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .map(str::to_owned);
+    let progress = transfer_progress_percent(&task).parse().unwrap_or(0);
+    LegacyImportExportTask {
+        id: task.id,
+        name: task.task_name,
+        task_type: import_export_task_type(task.kind).to_owned(),
+        status: import_export_task_status(task.status).to_owned(),
+        progress,
+        stage: None,
+        progress_message: Some(task.progress_description).filter(|value| !value.is_empty()),
+        target: Some(LegacyImportExportTaskTarget {
+            data_source_id: task.datasource_id,
+            database_name: task.database_name,
+            schema_name: task.schema_name,
+            table_name: task.table_name,
+        }),
+        error_code: None,
+        error_message,
+        artifact_id: task.artifact_id,
+        created_at: legacy_epoch_millis(&task.created_at_ms),
+        started_at: None,
+        finished_at: task.finished_at_ms.as_deref().map(legacy_epoch_millis),
+        updated_at: legacy_epoch_millis(&task.updated_at_ms),
+    }
+}
+
+pub(crate) async fn list_import_export_tasks(
+    application: &Application,
+    query: &LegacyImportExportTaskQuery,
+) -> LegacyResult<LegacyPage<LegacyImportExportTask>> {
+    let statuses = import_export_status_filter(&query.status)?;
+    let page = application
+        .list_transfer_tasks_by_statuses(query.page_no, query.page_size, &statuses)
+        .await?;
+    Ok(LegacyPage {
+        total: usize::try_from(page.total).unwrap_or(usize::MAX),
+        has_next_page: u64::from(page.page_no).saturating_mul(u64::from(page.page_size))
+            < page.total,
+        data: page.items.into_iter().map(import_export_task).collect(),
+        page_no: page.page_no,
+        page_size: page.page_size,
+    })
+}
+
+pub(crate) async fn get_import_export_task(
+    application: &Application,
+    query: &LegacyImportExportTaskIdQuery,
+) -> LegacyResult<LegacyImportExportTask> {
+    let task = application
+        .transfer_task(legacy_transfer_task_id(&query.task_id)?)
+        .await?;
+    Ok(import_export_task(task))
+}
+
+pub(crate) async fn active_import_export_task_count(
+    application: &Application,
+) -> LegacyResult<u64> {
+    let page = application
+        .list_transfer_tasks_by_statuses(
+            1,
+            100,
+            &[TransferTaskStatus::Queued, TransferTaskStatus::Running],
+        )
+        .await?;
+    Ok(page.total)
+}
+
+pub(crate) async fn import_export_task_artifact(
+    application: &Application,
+    query: &LegacyImportExportTaskIdQuery,
+) -> LegacyResult<TransferArtifactDownload> {
+    legacy_transfer_task_download(application, &query.task_id).await
 }
 
 pub(crate) async fn export_legacy_mysql_dml(
@@ -6450,6 +6649,22 @@ fn storage_failure(error: StorageError) -> LegacyFailure {
     }
 }
 
+pub(crate) async fn update_datasource_identity_color(
+    application: &Application,
+    request: &LegacyIdentityColorRequest,
+) -> LegacyResult<LegacyIdentityColorResponse> {
+    let id = request.id.as_string();
+    let datasource = application
+        .update_datasource_identity_color(&id, request.identity_color.clone())
+        .await?;
+    Ok(LegacyIdentityColorResponse {
+        id: datasource.id,
+        identity_color: datasource.identity_color,
+        environment_id: 1,
+        environment: default_environment(),
+    })
+}
+
 fn datasource_response(
     application: &Application,
     datasource: DatasourceEditProjection,
@@ -6520,6 +6735,7 @@ fn datasource_response(
         support_schema,
         has_secret: datasource.has_secret,
         revision: datasource.revision,
+        identity_color: datasource.identity_color,
     }
 }
 
@@ -8450,6 +8666,12 @@ async fn dispatch_inner(
                 Err(error) => Err(error),
             }
         }
+        ("post", "/api/connection/datasource/identity_color") => {
+            match decode::<LegacyIdentityColorRequest>(request.message) {
+                Ok(body) => serialized(update_datasource_identity_color(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
         ("post", "/api/import/sql_file") => {
             match decode::<LegacyImportFileRequest>(request.message) {
                 Ok(body) if desktop_paths => {
@@ -8507,6 +8729,21 @@ async fn dispatch_inner(
             Ok(_) => Err(desktop_file_operation_required()),
             Err(error) => Err(error),
         },
+        ("get", "/api/tasks/list") => {
+            match decode::<LegacyImportExportTaskQuery>(request.message) {
+                Ok(query) => serialized(list_import_export_tasks(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/tasks/get") => {
+            match decode::<LegacyImportExportTaskIdQuery>(request.message) {
+                Ok(query) => serialized(get_import_export_task(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("get", "/api/tasks/active-count") => {
+            serialized(active_import_export_task_count(application).await)
+        }
         ("get", "/api/sql/format") => match decode::<LegacySqlUtilityRequest>(request.message) {
             Ok(query) => serialized(format_legacy_sql(application, &query).await),
             Err(error) => Err(error),
@@ -9015,6 +9252,7 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/connection/datasource/create",
     "/api/connection/datasource/pre_connect",
     "/api/connection/datasource/update",
+    "/api/connection/datasource/identity_color",
     "/api/connection/datasource/clone",
     "/api/connection/datasource/connect",
     "/api/connection/datasource/close",
@@ -9036,6 +9274,10 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/task/get",
     "/api/task/stop",
     "/api/task/download",
+    "/api/tasks/list",
+    "/api/tasks/get",
+    "/api/tasks/active-count",
+    "/api/tasks/artifact",
     "/api/sql/format",
     "/api/sql/valid_select",
     "/api/sql_parser/get_keywords",
@@ -9211,10 +9453,7 @@ pub(crate) fn routes() -> Router<Application> {
         .route("/api/v1/chart/update", post(chart_update_handler))
         .route("/api/chart", axum::routing::delete(chart_delete_handler))
         .route("/api/common/environment/list_all", get(environment_handler))
-        .route(
-            "/api/database/supported",
-            get(supported_database_handler),
-        )
+        .route("/api/database/supported", get(supported_database_handler))
         .route(
             "/api/jdbc/driver/upload",
             post(driver_upload_handler).layer(DefaultBodyLimit::max(MAX_LEGACY_MULTIPART_BYTES)),
@@ -9301,6 +9540,10 @@ pub(crate) fn routes() -> Router<Application> {
             post(update_datasource_handler).put(update_datasource_handler),
         )
         .route(
+            "/api/connection/datasource/identity_color",
+            post(update_datasource_identity_color_handler),
+        )
+        .route(
             "/api/import/sql_file",
             post(import_sql_file_handler).layer(DefaultBodyLimit::max(MAX_LEGACY_MULTIPART_BYTES)),
         )
@@ -9314,6 +9557,16 @@ pub(crate) fn routes() -> Router<Application> {
         .route("/api/task/list", get(transfer_task_list_handler))
         .route("/api/task/get", get(transfer_task_get_handler))
         .route("/api/task/stop", get(transfer_task_stop_handler))
+        .route("/api/tasks/list", get(import_export_task_list_handler))
+        .route("/api/tasks/get", get(import_export_task_get_handler))
+        .route(
+            "/api/tasks/active-count",
+            get(import_export_task_active_count_handler),
+        )
+        .route(
+            "/api/tasks/artifact",
+            get(import_export_task_artifact_handler),
+        )
         .route("/api/task/download", get(transfer_task_download_handler))
         .route("/api/sql/format", get(sql_format_handler))
         .route("/api/sql/valid_select", get(sql_valid_select_handler))
@@ -9834,6 +10087,13 @@ async fn update_datasource_handler(
     envelope(update_datasource(&application, &request).await)
 }
 
+async fn update_datasource_identity_color_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyIdentityColorRequest>,
+) -> Json<LegacyEnvelope<LegacyIdentityColorResponse>> {
+    envelope(update_datasource_identity_color(&application, &request).await)
+}
+
 async fn delete_datasource_handler(
     State(application): State<Application>,
     Query(query): Query<LegacyIdQuery>,
@@ -9901,6 +10161,33 @@ async fn transfer_task_download_handler(
     Query(query): Query<LegacyIdQuery>,
 ) -> Response {
     transfer_attachment_response(legacy_transfer_task_download(&application, &query.id).await)
+}
+
+async fn import_export_task_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyImportExportTaskQuery>,
+) -> Json<LegacyEnvelope<LegacyPage<LegacyImportExportTask>>> {
+    envelope(list_import_export_tasks(&application, &query).await)
+}
+
+async fn import_export_task_get_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyImportExportTaskIdQuery>,
+) -> Json<LegacyEnvelope<LegacyImportExportTask>> {
+    envelope(get_import_export_task(&application, &query).await)
+}
+
+async fn import_export_task_active_count_handler(
+    State(application): State<Application>,
+) -> Json<LegacyEnvelope<u64>> {
+    envelope(active_import_export_task_count(&application).await)
+}
+
+async fn import_export_task_artifact_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyImportExportTaskIdQuery>,
+) -> Response {
+    transfer_attachment_response(import_export_task_artifact(&application, &query).await)
 }
 
 async fn dml_export_handler(
@@ -10711,6 +10998,7 @@ mod tests {
                 }),
                 has_secret: true,
                 revision: "1".to_owned(),
+                identity_color: None,
             },
         );
         let json = serde_json::to_string(&response).expect("response serializes");
@@ -10837,6 +11125,7 @@ mod tests {
         ("post", "/api/converter/dbp/upload"),
         ("post", "/api/converter/chat2db/upload"),
         ("post", "/api/converter/datagrip/upload"),
+        ("post", "/api/connection/datasource/identity_color"),
         ("post", "/api/namespaces/create"),
         ("post", "/api/namespaces/update"),
         ("post", "/api/namespaces/delete"),
@@ -10853,6 +11142,10 @@ mod tests {
         ("get", "/api/task/get"),
         ("get", "/api/task/stop"),
         ("get", "/api/task/download"),
+        ("get", "/api/tasks/list"),
+        ("get", "/api/tasks/get"),
+        ("get", "/api/tasks/active-count"),
+        ("get", "/api/tasks/artifact"),
         ("post", "/api/rdb/dml/export"),
         ("post", "/api/rdb/table/generate/class"),
     ];

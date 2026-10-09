@@ -115,6 +115,9 @@ pub struct Datasource {
     pub created_at_ms: String,
     /// Unix epoch milliseconds encoded as a decimal integer.
     pub updated_at_ms: String,
+    /// Optional `#RRGGBB` identity colour shown by the connection tree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity_color: Option<String>,
 }
 
 /// Stable datasource collection returned by list APIs.
@@ -142,6 +145,7 @@ mod tests {
             revision: "9007199254740993".to_owned(),
             created_at_ms: "1784900000000".to_owned(),
             updated_at_ms: "1784900000001".to_owned(),
+            identity_color: None,
         };
 
         let json = serde_json::to_string(&response).expect("response must serialize");

@@ -2570,7 +2570,10 @@ mod tests {
         assert_eq!(response_json(renamed).await["success"], true);
 
         let sessions = application
-            .oneshot(empty_request(Method::GET, "/api/v3/ai/chat/history/sessions"))
+            .oneshot(empty_request(
+                Method::GET,
+                "/api/v3/ai/chat/history/sessions",
+            ))
             .await
             .expect("session list must respond");
         let sessions = response_json(sessions).await;
