@@ -875,6 +875,49 @@ impl Storage {
         })
     }
 
+    /// Deletes one terminal transfer task and its artifact file.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, active-task, or `SQLite`/filesystem failures.
+    pub fn delete_transfer_task(&self, id: i64) -> Result<(), StorageError> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let status = transaction
+            .query_row(
+                "SELECT status FROM transfer_tasks WHERE id = ?1",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or(StorageError::TransferTaskNotFound(id))?;
+        if !StoredTransferTaskStatus::parse(&status)?.is_terminal() {
+            return Err(StorageError::InvalidTransfer(
+                "only finished transfer tasks can be deleted",
+            ));
+        }
+        let storage_name = transaction
+            .query_row(
+                "SELECT storage_name FROM transfer_artifacts WHERE task_id = ?1",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        transaction.execute("DELETE FROM transfer_tasks WHERE id = ?1", [id])?;
+        transaction.commit()?;
+        if let Some(name) = storage_name {
+            validate_storage_name(&name)?;
+            let path = self.inner.artifacts_dir.join(name);
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(StorageError::io(path, error)),
+            }
+            sync_directory(&self.inner.artifacts_dir)?;
+        }
+        Ok(())
+    }
+
     fn prune_transfer_tasks(&self) -> Result<(), StorageError> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1186,6 +1229,32 @@ mod tests {
             })
             .expect("task creates")
             .id
+    }
+
+    #[test]
+    fn delete_transfer_task_removes_finished_tasks_and_rejects_active_ones() {
+        let directory = TempDir::new().expect("temp directory");
+        let storage = open(&directory);
+        let active = task(&storage, 1);
+        assert!(matches!(
+            storage.delete_transfer_task(active),
+            Err(StorageError::InvalidTransfer(_))
+        ));
+        storage.start_transfer_task(active).expect("task starts");
+        storage
+            .complete_transfer_task(active, "done")
+            .expect("task completes");
+        storage.delete_transfer_task(active).expect("task deletes");
+        assert!(
+            storage
+                .get_transfer_task(active)
+                .expect("lookup succeeds")
+                .is_none()
+        );
+        assert!(matches!(
+            storage.delete_transfer_task(active),
+            Err(StorageError::TransferTaskNotFound(_))
+        ));
     }
 
     #[test]

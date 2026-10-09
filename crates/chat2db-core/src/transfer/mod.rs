@@ -616,6 +616,17 @@ impl Application {
         Ok(())
     }
 
+    /// Deletes one finished transfer task and its artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, active-task, or durable-storage failures.
+    pub async fn delete_transfer_task(&self, task_id: i64) -> Result<(), AppError> {
+        let storage = self.require_storage()?;
+        storage_call(move || storage.delete_transfer_task(task_id)).await?;
+        Ok(())
+    }
+
     /// Resolves a managed artifact and its owner-only local path for a delivery adapter.
     ///
     /// # Errors

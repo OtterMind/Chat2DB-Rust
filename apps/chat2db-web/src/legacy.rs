@@ -3168,6 +3168,16 @@ pub(crate) async fn import_export_task_artifact(
     legacy_transfer_task_download(application, &query.task_id).await
 }
 
+pub(crate) async fn delete_import_export_task(
+    application: &Application,
+    query: &LegacyImportExportTaskIdQuery,
+) -> LegacyResult<()> {
+    application
+        .delete_transfer_task(legacy_transfer_task_id(&query.task_id)?)
+        .await?;
+    Ok(())
+}
+
 pub(crate) async fn export_legacy_mysql_dml(
     application: &Application,
     request: &LegacyDmlExportRequest,
@@ -8744,6 +8754,12 @@ async fn dispatch_inner(
         ("get", "/api/tasks/active-count") => {
             serialized(active_import_export_task_count(application).await)
         }
+        ("delete", "/api/tasks/delete") => {
+            match decode::<LegacyImportExportTaskIdQuery>(request.message) {
+                Ok(query) => serialized(delete_import_export_task(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
         ("get", "/api/sql/format") => match decode::<LegacySqlUtilityRequest>(request.message) {
             Ok(query) => serialized(format_legacy_sql(application, &query).await),
             Err(error) => Err(error),
@@ -9278,6 +9294,7 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/tasks/get",
     "/api/tasks/active-count",
     "/api/tasks/artifact",
+    "/api/tasks/delete",
     "/api/sql/format",
     "/api/sql/valid_select",
     "/api/sql_parser/get_keywords",
@@ -9566,6 +9583,10 @@ pub(crate) fn routes() -> Router<Application> {
         .route(
             "/api/tasks/artifact",
             get(import_export_task_artifact_handler),
+        )
+        .route(
+            "/api/tasks/delete",
+            axum::routing::delete(import_export_task_delete_handler),
         )
         .route("/api/task/download", get(transfer_task_download_handler))
         .route("/api/sql/format", get(sql_format_handler))
@@ -10188,6 +10209,13 @@ async fn import_export_task_artifact_handler(
     Query(query): Query<LegacyImportExportTaskIdQuery>,
 ) -> Response {
     transfer_attachment_response(import_export_task_artifact(&application, &query).await)
+}
+
+async fn import_export_task_delete_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyImportExportTaskIdQuery>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(delete_import_export_task(&application, &query).await)
 }
 
 async fn dml_export_handler(
@@ -11146,6 +11174,7 @@ mod tests {
         ("get", "/api/tasks/get"),
         ("get", "/api/tasks/active-count"),
         ("get", "/api/tasks/artifact"),
+        ("delete", "/api/tasks/delete"),
         ("post", "/api/rdb/dml/export"),
         ("post", "/api/rdb/table/generate/class"),
     ];
