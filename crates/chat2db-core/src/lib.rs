@@ -861,6 +861,26 @@ impl Application {
     }
 
     /// Stops work admission and requests cancellation of active queries and agent runs.
+    /// Stops accepting new transfer work while the product prepares to exit.
+    ///
+    /// # Errors
+    ///
+    /// Returns availability failures only.
+    pub async fn prepare_user_exit(&self) -> Result<(), AppError> {
+        *self.inner.accepting_work.lock().await = false;
+        Ok(())
+    }
+
+    /// Re-enables transfer work after a cancelled exit.
+    ///
+    /// # Errors
+    ///
+    /// Returns availability failures only.
+    pub async fn abort_user_exit(&self) -> Result<(), AppError> {
+        *self.inner.accepting_work.lock().await = true;
+        Ok(())
+    }
+
     pub async fn begin_shutdown(&self) {
         let mut accepting_work = self.inner.accepting_work.lock().await;
         if !*accepting_work {

@@ -8968,6 +8968,18 @@ async fn dispatch_inner(
                 Err(error) => Err(error),
             }
         }
+        ("post", "/api/tasks/prepare-user-exit") => serialized(
+            application
+                .prepare_user_exit()
+                .await
+                .map_err(LegacyFailure::from),
+        ),
+        ("post", "/api/tasks/abort-user-exit") => serialized(
+            application
+                .abort_user_exit()
+                .await
+                .map_err(LegacyFailure::from),
+        ),
         ("get", "/api/sql/format") => match decode::<LegacySqlUtilityRequest>(request.message) {
             Ok(query) => serialized(format_legacy_sql(application, &query).await),
             Err(error) => Err(error),
@@ -9506,6 +9518,8 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/tasks/events",
     "/api/tasks/export",
     "/api/tasks/import",
+    "/api/tasks/prepare-user-exit",
+    "/api/tasks/abort-user-exit",
     "/api/sql/format",
     "/api/sql/valid_select",
     "/api/sql_parser/get_keywords",
@@ -9802,6 +9816,14 @@ pub(crate) fn routes() -> Router<Application> {
         .route("/api/tasks/events", get(import_export_task_events_handler))
         .route("/api/tasks/export", post(import_export_task_export_handler))
         .route("/api/tasks/import", post(import_export_task_import_handler))
+        .route(
+            "/api/tasks/prepare-user-exit",
+            post(import_export_task_prepare_exit_handler),
+        )
+        .route(
+            "/api/tasks/abort-user-exit",
+            post(import_export_task_abort_exit_handler),
+        )
         .route("/api/task/download", get(transfer_task_download_handler))
         .route("/api/sql/format", get(sql_format_handler))
         .route("/api/sql/valid_select", get(sql_valid_select_handler))
@@ -10451,6 +10473,28 @@ async fn import_export_task_import_handler(
     Json(request): Json<LegacyImportExportSubmitRequest>,
 ) -> Json<LegacyEnvelope<LegacyImportExportTaskAccepted>> {
     envelope(submit_import_export_task(&application, &request).await)
+}
+
+async fn import_export_task_prepare_exit_handler(
+    State(application): State<Application>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(
+        application
+            .prepare_user_exit()
+            .await
+            .map_err(LegacyFailure::from),
+    )
+}
+
+async fn import_export_task_abort_exit_handler(
+    State(application): State<Application>,
+) -> Json<LegacyEnvelope<()>> {
+    envelope(
+        application
+            .abort_user_exit()
+            .await
+            .map_err(LegacyFailure::from),
+    )
 }
 
 async fn dml_export_handler(
@@ -11413,6 +11457,8 @@ mod tests {
         ("get", "/api/tasks/events"),
         ("post", "/api/tasks/export"),
         ("post", "/api/tasks/import"),
+        ("post", "/api/tasks/prepare-user-exit"),
+        ("post", "/api/tasks/abort-user-exit"),
         ("post", "/api/rdb/dml/export"),
         ("post", "/api/rdb/table/generate/class"),
     ];
@@ -12136,6 +12182,37 @@ mod tests {
         let body = dashboard_http_json(&router, "POST", "/api/jdbc/driver/upload", None).await;
         assert_eq!(body["success"], false);
         assert_eq!(body["errorCode"], "unsupported_custom_driver_upload");
+    }
+
+    #[tokio::test]
+    async fn prepared_exit_blocks_new_task_submissions_until_aborted() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let storage = Storage::open(directory.path(), Arc::new(EmptyVault)).expect("storage opens");
+        let router = routes().with_state(Application::with_storage(storage));
+
+        let prepared =
+            dashboard_http_json(&router, "POST", "/api/tasks/prepare-user-exit", None).await;
+        assert_eq!(prepared["success"], true);
+
+        let blocked = dashboard_http_json(
+            &router,
+            "POST",
+            "/api/tasks/import",
+            Some(serde_json::json!({
+                "dataSourceId": "datasource-1",
+                "databaseName": "app",
+                "taskType": "DATA_FILE_IMPORT",
+                "format": "CSV",
+                "sourceFile": "/tmp/rows.csv"
+            })),
+        )
+        .await;
+        assert_eq!(blocked["success"], false);
+        assert_eq!(blocked["errorCode"], "runtime_not_accepting_work");
+
+        let aborted =
+            dashboard_http_json(&router, "POST", "/api/tasks/abort-user-exit", None).await;
+        assert_eq!(aborted["success"], true);
     }
 
     #[tokio::test]

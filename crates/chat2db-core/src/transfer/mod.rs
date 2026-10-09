@@ -445,6 +445,7 @@ impl Application {
         &self,
         request: ImportFileRequest,
     ) -> Result<TransferTaskAccepted, AppError> {
+        self.ensure_accepting_transfer_work().await?;
         self.import_file(request).await
     }
 
@@ -479,6 +480,7 @@ impl Application {
         &self,
         request: SqlFileExportRequest,
     ) -> Result<TransferTaskAccepted, AppError> {
+        self.ensure_accepting_transfer_work().await?;
         self.export_sql_file(request).await
     }
 
@@ -525,7 +527,24 @@ impl Application {
         &self,
         request: OtherFileExportRequest,
     ) -> Result<TransferTaskAccepted, AppError> {
+        self.ensure_accepting_transfer_work().await?;
         self.export_other_file(request).await
+    }
+
+    /// Rejects new transfer work while the product is preparing to exit.
+    ///
+    /// # Errors
+    ///
+    /// Returns `runtime_not_accepting_work` when an exit was prepared and not
+    /// aborted yet.
+    pub(crate) async fn ensure_accepting_transfer_work(&self) -> Result<(), AppError> {
+        if *self.inner.accepting_work.lock().await {
+            return Ok(());
+        }
+        Err(AppError::invalid(
+            "runtime_not_accepting_work",
+            "The application is preparing to exit and no longer accepts new transfer tasks",
+        ))
     }
 
     /// Lists retained transfer tasks newest first.
