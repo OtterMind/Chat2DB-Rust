@@ -233,6 +233,29 @@ pub struct GeneratedMysqlClassSet {
     pub files: Vec<String>,
 }
 
+/// One ordered progress event of a durable transfer task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferTaskEvent {
+    /// Event row id.
+    pub id: i64,
+    /// Owning transfer task id.
+    pub task_id: i64,
+    /// Monotonic per-task sequence starting at one.
+    pub sequence: u64,
+    /// `INFO`, `WARN`, or `ERROR`.
+    pub level: String,
+    /// Stable machine-readable event code, empty when none applies.
+    pub code: String,
+    /// Optional pipeline stage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// Human-readable event message.
+    pub message: String,
+    /// Unix epoch milliseconds encoded as a decimal integer.
+    pub created_at_ms: String,
+}
+
 const fn default_true() -> bool {
     true
 }

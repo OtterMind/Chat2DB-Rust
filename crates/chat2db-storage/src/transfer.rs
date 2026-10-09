@@ -18,6 +18,7 @@ const MAX_LOG_BYTES: usize = 256 * 1024;
 const MAX_LOG_BYTES_I64: i64 = 256 * 1024;
 const MAX_FILE_NAME_BYTES: usize = 1_024;
 const MAX_MEDIA_TYPE_BYTES: usize = 255;
+const MAX_TASK_EVENT_PAGE: u32 = 200;
 
 /// Durable transfer category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +148,19 @@ pub struct ResolvedTransferArtifact {
     pub record: TransferArtifactRecord,
     pub path: PathBuf,
     pub file: File,
+}
+
+/// One ordered progress event of a durable transfer task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferTaskEventRecord {
+    pub id: i64,
+    pub task_id: i64,
+    pub sequence: u64,
+    pub level: String,
+    pub code: String,
+    pub stage: Option<String>,
+    pub message: String,
+    pub created_at_ms: i64,
 }
 
 /// Startup cleanup and task recovery report.
@@ -427,6 +441,65 @@ impl Storage {
             .map_err(StorageError::from)
     }
 
+    /// Lists ordered events of one durable task inside a sequence window.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, not-found, range, or `SQLite` failures.
+    pub fn list_transfer_task_events(
+        &self,
+        task_id: i64,
+        after_sequence: Option<u64>,
+        before_sequence: Option<u64>,
+        limit: u32,
+    ) -> Result<Vec<TransferTaskEventRecord>, StorageError> {
+        if limit == 0 || limit > MAX_TASK_EVENT_PAGE {
+            return Err(StorageError::InvalidTransfer(
+                "event limit must be between 1 and 200",
+            ));
+        }
+        let connection = self.connection()?;
+        ensure_task_exists(&connection, task_id)?;
+        let after = sequence_bound(after_sequence)?.unwrap_or(0);
+        let before = sequence_bound(before_sequence)?.unwrap_or(i64::MAX);
+        let mut statement = connection.prepare(
+            "SELECT id, task_id, sequence, level, code, stage, message, created_at_ms
+             FROM transfer_task_events
+             WHERE task_id = ?1 AND sequence > ?2 AND sequence < ?3
+             ORDER BY sequence
+             LIMIT ?4",
+        )?;
+        let rows =
+            statement.query_map(params![task_id, after, before, i64::from(limit)], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            })?;
+        let mut events = Vec::new();
+        for row in rows {
+            let (id, task_id, sequence, level, code, stage, message, created_at_ms) = row?;
+            events.push(TransferTaskEventRecord {
+                id,
+                task_id,
+                sequence: u64::try_from(sequence)
+                    .map_err(|_| StorageError::NumericRange("event sequence"))?,
+                level,
+                code,
+                stage,
+                message,
+                created_at_ms,
+            });
+        }
+        Ok(events)
+    }
+
     /// Transitions a queued task to running.
     ///
     /// # Errors
@@ -476,8 +549,9 @@ impl Storage {
                     .map_err(|_| StorageError::NumericRange("transfer progress total"))
             })
             .transpose()?;
-        let connection = self.connection()?;
-        let updated = connection.execute(
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let updated = transaction.execute(
             "UPDATE transfer_tasks
              SET progress_current = MAX(progress_current, ?2),
                  progress_total = COALESCE(?3, progress_total),
@@ -498,8 +572,19 @@ impl Storage {
             ],
         )?;
         if updated == 1 {
+            append_transfer_task_event(
+                &transaction,
+                id,
+                "INFO",
+                "",
+                None,
+                info.unwrap_or(description),
+                timestamp,
+            )?;
+            transaction.commit()?;
             return Ok(());
         }
+        drop(transaction);
         ensure_task_exists(&connection, id)?;
         Err(StorageError::InvalidTransfer(
             "task progress can only update while running",
@@ -584,8 +669,9 @@ impl Storage {
     pub fn complete_transfer_task(&self, id: i64, message: &str) -> Result<(), StorageError> {
         validate_text(message, MAX_LOG_BYTES, "task completion message")?;
         let timestamp = now_millis()?;
-        let connection = self.connection()?;
-        let updated = connection.execute(
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let updated = transaction.execute(
             "UPDATE transfer_tasks
              SET status = 'succeeded', progress_description = 'Completed',
                  info_log = CASE WHEN ?2 = '' THEN info_log
@@ -601,11 +687,26 @@ impl Storage {
             ],
         )?;
         if updated != 1 {
+            drop(transaction);
             ensure_task_exists(&connection, id)?;
             return Err(StorageError::InvalidTransfer(
                 "task cannot complete in its current state",
             ));
         }
+        append_transfer_task_event(
+            &transaction,
+            id,
+            "INFO",
+            "",
+            None,
+            if message.is_empty() {
+                "Completed"
+            } else {
+                message
+            },
+            timestamp,
+        )?;
+        transaction.commit()?;
         // The terminal state is already durable. Retention is recoverable
         // maintenance and must not make callers retry a committed transition.
         let _ = self.prune_transfer_tasks();
@@ -624,8 +725,9 @@ impl Storage {
         }
         validate_text(message, MAX_LOG_BYTES, "task terminal message")?;
         let timestamp = now_millis()?;
-        let connection = self.connection()?;
-        let updated = connection.execute(
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let updated = transaction.execute(
             "UPDATE transfer_tasks
              SET status = ?2, progress_description = ?3, error_log = ?4,
                  updated_at_ms = ?5, finished_at_ms = ?5
@@ -633,11 +735,19 @@ impl Storage {
             params![id, status.as_str(), description, message, timestamp],
         )?;
         if updated != 1 {
+            drop(transaction);
             ensure_task_exists(&connection, id)?;
             return Err(StorageError::InvalidTransfer(
                 "task is already in a terminal state",
             ));
         }
+        let level = if status == StoredTransferTaskStatus::Cancelled {
+            "WARN"
+        } else {
+            "ERROR"
+        };
+        append_transfer_task_event(&transaction, id, level, "", None, message, timestamp)?;
+        transaction.commit()?;
         // The terminal state is already durable. Retention is recoverable
         // maintenance and must not make callers retry a committed transition.
         let _ = self.prune_transfer_tasks();
@@ -1155,6 +1265,39 @@ fn validate_text(value: &str, maximum: usize, field: &'static str) -> Result<(),
     Ok(())
 }
 
+/// Appends one ordered event to a task inside an open transaction.
+fn append_transfer_task_event(
+    transaction: &rusqlite::Transaction<'_>,
+    task_id: i64,
+    level: &str,
+    code: &str,
+    stage: Option<&str>,
+    message: &str,
+    timestamp: i64,
+) -> Result<(), StorageError> {
+    if message.is_empty() {
+        return Ok(());
+    }
+    validate_text(message, MAX_LOG_BYTES, "task event message")?;
+    transaction.execute(
+        "INSERT INTO transfer_task_events (
+            task_id, sequence, level, code, stage, message, details_json, created_at_ms
+         ) VALUES (
+            ?1,
+            (SELECT COALESCE(MAX(sequence), 0) + 1 FROM transfer_task_events WHERE task_id = ?1),
+            ?2, ?3, ?4, ?5, NULL, ?6
+         )",
+        params![task_id, level, code, stage, message, timestamp],
+    )?;
+    Ok(())
+}
+
+fn sequence_bound(value: Option<u64>) -> Result<Option<i64>, StorageError> {
+    value
+        .map(|value| i64::try_from(value).map_err(|_| StorageError::NumericRange("event sequence")))
+        .transpose()
+}
+
 fn ensure_task_exists(connection: &rusqlite::Connection, id: i64) -> Result<(), StorageError> {
     let exists = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM transfer_tasks WHERE id = ?1)",
@@ -1254,6 +1397,43 @@ mod tests {
         assert!(matches!(
             storage.delete_transfer_task(active),
             Err(StorageError::TransferTaskNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn task_events_record_progress_and_terminal_outcomes_in_sequence() {
+        let directory = TempDir::new().expect("temp directory");
+        let storage = open(&directory);
+        let id = task(&storage, 1);
+        storage.start_transfer_task(id).expect("task starts");
+        storage
+            .update_transfer_progress(id, 1, Some(2), "Importing", Some("Importing table rows"))
+            .expect("progress updates");
+        storage
+            .update_transfer_progress(id, 2, Some(2), "Finishing", None)
+            .expect("progress updates");
+        storage
+            .fail_transfer_task(id, "Import failed")
+            .expect("task fails");
+
+        let events = storage
+            .list_transfer_task_events(id, None, None, 10)
+            .expect("events list");
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].sequence, 1);
+        assert_eq!(events[0].level, "INFO");
+        assert_eq!(events[0].message, "Importing table rows");
+        assert_eq!(events[1].message, "Finishing");
+        assert_eq!(events[2].level, "ERROR");
+        assert_eq!(events[2].message, "Import failed");
+
+        let window = storage
+            .list_transfer_task_events(id, Some(1), None, 10)
+            .expect("window lists");
+        assert_eq!(window.len(), 2);
+        assert!(matches!(
+            storage.list_transfer_task_events(id, None, None, 0),
+            Err(StorageError::InvalidTransfer(_))
         ));
     }
 

@@ -11,8 +11,8 @@ use std::{
 use chat2db_contract::{
     DmlExportFormat, DmlExportRequest, DmlExportSize, GenerateMysqlClassRequest,
     GeneratedMysqlClassSet, ImportFileRequest, OtherFileExportRequest, SqlFileExportRequest,
-    TransferArtifact, TransferFileFormat, TransferTask, TransferTaskAccepted, TransferTaskKind,
-    TransferTaskPage, TransferTaskStatus,
+    TransferArtifact, TransferFileFormat, TransferTask, TransferTaskAccepted, TransferTaskEvent,
+    TransferTaskKind, TransferTaskPage, TransferTaskStatus,
 };
 use chat2db_storage::{
     CreateTransferTask, ResolvedTransferArtifact, Storage, StorageError, StoredTransferTaskKind,
@@ -27,6 +27,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{AppError, Application, storage_call};
 
 const MAX_TASK_PAGE_SIZE: u32 = 100;
+const MAX_TASK_EVENT_LIMIT: u32 = 200;
 const MAX_TRANSFER_FAILURE_MESSAGE_BYTES: usize = 64 * 1024;
 const TRANSFER_FAILURE_TRUNCATION_SUFFIX: &str = "\n[truncated]";
 const TERMINAL_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(25);
@@ -625,6 +626,39 @@ impl Application {
         let storage = self.require_storage()?;
         storage_call(move || storage.delete_transfer_task(task_id)).await?;
         Ok(())
+    }
+
+    /// Lists ordered progress events of one transfer task.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, not-found, or durable-storage failures.
+    pub async fn list_transfer_task_events(
+        &self,
+        task_id: i64,
+        after_sequence: Option<u64>,
+        before_sequence: Option<u64>,
+        limit: Option<u32>,
+    ) -> Result<Vec<TransferTaskEvent>, AppError> {
+        let limit = limit.unwrap_or(MAX_TASK_EVENT_LIMIT);
+        let storage = self.require_storage()?;
+        let records = storage_call(move || {
+            storage.list_transfer_task_events(task_id, after_sequence, before_sequence, limit)
+        })
+        .await?;
+        Ok(records
+            .into_iter()
+            .map(|record| TransferTaskEvent {
+                id: record.id,
+                task_id: record.task_id,
+                sequence: record.sequence,
+                level: record.level,
+                code: record.code,
+                stage: record.stage,
+                message: record.message,
+                created_at_ms: record.created_at_ms.to_string(),
+            })
+            .collect())
     }
 
     /// Resolves a managed artifact and its owner-only local path for a delivery adapter.

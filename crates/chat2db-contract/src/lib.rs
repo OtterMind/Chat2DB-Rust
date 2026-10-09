@@ -115,7 +115,8 @@ pub use transfer::{
     DmlExportFormat, DmlExportRequest, DmlExportSize, GenerateMysqlClassRequest,
     GeneratedMysqlClassSet, ImportFileRequest, OtherFileExportRequest, SqlFileExportRequest,
     TabularImportEncoding, TransferArtifact, TransferFileFormat, TransferSqlScope, TransferTask,
-    TransferTaskAccepted, TransferTaskKind, TransferTaskPage, TransferTaskStatus,
+    TransferTaskAccepted, TransferTaskEvent, TransferTaskKind, TransferTaskPage,
+    TransferTaskStatus,
 };
 pub use workspace::{
     AssignDatasourceNamespaceRequest, CreateWorkspaceNamespaceRequest, MoveWorkspaceNodeRequest,

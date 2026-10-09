@@ -495,6 +495,34 @@ pub struct LegacyImportExportTaskIdQuery {
     pub task_id: LegacyIdentifier,
 }
 
+/// Event-window query used by the task-center log view.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyImportExportEventQuery {
+    pub task_id: LegacyIdentifier,
+    #[serde(default)]
+    pub after_sequence: Option<u64>,
+    #[serde(default)]
+    pub before_sequence: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// One task-center log event in the shape the newer Community panel expects.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyImportExportEvent {
+    pub event_id: i64,
+    pub task_id: i64,
+    pub sequence: u64,
+    pub level: String,
+    pub code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    pub message: String,
+    pub created_at: i64,
+}
+
 /// One task-center row in the shape the newer Community panel expects.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -3176,6 +3204,33 @@ pub(crate) async fn delete_import_export_task(
         .delete_transfer_task(legacy_transfer_task_id(&query.task_id)?)
         .await?;
     Ok(())
+}
+
+pub(crate) async fn list_import_export_task_events(
+    application: &Application,
+    query: &LegacyImportExportEventQuery,
+) -> LegacyResult<Vec<LegacyImportExportEvent>> {
+    let events = application
+        .list_transfer_task_events(
+            legacy_transfer_task_id(&query.task_id)?,
+            query.after_sequence,
+            query.before_sequence,
+            query.limit,
+        )
+        .await?;
+    Ok(events
+        .into_iter()
+        .map(|event| LegacyImportExportEvent {
+            event_id: event.id,
+            task_id: event.task_id,
+            sequence: event.sequence,
+            level: event.level,
+            code: event.code,
+            stage: event.stage,
+            message: event.message,
+            created_at: legacy_epoch_millis(&event.created_at_ms),
+        })
+        .collect())
 }
 
 pub(crate) async fn export_legacy_mysql_dml(
@@ -8760,6 +8815,12 @@ async fn dispatch_inner(
                 Err(error) => Err(error),
             }
         }
+        ("get", "/api/tasks/events") => {
+            match decode::<LegacyImportExportEventQuery>(request.message) {
+                Ok(query) => serialized(list_import_export_task_events(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
         ("get", "/api/sql/format") => match decode::<LegacySqlUtilityRequest>(request.message) {
             Ok(query) => serialized(format_legacy_sql(application, &query).await),
             Err(error) => Err(error),
@@ -9295,6 +9356,7 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/tasks/active-count",
     "/api/tasks/artifact",
     "/api/tasks/delete",
+    "/api/tasks/events",
     "/api/sql/format",
     "/api/sql/valid_select",
     "/api/sql_parser/get_keywords",
@@ -9588,6 +9650,7 @@ pub(crate) fn routes() -> Router<Application> {
             "/api/tasks/delete",
             axum::routing::delete(import_export_task_delete_handler),
         )
+        .route("/api/tasks/events", get(import_export_task_events_handler))
         .route("/api/task/download", get(transfer_task_download_handler))
         .route("/api/sql/format", get(sql_format_handler))
         .route("/api/sql/valid_select", get(sql_valid_select_handler))
@@ -10216,6 +10279,13 @@ async fn import_export_task_delete_handler(
     Query(query): Query<LegacyImportExportTaskIdQuery>,
 ) -> Json<LegacyEnvelope<()>> {
     envelope(delete_import_export_task(&application, &query).await)
+}
+
+async fn import_export_task_events_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyImportExportEventQuery>,
+) -> Json<LegacyEnvelope<Vec<LegacyImportExportEvent>>> {
+    envelope(list_import_export_task_events(&application, &query).await)
 }
 
 async fn dml_export_handler(
@@ -11175,6 +11245,7 @@ mod tests {
         ("get", "/api/tasks/active-count"),
         ("get", "/api/tasks/artifact"),
         ("delete", "/api/tasks/delete"),
+        ("get", "/api/tasks/events"),
         ("post", "/api/rdb/dml/export"),
         ("post", "/api/rdb/table/generate/class"),
     ];
