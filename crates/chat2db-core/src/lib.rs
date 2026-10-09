@@ -13,6 +13,7 @@ mod error;
 mod large_value;
 mod legacy_community_import;
 mod mysql_account;
+mod mysql_active_transaction;
 mod mysql_dashboard;
 pub mod mysql_ddl;
 mod mysql_schema_diff;

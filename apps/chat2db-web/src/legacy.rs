@@ -515,6 +515,42 @@ pub struct LegacyImportExportTaskAccepted {
     pub task_id: i64,
 }
 
+/// Active-transaction query used by the `MySQL` operations monitor.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyActiveTransactionQuery {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub database_name: String,
+    #[serde(default)]
+    pub schema_name: String,
+}
+
+/// One active transaction in the shape the monitor expects.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyActiveTransaction {
+    pub trx_id: String,
+    pub state: String,
+    pub started_at: i64,
+    pub age_seconds: u64,
+    pub isolation_level: String,
+    pub rows_locked: u64,
+    pub rows_modified: u64,
+    pub lock_structs: u64,
+    pub thread_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub db: Option<String>,
+    pub query: String,
+    pub connection_inspection_sql: String,
+    /// Deep lock metadata is not collected yet, so the panel must not wait for it.
+    pub lock_metadata_state: String,
+}
+
 /// Staged import-preview upload sent by the desktop bridge.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -5020,6 +5056,39 @@ pub(crate) async fn list_simple_tables(
 }
 
 /// Lists table or view columns in the historical `ColumnResponse` shape.
+pub(crate) async fn list_active_transactions(
+    application: &Application,
+    query: &LegacyActiveTransactionQuery,
+) -> LegacyResult<Vec<LegacyActiveTransaction>> {
+    let datasource_id = query.data_source_id.as_string();
+    resolve_mysql_database_type(application, &datasource_id, "").await?;
+    Ok(application
+        .list_mysql_active_transactions(&datasource_id)
+        .await?
+        .into_iter()
+        .map(|item| LegacyActiveTransaction {
+            connection_inspection_sql: format!(
+                "SELECT * FROM information_schema.PROCESSLIST WHERE ID = {}",
+                item.thread_id
+            ),
+            lock_metadata_state: "UNAVAILABLE".to_owned(),
+            started_at: legacy_epoch_millis(&item.started_at_ms),
+            trx_id: item.trx_id,
+            state: item.state,
+            age_seconds: item.age_seconds,
+            isolation_level: item.isolation_level,
+            rows_locked: item.rows_locked,
+            rows_modified: item.rows_modified,
+            lock_structs: item.lock_structs,
+            thread_id: item.thread_id,
+            user: item.user,
+            host: item.host,
+            db: item.database,
+            query: item.query,
+        })
+        .collect())
+}
+
 pub(crate) async fn list_columns(
     application: &Application,
     query: &LegacyTableDetailQuery,
@@ -9309,6 +9378,12 @@ async fn dispatch_inner(
                 .await
                 .map_err(LegacyFailure::from),
         ),
+        ("get", "/api/rdb/active_transaction/list") => {
+            match decode::<LegacyActiveTransactionQuery>(request.message) {
+                Ok(query) => serialized(list_active_transactions(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
         ("post", "/api/rdb/import_preview/upload_local") => {
             match decode::<LegacyImportPreviewLocalUploadRequest>(request.message) {
                 Ok(body) if desktop_paths => {
@@ -9861,6 +9936,7 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/connection/console/connect",
     "/api/import/sql_file",
     "/api/import/other_file",
+    "/api/rdb/active_transaction/list",
     "/api/rdb/import_preview/upload",
     "/api/rdb/import_preview/upload_local",
     "/api/rdb/import_preview/sheets",
@@ -10309,6 +10385,10 @@ pub(crate) fn routes() -> Router<Application> {
         .route("/api/rdb/table/modify/sql", post(table_modify_sql_handler))
         .route("/api/rdb/table/truncate", post(table_truncate_handler))
         .route("/api/rdb/table/copy", post(table_copy_handler))
+        .route(
+            "/api/rdb/active_transaction/list",
+            get(active_transaction_list_handler),
+        )
         .route(
             "/api/rdb/table/copy/prepare",
             get(table_copy_prepare_handler),
@@ -10842,6 +10922,13 @@ async fn import_export_task_events_handler(
     Query(query): Query<LegacyImportExportEventQuery>,
 ) -> Json<LegacyEnvelope<Vec<LegacyImportExportEvent>>> {
     envelope(list_import_export_task_events(&application, &query).await)
+}
+
+async fn active_transaction_list_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyActiveTransactionQuery>,
+) -> Json<LegacyEnvelope<Vec<LegacyActiveTransaction>>> {
+    envelope(list_active_transactions(&application, &query).await)
 }
 
 async fn import_preview_upload_handler(

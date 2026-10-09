@@ -2049,3 +2049,38 @@ mod tests {
         }
     }
 }
+
+/// One active `InnoDB` transaction reported by the `MySQL` operations monitor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveTransaction {
+    /// `InnoDB` transaction id.
+    pub trx_id: String,
+    /// `InnoDB` transaction state.
+    pub state: String,
+    /// Transaction start time as Unix epoch milliseconds.
+    pub started_at_ms: String,
+    /// Whole seconds since the transaction started.
+    pub age_seconds: u64,
+    /// Isolation level reported by `InnoDB`.
+    pub isolation_level: String,
+    /// Rows currently locked by the transaction.
+    pub rows_locked: u64,
+    /// Rows modified by the transaction.
+    pub rows_modified: u64,
+    /// `InnoDB` lock structures held by the transaction.
+    pub lock_structs: u64,
+    /// `MySQL` thread id owning the transaction.
+    pub thread_id: u64,
+    /// Connection user, when the process list entry is visible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Connection host, when the process list entry is visible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// Default database of the connection, when visible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    /// Currently running statement, empty when the session is idle.
+    pub query: String,
+}
