@@ -647,6 +647,59 @@ impl Application {
         Ok(())
     }
 
+    /// Resolves one staged import preview artifact to its path and format.
+    async fn staged_import_file(
+        &self,
+        file_id: &str,
+    ) -> Result<(std::path::PathBuf, TransferFileFormat), AppError> {
+        let download = self.transfer_artifact_download(file_id.trim()).await?;
+        let format = match download
+            .artifact
+            .format
+            .trim()
+            .to_ascii_uppercase()
+            .as_str()
+        {
+            "CSV" => TransferFileFormat::Csv,
+            "XLS" => TransferFileFormat::Xls,
+            "XLSX" => TransferFileFormat::Xlsx,
+            "SQL" => TransferFileFormat::Sql,
+            other => {
+                return Err(AppError::invalid(
+                    "unsupported_import_file",
+                    format!("Unsupported import preview format: {other}"),
+                ));
+            }
+        };
+        Ok((download.path, format))
+    }
+
+    /// Lists worksheet names of one staged import preview file.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, expiry, corrupted-artifact, or format failures.
+    pub async fn import_preview_sheets(&self, file_id: &str) -> Result<Vec<String>, AppError> {
+        let (path, format) = self.staged_import_file(file_id).await?;
+        format::worksheet_names(&path, format)
+    }
+
+    /// Reads a bounded preview of one staged import file.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, expiry, corrupted-artifact, or format failures.
+    pub async fn import_preview_table(
+        &self,
+        file_id: &str,
+        contains_header: bool,
+        limit: u32,
+    ) -> Result<(Vec<String>, Vec<Vec<String>>), AppError> {
+        let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+        let (path, format) = self.staged_import_file(file_id).await?;
+        format::read_tabular_preview(&path, format, contains_header, limit)
+    }
+
     /// Lists ordered progress events of one transfer task.
     ///
     /// # Errors

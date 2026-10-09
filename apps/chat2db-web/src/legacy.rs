@@ -515,6 +515,88 @@ pub struct LegacyImportExportTaskAccepted {
     pub task_id: i64,
 }
 
+/// Staged import-preview upload sent by the desktop bridge.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyImportPreviewLocalUploadRequest {
+    pub source_file: String,
+    #[serde(default)]
+    pub original_file_name: String,
+}
+
+/// Import-preview request carrying a staged file id.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyImportPreviewFileRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub database_name: String,
+    #[serde(default)]
+    pub schema_name: String,
+    #[serde(default)]
+    pub table_name: String,
+    pub file_id: String,
+}
+
+/// Column mapping submitted with an import-preview execution.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyImportPreviewMappingRequest {
+    #[serde(default)]
+    pub source_column: Option<String>,
+    pub target_column: String,
+}
+
+/// Import-preview execution posted after the mapping step.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyImportPreviewExecuteRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub database_name: String,
+    #[serde(default)]
+    pub schema_name: String,
+    #[serde(default)]
+    pub table_name: String,
+    pub file_id: String,
+    #[serde(default)]
+    pub mappings: Vec<LegacyImportPreviewMappingRequest>,
+    #[serde(default)]
+    pub unmapped_target: String,
+}
+
+/// Mapping suggestion returned by the preview step.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyImportPreviewMapping {
+    pub source_column: String,
+    pub target_column: String,
+}
+
+/// Target column metadata shown by the mapping step.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyImportPreviewColumn {
+    pub name: String,
+    pub data_type: String,
+    pub nullable: bool,
+    pub auto_increment: bool,
+    pub default_value: Option<String>,
+    pub comment: Option<String>,
+}
+
+/// Preview payload rendered by the mapping step.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyImportPreview {
+    pub source_columns: Vec<String>,
+    pub preview_data: Vec<Vec<String>>,
+    pub target_table_name: String,
+    pub target_columns: Vec<LegacyImportPreviewColumn>,
+    pub suggested_mapping: Vec<LegacyImportPreviewMapping>,
+    pub preview_limit: u32,
+}
+
 /// Submission posted by the task-center import/export panel.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3271,6 +3353,253 @@ pub(crate) async fn list_import_export_task_events(
             created_at: legacy_epoch_millis(&event.created_at_ms),
         })
         .collect())
+}
+
+const IMPORT_PREVIEW_ROW_LIMIT: u32 = 100;
+
+fn import_preview_artifact_format(
+    file_name: &str,
+) -> LegacyResult<(&'static str, &'static str, &'static str)> {
+    let extension = file_name
+        .rsplit('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "csv" => Ok(("text/csv", "CSV", "csv")),
+        "xls" => Ok(("application/vnd.ms-excel", "XLS", "xls")),
+        "xlsx" => Ok((
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "XLSX",
+            "xlsx",
+        )),
+        "sql" => Ok(("application/sql; charset=utf-8", "SQL", "sql")),
+        _ => Err(LegacyFailure::invalid(
+            "invalid_import_file",
+            "The staged import file must be CSV, XLS, XLSX, or SQL",
+        )),
+    }
+}
+
+fn import_preview_transfer_format(value: &str) -> LegacyResult<TransferFileFormat> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "CSV" => Ok(TransferFileFormat::Csv),
+        "XLS" => Ok(TransferFileFormat::Xls),
+        "XLSX" => Ok(TransferFileFormat::Xlsx),
+        "SQL" => Ok(TransferFileFormat::Sql),
+        other => Err(LegacyFailure {
+            code: "unsupported_import_file".to_owned(),
+            message: format!("Unsupported import preview format: {other}"),
+        }),
+    }
+}
+
+async fn stage_import_preview_bytes(
+    application: &Application,
+    file_name: String,
+    content: Vec<u8>,
+) -> LegacyResult<String> {
+    let (media_type, format_name, extension) = import_preview_artifact_format(&file_name)?;
+    let expires_at_ms = i64::try_from(unix_epoch_millis())
+        .unwrap_or(i64::MAX)
+        .saturating_add(LEGACY_IMPORT_UPLOAD_TTL_MS);
+    let storage = legacy_storage(application)?;
+    legacy_storage_call(move || {
+        let mut writer = storage.begin_transfer_artifact(
+            None,
+            &file_name,
+            media_type,
+            format_name,
+            extension,
+            Some(expires_at_ms),
+        )?;
+        writer.write_all(&content).map_err(|_| {
+            StorageError::InvalidTransfer("the staged import file could not be stored")
+        })?;
+        Ok(writer.finish()?.id)
+    })
+    .await
+}
+
+pub(crate) async fn stage_import_preview_upload(
+    application: &Application,
+    multipart: Multipart,
+) -> LegacyResult<String> {
+    let upload = read_legacy_multipart_file(multipart).await?;
+    stage_import_preview_bytes(application, upload.file_name, upload.content).await
+}
+
+pub(crate) async fn stage_import_preview_local_file(
+    application: &Application,
+    request: &LegacyImportPreviewLocalUploadRequest,
+) -> LegacyResult<String> {
+    let source = request.source_file.trim().to_owned();
+    if source.is_empty() {
+        return Err(LegacyFailure::invalid(
+            "invalid_import_file",
+            "sourceFile is required",
+        ));
+    }
+    let metadata = tokio::fs::metadata(&source)
+        .await
+        .map_err(|_| LegacyFailure {
+            code: "import_file_not_found".to_owned(),
+            message: "The selected import file could not be read".to_owned(),
+        })?;
+    if !metadata.is_file() || metadata.len() > MAX_LEGACY_DATASOURCE_IMPORT_BYTES as u64 {
+        return Err(LegacyFailure::invalid(
+            "invalid_import_file",
+            "sourceFile must be a readable file within the upload size limit",
+        ));
+    }
+    let content = tokio::fs::read(&source).await.map_err(|_| LegacyFailure {
+        code: "import_file_not_found".to_owned(),
+        message: "The selected import file could not be read".to_owned(),
+    })?;
+    let file_name = non_blank(&request.original_file_name).unwrap_or_else(|| {
+        source
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or("import.dat")
+            .to_owned()
+    });
+    stage_import_preview_bytes(application, file_name, content).await
+}
+
+pub(crate) async fn import_preview_sheets(
+    application: &Application,
+    request: &LegacyImportPreviewFileRequest,
+) -> LegacyResult<Vec<String>> {
+    Ok(application.import_preview_sheets(&request.file_id).await?)
+}
+
+async fn import_preview_target_columns(
+    application: &Application,
+    request: &LegacyImportPreviewFileRequest,
+) -> LegacyResult<Vec<CommunityTableColumn>> {
+    let datasource_id = request.data_source_id.as_string();
+    let database_type = resolve_database_type(application, &datasource_id, "").await?;
+    Ok(application
+        .list_community_columns(ListCommunityColumnsRequest {
+            datasource_id,
+            database_type,
+            database_name: request.database_name.clone(),
+            schema_name: request.schema_name.clone(),
+            table_name: request.table_name.clone(),
+        })
+        .await?
+        .items)
+}
+
+pub(crate) async fn import_preview(
+    application: &Application,
+    request: &LegacyImportPreviewFileRequest,
+) -> LegacyResult<LegacyImportPreview> {
+    let columns = import_preview_target_columns(application, request).await?;
+    let (source_columns, rows) = application
+        .import_preview_table(&request.file_id, true, IMPORT_PREVIEW_ROW_LIMIT)
+        .await?;
+    let suggested_mapping = source_columns
+        .iter()
+        .filter_map(|source| {
+            columns
+                .iter()
+                .find(|target| target.name.eq_ignore_ascii_case(source))
+                .map(|target| LegacyImportPreviewMapping {
+                    source_column: source.clone(),
+                    target_column: target.name.clone(),
+                })
+        })
+        .collect();
+    let target_columns = columns
+        .into_iter()
+        .map(|column| LegacyImportPreviewColumn {
+            name: column.name,
+            data_type: column.column_type,
+            nullable: column.nullable != Some(0),
+            auto_increment: column.auto_increment.unwrap_or(false),
+            default_value: column.default_value,
+            comment: non_blank(&column.comment),
+        })
+        .collect();
+    Ok(LegacyImportPreview {
+        source_columns,
+        preview_data: rows,
+        target_table_name: request.table_name.clone(),
+        target_columns,
+        suggested_mapping,
+        preview_limit: IMPORT_PREVIEW_ROW_LIMIT,
+    })
+}
+
+pub(crate) async fn execute_import_preview(
+    application: &Application,
+    request: &LegacyImportPreviewExecuteRequest,
+) -> LegacyResult<LegacyImportExportTaskAccepted> {
+    if request.unmapped_target.trim().eq_ignore_ascii_case("NULL") {
+        return Err(LegacyFailure {
+            code: "unsupported_import_mapping".to_owned(),
+            message: "Writing NULL into unmapped target columns is not supported yet".to_owned(),
+        });
+    }
+    let mappings: Vec<(String, String)> = request
+        .mappings
+        .iter()
+        .filter_map(|mapping| {
+            non_blank(mapping.source_column.as_deref().unwrap_or_default())
+                .map(|source| (source, mapping.target_column.clone()))
+        })
+        .collect();
+    if mappings
+        .iter()
+        .any(|(source, target)| !source.eq_ignore_ascii_case(target))
+    {
+        return Err(LegacyFailure {
+            code: "unsupported_import_mapping".to_owned(),
+            message: "Renaming columns during import is not supported yet".to_owned(),
+        });
+    }
+    let (columns, _) = application
+        .import_preview_table(&request.file_id, true, 1)
+        .await?;
+    if columns.len() != mappings.len()
+        || !columns.iter().all(|column| {
+            mappings
+                .iter()
+                .any(|(source, _)| source.eq_ignore_ascii_case(column))
+        })
+    {
+        return Err(LegacyFailure {
+            code: "unsupported_import_mapping".to_owned(),
+            message: "Every file column must map to a same-named table column; skipped columns are not supported yet"
+                .to_owned(),
+        });
+    }
+    let download = application
+        .transfer_artifact_download(&request.file_id)
+        .await?;
+    let format = import_preview_transfer_format(&download.artifact.format)?;
+    let Some(file_path) = download.path.to_str().map(str::to_owned) else {
+        return Err(LegacyFailure {
+            code: "invalid_import_path".to_owned(),
+            message: "The staged import file path cannot be represented as UTF-8".to_owned(),
+        });
+    };
+    let accepted = application
+        .import_mysql_file(ImportFileRequest {
+            datasource_id: request.data_source_id.as_string(),
+            database_name: request.database_name.clone(),
+            schema_name: request.schema_name.clone(),
+            table_name: non_blank(&request.table_name),
+            file_path,
+            format,
+            contains_header: true,
+            tabular_encoding: TabularImportEncoding::Plain,
+        })
+        .await?;
+    Ok(LegacyImportExportTaskAccepted {
+        task_id: accepted.task_id,
+    })
 }
 
 async fn submitted_import_path(
@@ -8980,6 +9309,34 @@ async fn dispatch_inner(
                 .await
                 .map_err(LegacyFailure::from),
         ),
+        ("post", "/api/rdb/import_preview/upload_local") => {
+            match decode::<LegacyImportPreviewLocalUploadRequest>(request.message) {
+                Ok(body) if desktop_paths => {
+                    serialized(stage_import_preview_local_file(application, &body).await)
+                }
+                Ok(_) => Err(desktop_file_operation_required()),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/import_preview/upload") => Err(desktop_file_operation_required()),
+        ("post", "/api/rdb/import_preview/sheets") => {
+            match decode::<LegacyImportPreviewFileRequest>(request.message) {
+                Ok(body) => serialized(import_preview_sheets(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/import_preview/preview") => {
+            match decode::<LegacyImportPreviewFileRequest>(request.message) {
+                Ok(body) => serialized(import_preview(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
+        ("post", "/api/rdb/import_preview/execute") => {
+            match decode::<LegacyImportPreviewExecuteRequest>(request.message) {
+                Ok(body) => serialized(execute_import_preview(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
         ("get", "/api/sql/format") => match decode::<LegacySqlUtilityRequest>(request.message) {
             Ok(query) => serialized(format_legacy_sql(application, &query).await),
             Err(error) => Err(error),
@@ -9504,6 +9861,11 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/connection/console/connect",
     "/api/import/sql_file",
     "/api/import/other_file",
+    "/api/rdb/import_preview/upload",
+    "/api/rdb/import_preview/upload_local",
+    "/api/rdb/import_preview/sheets",
+    "/api/rdb/import_preview/preview",
+    "/api/rdb/import_preview/execute",
     "/api/export/sql_file",
     "/api/export/other_file",
     "/api/task/list",
@@ -9796,6 +10158,27 @@ pub(crate) fn routes() -> Router<Application> {
         )
         .route("/api/export/sql_file", post(export_sql_file_handler))
         .route("/api/export/other_file", post(export_other_file_handler))
+        .route(
+            "/api/rdb/import_preview/upload",
+            post(import_preview_upload_handler)
+                .layer(DefaultBodyLimit::max(MAX_LEGACY_MULTIPART_BYTES)),
+        )
+        .route(
+            "/api/rdb/import_preview/upload_local",
+            post(import_preview_local_upload_handler),
+        )
+        .route(
+            "/api/rdb/import_preview/sheets",
+            post(import_preview_sheets_handler),
+        )
+        .route(
+            "/api/rdb/import_preview/preview",
+            post(import_preview_handler),
+        )
+        .route(
+            "/api/rdb/import_preview/execute",
+            post(import_preview_execute_handler),
+        )
         .route("/api/task/list", get(transfer_task_list_handler))
         .route("/api/task/get", get(transfer_task_get_handler))
         .route("/api/task/stop", get(transfer_task_stop_handler))
@@ -10459,6 +10842,38 @@ async fn import_export_task_events_handler(
     Query(query): Query<LegacyImportExportEventQuery>,
 ) -> Json<LegacyEnvelope<Vec<LegacyImportExportEvent>>> {
     envelope(list_import_export_task_events(&application, &query).await)
+}
+
+async fn import_preview_upload_handler(
+    State(application): State<Application>,
+    multipart: Multipart,
+) -> Json<LegacyEnvelope<String>> {
+    envelope(stage_import_preview_upload(&application, multipart).await)
+}
+
+async fn import_preview_local_upload_handler() -> Json<LegacyEnvelope<String>> {
+    envelope(Err(desktop_file_operation_required()))
+}
+
+async fn import_preview_sheets_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyImportPreviewFileRequest>,
+) -> Json<LegacyEnvelope<Vec<String>>> {
+    envelope(import_preview_sheets(&application, &request).await)
+}
+
+async fn import_preview_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyImportPreviewFileRequest>,
+) -> Json<LegacyEnvelope<LegacyImportPreview>> {
+    envelope(import_preview(&application, &request).await)
+}
+
+async fn import_preview_execute_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyImportPreviewExecuteRequest>,
+) -> Json<LegacyEnvelope<LegacyImportExportTaskAccepted>> {
+    envelope(execute_import_preview(&application, &request).await)
 }
 
 async fn import_export_task_export_handler(
@@ -11443,6 +11858,11 @@ mod tests {
     const REQUIRED_TRANSFER_PATHS: &[(&str, &str)] = &[
         ("post", "/api/import/sql_file"),
         ("post", "/api/import/other_file"),
+        ("post", "/api/rdb/import_preview/upload"),
+        ("post", "/api/rdb/import_preview/upload_local"),
+        ("post", "/api/rdb/import_preview/sheets"),
+        ("post", "/api/rdb/import_preview/preview"),
+        ("post", "/api/rdb/import_preview/execute"),
         ("post", "/api/export/sql_file"),
         ("post", "/api/export/other_file"),
         ("get", "/api/task/list"),
@@ -12122,6 +12542,16 @@ mod tests {
         }
     }
 
+    async fn dashboard_response_json(response: axum::response::Response) -> serde_json::Value {
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("response body must collect")
+            .to_bytes();
+        serde_json::from_slice(&body).expect("response body must be JSON")
+    }
+
     async fn dashboard_http_json(
         router: &Router,
         method: &str,
@@ -12182,6 +12612,73 @@ mod tests {
         let body = dashboard_http_json(&router, "POST", "/api/jdbc/driver/upload", None).await;
         assert_eq!(body["success"], false);
         assert_eq!(body["errorCode"], "unsupported_custom_driver_upload");
+    }
+
+    #[tokio::test]
+    async fn import_preview_stages_files_and_rejects_unsupported_mappings() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let storage = Storage::open(directory.path(), Arc::new(EmptyVault)).expect("storage opens");
+        let router = routes().with_state(Application::with_storage(storage));
+
+        let boundary = "chat2db-preview-boundary";
+        let multipart = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"rows.csv\"\r\nContent-Type: text/csv\r\n\r\nname,value\r\nalpha,1\r\n--{boundary}--\r\n"
+        );
+        let upload_request = Request::builder()
+            .method(axum::http::Method::POST)
+            .uri("/api/rdb/import_preview/upload")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(multipart))
+            .expect("multipart request must build");
+        let uploaded = router
+            .clone()
+            .oneshot(upload_request)
+            .await
+            .expect("upload route must respond");
+        let uploaded = dashboard_response_json(uploaded).await;
+        assert_eq!(uploaded["success"], true);
+        let file_id = uploaded["data"]
+            .as_str()
+            .expect("staged file id must be a string")
+            .to_owned();
+
+        let sheets = dashboard_http_json(
+            &router,
+            "POST",
+            "/api/rdb/import_preview/sheets",
+            Some(serde_json::json!({
+                "dataSourceId": "datasource-1",
+                "databaseName": "app",
+                "tableName": "items",
+                "fileId": file_id
+            })),
+        )
+        .await;
+        assert_eq!(sheets["success"], true);
+        assert_eq!(sheets["data"], serde_json::json!([]));
+
+        let renamed = dashboard_http_json(
+            &router,
+            "POST",
+            "/api/rdb/import_preview/execute",
+            Some(serde_json::json!({
+                "dataSourceId": "datasource-1",
+                "databaseName": "app",
+                "tableName": "items",
+                "fileId": file_id,
+                "unmappedTarget": "DEFAULT",
+                "mappings": [
+                    {"sourceColumn": "name", "targetColumn": "label"},
+                    {"sourceColumn": "value", "targetColumn": "value"}
+                ]
+            })),
+        )
+        .await;
+        assert_eq!(renamed["success"], false);
+        assert_eq!(renamed["errorCode"], "unsupported_import_mapping");
     }
 
     #[tokio::test]
