@@ -508,6 +508,46 @@ pub struct LegacyImportExportEventQuery {
     pub limit: Option<u32>,
 }
 
+/// Accepted task id returned to the task-center panel.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyImportExportTaskAccepted {
+    pub task_id: i64,
+}
+
+/// Submission posted by the task-center import/export panel.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyImportExportSubmitRequest {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default)]
+    pub database_name: String,
+    #[serde(default)]
+    pub schema_name: String,
+    #[serde(default)]
+    pub table_name: String,
+    #[serde(default)]
+    pub table_names: Vec<String>,
+    #[serde(default)]
+    pub task_type: String,
+    #[serde(default)]
+    pub task_name: String,
+    #[serde(default)]
+    pub format: String,
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default = "default_true")]
+    pub contain_data: bool,
+    #[serde(default = "default_true")]
+    pub contains_header: bool,
+    #[serde(default)]
+    pub source_file: String,
+    #[serde(default)]
+    pub file_id: String,
+    #[serde(default)]
+    pub export_path: String,
+}
+
 /// One task-center log event in the shape the newer Community panel expects.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -3231,6 +3271,107 @@ pub(crate) async fn list_import_export_task_events(
             created_at: legacy_epoch_millis(&event.created_at_ms),
         })
         .collect())
+}
+
+async fn submitted_import_path(
+    application: &Application,
+    request: &LegacyImportExportSubmitRequest,
+) -> LegacyResult<String> {
+    if let Some(path) = non_blank(&request.source_file) {
+        return Ok(path);
+    }
+    if let Some(file_id) = non_blank(&request.file_id) {
+        let download = application.transfer_artifact_download(&file_id).await?;
+        return download
+            .path
+            .to_str()
+            .map(str::to_owned)
+            .ok_or_else(|| LegacyFailure {
+                code: "invalid_import_path".to_owned(),
+                message: "The staged import file path cannot be represented as UTF-8".to_owned(),
+            });
+    }
+    Err(LegacyFailure::invalid(
+        "invalid_import_request",
+        "sourceFile or fileId is required",
+    ))
+}
+
+pub(crate) async fn submit_import_export_task(
+    application: &Application,
+    request: &LegacyImportExportSubmitRequest,
+) -> LegacyResult<LegacyImportExportTaskAccepted> {
+    let task_type = request.task_type.trim().to_ascii_uppercase();
+    match task_type.as_str() {
+        "SQL_EXPORT" => {
+            let task_id = export_legacy_mysql_sql_file(
+                application,
+                &LegacySqlFileExportRequest {
+                    data_source_id: request.data_source_id.clone(),
+                    database_name: request.database_name.clone(),
+                    schema_name: request.schema_name.clone(),
+                    table_name: request.table_name.clone(),
+                    table_names: request.table_names.clone(),
+                    scope: request.scope.clone(),
+                    contain_data: request.contain_data,
+                    export_path: String::new(),
+                },
+            )
+            .await?;
+            Ok(LegacyImportExportTaskAccepted { task_id })
+        }
+        "TABLE_DATA_EXPORT" => {
+            let task_id = export_legacy_mysql_other_file(
+                application,
+                &LegacyOtherFileExportRequest {
+                    data_source_id: request.data_source_id.clone(),
+                    database_name: request.database_name.clone(),
+                    schema_name: request.schema_name.clone(),
+                    table_name: request.table_name.clone(),
+                    table_names: request.table_names.clone(),
+                    export_type: request.format.clone(),
+                    contains_header: request.contains_header,
+                    export_path: String::new(),
+                },
+            )
+            .await?;
+            Ok(LegacyImportExportTaskAccepted { task_id })
+        }
+        "DATA_FILE_IMPORT" | "SQL_FILE_IMPORT" => {
+            let sql_route = task_type == "SQL_FILE_IMPORT";
+            let file_name = submitted_import_path(application, request).await?;
+            let import_type = if sql_route {
+                "SQL".to_owned()
+            } else {
+                request.format.clone()
+            };
+            let task_id = import_legacy_mysql_desktop_file(
+                application,
+                &LegacyImportFileRequest {
+                    data_source_id: request.data_source_id.clone(),
+                    database_name: request.database_name.clone(),
+                    schema_name: request.schema_name.clone(),
+                    table_name: request.table_name.clone(),
+                    file_name,
+                    import_type,
+                    contains_header: request.contains_header,
+                    tabular_encoding: TabularImportEncoding::Plain,
+                },
+                sql_route,
+            )
+            .await?;
+            Ok(LegacyImportExportTaskAccepted { task_id })
+        }
+        "QUERY_RESULT_EXPORT" => Err(LegacyFailure {
+            code: "unsupported_task_type".to_owned(),
+            message: "Exporting a query result as a background task is not supported yet"
+                .to_owned(),
+        }),
+        _ => Err(LegacyFailure::invalid(
+            "invalid_task_type",
+            "taskType is not supported",
+        )),
+    }
 }
 
 pub(crate) async fn export_legacy_mysql_dml(
@@ -8821,6 +8962,12 @@ async fn dispatch_inner(
                 Err(error) => Err(error),
             }
         }
+        ("post", "/api/tasks/export" | "/api/tasks/import") => {
+            match decode::<LegacyImportExportSubmitRequest>(request.message) {
+                Ok(body) => serialized(submit_import_export_task(application, &body).await),
+                Err(error) => Err(error),
+            }
+        }
         ("get", "/api/sql/format") => match decode::<LegacySqlUtilityRequest>(request.message) {
             Ok(query) => serialized(format_legacy_sql(application, &query).await),
             Err(error) => Err(error),
@@ -9357,6 +9504,8 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/tasks/artifact",
     "/api/tasks/delete",
     "/api/tasks/events",
+    "/api/tasks/export",
+    "/api/tasks/import",
     "/api/sql/format",
     "/api/sql/valid_select",
     "/api/sql_parser/get_keywords",
@@ -9651,6 +9800,8 @@ pub(crate) fn routes() -> Router<Application> {
             axum::routing::delete(import_export_task_delete_handler),
         )
         .route("/api/tasks/events", get(import_export_task_events_handler))
+        .route("/api/tasks/export", post(import_export_task_export_handler))
+        .route("/api/tasks/import", post(import_export_task_import_handler))
         .route("/api/task/download", get(transfer_task_download_handler))
         .route("/api/sql/format", get(sql_format_handler))
         .route("/api/sql/valid_select", get(sql_valid_select_handler))
@@ -10286,6 +10437,20 @@ async fn import_export_task_events_handler(
     Query(query): Query<LegacyImportExportEventQuery>,
 ) -> Json<LegacyEnvelope<Vec<LegacyImportExportEvent>>> {
     envelope(list_import_export_task_events(&application, &query).await)
+}
+
+async fn import_export_task_export_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyImportExportSubmitRequest>,
+) -> Json<LegacyEnvelope<LegacyImportExportTaskAccepted>> {
+    envelope(submit_import_export_task(&application, &request).await)
+}
+
+async fn import_export_task_import_handler(
+    State(application): State<Application>,
+    Json(request): Json<LegacyImportExportSubmitRequest>,
+) -> Json<LegacyEnvelope<LegacyImportExportTaskAccepted>> {
+    envelope(submit_import_export_task(&application, &request).await)
 }
 
 async fn dml_export_handler(
@@ -11246,6 +11411,8 @@ mod tests {
         ("get", "/api/tasks/artifact"),
         ("delete", "/api/tasks/delete"),
         ("get", "/api/tasks/events"),
+        ("post", "/api/tasks/export"),
+        ("post", "/api/tasks/import"),
         ("post", "/api/rdb/dml/export"),
         ("post", "/api/rdb/table/generate/class"),
     ];
@@ -11969,6 +12136,43 @@ mod tests {
         let body = dashboard_http_json(&router, "POST", "/api/jdbc/driver/upload", None).await;
         assert_eq!(body["success"], false);
         assert_eq!(body["errorCode"], "unsupported_custom_driver_upload");
+    }
+
+    #[tokio::test]
+    async fn task_submission_reports_unsupported_and_invalid_task_types() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let storage = Storage::open(directory.path(), Arc::new(EmptyVault)).expect("storage opens");
+        let router = routes().with_state(Application::with_storage(storage));
+
+        let unsupported = dashboard_http_json(
+            &router,
+            "POST",
+            "/api/tasks/export",
+            Some(serde_json::json!({
+                "dataSourceId": "datasource-1",
+                "databaseName": "app",
+                "taskType": "QUERY_RESULT_EXPORT",
+                "format": "CSV"
+            })),
+        )
+        .await;
+        assert_eq!(unsupported["success"], false);
+        assert_eq!(unsupported["errorCode"], "unsupported_task_type");
+
+        let invalid = dashboard_http_json(
+            &router,
+            "POST",
+            "/api/tasks/import",
+            Some(serde_json::json!({
+                "dataSourceId": "datasource-1",
+                "databaseName": "app",
+                "taskType": "NOPE",
+                "format": "CSV"
+            })),
+        )
+        .await;
+        assert_eq!(invalid["success"], false);
+        assert_eq!(invalid["errorCode"], "invalid_task_type");
     }
 
     #[tokio::test]
