@@ -245,6 +245,24 @@ pub struct LegacyDriverResponse {
     pub driver_config_list: Vec<LegacyDriverConfig>,
 }
 
+/// One database type offered by the retained Community connection form.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacySupportedDatabase {
+    pub db_type: String,
+    pub name: String,
+    pub support_database: bool,
+    pub support_schema: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sql_dialect: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jdbc_driver_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url_sample: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+}
+
 #[derive(Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LegacyConnectionProperty {
@@ -856,6 +874,20 @@ pub struct LegacyTableCopyRequest {
     pub new_name: String,
     #[serde(default)]
     pub copy_data: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyTableCopyPrepareQuery {
+    pub data_source_id: LegacyIdentifier,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub schema_name: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub database_type: String,
+    #[serde(default, deserialize_with = "deserialize_string_or_default")]
+    pub table_name: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1947,6 +1979,38 @@ pub fn drivers(application: &Application, requested_type: &str) -> LegacyDriverR
         default_driver_config,
         driver_config_list,
     }
+}
+
+/// Rejects uploaded JDBC drivers: this runtime only loads verified driver packs.
+pub(crate) fn custom_driver_upload_unsupported() -> LegacyFailure {
+    LegacyFailure {
+        code: "unsupported_custom_driver_upload".to_owned(),
+        message:
+            "This runtime loads verified driver packs and cannot accept an uploaded JDBC driver yet"
+                .to_owned(),
+    }
+}
+
+pub(crate) fn list_supported_databases(application: &Application) -> Vec<LegacySupportedDatabase> {
+    application
+        .list_drivers()
+        .items
+        .into_iter()
+        .map(|driver| {
+            let db_type = database_type_for_driver(&driver);
+            let support_schema = !matches!(db_type.as_str(), "MYSQL" | "SQLITE");
+            LegacySupportedDatabase {
+                db_type,
+                name: driver.name,
+                support_database: true,
+                support_schema,
+                sql_dialect: None,
+                jdbc_driver_class: Some(driver.driver_class),
+                url_sample: None,
+                icon: None,
+            }
+        })
+        .collect()
 }
 
 pub(crate) async fn list_community_dashboards(
@@ -4732,6 +4796,26 @@ pub(crate) async fn truncate_table(
     .await
 }
 
+/// Returns the default copy-table name the Community copy dialog pre-fills.
+pub(crate) async fn prepare_copy_table_name(
+    application: &Application,
+    request: &LegacyTableCopyPrepareQuery,
+) -> LegacyResult<String> {
+    let datasource_id = request.data_source_id.as_string();
+    resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
+    if request.table_name.trim().is_empty() {
+        return Err(LegacyFailure::invalid(
+            "invalid_table_request",
+            "tableName is required",
+        ));
+    }
+    Ok(default_copy_table_name(&request.table_name))
+}
+
+fn default_copy_table_name(table_name: &str) -> String {
+    format!("{}_copy", table_name.trim())
+}
+
 pub(crate) async fn copy_table(
     application: &Application,
     request: &LegacyTableCopyRequest,
@@ -4739,7 +4823,7 @@ pub(crate) async fn copy_table(
     let datasource_id = request.data_source_id.as_string();
     resolve_mysql_database_type(application, &datasource_id, &request.database_type).await?;
     let new_name = if request.new_name.trim().is_empty() {
-        format!("{}_copy", request.table_name.trim())
+        default_copy_table_name(&request.table_name)
     } else {
         request.new_name.trim().to_owned()
     };
@@ -8190,6 +8274,8 @@ async fn dispatch_inner(
             Err(error) => Err(error),
         },
         ("get", "/api/common/environment/list_all") => serialized(Ok(environments())),
+        ("get", "/api/database/supported") => serialize_data(list_supported_databases(application)),
+        ("post", "/api/jdbc/driver/upload") => Err(custom_driver_upload_unsupported()),
         ("get", "/api/jdbc/driver/list") => decode(request.message)
             .map(|query: LegacyDriverQuery| drivers(application, &query.db_type))
             .and_then(serialize_data),
@@ -8817,6 +8903,12 @@ async fn dispatch_inner(
                 Err(error) => Err(error),
             }
         }
+        ("get", "/api/rdb/table/copy/prepare") => {
+            match decode::<LegacyTableCopyPrepareQuery>(request.message) {
+                Ok(query) => serialized(prepare_copy_table_name(application, &query).await),
+                Err(error) => Err(error),
+            }
+        }
         ("post", "/api/rdb/table/copy") => {
             match decode::<LegacyTableCopyRequest>(request.message) {
                 Ok(body) => serialized(copy_table(application, &body).await),
@@ -8974,6 +9066,8 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/rdb/account/grants",
     "/api/rdb/account/preview",
     "/api/rdb/account/execute",
+    "/api/database/supported",
+    "/api/jdbc/driver/upload",
     "/api/diff/sql",
     "/api/rdb/database/list",
     "/api/rdb/database/create_database_sql",
@@ -8981,6 +9075,7 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/rdb/schema/create_schema_sql",
     "/api/rdb/ddl/schema_list",
     "/api/rdb/ddl/database_schema_list",
+    "/api/rdb/table/copy/prepare",
     "/api/rdb/table/list",
     "/api/rdb/table/table_meta",
     "/api/rdb/table/query",
@@ -9116,6 +9211,14 @@ pub(crate) fn routes() -> Router<Application> {
         .route("/api/v1/chart/update", post(chart_update_handler))
         .route("/api/chart", axum::routing::delete(chart_delete_handler))
         .route("/api/common/environment/list_all", get(environment_handler))
+        .route(
+            "/api/database/supported",
+            get(supported_database_handler),
+        )
+        .route(
+            "/api/jdbc/driver/upload",
+            post(driver_upload_handler).layer(DefaultBodyLimit::max(MAX_LEGACY_MULTIPART_BYTES)),
+        )
         .route("/api/jdbc/driver/list", get(driver_handler))
         .route("/api/jdbc/driver/download", get(driver_download_handler))
         .route("/api/jdbc/driver/save", post(driver_save_handler))
@@ -9313,6 +9416,10 @@ pub(crate) fn routes() -> Router<Application> {
         .route("/api/rdb/table/modify/sql", post(table_modify_sql_handler))
         .route("/api/rdb/table/truncate", post(table_truncate_handler))
         .route("/api/rdb/table/copy", post(table_copy_handler))
+        .route(
+            "/api/rdb/table/copy/prepare",
+            get(table_copy_prepare_handler),
+        )
         .route("/api/rdb/table/table_list", get(simple_table_list_handler))
         .route("/api/rdb/table/column_list", get(table_column_list_handler))
         .route("/api/rdb/table/index_list", get(table_index_list_handler))
@@ -9519,6 +9626,16 @@ async fn chart_delete_handler(
 
 async fn environment_handler() -> Json<LegacyEnvelope<Vec<LegacyEnvironment>>> {
     envelope(Ok(environments()))
+}
+
+async fn supported_database_handler(
+    State(application): State<Application>,
+) -> Json<LegacyEnvelope<Vec<LegacySupportedDatabase>>> {
+    envelope(Ok(list_supported_databases(&application)))
+}
+
+async fn driver_upload_handler() -> Json<LegacyEnvelope<Vec<String>>> {
+    envelope(Err(custom_driver_upload_unsupported()))
 }
 
 async fn driver_handler(
@@ -10152,6 +10269,13 @@ async fn table_copy_handler(
     envelope(copy_table(&application, &request).await)
 }
 
+async fn table_copy_prepare_handler(
+    State(application): State<Application>,
+    Query(query): Query<LegacyTableCopyPrepareQuery>,
+) -> Json<LegacyEnvelope<String>> {
+    envelope(prepare_copy_table_name(&application, &query).await)
+}
+
 async fn database_delete_prepare_handler(
     State(application): State<Application>,
     Json(request): Json<LegacyDeleteObjectRequest>,
@@ -10645,6 +10769,7 @@ mod tests {
         ("get", "/api/rdb/ddl/database_schema_list"),
         ("post", "/api/rdb/ddl/execute"),
         ("get", "/api/rdb/table/table_meta"),
+        ("get", "/api/rdb/table/copy/prepare"),
         ("get", "/api/rdb/table/query"),
         ("get", "/api/rdb/table/export"),
         ("get", "/api/rdb/table/create/example"),
@@ -10693,6 +10818,8 @@ mod tests {
     ];
 
     const REQUIRED_WORKSPACE_PATHS: &[(&str, &str)] = &[
+        ("get", "/api/database/supported"),
+        ("post", "/api/jdbc/driver/upload"),
         ("get", "/api/jdbc/driver/download"),
         ("post", "/api/jdbc/driver/save"),
         ("delete", "/api/jdbc/driver/delete"),
@@ -11419,6 +11546,36 @@ mod tests {
             .expect("response body must collect")
             .to_bytes();
         serde_json::from_slice(&body).expect("response body must be JSON")
+    }
+
+    #[tokio::test]
+    async fn supported_databases_route_serves_the_driver_inventory() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let storage = Storage::open(directory.path(), Arc::new(EmptyVault)).expect("storage opens");
+        let router = routes().with_state(Application::with_storage(storage));
+
+        let body = dashboard_http_json(&router, "GET", "/api/database/supported", None).await;
+        assert_eq!(body["success"], true);
+        assert!(body["errorCode"].is_null());
+        let databases = body["data"]
+            .as_array()
+            .expect("supported databases must be an array");
+        for database in databases {
+            assert!(database["dbType"].is_string(), "dbType must be a string");
+            assert_eq!(database["supportDatabase"], true);
+            assert!(database["supportSchema"].is_boolean());
+        }
+    }
+
+    #[tokio::test]
+    async fn driver_upload_route_reports_the_unsupported_gap() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let storage = Storage::open(directory.path(), Arc::new(EmptyVault)).expect("storage opens");
+        let router = routes().with_state(Application::with_storage(storage));
+
+        let body = dashboard_http_json(&router, "POST", "/api/jdbc/driver/upload", None).await;
+        assert_eq!(body["success"], false);
+        assert_eq!(body["errorCode"], "unsupported_custom_driver_upload");
     }
 
     #[tokio::test]
