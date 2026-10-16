@@ -206,7 +206,13 @@ jobs:
       - name: Install Windows signing client
         if: steps.windows-signing.outputs.configured == 'true'
         shell: pwsh
-        run: choco install winscp -y --no-progress
+        run: |
+          choco install winscp -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'WinSCP installation failed' }
+          if (-not (Get-Command WinSCP.com -ErrorAction SilentlyContinue) -and
+              -not (Test-Path -LiteralPath "${env:ProgramFiles(x86)}/WinSCP/WinSCP.com")) {
+            throw 'WinSCP is unavailable after installation; the signing step would fail'
+          }
       - name: Build and verify Windows installers
         shell: bash
         env:
