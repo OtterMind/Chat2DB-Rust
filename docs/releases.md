@@ -38,7 +38,13 @@ with `rtk git push origin v0.0.1`. The `Desktop Packages` workflow will:
    and that the release commit is in `main`.
 2. Run the reusable repository CI on that same tagged revision.
 3. Build macOS ARM64/x86_64, Windows x86_64, and Linux ARM64/x86_64 packages.
-   macOS signing and notarization remain required.
+   macOS signing and notarization remain required. Windows installers are
+   signed on the shared remote Authenticode service when `WIN_SERVER_IP`,
+   `WIN_SERVER_USER`, `WIN_SSH_PRIVATE_KEY`, `REMOTE_SIGN_PATH`,
+   `REMOTE_SIGN_SCRIPT`, and `HOST_KEY` are configured; tag builds fail rather
+   than attach unsigned installers. Branch builds without that configuration
+   skip signing with a warning and record `code_signing=skipped` in the
+   Windows manifest.
 4. Require successful CI and every package job before preparing the release.
 5. Verify package hashes and all five version/source/Community manifests.
 6. Create a GitHub **Draft Release** with twelve package files, a combined
@@ -58,9 +64,12 @@ on a published release. Partial or failed builds do not reach the release job.
 
 Download the draft assets, verify `SHA256SUMS`, and validate installation,
 startup, the displayed version, database connections, and CLI attachment on
-the supported platforms. Review the draft notes and known limitations, and
-complete the repository's Community distribution, NOTICE/SBOM, and installed
-package acceptance requirements before publishing the draft.
+the supported platforms. Confirm the Windows installers carry a valid
+Authenticode signature with `Get-AuthenticodeSignature`, or by reading
+`code_signing=authenticode-dual` from `BUILD-MANIFEST-windows-x86_64.txt`.
+Review the draft notes and known limitations, and complete the repository's
+Community distribution, NOTICE/SBOM, and installed package acceptance
+requirements before publishing the draft.
 
 Publish through GitHub or:
 

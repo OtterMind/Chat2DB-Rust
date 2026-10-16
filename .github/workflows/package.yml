@@ -185,8 +185,38 @@ jobs:
           rm -rf target/windows-driver-packs
           ./scripts/prepare-mysql-driver-pack.sh target/windows-driver-packs
           ./scripts/prepare-h2-driver-pack.sh target/windows-driver-packs
+      - name: Detect Windows signing configuration
+        id: windows-signing
+        shell: bash
+        env:
+          WIN_SERVER_IP: ${{ secrets.WIN_SERVER_IP }}
+          WIN_SERVER_USER: ${{ secrets.WIN_SERVER_USER }}
+          WIN_SSH_PRIVATE_KEY: ${{ secrets.WIN_SSH_PRIVATE_KEY }}
+          REMOTE_SIGN_PATH: ${{ secrets.REMOTE_SIGN_PATH }}
+          REMOTE_SIGN_SCRIPT: ${{ secrets.REMOTE_SIGN_SCRIPT }}
+          HOST_KEY: ${{ secrets.HOST_KEY }}
+        run: |
+          if [[ -n "${WIN_SERVER_IP}" && -n "${WIN_SERVER_USER}" && -n "${WIN_SSH_PRIVATE_KEY}" && \
+                -n "${REMOTE_SIGN_PATH}" && -n "${REMOTE_SIGN_SCRIPT}" && -n "${HOST_KEY}" ]]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Windows code signing is not configured; the installers are built unsigned." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Install Windows signing client
+        if: steps.windows-signing.outputs.configured == 'true'
+        shell: pwsh
+        run: choco install winscp -y --no-progress
       - name: Build and verify Windows installers
         shell: bash
+        env:
+          WIN_SERVER_IP: ${{ secrets.WIN_SERVER_IP }}
+          WIN_SERVER_USER: ${{ secrets.WIN_SERVER_USER }}
+          WIN_SSH_PRIVATE_KEY: ${{ secrets.WIN_SSH_PRIVATE_KEY }}
+          REMOTE_SIGN_PATH: ${{ secrets.REMOTE_SIGN_PATH }}
+          REMOTE_SIGN_SCRIPT: ${{ secrets.REMOTE_SIGN_SCRIPT }}
+          HOST_KEY: ${{ secrets.HOST_KEY }}
+          CHAT2DB_REQUIRE_WINDOWS_SIGNING: ${{ github.ref_type == 'tag' }}
         run: ./scripts/build-windows-package.sh
       - name: Add package manifest to summary
         shell: pwsh
