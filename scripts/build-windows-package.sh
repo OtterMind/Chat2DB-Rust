@@ -129,9 +129,13 @@ if ((configured_signing_variables > 0)); then
     exit 1
   fi
   # Sign the installers before the checksums and manifest describe the shipped bytes.
+  # MSYS rewrites environment values that look like Unix paths when it launches a
+  # native program, which would corrupt the signer's remote paths and script name.
+  conversion_exclusions="$(IFS=';'; echo "${signing_variables[*]}")"
   for artifact in "${package_directory}"/*.exe "${package_directory}"/*.msi; do
-    pwsh -NoProfile -NonInteractive -File "$(cygpath -w "${repository_root}/scripts/sign-windows-package.ps1")" \
-      -PackagePath "$(cygpath -w "${artifact}")"
+    MSYS2_ENV_CONV_EXCL="${conversion_exclusions}" \
+      pwsh -NoProfile -NonInteractive -File "$(cygpath -w "${repository_root}/scripts/sign-windows-package.ps1")" \
+        -PackagePath "$(cygpath -w "${artifact}")"
   done
   code_signing=authenticode-dual
 elif [[ "${CHAT2DB_REQUIRE_WINDOWS_SIGNING:-false}" == "true" ]]; then
