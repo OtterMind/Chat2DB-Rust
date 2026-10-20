@@ -114,6 +114,37 @@ rm -rf -- "${package_directory}"
 mkdir -p "${package_directory}"
 cp -- "${nsis_artifacts[0]}" "${package_directory}/"
 cp -- "${msi_artifacts[0]}" "${package_directory}/"
+
+signing_variables=(WIN_SERVER_IP WIN_SERVER_USER WIN_SSH_PRIVATE_KEY REMOTE_SIGN_PATH REMOTE_SIGN_SCRIPT HOST_KEY)
+configured_signing_variables=0
+for variable in "${signing_variables[@]}"; do
+  if [[ -n "$(printenv "${variable}" || true)" ]]; then
+    configured_signing_variables=$((configured_signing_variables + 1))
+  fi
+done
+code_signing=skipped
+if ((configured_signing_variables > 0)); then
+  if ((configured_signing_variables < ${#signing_variables[@]})); then
+    echo "Windows code signing requires all of: ${signing_variables[*]}" >&2
+    exit 1
+  fi
+  # Sign the installers before the checksums and manifest describe the shipped bytes.
+  # MSYS rewrites environment values that look like Unix paths when it launches a
+  # native program, which would corrupt the signer's remote paths and script name.
+  conversion_exclusions="$(IFS=';'; echo "${signing_variables[*]}")"
+  for artifact in "${package_directory}"/*.exe "${package_directory}"/*.msi; do
+    MSYS2_ENV_CONV_EXCL="${conversion_exclusions}" \
+      pwsh -NoProfile -NonInteractive -File "$(cygpath -w "${repository_root}/scripts/sign-windows-package.ps1")" \
+        -PackagePath "$(cygpath -w "${artifact}")"
+  done
+  code_signing=authenticode-dual
+elif [[ "${CHAT2DB_REQUIRE_WINDOWS_SIGNING:-false}" == "true" ]]; then
+  echo "Windows code signing is required but not configured: ${signing_variables[*]}" >&2
+  exit 1
+else
+  echo "Windows code signing skipped: the remote signing service is not configured" >&2
+fi
+
 (
   cd "${package_directory}"
   sha256sum ./*.exe ./*.msi > SHA256SUMS
@@ -126,6 +157,7 @@ cp -- "${msi_artifacts[0]}" "${package_directory}/"
     echo "target=windows"
     echo "rust_toolchain=${rust_toolchain}"
     echo "tauri_cli=$(cargo tauri --version)"
+    echo "code_signing=${code_signing}"
     echo "embedded_cli=chat2db/bin/chat2db.exe"
     echo "nsis=$(basename "${nsis_artifacts[0]}")"
     echo "msi=$(basename "${msi_artifacts[0]}")"

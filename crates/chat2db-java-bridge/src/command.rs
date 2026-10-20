@@ -35,6 +35,13 @@ impl EngineCommand {
     pub(crate) fn build(&self) -> Command {
         let mut command = Command::new(&self.program);
         command.args(&self.arguments);
+        // A GUI host would otherwise open a console window for the bundled
+        // java.exe on every engine start.
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
         command
     }
 }
