@@ -89,3 +89,11 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 all = "warn"
 pedantic = "warn"
+
+# Size-first release binaries for installers. panic=abort stays off because
+# the native database drivers rely on catch_unwind for error recovery.
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "s"
+strip = true
