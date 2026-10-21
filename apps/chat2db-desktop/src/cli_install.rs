@@ -36,7 +36,11 @@ struct CliInstallProgress {
 }
 
 fn cli_binary_name() -> &'static str {
-    if cfg!(windows) { "chat2db.exe" } else { "chat2db" }
+    if cfg!(windows) {
+        "chat2db.exe"
+    } else {
+        "chat2db"
+    }
 }
 
 fn platform_id() -> &'static str {
@@ -116,11 +120,7 @@ fn emit_progress(
     );
 }
 
-async fn download_archive(
-    app: &AppHandle,
-    url: &str,
-    destination: &Path,
-) -> Result<(), String> {
+async fn download_archive(app: &AppHandle, url: &str, destination: &Path) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .build()
         .map_err(|error| format!("download client failed: {error}"))?;
@@ -232,8 +232,7 @@ fn extract_cli_binary(archive_path: &Path, destination: &Path) -> Result<(), Str
             fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))
                 .map_err(|error| format!("CLI permission update failed: {error}"))?;
         }
-        fs::rename(&staged, destination)
-            .map_err(|error| format!("CLI install failed: {error}"))?;
+        fs::rename(&staged, destination).map_err(|error| format!("CLI install failed: {error}"))?;
         return Ok(());
     }
     Err("archive does not contain the chat2db binary".to_owned())
@@ -274,8 +273,11 @@ pub async fn cli_install(app: AppHandle) -> Result<CliInstallStatus, String> {
         return Err(error);
     }
     let _ = fs::remove_file(&archive_path);
-    fs::write(bin_directory.join(CLI_VERSION_FILE), format!("{PRODUCT_VERSION}\n"))
-        .map_err(|error| format!("CLI version record failed: {error}"))?;
+    fs::write(
+        bin_directory.join(CLI_VERSION_FILE),
+        format!("{PRODUCT_VERSION}\n"),
+    )
+    .map_err(|error| format!("CLI version record failed: {error}"))?;
     emit_progress(&app, "installed", 0, None);
     status_from_disk(&app)
 }
@@ -289,8 +291,7 @@ pub async fn cli_install(app: AppHandle) -> Result<CliInstallStatus, String> {
 pub async fn cli_uninstall(app: AppHandle) -> Result<CliInstallStatus, String> {
     let binary_path = cli_binary_path(&app)?;
     if binary_path.is_file() {
-        fs::remove_file(&binary_path)
-            .map_err(|error| format!("CLI removal failed: {error}"))?;
+        fs::remove_file(&binary_path).map_err(|error| format!("CLI removal failed: {error}"))?;
     }
     if let Ok(version_path) = cli_version_path(&app) {
         let _ = fs::remove_file(version_path);
