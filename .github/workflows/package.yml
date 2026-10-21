@@ -91,12 +91,16 @@ jobs:
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
       - name: Install pinned Tauri CLI
-        env:
-          TAURI_TARGET: ${{ matrix.arch == 'arm64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}
         run: |
-          curl -fsSL --retry 3 "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.8.4/cargo-tauri-${TAURI_TARGET}.zip" -o "${RUNNER_TEMP}/tauri-cli.zip"
-          unzip -q "${RUNNER_TEMP}/tauri-cli.zip" cargo-tauri -d "${RUNNER_TEMP}/tauri-cli"
-          install -m 755 "${RUNNER_TEMP}/tauri-cli/cargo-tauri" "${HOME}/.cargo/bin/cargo-tauri"
+          # The published x86_64-apple-darwin archive actually contains an arm64
+          # binary, so Intel runners keep building the CLI from source.
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            curl -fsSL --retry 3 "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.8.4/cargo-tauri-aarch64-apple-darwin.zip" -o "${RUNNER_TEMP}/tauri-cli.zip"
+            unzip -q "${RUNNER_TEMP}/tauri-cli.zip" cargo-tauri -d "${RUNNER_TEMP}/tauri-cli"
+            install -m 755 "${RUNNER_TEMP}/tauri-cli/cargo-tauri" "${HOME}/.cargo/bin/cargo-tauri"
+          else
+            cargo install tauri-cli --version 2.8.4 --locked
+          fi
           cargo tauri --version
       - name: Configure Developer ID signing and notarization
         env:
@@ -311,11 +315,10 @@ jobs:
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
       - name: Install pinned Tauri CLI
-        env:
-          TAURI_TARGET: ${{ matrix.arch == 'aarch64' && '' || 'x86_64-unknown-linux-gnu' }}
         run: |
-          if [ -n "${TAURI_TARGET}" ]; then
-            curl -fsSL --retry 3 "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.8.4/cargo-tauri-${TAURI_TARGET}.tgz" -o "${RUNNER_TEMP}/tauri-cli.tgz"
+          # No aarch64 Linux binary is published, so that runner builds from source.
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            curl -fsSL --retry 3 "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.8.4/cargo-tauri-x86_64-unknown-linux-gnu.tgz" -o "${RUNNER_TEMP}/tauri-cli.tgz"
             mkdir -p "${RUNNER_TEMP}/tauri-cli"
             tar -xzf "${RUNNER_TEMP}/tauri-cli.tgz" -C "${RUNNER_TEMP}/tauri-cli"
             install -m 755 "${RUNNER_TEMP}/tauri-cli/cargo-tauri" "${HOME}/.cargo/bin/cargo-tauri"
