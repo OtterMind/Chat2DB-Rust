@@ -113,6 +113,7 @@ jobs:
           name: Chat2DB-Rust-Desktop-${{ matrix.artifact_name }}-${{ github.sha }}
           path: |
             target/macos-package/*.zip
+            target/macos-package/*.zip.sha256
             target/macos-package/*.dmg
             target/macos-package/SHA256SUMS
             target/macos-package/BUILD-MANIFEST.txt
@@ -234,6 +235,8 @@ jobs:
           path: |
             target/windows-package/*.exe
             target/windows-package/*.msi
+            target/windows-package/chat2db-cli-*.zip
+            target/windows-package/chat2db-cli-*.zip.sha256
             target/windows-package/SHA256SUMS
             target/windows-package/BUILD-MANIFEST.txt
           if-no-files-found: error
@@ -321,6 +324,8 @@ jobs:
             target/linux-package/*.AppImage
             target/linux-package/*.deb
             target/linux-package/*.rpm
+            target/linux-package/chat2db-cli-*.zip
+            target/linux-package/chat2db-cli-*.zip.sha256
             target/linux-package/SHA256SUMS
             target/linux-package/BUILD-MANIFEST.txt
           if-no-files-found: error

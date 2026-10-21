@@ -164,5 +164,13 @@ fi
   } > BUILD-MANIFEST.txt
 )
 
+cli_zip_name="chat2db-cli-windows-x86_64.zip"
+pwsh -NoProfile -NonInteractive -Command \
+  "Compress-Archive -LiteralPath '$(cygpath -w "${cli_resource_directory}/chat2db.exe")' -DestinationPath '$(cygpath -w "${package_directory}/${cli_zip_name}")' -Force"
+(
+  cd "${package_directory}"
+  sha256sum -- "${cli_zip_name}" > "${cli_zip_name}.sha256"
+)
+
 echo "Built Windows installers at ${package_directory}"
 echo "Checksums: ${package_directory}/SHA256SUMS"

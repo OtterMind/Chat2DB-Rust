@@ -1,8 +1,9 @@
 import i18n from '@/i18n';
-import { ClipboardPen, Info, Keyboard, SlidersHorizontal } from 'lucide-react';
+import { ClipboardPen, Info, Keyboard, SlidersHorizontal, Terminal } from 'lucide-react';
 import { useEffect, useMemo } from 'react';
 import About from './About';
 import BaseSetting from './BaseSetting';
+import CommandLineSetting from './CommandLineSetting';
 import EditorSetting from './EditorSetting';
 import McpSetting from './McpSetting';
 import NetworkProxySetting from './NetworkProxySetting';
@@ -54,6 +55,14 @@ function CommunitySetting() {
               },
             ]
           : []),
+        {
+          title: i18n('setting.nav.commandLine'),
+          describe: i18n('setting.nav.commandLineDescribe'),
+          group: 'services' as const,
+          icon: Terminal,
+          body: <CommandLineSetting />,
+          code: 'commandLine',
+        },
         ...(runtimeEditionConfig.networkProxySetting
           ? [
               {

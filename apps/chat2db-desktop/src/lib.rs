@@ -3,6 +3,7 @@
 // Tauri serializes the stable ApiError value directly at every command boundary.
 #![allow(clippy::result_large_err)]
 
+mod cli_install;
 mod legacy_files;
 
 use std::{
@@ -501,6 +502,9 @@ pub fn run() -> Result<i32, DesktopError> {
             subscribe_operation,
             unsubscribe_operation,
             result_page,
+            cli_install::cli_status,
+            cli_install::cli_install,
+            cli_install::cli_uninstall,
         ])
         .build(tauri::generate_context!());
     let application = match application {

@@ -307,6 +307,22 @@ verification_directory=""
   cd "${package_directory}"
   shasum -a 256 -- "$(basename "${zip_path}")" "$(basename "${dmg_path}")" > SHA256SUMS
 )
+
+case "${artifact_arch}" in
+  arm64) cli_platform="macos-arm64" ;;
+  x86_64) cli_platform="macos-x64" ;;
+  *)
+    echo "unsupported macOS CLI architecture: ${artifact_arch}" >&2
+    exit 1
+    ;;
+esac
+cli_zip_name="chat2db-cli-${cli_platform}.zip"
+(
+  cd "${cli_resource_directory}"
+  zip -q "${package_directory}/${cli_zip_name}" chat2db
+  cd "${package_directory}"
+  shasum -a 256 -- "${cli_zip_name}" > "${cli_zip_name}.sha256"
+)
 git_commit="$(git -C "${repository_root}" rev-parse HEAD)"
 community_commit="$(git -C "${repository_root}/third_party/chat2db-community" rev-parse HEAD)"
 app_kib="$(du -sk "${app_path}" | awk '{ print $1 }')"
