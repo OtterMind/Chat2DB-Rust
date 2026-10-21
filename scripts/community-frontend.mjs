@@ -19,7 +19,7 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = resolve(SCRIPT_DIR, '..');
 const LOCK_PATH = join(SCRIPT_DIR, 'community-frontend.lock.json');
 const lock = JSON.parse(readFileSync(LOCK_PATH, 'utf8'));
-const SUBMODULE_DIR = join(ROOT_DIR, lock.submodulePath);
+const SOURCE_DIR = join(ROOT_DIR, 'apps', 'community-client');
 const TARGET_ROOT = join(
   ROOT_DIR,
   'target',
@@ -91,63 +91,18 @@ function replaceDirectory(target) {
 }
 
 function verifySource() {
-  if (!existsSync(join(SUBMODULE_DIR, '.git'))) {
-    fail(`submodule is unavailable; run git submodule update --init --recursive ${lock.submodulePath}`);
+  if (!existsSync(join(SOURCE_DIR, 'package.json'))) {
+    fail('vendored community client is missing at apps/community-client');
   }
-
-  const indexedSubmodule = capture('git', ['ls-files', '--stage', '--', lock.submodulePath]);
-  const expectedIndex = `160000 ${lock.commit} 0\t${lock.submodulePath}`;
-  if (indexedSubmodule !== expectedIndex) {
-    fail(`repository index must pin ${lock.submodulePath} at ${lock.commit}`);
-  }
-
-  const commit = capture('git', ['rev-parse', 'HEAD'], SUBMODULE_DIR);
-  if (commit !== lock.commit) {
-    fail(`submodule HEAD is ${commit}; expected ${lock.commit}`);
-  }
-
-  const tree = capture('git', ['rev-parse', `${lock.commit}:${lock.sourcePath}`], SUBMODULE_DIR);
-  if (tree !== lock.tree) {
-    fail(`source tree is ${tree}; expected byte-level tree ${lock.tree}`);
-  }
-
-  const status = capture(
-    'git',
-    ['status', '--porcelain=v1', '--untracked-files=all'],
-    SUBMODULE_DIR,
-  );
-  if (status !== '') {
-    fail(`submodule worktree is not clean:\n${status}`);
-  }
-
-  return { commit, tree };
+  return { commit: lock.commit, tree: lock.tree };
 }
 
 function exportSource(destination) {
   replaceDirectory(destination);
-  mkdirSync(VERSION_ROOT, { recursive: true });
-  const archiveName = `source-${process.pid}.tar`;
-  const archivePath = join(VERSION_ROOT, archiveName);
-  const archiveOutput = relative(SUBMODULE_DIR, archivePath).split(sep).join('/');
-  rmSync(archivePath, { force: true });
-  run(
-    'git',
-    [
-      '-C',
-      SUBMODULE_DIR,
-      'archive',
-      '--format=tar',
-      `--output=${archiveOutput}`,
-      lock.commit,
-      lock.sourcePath,
-    ],
-    { cwd: VERSION_ROOT },
-  );
-  const destinationPath = relative(VERSION_ROOT, destination).split(sep).join('/');
-  run('tar', ['-xf', archiveName, '--strip-components=1', '-C', destinationPath], {
-    cwd: VERSION_ROOT,
+  cpSync(SOURCE_DIR, destination, {
+    recursive: true,
+    filter: (src) => !/[\\/](node_modules|dist|\.umi|\.umi-production)([\\/]|$)/.test(src),
   });
-  rmSync(archivePath, { force: true });
 }
 
 function runYarn(args, cwd, env = {}) {
@@ -268,7 +223,7 @@ verifySource();
 switch (command) {
   case 'verify':
     console.log(
-      `community frontend: verified ${lock.repository}@${lock.commit}:${lock.sourcePath} (${lock.tree})`,
+      `community frontend: using vendored source apps/community-client (synced from ${lock.repository}@${lock.commit})`,
     );
     break;
   case 'test':

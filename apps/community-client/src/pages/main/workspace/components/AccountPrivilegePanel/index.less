@@ -1,0 +1,133 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-bg-base);
+}
+
+.alert {
+  margin: 10px 16px 0;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  padding: 14px 16px 16px;
+  box-sizing: border-box;
+  overflow: auto;
+}
+
+.accountActions {
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.editorPane {
+  min-height: 0;
+  padding: 14px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+
+.privilegeForm {
+  display: block;
+  flex: none;
+
+  :global {
+    .ant-form-item {
+      margin-bottom: 14px;
+    }
+
+    .ant-form-item-label {
+      padding-bottom: 6px;
+    }
+
+    .ant-form-item-label > label {
+      color: var(--color-text-secondary);
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 20px;
+    }
+  }
+}
+
+.privilegeSelect {
+  width: 100%;
+}
+
+.accountForm {
+  margin-top: 12px;
+}
+
+.previewSection {
+  min-height: 0;
+  margin-top: 2px;
+}
+
+.previewHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 22px;
+  margin-bottom: 10px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sqlPreview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 280px;
+  overflow: auto;
+  padding: 12px;
+  background: var(--color-fill-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+
+  :global {
+    pre,
+    code {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+  }
+}
+
+.submitButton {
+  flex: none;
+  margin-top: 12px;
+  transition: none !important;
+  box-shadow: none !important;
+
+  &:global(.ant-btn-primary:not(:disabled)),
+  &:global(.ant-btn-primary:not(:disabled)):hover,
+  &:global(.ant-btn-primary:not(:disabled)):focus,
+  &:global(.ant-btn-primary:not(:disabled)):focus-visible,
+  &:global(.ant-btn-primary:not(:disabled)):active {
+    color: var(--account-submit-color) !important;
+    background: var(--account-submit-bg) !important;
+    border-color: var(--account-submit-bg) !important;
+    box-shadow: none !important;
+    outline: none !important;
+    transition: none !important;
+  }
+}
+
+@media (max-width: 1200px) {
+  .accountActions {
+    justify-content: flex-start;
+  }
+}

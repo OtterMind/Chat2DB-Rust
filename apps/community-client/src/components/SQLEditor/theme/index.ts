@@ -1,0 +1,11 @@
+export { default as Chat2DBLightTheme } from './Chat2DB Light.json';
+export { default as Chat2DBDarkTheme } from './Chat2DB Dark.json';
+export { default as OneDarkTheme } from './One Dark.json';
+export { default as GithubLightTheme } from './GitHub Light.json';
+export { default as GithubDarkTheme } from './GitHub Dark.json';
+export { default as DraculaTheme } from './Dracula.json';
+export { default as MonokaiTheme } from './Monokai.json';
+export { default as MonokaiBrightTheme } from './Monokai Bright.json';
+export { default as SolarizedLightTheme } from './Solarized-light.json';
+export { default as SolarizedDarkTheme } from './Solarized-dark.json';
+export { default as XcodeTheme } from './Xcode_default.json';

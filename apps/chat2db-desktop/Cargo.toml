@@ -23,8 +23,11 @@ chat2db-local = { path = "../../crates/chat2db-local" }
 chat2db-runtime = { path = "../../crates/chat2db-runtime" }
 chat2db-web = { path = "../chat2db-web" }
 encoding_rs = "0.8.35"
+futures-util.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tauri = { workspace = true, features = ["wry"] }
 tauri-runtime = "=2.9.2"
 tauri-plugin-dialog.workspace = true
@@ -33,6 +36,7 @@ tokio.workspace = true
 tracing.workspace = true
 trash = "5.2.6"
 uuid.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

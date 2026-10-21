@@ -1,0 +1,50 @@
+[
+  {
+    "region": "Western Europe",
+    "subregions": ["Western Europe"]
+  },
+  {
+    "region": "Eastern Europe",
+    "subregions": ["Eastern Europe"]
+  },
+  {
+    "region": "Northern Europe",
+    "subregions": ["Northern Europe"]
+  },
+  {
+    "region": "Southern Europe",
+    "subregions": ["Southern Europe"]
+  },
+  {
+    "region": "Central Europe",
+    "subregions": ["Central Europe"]
+  },
+  {
+    "region": "Southeast Asia",
+    "subregions": ["Southeast Asia"]
+  },
+  {
+    "region": "South Asia",
+    "subregions": ["South Asia"]
+  },
+  {
+    "region": "East Asia",
+    "subregions": ["East Asia"]
+  },
+  {
+    "region": "Middle East",
+    "subregions": ["Middle East"]
+  },
+  {
+    "region": "Africa",
+    "subregions": ["Africa"]
+  },
+  {
+    "region": "Americas",
+    "subregions": ["Americas"]
+  },
+  {
+    "region": "Oceania",
+    "subregions": ["Oceania"]
+  }
+]

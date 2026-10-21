@@ -961,8 +961,11 @@ dependencies = [
  "chat2db-runtime",
  "chat2db-web",
  "encoding_rs",
+ "futures-util",
+ "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -973,6 +976,7 @@ dependencies = [
  "tracing",
  "trash",
  "uuid",
+ "zip",
 ]
 
 [[package]]

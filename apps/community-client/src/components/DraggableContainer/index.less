@@ -1,0 +1,53 @@
+// @import '../../var.less';
+
+.box {
+  display: flex;
+
+  .divider {
+    width: 0;
+    position: relative;
+  }
+
+  .dividerCenter {
+    position: absolute;
+    width: 6px;
+    top: 0;
+    bottom: 0;
+    z-index: 100;
+    transform: translateX(-50%);
+
+    &:hover {
+      background-color: var(--color-primary-bg);
+      cursor: col-resize;
+    }
+  }
+}
+
+.box.boxColumn {
+  height: 100%;
+  flex-direction: column;
+
+  .divider {
+    height: 0;
+    width: 100%;
+    position: relative;
+  }
+
+  .dividerCenter {
+    height: 6px;
+    width: auto;
+    top: 0;
+    right: 0;
+    left: 0;
+    z-index: 100;
+    transform: translateY(-50%);
+
+    &:hover {
+      cursor: row-resize;
+    }
+  }
+}
+
+.displayDivider {
+  display: none;
+}

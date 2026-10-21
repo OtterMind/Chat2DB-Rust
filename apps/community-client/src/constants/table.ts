@@ -1,0 +1,19 @@
+export enum TableDataType {
+  NUMERIC = 'NUMERIC',
+  STRING = 'STRING',
+  DATETIME = 'DATETIME',
+  // 
+  BOOLEAN = 'BOOLEAN',
+  // Not suitable for the moment
+  BINARY = 'BINARY',
+  CONTENT = 'CONTENT',
+  STRUCT = 'STRUCT',
+  DOCUMENT = 'DOCUMENT',
+  ARRAY = 'ARRAY',
+  OBJECT = 'OBJECT',
+  REFERENCE = 'REFERENCE',
+  ROWID = 'ROWID',
+  ANY = 'ANY',
+  UNKNOWN = 'UNKNOWN',
+  CHAT2DB_ROW_NUMBER = 'CHAT2DB_ROW_NUMBER',
+}

@@ -1,0 +1,313 @@
+.leftBorder {
+  border-left: 1px solid yellow;
+}
+
+.rightBorder {
+  border-right: 1px solid yellow;
+}
+
+.topBorder {
+  border-top: 1px solid yellow;
+}
+
+.bottomBorder {
+  border-bottom: 1px solid yellow;
+}
+
+.myCodeBlockOutlineTop {
+  border-top: 1px solid yellow;
+  z-index: 10;
+}
+
+.myCodeBlockOutlineBottom {
+  border-bottom: 1px solid yellow;
+  z-index: 10;
+}
+
+.myCodeBlockOutlineLeft {
+  // content: '';
+  // position: absolute;
+  // top: 0;
+  // right: 0;
+  // bottom: 0;
+  border-left: 1px solid yellow;
+}
+
+.myCodeBlockOutlineRight {
+  border-right: 1px solid yellow;
+
+  // content: '';
+  // position: absolute;
+  // top: 0;
+  // right: 0;
+  // bottom: 0;
+  // width: 1px;
+  // background-color: yellow;
+}
+
+.myCodeBlockOutlineVertical {
+  border-right: 1px solid #007acc;
+}
+
+.execute-button-glyph {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  // background-color: currentColor;
+  background-image: url('@/assets/img/play.svg');
+  background-size: contain;
+  background-position: center;
+  background-repeat: no-repeat;
+  transition: transform 0.2s ease-in-out;
+}
+
+.execute-button-glyph:hover {
+  transform: scale(1.2);
+}
+
+.execute-button-glyph:active {
+  transform: scale(1);
+}
+
+.insert-value-highlight {
+  background-color: rgb(255 193 7 / 28%);
+}
+
+.sql-value-type-hint {
+  color: var(--color-text-tertiary);
+  font-style: italic;
+  opacity: 0.55;
+}
+
+.parameter-hint-widget {
+  max-width: min(960px, calc(100vw - 96px));
+  padding: 2px 6px 4px;
+  overflow: auto hidden;
+  color: rgb(226 232 240 / 72%);
+  white-space: nowrap;
+  background: rgb(37 41 48 / 72%);
+  border: 1px solid rgb(148 163 184 / 18%);
+  border-radius: 4px;
+  box-shadow: 0 3px 10px rgb(0 0 0 / 14%);
+  font-size: 12px;
+  line-height: 18px;
+  scrollbar-width: thin;
+  overscroll-behavior-x: contain;
+  backdrop-filter: blur(2px);
+}
+
+.parameter-hint-item {
+  display: inline-block;
+  vertical-align: top;
+}
+
+.parameter-hint-item.active {
+  color: #2d2410;
+  background: rgb(246 211 101 / 86%);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+.parameter-hint-separator {
+  color: rgb(226 232 240 / 32%);
+}
+
+.table-identifier-underline {
+  border-bottom: 1px dashed rgb(64 158 255 / 80%);
+  cursor: pointer;
+}
+
+.monaco-editor .margin {
+  border-right: 1px solid rgb(148 163 184 / 26%);
+}
+
+.content-diff-active .margin-view-overlays .folding,
+.content-diff-active .margin-view-overlays .codicon-folding-collapsed,
+.content-diff-active .margin-view-overlays .codicon-folding-expanded,
+.content-diff-active .margin-view-overlays .codicon-folding-manual-collapsed,
+.content-diff-active .margin-view-overlays .codicon-folding-manual-expanded {
+  display: none !important;
+}
+
+.content-diff-gutter-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.content-diff-gutter-marker {
+  position: absolute;
+  width: 6px;
+  min-height: 6px;
+  padding: 0;
+  pointer-events: auto;
+  border: 0;
+  border-radius: 3px;
+}
+
+.content-diff-gutter-marker-added {
+  cursor: default;
+  pointer-events: none;
+  background: #3fb950;
+}
+
+.content-diff-gutter-marker-modified {
+  cursor: pointer;
+  background: #d29922;
+}
+
+.content-diff-gutter-marker-deleted {
+  cursor: pointer;
+  background: #f85149;
+}
+
+.content-diff-inline-viewer {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: visible;
+}
+
+.content-diff-inline-panel {
+  display: flex;
+  max-width: calc(100% - 24px);
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: #252b34;
+  border: 1px solid rgb(148 163 184 / 20%);
+  border-radius: 4px;
+}
+
+.content-diff-inline-toolbar {
+  display: flex;
+  height: 28px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 0 8px;
+  background: #1d222b;
+  border-bottom: 1px solid rgb(148 163 184 / 16%);
+}
+
+.content-diff-inline-action,
+.content-diff-inline-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: rgb(229 231 235 / 76%);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  line-height: 22px;
+}
+
+.content-diff-inline-action-icon {
+  width: 16px;
+  height: 16px;
+  fill: currentcolor;
+}
+
+.content-diff-inline-action-icon-lucide {
+  fill: none;
+  stroke: currentcolor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.content-diff-inline-action:hover,
+.content-diff-inline-close:hover {
+  color: #fff;
+  background: rgb(148 163 184 / 16%);
+}
+
+.content-diff-inline-action:disabled {
+  color: rgb(229 231 235 / 28%);
+  cursor: default;
+  background: transparent;
+}
+
+.content-diff-inline-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0;
+  font-family: 'JetBrains Mono', SFMono-Regular, Consolas, monospace;
+  font-size: inherit;
+}
+
+.content-diff-inline-row {
+  display: flex;
+  min-width: 100%;
+  align-items: center;
+  white-space: pre;
+}
+
+.content-diff-inline-row-deleted {
+  color: rgb(255 202 202 / 96%);
+  background: rgb(248 81 73 / 18%);
+}
+
+.content-diff-inline-row-added {
+  color: rgb(203 244 201 / 96%);
+  background: rgb(63 185 80 / 18%);
+}
+
+.content-diff-inline-sign {
+  flex: 0 0 28px;
+  text-align: center;
+  user-select: none;
+}
+
+.content-diff-inline-row-deleted .content-diff-inline-sign {
+  color: #ff7b72;
+}
+
+.content-diff-inline-row-added .content-diff-inline-sign {
+  color: #7ee787;
+}
+
+.content-diff-inline-code {
+  flex: 0 0 auto;
+  padding-right: 16px;
+}
+
+.monaco-editor {
+  .mtk21 {
+    color: #6aab73 !important; /* Set the color to green. */
+  }
+
+  .mtk4 {
+    color: #34b149 !important; /* Set the color to green. */
+  }
+}
+
+body.chat2db-backend-completion {
+  .monaco-editor .suggest-widget .monaco-list {
+    width: 100% !important;
+  }
+
+  .monaco-editor .suggest-widget .monaco-list .monaco-list-row .contents {
+    width: 100%;
+  }
+
+  .monaco-editor .suggest-widget .monaco-list .monaco-list-row > .contents > .main {
+    width: 100%;
+  }
+
+  .monaco-editor .suggest-widget .monaco-list .monaco-list-row > .contents > .main > .left {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}

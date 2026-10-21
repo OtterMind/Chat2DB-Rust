@@ -1,0 +1,17 @@
+{
+  "source": {
+    "repositoryPath": "Chat2DB-Enterprise",
+    "branch": "main",
+    "commit": "dcc81b585d56653c99c72faf783d9a4a4351790f",
+    "clientPath": "chat2db-client"
+  },
+  "target": {
+    "branch": "community-migration",
+    "clientPath": "chat2db-community-client"
+  },
+  "policy": {
+    "mainIsDonorOnly": true,
+    "businessSourceRoot": "chat2db-community-client/src",
+    "preserveCommunityProductization": true
+  }
+}

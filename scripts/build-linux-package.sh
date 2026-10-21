@@ -131,4 +131,20 @@ cp -- "${appimage_artifacts[0]}" "${deb_artifacts[0]}" "${rpm_artifacts[0]}" "${
   } > BUILD-MANIFEST.txt
 )
 
+case "$(uname -m)" in
+  x86_64) cli_platform="linux-x86_64" ;;
+  aarch64) cli_platform="linux-arm64" ;;
+  *)
+    echo "unsupported Linux CLI architecture: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+cli_zip_name="chat2db-cli-${cli_platform}.zip"
+(
+  cd "${cli_resource_directory}"
+  python3 -m zipfile -c "${package_directory}/${cli_zip_name}" chat2db
+  cd "${package_directory}"
+  sha256sum -- "${cli_zip_name}" > "${cli_zip_name}.sha256"
+)
+
 echo "Built Linux packages at ${package_directory}"

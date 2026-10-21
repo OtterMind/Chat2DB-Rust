@@ -1,0 +1,21 @@
+{
+  "base": "vs",
+  "inherit": true,
+  "rules": [
+    { "token": "keyword", "foreground": "0000FF", "fontStyle": "bold" },
+    { "token": "string", "foreground": "50a14f" },
+    { "token": "string.sql", "foreground": "50a14f" },
+    { "token": "identifier", "foreground": "001080" },
+    { "token": "number", "foreground": "098658" },
+    { "token": "comment", "foreground": "008000" }
+  ],
+  "colors": {
+    "editor.foreground": "#000000",
+    "editor.background": "#FFFFFF",
+    "editorCursor.foreground": "#000000",
+    "editor.lineHighlightBackground": "#F0F0F0",
+    "editorLineNumber.foreground": "#999999",
+    "editor.selectionBackground": "#ADD6FF",
+    "editorIndentGuide.background": "#D3D3D3"
+  }
+}
