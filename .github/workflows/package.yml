@@ -91,7 +91,13 @@ jobs:
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
       - name: Install pinned Tauri CLI
-        run: cargo install tauri-cli --version 2.8.4 --locked
+        env:
+          TAURI_TARGET: ${{ matrix.arch == 'arm64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}
+        run: |
+          curl -fsSL --retry 3 "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.8.4/cargo-tauri-${TAURI_TARGET}.zip" -o "${RUNNER_TEMP}/tauri-cli.zip"
+          unzip -q "${RUNNER_TEMP}/tauri-cli.zip" cargo-tauri -d "${RUNNER_TEMP}/tauri-cli"
+          install -m 755 "${RUNNER_TEMP}/tauri-cli/cargo-tauri" "${HOME}/.cargo/bin/cargo-tauri"
+          cargo tauri --version
       - name: Configure Developer ID signing and notarization
         env:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -165,7 +171,13 @@ jobs:
           cache-dependency-path: apps/frontend/package-lock.json
       - name: Install pinned Tauri CLI
         shell: pwsh
-        run: cargo install tauri-cli --version 2.8.4 --locked
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'tauri-cli.zip'
+          Invoke-WebRequest -Uri 'https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.8.4/cargo-tauri-x86_64-pc-windows-msvc.zip' -OutFile $archive
+          $extracted = Join-Path $env:RUNNER_TEMP 'tauri-cli'
+          Expand-Archive -Path $archive -DestinationPath $extracted -Force
+          Copy-Item (Join-Path $extracted 'cargo-tauri.exe') (Join-Path $env:CARGO_HOME 'bin/cargo-tauri.exe') -Force
+          cargo tauri --version
       - name: Package Java compatibility engine
         working-directory: java
         shell: pwsh
@@ -299,7 +311,18 @@ jobs:
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
       - name: Install pinned Tauri CLI
-        run: cargo install tauri-cli --version 2.8.4 --locked
+        env:
+          TAURI_TARGET: ${{ matrix.arch == 'aarch64' && '' || 'x86_64-unknown-linux-gnu' }}
+        run: |
+          if [ -n "${TAURI_TARGET}" ]; then
+            curl -fsSL --retry 3 "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.8.4/cargo-tauri-${TAURI_TARGET}.tgz" -o "${RUNNER_TEMP}/tauri-cli.tgz"
+            mkdir -p "${RUNNER_TEMP}/tauri-cli"
+            tar -xzf "${RUNNER_TEMP}/tauri-cli.tgz" -C "${RUNNER_TEMP}/tauri-cli"
+            install -m 755 "${RUNNER_TEMP}/tauri-cli/cargo-tauri" "${HOME}/.cargo/bin/cargo-tauri"
+          else
+            cargo install tauri-cli --version 2.8.4 --locked
+          fi
+          cargo tauri --version
       - name: Package Java compatibility engine
         working-directory: java
         run: ./mvnw -B -DskipTests package
