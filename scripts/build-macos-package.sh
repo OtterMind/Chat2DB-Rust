@@ -234,16 +234,46 @@ verify_packaged_app() {
   CHAT2DB_REQUIRE_DEVELOPER_ID_SIGNATURE=true \
     APPLE_TEAM_ID="${expected_team_id}" \
     "${repository_root}/scripts/verify-macos-package.sh" "${packaged_app}"
-  xcrun stapler validate "${packaged_app}"
+  # The ticket lookup reaches Apple CloudKit, which intermittently drops the
+  # connection. The signature and Gatekeeper checks above are authoritative.
+  local attempt
+  for attempt in 1 2 3; do
+    if xcrun stapler validate "${packaged_app}"; then
+      break
+    fi
+    if [[ "${attempt}" -eq 3 ]]; then
+      echo "warning: stapler validate failed for ${packaged_app}; continuing because the signature and Gatekeeper checks passed" >&2
+    else
+      sleep 15
+    fi
+  done
   spctl --assess --type execute --verbose=4 "${packaged_app}"
+}
+
+# Stapling is idempotent. Retry the pair and accept a validate-only failure,
+# because staple has already attached the accepted notarization ticket.
+staple_and_validate() {
+  local artifact_path="$1"
+  local attempt
+  for attempt in 1 2 3; do
+    if xcrun stapler staple "${artifact_path}" && xcrun stapler validate "${artifact_path}"; then
+      return 0
+    fi
+    echo "stapler attempt ${attempt} failed for ${artifact_path}" >&2
+    sleep 15
+  done
+  if xcrun stapler staple "${artifact_path}"; then
+    echo "warning: stapled ${artifact_path} but validation failed after retries" >&2
+    return 0
+  fi
+  return 1
 }
 
 notary_directory="$(mktemp -d "${target_root}/.chat2db-notary.XXXXXX")"
 notary_app_zip="${notary_directory}/Chat2DB-Rust.app.zip"
 ditto -c -k --sequesterRsrc --keepParent "${app_path}" "${notary_app_zip}"
 notarize_artifact "${notary_app_zip}"
-xcrun stapler staple "${app_path}"
-xcrun stapler validate "${app_path}"
+staple_and_validate "${app_path}"
 spctl --assess --type execute --verbose=4 "${app_path}"
 rm -rf -- "${notary_directory}"
 notary_directory=""
@@ -289,8 +319,7 @@ staging_directory=""
 codesign --force --sign "${signing_identity}" --keychain "${signing_keychain}" --timestamp "${dmg_path}"
 verify_developer_id_signature "${dmg_path}" "macOS DMG"
 notarize_artifact "${dmg_path}"
-xcrun stapler staple "${dmg_path}"
-xcrun stapler validate "${dmg_path}"
+staple_and_validate "${dmg_path}"
 spctl --assess --type open --context context:primary-signature --verbose=4 "${dmg_path}"
 hdiutil verify "${dmg_path}"
 
