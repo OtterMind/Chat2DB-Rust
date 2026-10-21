@@ -1,0 +1,31 @@
+
+[
+  {
+    "value": "CEO",
+    "label": "CEO"
+  },
+  {
+    "value": "CTO",
+    "label": "CTO"
+  },
+  {
+    "value": "CIO",
+    "label": "CIO"
+  },
+  {
+    "value": "后端开发",
+    "label": "Backend Developer"
+  },
+  {
+    "value": "数据工程师",
+    "label": "Data Engineer"
+  },
+  {
+    "value": "运营人员",
+    "label": "Operations"
+  },
+  {
+    "value": "产品经理",
+    "label": "Product Manager"
+  }
+]

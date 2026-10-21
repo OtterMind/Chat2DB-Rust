@@ -1,0 +1,11 @@
+import { createStyles } from 'antd-style';
+
+export const useStyles = createStyles(({ css }) => {
+  return {
+    container: css`
+    `,
+    sqlEditor: css`
+      height: 300px;
+    `,
+  };
+});

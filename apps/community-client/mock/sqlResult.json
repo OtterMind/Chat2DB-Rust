@@ -1,0 +1,169 @@
+{
+  "success": true,
+  "errorCode": null,
+  "errorMessage": null,
+  "data": [
+    {
+      "sql": "SELECT *\nFROM students\nLIMIT 500",
+      "description": "Executed successfully",
+      "message": null,
+      "success": true,
+      "headerList": [
+        {
+          "dataType": "NUMERIC",
+          "name": "id"
+        },
+        {
+          "dataType": "STRING",
+          "name": "name"
+        },
+        {
+          "dataType": "STRING",
+          "name": "gender"
+        },
+        {
+          "dataType": "DATETIME",
+          "name": "birthday"
+        },
+        {
+          "dataType": "STRING",
+          "name": "address"
+        },
+        {
+          "dataType": "STRING",
+          "name": "phone"
+        },
+        {
+          "dataType": "STRING",
+          "name": "email"
+        },
+        {
+          "dataType": "DATETIME",
+          "name": "create_time"
+        },
+        {
+          "dataType": "DATETIME",
+          "name": "update_time"
+        }
+      ],
+      "dataList": [
+        [
+          "1",
+          "Alice",
+          "Male",
+          null,
+          "Haidian District, Beijing",
+          "12345678901",
+          "zhangsan@example.com",
+          "2023-05-31 10:41:56.000",
+          "2023-05-31 10:41:56.000"
+        ],
+        [
+          "2",
+          "Bob",
+          "Male",
+          null,
+          "Pudong New Area, Shanghai",
+          "12345678902",
+          "lisi@example.com",
+          "2023-05-31 10:41:56.000",
+          "2023-05-31 10:41:56.000"
+        ],
+        [
+          "3",
+          "Charlie",
+          "Female",
+          null,
+          "Tianhe District, Guangzhou",
+          "12345678903",
+          "wangwu@example.com",
+          "2023-05-31 10:41:56.000",
+          "2023-05-31 10:41:56.000"
+        ],
+        [
+          "4",
+          "David",
+          "Male",
+          null,
+          "Nanshan District, Shenzhen",
+          "12345678904",
+          "zhaoliu@example.com",
+          "2023-05-31 10:41:56.000",
+          "2023-05-31 10:41:56.000"
+        ],
+        [
+          "5",
+          "Emma",
+          "Female",
+          null,
+          "Jianghan District, Wuhan",
+          "12345678905",
+          "chenqi@example.com",
+          "2023-05-31 10:41:56.000",
+          "2023-05-31 10:41:56.000"
+        ],
+        [
+          "6",
+          "Frank",
+          "Male",
+          null,
+          "High-tech Zone, Chengdu",
+          "12345678906",
+          "liuba@example.com",
+          "2023-05-31 10:41:56.000",
+          "2023-05-31 10:41:56.000"
+        ],
+        [
+          "7",
+          "Grace",
+          "Female",
+          null,
+          "Yubei District, Chongqing",
+          "12345678907",
+          "weijiu@example.com",
+          "2023-05-31 10:41:56.000",
+          "2023-05-31 10:41:56.000"
+        ],
+        [
+          "8",
+          "Henry",
+          "Male",
+          null,
+          "Gulou District, Nanjing",
+          "12345678908",
+          "sunshi@example.com",
+          "2023-05-31 10:41:56.000",
+          "2023-05-31 10:41:56.000"
+        ],
+        [
+          "9",
+          "Ivy",
+          "Male",
+          null,
+          "Yanta District, Xi'an",
+          "12345678909",
+          "zhengshiyi@example.com",
+          "2023-05-31 10:41:56.000",
+          "2023-05-31 10:41:56.000"
+        ],
+        [
+          "10",
+          "Jack",
+          "Female",
+          null,
+          "Gusu District, Suzhou",
+          "12345678910",
+          "xushier@example.com",
+          "2023-05-31 10:41:56.000",
+          "2023-05-31 10:41:56.000"
+        ]
+      ],
+      "sqlType": "SELECT",
+      "hasNextPage": false,
+      "pageNo": 1,
+      "pageSize": 500,
+      "duration": 6
+    }
+  ],
+  "traceId": null
+}

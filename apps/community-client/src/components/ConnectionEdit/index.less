@@ -1,0 +1,167 @@
+@import '../../styles/var.less';
+
+.connectionBox {
+  width: 100%;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.form {
+  :global {
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+
+    .ant-form-item-label {
+      width: var(--form-label-width);
+    }
+  }
+}
+
+.labelTextAlign {
+  :global {
+    .custom-form-item {
+      > div > div:nth-of-type(1) {
+        text-align: right;
+      }
+    }
+  }
+}
+
+.extendInfoBox .form {
+  :global {
+    .custom-form-item {
+      > div > div:nth-of-type(1) {
+        width: 200px;
+      }
+    }
+  }
+}
+
+.formBody {
+  flex: 1;
+  overflow-y: scroll;
+  padding-right: 10px;
+}
+
+.formFooter {
+  flex-shrink: 0;
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  padding-top: 20px;
+
+  .cancel {
+    .f-button();
+  }
+
+  .save {
+    margin-left: 20px;
+  }
+
+  .rightButton {
+    display: flex;
+  }
+
+  .test,
+  .save,
+  .cancel {
+    .f-button();
+  }
+}
+
+.tabsBox {
+  margin-bottom: 20px;
+}
+
+.testSSHConnect {
+  margin: 10px 0;
+  display: flex;
+  align-items: center;
+
+  i {
+    margin-right: 10px;
+    color: var(--success-color);
+  }
+
+  .testSSHConnectText {
+    margin-left: 4px;
+    font-size: 12px;
+    color: var(--color-primary);
+    cursor: pointer;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+}
+
+.extendTable {
+  max-height: 300px;
+  overflow-y: auto;
+
+  input {
+    border: 0;
+  }
+
+  :global {
+    .custom-input[disabled],
+    .custom-input-disabled {
+      background-color: transparent;
+    }
+
+    .custom-table-tbody > tr.custom-table-row:hover > td {
+      background-color: transparent;
+    }
+
+    .custom-input {
+      padding: 0;
+    }
+
+    .custom-input:focus {
+      border: 0;
+      box-shadow: none;
+    }
+
+    thead .custom-table-cell {
+      box-sizing: content-box;
+      height: 28px;
+    }
+  }
+}
+
+.optionItem {
+  display: flex;
+  align-items: center;
+}
+
+.envTag {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--color-primary);
+  margin-right: 8px;
+}
+
+.filePathInputBox {
+  display: flex;
+  width: 100%;
+}
+
+.filePathInput {
+  flex: 1;
+}
+
+.filePathSelectButton {
+  flex-shrink: 0;
+  min-width: 96px;
+  margin-left: -1px;
+}
+
+.hiddenFileInput {
+  display: none !important;
+}

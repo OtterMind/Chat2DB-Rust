@@ -1,0 +1,42 @@
+[
+  {
+    "value": "科技",
+    "label": "Technology"
+  },
+  {
+    "value": "金融",
+    "label": "Finance"
+  },
+  {
+    "value": "医疗",
+    "label": "Healthcare"
+  },
+  {
+    "value": "教育",
+    "label": "Education"
+  },
+  {
+    "value": "制造",
+    "label": "Manufacturing"
+  },
+  {
+    "value": "零售",
+    "label": "Retail"
+  },
+  {
+    "value": "运输",
+    "label": "Transportation"
+  },
+  {
+    "value": "建筑",
+    "label": "Construction"
+  },
+  {
+    "value": "能源",
+    "label": "Energy"
+  },
+  {
+    "value": "农业",
+    "label": "Agriculture"
+  }
+]

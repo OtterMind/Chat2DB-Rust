@@ -1,0 +1,14 @@
+{
+  "extends": ["stylelint-config-standard-less"],
+  "rules": {
+    "media-feature-range-notation": "prefix",
+    "keyframes-name-pattern": [
+      "^[A-Za-z][A-Za-z0-9-]*$",
+      { "message": "Expected keyframe name to use camelCase or kebab-case" }
+    ],
+    "selector-class-pattern": [
+      "^[A-Za-z][A-Za-z0-9-]*$",
+      { "message": "Expected class selector to use camelCase or kebab-case" }
+    ]
+  }
+}
