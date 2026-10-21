@@ -309,7 +309,7 @@ verification_directory=""
 )
 
 case "${artifact_arch}" in
-  arm64) cli_platform="macos-arm64" ;;
+  arm64|aarch64) cli_platform="macos-arm64" ;;
   x86_64) cli_platform="macos-x64" ;;
   *)
     echo "unsupported macOS CLI architecture: ${artifact_arch}" >&2
