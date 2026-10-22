@@ -158,7 +158,6 @@ fi
     echo "rust_toolchain=${rust_toolchain}"
     echo "tauri_cli=$(cargo tauri --version)"
     echo "code_signing=${code_signing}"
-    echo "embedded_cli=chat2db/bin/chat2db.exe"
     echo "nsis=$(basename "${nsis_artifacts[0]}")"
     echo "msi=$(basename "${msi_artifacts[0]}")"
   } > BUILD-MANIFEST.txt

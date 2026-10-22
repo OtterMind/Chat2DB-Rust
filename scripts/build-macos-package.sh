@@ -372,7 +372,6 @@ signing_authority=${signing_authority}
 signing_team_id=${signing_team_id}
 notarization_status=${notarization_status}
 distribution_status=${distribution_status}
-embedded_cli=chat2db/bin/chat2db
 EOF
 
 echo "Built self-contained macOS app: ${app_path}"

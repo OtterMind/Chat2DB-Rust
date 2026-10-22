@@ -35,9 +35,26 @@ struct CliInstallProgress {
     total_bytes: Option<u64>,
 }
 
-fn cli_binary_name() -> &'static str {
+/// Name of the CLI executable inside the published release archive.
+fn cli_archive_binary_name() -> &'static str {
     if cfg!(windows) {
         "chat2db.exe"
+    } else {
+        "chat2db"
+    }
+}
+
+fn cli_executable_name() -> &'static str {
+    if cfg!(windows) {
+        "chat2db-bin.exe"
+    } else {
+        "chat2db-bin"
+    }
+}
+
+fn cli_launcher_name() -> &'static str {
+    if cfg!(windows) {
+        "chat2db.cmd"
     } else {
         "chat2db"
     }
@@ -61,15 +78,21 @@ fn release_base() -> String {
     std::env::var(CLI_RELEASE_BASE_ENV).unwrap_or_else(|_| DEFAULT_RELEASE_BASE.to_owned())
 }
 
+// The CLI must not be written into the application bundle: macOS code
+// signatures cover it, and modifying a signed bundle breaks Gatekeeper.
 fn cli_bin_directory(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
-        .resource_dir()
-        .map(|directory| directory.join("chat2db").join("bin"))
-        .map_err(|error| format!("resource directory is unavailable: {error}"))
+        .app_data_dir()
+        .map(|directory| directory.join("bin"))
+        .map_err(|error| format!("application data directory is unavailable: {error}"))
 }
 
-fn cli_binary_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(cli_bin_directory(app)?.join(cli_binary_name()))
+fn cli_launcher_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(cli_bin_directory(app)?.join(cli_launcher_name()))
+}
+
+fn cli_executable_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(cli_bin_directory(app)?.join(cli_executable_name()))
 }
 
 fn cli_version_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -85,7 +108,7 @@ fn read_installed_version(app: &AppHandle) -> Option<String> {
 }
 
 fn status_from_disk(app: &AppHandle) -> Result<CliInstallStatus, String> {
-    let path = cli_binary_path(app)?;
+    let path = cli_launcher_path(app)?;
     let installed = path.is_file();
     Ok(CliInstallStatus {
         installed,
@@ -98,7 +121,7 @@ fn status_from_disk(app: &AppHandle) -> Result<CliInstallStatus, String> {
 ///
 /// # Errors
 ///
-/// Returns an error when the application resource directory cannot be resolved.
+/// Returns an error when the application data directory cannot be resolved.
 #[tauri::command]
 pub async fn cli_status(app: AppHandle) -> Result<CliInstallStatus, String> {
     status_from_disk(&app)
@@ -212,7 +235,7 @@ fn extract_cli_binary(archive_path: &Path, destination: &Path) -> Result<(), Str
         if Path::new(&entry_name)
             .file_name()
             .and_then(|name| name.to_str())
-            != Some(cli_binary_name())
+            != Some(cli_archive_binary_name())
         {
             continue;
         }
@@ -236,6 +259,81 @@ fn extract_cli_binary(archive_path: &Path, destination: &Path) -> Result<(), Str
         return Ok(());
     }
     Err("archive does not contain the chat2db binary".to_owned())
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn launcher_script(
+    java_bin: &Path,
+    engine_jar: &Path,
+    classpath: &Path,
+    driver_packs: &Path,
+) -> String {
+    if cfg!(windows) {
+        // Percent signs expand inside batch files, so escape them literally.
+        let quote = |path: &Path| path.display().to_string().replace('%', "%%");
+        format!(
+            "@echo off\r\n\
+             set \"CHAT2DB_JAVA_BIN={}\"\r\n\
+             set \"CHAT2DB_JAVA_ENGINE_JAR={}\"\r\n\
+             set \"CHAT2DB_COMMUNITY_CLASSPATH_DIR={}\"\r\n\
+             set \"CHAT2DB_DRIVER_PACK_DIR={}\"\r\n\
+             \"%~dp0{}\" %*\r\n",
+            quote(java_bin),
+            quote(engine_jar),
+            quote(classpath),
+            quote(driver_packs),
+            cli_executable_name(),
+        )
+    } else {
+        format!(
+            "#!/bin/sh\n\
+             CHAT2DB_JAVA_BIN={}\n\
+             CHAT2DB_JAVA_ENGINE_JAR={}\n\
+             CHAT2DB_COMMUNITY_CLASSPATH_DIR={}\n\
+             CHAT2DB_DRIVER_PACK_DIR={}\n\
+             export CHAT2DB_JAVA_BIN CHAT2DB_JAVA_ENGINE_JAR \
+             CHAT2DB_COMMUNITY_CLASSPATH_DIR CHAT2DB_DRIVER_PACK_DIR\n\
+             exec \"$(dirname \"$0\")/{}\" \"$@\"\n",
+            shell_quote(&java_bin.display().to_string()),
+            shell_quote(&engine_jar.display().to_string()),
+            shell_quote(&classpath.display().to_string()),
+            shell_quote(&driver_packs.display().to_string()),
+            cli_executable_name(),
+        )
+    }
+}
+
+fn write_launcher(app: &AppHandle, bin_directory: &Path) -> Result<(), String> {
+    let resource_root = app
+        .path()
+        .resource_dir()
+        .map(|directory| directory.join("chat2db"))
+        .map_err(|error| format!("resource directory is unavailable: {error}"))?;
+    let java_bin = resource_root
+        .join("java")
+        .join("bin")
+        .join(if cfg!(windows) { "java.exe" } else { "java" });
+    let engine_jar = resource_root
+        .join("engine")
+        .join("chat2db-compat-runtime.jar");
+    let classpath = resource_root.join("community-classpath");
+    let driver_packs = resource_root.join("driver-packs");
+
+    let script = launcher_script(&java_bin, &engine_jar, &classpath, &driver_packs);
+
+    let launcher = bin_directory.join(cli_launcher_name());
+    let staged = launcher.with_extension("staged");
+    fs::write(&staged, script).map_err(|error| format!("CLI launcher write failed: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))
+            .map_err(|error| format!("CLI launcher permission update failed: {error}"))?;
+    }
+    fs::rename(&staged, &launcher).map_err(|error| format!("CLI launcher install failed: {error}"))
 }
 
 /// Downloads, verifies and installs the command-line tool for this desktop app.
@@ -267,12 +365,13 @@ pub async fn cli_install(app: AppHandle) -> Result<CliInstallStatus, String> {
     }
 
     emit_progress(&app, "installing", 0, None);
-    let binary_path = bin_directory.join(cli_binary_name());
+    let binary_path = cli_executable_path(&app)?;
     if let Err(error) = extract_cli_binary(&archive_path, &binary_path) {
         let _ = fs::remove_file(&archive_path);
         return Err(error);
     }
     let _ = fs::remove_file(&archive_path);
+    write_launcher(&app, &bin_directory)?;
     fs::write(
         bin_directory.join(CLI_VERSION_FILE),
         format!("{PRODUCT_VERSION}\n"),
@@ -289,12 +388,44 @@ pub async fn cli_install(app: AppHandle) -> Result<CliInstallStatus, String> {
 /// Returns an error when the installed binary cannot be removed.
 #[tauri::command]
 pub async fn cli_uninstall(app: AppHandle) -> Result<CliInstallStatus, String> {
-    let binary_path = cli_binary_path(&app)?;
-    if binary_path.is_file() {
-        fs::remove_file(&binary_path).map_err(|error| format!("CLI removal failed: {error}"))?;
+    for path in [cli_launcher_path(&app)?, cli_executable_path(&app)?] {
+        if path.is_file() {
+            fs::remove_file(&path).map_err(|error| format!("CLI removal failed: {error}"))?;
+        }
     }
     if let Ok(version_path) = cli_version_path(&app) {
         let _ = fs::remove_file(version_path);
     }
     status_from_disk(&app)
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launcher_exports_runtime_paths_and_executes_the_cli() {
+        let script = launcher_script(
+            Path::new("/Applications/Chat2DB Rust.app/Contents/Resources/chat2db/java/bin/java"),
+            Path::new(
+                "/Applications/Chat2DB Rust.app/Contents/Resources/chat2db/engine/chat2db-compat-runtime.jar",
+            ),
+            Path::new(
+                "/Applications/Chat2DB Rust.app/Contents/Resources/chat2db/community-classpath",
+            ),
+            Path::new("/Applications/Chat2DB Rust.app/Contents/Resources/chat2db/driver-packs"),
+        );
+
+        assert!(script.starts_with("#!/bin/sh\n"));
+        assert!(script.contains(
+            "CHAT2DB_JAVA_BIN='/Applications/Chat2DB Rust.app/Contents/Resources/chat2db/java/bin/java'"
+        ));
+        assert!(script.contains("export CHAT2DB_JAVA_BIN CHAT2DB_JAVA_ENGINE_JAR"));
+        assert!(script.contains("exec \"$(dirname \"$0\")/chat2db-bin\" \"$@\""));
+    }
+
+    #[test]
+    fn shell_quote_escapes_single_quotes() {
+        assert_eq!(shell_quote("/tmp/it's here"), "'/tmp/it'\\''s here'");
+    }
 }
