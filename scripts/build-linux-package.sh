@@ -124,7 +124,6 @@ cp -- "${appimage_artifacts[0]}" "${deb_artifacts[0]}" "${rpm_artifacts[0]}" "${
     echo "target=linux"
     echo "rust_toolchain=${rust_toolchain}"
     echo "tauri_cli=$(cargo tauri --version)"
-    echo "embedded_cli=chat2db/bin/chat2db"
     echo "appimage=$(basename "${appimage_artifacts[0]}")"
     echo "deb=$(basename "${deb_artifacts[0]}")"
     echo "rpm=$(basename "${rpm_artifacts[0]}")"

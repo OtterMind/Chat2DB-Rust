@@ -34,8 +34,9 @@ for every platform supported by Chat2DB Community:
 - Windows x86_64, with NSIS `.exe` and MSI installers; and
 - Linux x86_64 and ARM64, with AppImage, `.deb`, and `.rpm` artifacts.
 
-Every desktop package embeds the matching `chat2db` headless CLI beside the
-shared Java, Community-classpath, and driver-pack resources.
+Every desktop package ships the shared Java, Community-classpath, and
+driver-pack resources. The `chat2db` headless CLI is published as a separate
+per-platform archive and installed on demand from the desktop settings page.
 
 Product versions and tagged Draft Releases follow [the release guide](docs/releases.md).
 
