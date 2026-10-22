@@ -170,6 +170,13 @@ pwsh -NoProfile -NonInteractive -Command \
   cd "${package_directory}"
   sha256sum -- "${cli_zip_name}" > "${cli_zip_name}.sha256"
 )
+"${repository_root}/scripts/package-java-runtime.sh" \
+  windows-x86_64 \
+  "${repository_root}/target/windows-runtime" \
+  "${repository_root}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar" \
+  "${repository_root}/target/community-h2-classpath" \
+  "${repository_root}/target/windows-driver-packs" \
+  "${package_directory}"
 
 echo "Built Windows installers at ${package_directory}"
 echo "Checksums: ${package_directory}/SHA256SUMS"

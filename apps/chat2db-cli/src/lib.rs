@@ -329,6 +329,8 @@ async fn serve_runtime(
         data_dir: Some(client.data_dir().to_path_buf()),
         executable: executable.as_deref(),
         resource_dir: None,
+        java_root: None,
+        allow_missing_java: false,
     })?;
     let mut host = RuntimeHost::open(config).await?;
     let application = host.application();

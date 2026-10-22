@@ -5,6 +5,7 @@ import About from './About';
 import BaseSetting from './BaseSetting';
 import CommandLineSetting from './CommandLineSetting';
 import EditorSetting from './EditorSetting';
+import JavaRuntimeSetting from './JavaRuntimeSetting';
 import McpSetting from './McpSetting';
 import NetworkProxySetting from './NetworkProxySetting';
 import SettingLayout, { type SettingMenuItem } from './SettingLayout';
@@ -62,6 +63,14 @@ function CommunitySetting() {
           icon: Terminal,
           body: <CommandLineSetting />,
           code: 'commandLine',
+        },
+        {
+          title: i18n('setting.nav.javaRuntime'),
+          describe: i18n('setting.nav.javaRuntimeDescribe'),
+          group: 'services' as const,
+          icon: Terminal,
+          body: <JavaRuntimeSetting />,
+          code: 'javaRuntime',
         },
         ...(runtimeEditionConfig.networkProxySetting
           ? [

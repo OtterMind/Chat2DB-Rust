@@ -4,13 +4,7 @@ set -euo pipefail
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app_path="${1:-${repository_root}/target/macos-package-build/release/bundle/macos/Chat2DB Rust.app}"
 resource_root="${app_path}/Contents/Resources/chat2db"
-java_bin="${resource_root}/java/bin/java"
-jvm_library="${resource_root}/java/lib/server/libjvm.dylib"
-engine_jar="${resource_root}/engine/chat2db-compat-runtime.jar"
-community_classpath="${resource_root}/community-classpath"
-driver_root="${resource_root}/driver-packs"
 binary="${app_path}/Contents/MacOS/chat2db-desktop"
-module_file="${repository_root}/packaging/macos/jlink-modules.txt"
 
 require_file() {
   local path="$1"
@@ -34,80 +28,14 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 require_directory "${app_path}"
 require_file "${binary}"
-require_file "${java_bin}"
-require_file "${jvm_library}"
-require_file "${engine_jar}"
-require_directory "${community_classpath}"
-require_directory "${driver_root}"
 require_file "${resource_root}/licenses/Chat2DB-Rust-LICENSE.txt"
 require_file "${resource_root}/licenses/Chat2DB-Community-LICENSE.txt"
 require_file "${resource_root}/licenses/THIRD_PARTY_NOTICES.md"
 
-if [[ ! -x "${binary}" || ! -x "${java_bin}" ]]; then
-  echo "packaged desktop and Java binaries must be executable" >&2
+if [[ ! -x "${binary}" ]]; then
+  echo "packaged desktop binary must be executable" >&2
   exit 1
 fi
-
-"${repository_root}/scripts/community-classpath-lock.sh" verify \
-  "${community_classpath}" \
-  "${repository_root}/third_party/community-h2-classpath.lock" \
-  "3cb8af54cad5bd5caa20bb25f10d9b0e4f01931c"
-
-driver_entry_count=0
-mysql_pack_found=false
-h2_pack_found=false
-while IFS= read -r -d '' driver_entry; do
-  driver_entry_count=$((driver_entry_count + 1))
-  driver_entry_name="$(basename "${driver_entry}")"
-  if [[ ! -d "${driver_entry}" || -L "${driver_entry}" ]]; then
-    echo "packaged driver-pack entry must be a non-symbolic directory: ${driver_entry_name}" >&2
-    exit 1
-  fi
-  case "${driver_entry_name}" in
-    01-mysql) mysql_pack_found=true ;;
-    02-h2-migration) h2_pack_found=true ;;
-    *)
-      echo "packaged driver-pack root contains an unauthorized entry: ${driver_entry_name}" >&2
-      exit 1
-      ;;
-  esac
-done < <(find "${driver_root}" -mindepth 1 -maxdepth 1 -print0)
-if [[ "${driver_entry_count}" -ne 2 || "${mysql_pack_found}" != true || "${h2_pack_found}" != true ]]; then
-  echo "packaged driver packs must contain exactly 01-mysql and 02-h2-migration" >&2
-  exit 1
-fi
-
-driver_manifest="${driver_root}/01-mysql/driver-pack.json"
-driver_jar="${driver_root}/01-mysql/mysql-connector-java-8.0.30.jar"
-require_file "${driver_manifest}"
-require_file "${driver_jar}"
-expected_driver_sha="$(awk -F '"' '/"sha256"/ { print $4; exit }' "${driver_manifest}")"
-actual_driver_sha="$(shasum -a 256 -- "${driver_jar}" | awk '{ print $1 }')"
-if [[ -z "${expected_driver_sha}" || "${actual_driver_sha}" != "${expected_driver_sha}" ]]; then
-  echo "packaged MySQL driver digest does not match its manifest" >&2
-  exit 1
-fi
-
-h2_manifest="${driver_root}/02-h2-migration/driver-pack.json"
-h2_jar="${driver_root}/02-h2-migration/h2-2.1.214.jar"
-require_file "${h2_manifest}"
-require_file "${h2_jar}"
-expected_h2_sha="$(awk -F '"' '/"sha256"/ { print $4; exit }' "${h2_manifest}")"
-actual_h2_sha="$(shasum -a 256 -- "${h2_jar}" | awk '{ print $1 }')"
-if [[ -z "${expected_h2_sha}" || "${actual_h2_sha}" != "${expected_h2_sha}" ]]; then
-  echo "packaged H2 migration driver digest does not match its manifest" >&2
-  exit 1
-fi
-
-"${java_bin}" -version
-while IFS= read -r module; do
-  [[ -z "${module}" || "${module}" == \#* ]] && continue
-  if ! "${java_bin}" --list-modules | cut -d@ -f1 | grep -Fxq "${module}"; then
-    echo "packaged Java runtime is missing ${module}" >&2
-    exit 1
-  fi
-done < "${module_file}"
-"${java_bin}" -jar "${engine_jar}" < /dev/null
 
 bundle_identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${app_path}/Contents/Info.plist")"
 if [[ "${bundle_identifier}" != "ai.chat2db.desktop" ]]; then
@@ -119,8 +47,13 @@ if ! lipo -archs "${binary}" | tr ' ' '\n' | grep -Fxq "${host_arch}"; then
   echo "desktop binary does not contain host architecture ${host_arch}" >&2
   exit 1
 fi
-if ! lipo -archs "${java_bin}" | tr ' ' '\n' | grep -Fxq "${host_arch}"; then
-  echo "Java runtime does not contain host architecture ${host_arch}" >&2
+
+# The Java runtime, compatibility engine, classpath, and driver packs are
+# distributed as a separate on-demand archive. The app bundle must not carry
+# them.
+if [[ -e "${resource_root}/java" || -e "${resource_root}/engine" \
+  || -e "${resource_root}/community-classpath" || -e "${resource_root}/driver-packs" ]]; then
+  echo "desktop package must not embed the on-demand Java runtime" >&2
   exit 1
 fi
 
@@ -169,30 +102,5 @@ if [[ "${CHAT2DB_REQUIRE_DEVELOPER_ID_SIGNATURE:-false}" == true ]]; then
   }
 
   verify_developer_id_code "${app_path}" "package" "${APPLE_TEAM_ID:-}"
-
-  jvm_entitlements="$(codesign -d --entitlements :- "${jvm_library}" 2>/dev/null)"
-  for required_entitlement in \
-    com.apple.security.cs.allow-jit \
-    com.apple.security.cs.allow-unsigned-executable-memory \
-    com.apple.security.cs.disable-library-validation; do
-    if ! grep -Fq "<key>${required_entitlement}</key>" <<<"${jvm_entitlements}"; then
-      echo "packaged JVM is missing required entitlement ${required_entitlement}" >&2
-      exit 1
-    fi
-  done
-
-  runtime_macho_count=0
-  while IFS= read -r -d '' runtime_file; do
-    if [[ "$(file -b "${runtime_file}")" != *"Mach-O"* ]]; then
-      continue
-    fi
-    runtime_macho_count=$((runtime_macho_count + 1))
-    verify_developer_id_code "${runtime_file}" "packaged Java code ${runtime_file#"${app_path}/"}" ""
-  done < <(find "${resource_root}/java" -type f -print0)
-  if [[ "${runtime_macho_count}" -eq 0 ]]; then
-    echo "packaged Java runtime contains no Mach-O code" >&2
-    exit 1
-  fi
-  echo "Verified ${runtime_macho_count} Developer ID signed Java runtime binaries"
 fi
 echo "Verified self-contained macOS package at ${app_path}"

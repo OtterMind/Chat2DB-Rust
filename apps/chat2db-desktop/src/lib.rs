@@ -4,6 +4,7 @@
 #![allow(clippy::result_large_err)]
 
 mod cli_install;
+mod java_runtime_install;
 mod legacy_files;
 
 use std::{
@@ -261,8 +262,11 @@ impl SubscriptionRegistry {
 }
 
 impl DesktopState {
-    async fn open_from_environment(resource_dir: Option<&Path>) -> Result<Self, DesktopError> {
-        let runtime_config = runtime_config_from_environment(resource_dir)?;
+    async fn open_from_environment(
+        resource_dir: Option<&Path>,
+        java_root: Option<&Path>,
+    ) -> Result<Self, DesktopError> {
+        let runtime_config = runtime_config_from_environment(resource_dir, java_root)?;
         let mut runtime_host = RuntimeHost::open(runtime_config)
             .await
             .map_err(DesktopError::runtime)?;
@@ -367,6 +371,24 @@ impl std::error::Error for DesktopError {
     }
 }
 
+fn on_demand_java_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|directory| {
+        directory
+            .join("java-runtime")
+            .join(env!("CARGO_PKG_VERSION"))
+    })
+}
+
+fn installed_java_runtime<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
+    let root = on_demand_java_root(app)?;
+    let java = root
+        .join("java")
+        .join("bin")
+        .join(if cfg!(windows) { "java.exe" } else { "java" });
+    let engine = root.join("engine").join("chat2db-compat-runtime.jar");
+    (java.is_file() && engine.is_file()).then_some(root)
+}
+
 fn spawn_desktop_runtime_initialization<R: tauri::Runtime>(
     app_handle: tauri::AppHandle<R>,
     startup: &Arc<DesktopStartup>,
@@ -374,7 +396,10 @@ fn spawn_desktop_runtime_initialization<R: tauri::Runtime>(
     let task_startup = Arc::clone(startup);
     let resource_dir = app_handle.path().resource_dir().ok();
     let initialization = tauri::async_runtime::spawn(async move {
-        match DesktopState::open_from_environment(resource_dir.as_deref()).await {
+        let java_root = installed_java_runtime(&app_handle);
+        match DesktopState::open_from_environment(resource_dir.as_deref(), java_root.as_deref())
+            .await
+        {
             Ok(state) => {
                 let state = Arc::new(state);
                 if app_handle.manage(Arc::clone(&state)) {
@@ -505,6 +530,9 @@ pub fn run() -> Result<i32, DesktopError> {
             cli_install::cli_status,
             cli_install::cli_install,
             cli_install::cli_uninstall,
+            java_runtime_install::java_runtime_status,
+            java_runtime_install::java_runtime_install,
+            java_runtime_install::java_runtime_uninstall,
         ])
         .build(tauri::generate_context!());
     let application = match application {
@@ -519,12 +547,15 @@ pub fn run() -> Result<i32, DesktopError> {
 
 fn runtime_config_from_environment(
     resource_dir: Option<&Path>,
+    java_root: Option<&Path>,
 ) -> Result<RuntimeConfig, DesktopError> {
     let current_executable = std::env::current_exe().ok();
     chat2db_runtime::runtime_config_from_environment(RuntimeOptions {
         data_dir: None,
         executable: current_executable.as_deref(),
         resource_dir,
+        java_root,
+        allow_missing_java: java_root.is_none(),
     })
     .map_err(|error| DesktopError::RuntimeConfiguration(Box::new(error)))
 }

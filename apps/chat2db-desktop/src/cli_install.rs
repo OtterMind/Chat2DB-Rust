@@ -307,11 +307,26 @@ fn launcher_script(
 }
 
 fn write_launcher(app: &AppHandle, bin_directory: &Path) -> Result<(), String> {
-    let resource_root = app
+    // The on-demand runtime lives outside the app bundle; older packages that
+    // still embed it fall back to the resource directory.
+    let on_demand_root = app
         .path()
-        .resource_dir()
-        .map(|directory| directory.join("chat2db"))
-        .map_err(|error| format!("resource directory is unavailable: {error}"))?;
+        .app_data_dir()
+        .ok()
+        .map(|directory| directory.join("java-runtime").join(PRODUCT_VERSION))
+        .filter(|root| {
+            root.join("engine")
+                .join("chat2db-compat-runtime.jar")
+                .is_file()
+        });
+    let resource_root = match on_demand_root {
+        Some(root) => root,
+        None => app
+            .path()
+            .resource_dir()
+            .map(|directory| directory.join("chat2db"))
+            .map_err(|error| format!("resource directory is unavailable: {error}"))?,
+    };
     let java_bin = resource_root
         .join("java")
         .join("bin")

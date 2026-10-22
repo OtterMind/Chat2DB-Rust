@@ -59,16 +59,21 @@ export async function prepareRelease({ artifactsDir, outputDir, version, commit,
       packages.filter((name) => name.endsWith(extension)).length !== 1)) {
       throw new Error(`${platform} must contain exactly one package for each of ${extensions.join(', ')}`);
     }
-    const cliName = `chat2db-cli-${platform}.zip`;
-    const cliSource = join(directory, cliName);
-    try {
-      const declared = (await readFile(`${cliSource}.sha256`, 'utf8')).trim().split(/\s+/)[0].toLowerCase();
-      if (!/^[a-f0-9]{64}$/.test(declared)) throw new Error(`${platform} has an invalid CLI checksum`);
-      if (await sha256(cliSource) !== declared) throw new Error(`${platform} CLI checksum mismatch`);
-      if (files.has(cliName)) throw new Error(`duplicate release asset ${cliName}`);
-      files.set(cliName, { source: cliSource, digest: declared });
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
+    for (const [assetPrefix, label] of [
+      ['chat2db-cli-', 'CLI'],
+      ['chat2db-java-runtime-', 'Java runtime'],
+    ]) {
+      const assetName = `${assetPrefix}${platform}.zip`;
+      const assetSource = join(directory, assetName);
+      try {
+        const declared = (await readFile(`${assetSource}.sha256`, 'utf8')).trim().split(/\s+/)[0].toLowerCase();
+        if (!/^[a-f0-9]{64}$/.test(declared)) throw new Error(`${platform} has an invalid ${label} checksum`);
+        if (await sha256(assetSource) !== declared) throw new Error(`${platform} ${label} checksum mismatch`);
+        if (files.has(assetName)) throw new Error(`duplicate release asset ${assetName}`);
+        files.set(assetName, { source: assetSource, digest: declared });
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
     }
     manifests.push({ name: `BUILD-MANIFEST-${platform}.txt`, source: join(directory, 'BUILD-MANIFEST.txt') });
   }
