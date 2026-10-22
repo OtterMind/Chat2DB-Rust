@@ -253,14 +253,12 @@ fn extract_runtime(archive_path: &Path, destination: &Path) -> Result<(), String
                     .map_err(|error| format!("runtime link read failed: {error}"))?;
                 std::os::unix::fs::symlink(target, &output)
                     .map_err(|error| format!("runtime link creation failed: {error}"))?;
+                continue;
             }
             #[cfg(not(unix))]
-            {
-                return Err(format!(
-                    "runtime archive contains an unsupported link: {name}"
-                ));
-            }
-            continue;
+            return Err(format!(
+                "runtime archive contains an unsupported link: {name}"
+            ));
         }
         let mut output_file =
             fs::File::create(&output).map_err(|error| format!("runtime write failed: {error}"))?;
