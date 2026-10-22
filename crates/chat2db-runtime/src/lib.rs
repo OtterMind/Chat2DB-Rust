@@ -300,8 +300,7 @@ fn resolve_directory_override(
                 Ok(Some((*directory).clone()))
             }
             Some(directory) if directory.is_dir() => Ok(Some((*directory).clone())),
-            Some(_) => Ok(None),
-            None => Ok(None),
+            _ => Ok(None),
         },
     }
 }
