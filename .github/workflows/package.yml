@@ -125,6 +125,8 @@ jobs:
             target/macos-package/*.zip
             target/macos-package/*.zip.sha256
             target/macos-package/*.dmg
+            target/macos-package/chat2db-java-runtime-*.zip
+            target/macos-package/chat2db-java-runtime-*.zip.sha256
             target/macos-package/SHA256SUMS
             target/macos-package/BUILD-MANIFEST.txt
           if-no-files-found: error
@@ -253,6 +255,8 @@ jobs:
             target/windows-package/*.msi
             target/windows-package/chat2db-cli-*.zip
             target/windows-package/chat2db-cli-*.zip.sha256
+            target/windows-package/chat2db-java-runtime-*.zip
+            target/windows-package/chat2db-java-runtime-*.zip.sha256
             target/windows-package/SHA256SUMS
             target/windows-package/BUILD-MANIFEST.txt
           if-no-files-found: error
@@ -352,6 +356,8 @@ jobs:
             target/linux-package/*.rpm
             target/linux-package/chat2db-cli-*.zip
             target/linux-package/chat2db-cli-*.zip.sha256
+            target/linux-package/chat2db-java-runtime-*.zip
+            target/linux-package/chat2db-java-runtime-*.zip.sha256
             target/linux-package/SHA256SUMS
             target/linux-package/BUILD-MANIFEST.txt
           if-no-files-found: error

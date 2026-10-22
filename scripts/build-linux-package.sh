@@ -145,5 +145,12 @@ cli_zip_name="chat2db-cli-${cli_platform}.zip"
   cd "${package_directory}"
   sha256sum -- "${cli_zip_name}" > "${cli_zip_name}.sha256"
 )
+"${repository_root}/scripts/package-java-runtime.sh" \
+  "${cli_platform}" \
+  "${repository_root}/target/linux-runtime" \
+  "${repository_root}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar" \
+  "${repository_root}/target/community-h2-classpath" \
+  "${repository_root}/target/linux-driver-packs" \
+  "${package_directory}"
 
 echo "Built Linux packages at ${package_directory}"

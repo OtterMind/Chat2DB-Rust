@@ -29,6 +29,12 @@ pub struct RuntimeOptions<'a> {
     pub data_dir: Option<PathBuf>,
     pub executable: Option<&'a Path>,
     pub resource_dir: Option<&'a Path>,
+    /// Root of an on-demand Java runtime (`java`, `engine`, `community-classpath`,
+    /// and `driver-packs`). Environment overrides still win over this root.
+    pub java_root: Option<&'a Path>,
+    /// Allows the host to start without an installed Java runtime. Java-backed
+    /// operations then fail until the runtime is installed.
+    pub allow_missing_java: bool,
 }
 
 /// Runtime resource lookup or validation failure.
@@ -64,6 +70,7 @@ struct RuntimeResourceOverrides {
     java_engine_jar: Option<OsString>,
     community_classpath_dir: Option<OsString>,
     driver_pack_dir: Option<OsString>,
+    allow_missing_java: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -152,11 +159,29 @@ impl BundledRuntimeResources {
 pub fn runtime_config_from_environment(
     options: RuntimeOptions<'_>,
 ) -> Result<RuntimeConfig, RuntimeConfigError> {
+    let java_bin_override = optional_nonempty_os_env(JAVA_BIN_ENV)?;
+    let java_engine_jar_override = optional_nonempty_os_env(JAVA_ENGINE_JAR_ENV)?;
+    let community_classpath_override = optional_nonempty_os_env(COMMUNITY_CLASSPATH_DIR_ENV)?;
+    let driver_pack_override = optional_nonempty_os_env(DRIVER_PACK_DIR_ENV)?;
+    let from_java_root = |relative: &str| {
+        options
+            .java_root
+            .map(|root| root.join(relative).into_os_string())
+    };
     let overrides = RuntimeResourceOverrides {
-        java_engine_jar: optional_nonempty_os_env(JAVA_ENGINE_JAR_ENV)?,
-        java_bin: optional_nonempty_os_env(JAVA_BIN_ENV)?,
-        community_classpath_dir: optional_nonempty_os_env(COMMUNITY_CLASSPATH_DIR_ENV)?,
-        driver_pack_dir: optional_nonempty_os_env(DRIVER_PACK_DIR_ENV)?,
+        java_engine_jar: java_engine_jar_override
+            .or_else(|| from_java_root("engine/chat2db-compat-runtime.jar")),
+        java_bin: java_bin_override.or_else(|| {
+            from_java_root(if cfg!(windows) {
+                "java/bin/java.exe"
+            } else {
+                "java/bin/java"
+            })
+        }),
+        community_classpath_dir: community_classpath_override
+            .or_else(|| from_java_root("community-classpath")),
+        driver_pack_dir: driver_pack_override.or_else(|| from_java_root("driver-packs")),
+        allow_missing_java: options.allow_missing_java,
     };
     let resources =
         resolve_runtime_resource_paths(options.executable, options.resource_dir, overrides)?;
@@ -210,10 +235,13 @@ fn resolve_runtime_resource_paths(
             None => OsString::from(if cfg!(windows) { "java.exe" } else { "java" }),
         },
     };
+    let require_java = !overrides.allow_missing_java;
     let java_engine_jar = match overrides.java_engine_jar {
         Some(java_engine_jar) => {
             let path = PathBuf::from(java_engine_jar);
-            validate_java_engine_jar(&path)?;
+            if require_java {
+                validate_java_engine_jar(&path)?;
+            }
             path
         }
         None => match bundled.as_ref() {
@@ -221,7 +249,8 @@ fn resolve_runtime_resource_paths(
                 validate_bundled_file(BUNDLED_JAVA_ENGINE_JAR, &resources.java_engine_jar)?;
                 resources.java_engine_jar.clone()
             }
-            None => return Err(RuntimeConfigError::MissingJavaEngineJar),
+            None if require_java => return Err(RuntimeConfigError::MissingJavaEngineJar),
+            None => PathBuf::from("chat2db-compat-runtime.jar"),
         },
     };
     let community_classpath_dir = resolve_directory_override(
@@ -519,6 +548,7 @@ mod tests {
                 java_engine_jar: Some(engine_jar.clone().into_os_string()),
                 community_classpath_dir: Some(OsString::from("community")),
                 driver_pack_dir: Some(OsString::from("drivers")),
+                allow_missing_java: false,
             },
         )
         .expect("explicit overrides must resolve");

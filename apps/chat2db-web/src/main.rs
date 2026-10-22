@@ -89,6 +89,8 @@ fn runtime_config_from_env() -> Result<RuntimeConfig, Box<dyn std::error::Error>
         data_dir: None,
         executable: executable.as_deref(),
         resource_dir: None,
+        java_root: None,
+        allow_missing_java: false,
     })
     .map_err(Into::into)
 }

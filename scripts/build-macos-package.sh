@@ -352,6 +352,13 @@ cli_zip_name="chat2db-cli-${cli_platform}.zip"
   cd "${package_directory}"
   shasum -a 256 -- "${cli_zip_name}" > "${cli_zip_name}.sha256"
 )
+"${repository_root}/scripts/package-java-runtime.sh" \
+  "${cli_platform}" \
+  "${repository_root}/target/macos-runtime" \
+  "${repository_root}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar" \
+  "${repository_root}/target/community-h2-classpath" \
+  "${repository_root}/target/macos-driver-packs" \
+  "${package_directory}"
 git_commit="$(git -C "${repository_root}" rev-parse HEAD)"
 community_commit="$(git -C "${repository_root}/third_party/chat2db-community" rev-parse HEAD)"
 app_kib="$(du -sk "${app_path}" | awk '{ print $1 }')"
