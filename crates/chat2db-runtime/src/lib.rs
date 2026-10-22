@@ -91,9 +91,14 @@ struct BundledRuntimeResources {
 
 impl BundledRuntimeResources {
     fn from_resource_dir(resource_dir: &Path) -> Option<Self> {
-        resource_dir
-            .is_absolute()
-            .then(|| Self::from_resource_root(&resource_dir.join("chat2db")))
+        if !resource_dir.is_absolute() {
+            return None;
+        }
+        let root = resource_dir.join("chat2db");
+        root.join("engine")
+            .join("chat2db-compat-runtime.jar")
+            .is_file()
+            .then(|| Self::from_resource_root(&root))
     }
 
     fn from_resource_root(resource_root: &Path) -> Self {
@@ -120,9 +125,15 @@ impl BundledRuntimeResources {
                     .parent()
                     .is_some_and(|path| path.extension() == Some(std::ffi::OsStr::new("app")))
             {
-                return Some(Self::from_resource_root(
-                    &contents_dir.join("Resources").join("chat2db"),
-                ));
+                let root = contents_dir.join("Resources").join("chat2db");
+                if root
+                    .join("engine")
+                    .join("chat2db-compat-runtime.jar")
+                    .is_file()
+                {
+                    return Some(Self::from_resource_root(&root));
+                }
+                return None;
             }
         }
 
@@ -225,17 +236,19 @@ fn resolve_runtime_resource_paths(
         .and_then(BundledRuntimeResources::from_resource_dir)
         .or_else(|| executable.and_then(BundledRuntimeResources::from_executable));
 
+    let require_java = !overrides.allow_missing_java;
     let java_bin = match overrides.java_bin {
         Some(java_bin) => java_bin,
         None => match bundled.as_ref() {
             Some(resources) => {
-                validate_bundled_file(BUNDLED_JAVA_BIN, &resources.java_bin)?;
+                if require_java {
+                    validate_bundled_file(BUNDLED_JAVA_BIN, &resources.java_bin)?;
+                }
                 resources.java_bin.clone().into_os_string()
             }
             None => OsString::from(if cfg!(windows) { "java.exe" } else { "java" }),
         },
     };
-    let require_java = !overrides.allow_missing_java;
     let java_engine_jar = match overrides.java_engine_jar {
         Some(java_engine_jar) => {
             let path = PathBuf::from(java_engine_jar);
@@ -246,7 +259,9 @@ fn resolve_runtime_resource_paths(
         }
         None => match bundled.as_ref() {
             Some(resources) => {
-                validate_bundled_file(BUNDLED_JAVA_ENGINE_JAR, &resources.java_engine_jar)?;
+                if require_java {
+                    validate_bundled_file(BUNDLED_JAVA_ENGINE_JAR, &resources.java_engine_jar)?;
+                }
                 resources.java_engine_jar.clone()
             }
             None if require_java => return Err(RuntimeConfigError::MissingJavaEngineJar),
@@ -259,11 +274,13 @@ fn resolve_runtime_resource_paths(
             .as_ref()
             .map(|resources| &resources.community_classpath_dir),
         BUNDLED_COMMUNITY_CLASSPATH,
+        require_java,
     )?;
     let driver_pack_dir = resolve_directory_override(
         overrides.driver_pack_dir,
         bundled.as_ref().map(|resources| &resources.driver_pack_dir),
         BUNDLED_DRIVER_PACKS,
+        require_java,
     )?;
 
     Ok(RuntimeResourcePaths {
@@ -278,15 +295,17 @@ fn resolve_directory_override(
     override_path: Option<OsString>,
     bundled_path: Option<&PathBuf>,
     resource: &'static str,
+    required: bool,
 ) -> Result<Option<PathBuf>, RuntimeConfigError> {
     match override_path {
         Some(directory) => Ok(Some(PathBuf::from(directory))),
         None => match bundled_path {
-            Some(directory) => {
+            Some(directory) if required => {
                 validate_bundled_directory(resource, directory)?;
                 Ok(Some((*directory).clone()))
             }
-            None => Ok(None),
+            Some(directory) if directory.is_dir() => Ok(Some((*directory).clone())),
+            _ => Ok(None),
         },
     }
 }
@@ -371,8 +390,14 @@ mod tests {
             .expect("bundle executable directory");
         File::create(&executable).expect("bundle executable");
 
-        let resources = BundledRuntimeResources::from_executable(&executable)
-            .expect("synthetic executable must be recognized as an app bundle");
+        let resources = BundledRuntimeResources::from_resource_root(
+            &directory
+                .path()
+                .join("Chat2DB.app")
+                .join("Contents")
+                .join("Resources")
+                .join("chat2db"),
+        );
         fs::create_dir_all(resources.java_bin.parent().expect("Java binary parent"))
             .expect("bundled Java directory");
         File::create(&resources.java_bin).expect("bundled Java binary");
@@ -414,8 +439,7 @@ mod tests {
     fn resource_directory_supplies_non_macos_runtime_resources() {
         let directory = tempfile::tempdir().expect("temporary resource directory");
         let resource_dir = directory.path().join("resources");
-        let bundled = BundledRuntimeResources::from_resource_dir(&resource_dir)
-            .expect("absolute resource directory must resolve");
+        let bundled = BundledRuntimeResources::from_resource_root(&resource_dir.join("chat2db"));
         fs::create_dir_all(bundled.java_bin.parent().expect("Java binary parent"))
             .expect("bundled Java directory");
         File::create(&bundled.java_bin).expect("bundled Java binary");
@@ -490,11 +514,17 @@ mod tests {
                 RuntimeResourceOverrides::default(),
             )
             .expect_err("missing bundled resource must fail closed");
-            assert!(matches!(
-                error,
-                RuntimeConfigError::InvalidBundledResource { resource, path, .. }
-                    if resource == missing_resource && path == missing_path
-            ));
+            if missing_resource == BUNDLED_JAVA_ENGINE_JAR {
+                // Without the engine JAR the directory is not an app bundle
+                // layout, so discovery falls through to the required-Java path.
+                assert!(matches!(error, RuntimeConfigError::MissingJavaEngineJar));
+            } else {
+                assert!(matches!(
+                    error,
+                    RuntimeConfigError::InvalidBundledResource { resource, path, .. }
+                        if resource == missing_resource && path == missing_path
+                ));
+            }
         }
     }
 
