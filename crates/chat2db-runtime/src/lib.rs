@@ -91,9 +91,14 @@ struct BundledRuntimeResources {
 
 impl BundledRuntimeResources {
     fn from_resource_dir(resource_dir: &Path) -> Option<Self> {
-        resource_dir
-            .is_absolute()
-            .then(|| Self::from_resource_root(&resource_dir.join("chat2db")))
+        if !resource_dir.is_absolute() {
+            return None;
+        }
+        let root = resource_dir.join("chat2db");
+        root.join("engine")
+            .join("chat2db-compat-runtime.jar")
+            .is_file()
+            .then(|| Self::from_resource_root(&root))
     }
 
     fn from_resource_root(resource_root: &Path) -> Self {
@@ -434,8 +439,7 @@ mod tests {
     fn resource_directory_supplies_non_macos_runtime_resources() {
         let directory = tempfile::tempdir().expect("temporary resource directory");
         let resource_dir = directory.path().join("resources");
-        let bundled = BundledRuntimeResources::from_resource_dir(&resource_dir)
-            .expect("absolute resource directory must resolve");
+        let bundled = BundledRuntimeResources::from_resource_root(&resource_dir.join("chat2db"));
         fs::create_dir_all(bundled.java_bin.parent().expect("Java binary parent"))
             .expect("bundled Java directory");
         File::create(&bundled.java_bin).expect("bundled Java binary");
