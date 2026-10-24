@@ -181,8 +181,25 @@ function test() {
   }
 }
 
+/**
+ * The pinned client's `prebuild`/`postbuild` hooks assume the upstream
+ * monorepo layout (they scan `../chat2db-community-server`). Drop them in the
+ * exported worktree so the product build only runs the Umi bundler.
+ */
+function stripUpstreamBuildHooks(worktree) {
+  const packagePath = join(worktree, 'package.json');
+  const pkg = JSON.parse(readFileSync(packagePath, 'utf8'));
+  if (!pkg.scripts) {
+    return;
+  }
+  delete pkg.scripts['prebuild:web:community'];
+  delete pkg.scripts['postbuild:web:community'];
+  writeFileSync(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
+}
+
 function build() {
   const worktree = createWorktree('build');
+  stripUpstreamBuildHooks(worktree);
   setupUmi(worktree);
   runYarn(
     [

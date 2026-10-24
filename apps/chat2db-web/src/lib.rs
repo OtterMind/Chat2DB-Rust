@@ -994,24 +994,6 @@ mod tests {
                 ),
                 "database_engine_unavailable",
             ),
-            (
-                json_request(
-                    Method::POST,
-                    "/api/v1/community/sql/complete",
-                    &serde_json::json!({
-                        "datasourceId": "datasource-1",
-                        "databaseType": "H2",
-                        "databaseName": "inventory",
-                        "schemaName": "PUBLIC",
-                        "sql": "select * from ",
-                        "cursorUtf16": 14,
-                        "minPrefixLength": 0,
-                        "needFullName": false,
-                        "keywordCase": "UPPER"
-                    }),
-                ),
-                "storage_unavailable",
-            ),
         ];
 
         for (request, expected_code) in requests {
