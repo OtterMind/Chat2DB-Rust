@@ -865,6 +865,41 @@ pub struct UpdateResult {
     pub affected_rows: u64,
 }
 
+/// Capability advertised by engines that expose the raw metadata calls.
+pub const JDBC_METADATA_CAPABILITY: &str = "metadata.jdbc.v1";
+
+/// One raw `DatabaseMetaData` operation the host can forward.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetadataOperation {
+    Catalogs,
+    Schemas,
+    Tables,
+    Columns,
+    PrimaryKeys,
+    Indexes,
+    ForeignKeys,
+    TableTypes,
+}
+
+/// JDBC selectors for a metadata call; `None` means "every entry".
+#[derive(Clone, Debug, Default)]
+pub struct MetadataQuery {
+    pub catalog: Option<String>,
+    pub schema: Option<String>,
+    pub table: Option<String>,
+    pub table_types: Vec<String>,
+    pub pattern: Option<String>,
+    pub max_rows: u32,
+}
+
+/// Raw rows returned by the engine for one metadata call.
+#[derive(Clone, Debug)]
+pub struct MetadataResult {
+    pub columns: Vec<JdbcColumn>,
+    pub rows: Vec<JdbcRow>,
+    pub truncated: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CancelDisposition {
     Accepted,
@@ -1355,6 +1390,79 @@ impl Session {
             affected_rows: completed.affected_rows,
         })
     }
+
+    /// Forwards one raw `java.sql.DatabaseMetaData` call.
+    ///
+    /// The engine returns the driver's own columns and rows. Interpreting them -
+    /// catalog versus schema, case folding, system objects - is the host's job,
+    /// so no dialect knowledge lives on the Java side.
+    ///
+    /// # Errors
+    ///
+    /// Returns session, transport, or remote JDBC errors.
+    pub async fn metadata(
+        &self,
+        operation: MetadataOperation,
+        query: MetadataQuery,
+    ) -> Result<MetadataResult, BridgeError> {
+        let request = wire::JdbcMetadataRequest {
+            catalog: query.catalog,
+            schema: query.schema,
+            table: query.table,
+            table_types: query.table_types,
+            pattern: query.pattern,
+            max_rows: query.max_rows,
+        };
+        let payload = match operation {
+            MetadataOperation::Catalogs => {
+                wire::client_envelope::Payload::MetadataCatalogs(request)
+            }
+            MetadataOperation::Schemas => wire::client_envelope::Payload::MetadataSchemas(request),
+            MetadataOperation::Tables => wire::client_envelope::Payload::MetadataTables(request),
+            MetadataOperation::Columns => wire::client_envelope::Payload::MetadataColumns(request),
+            MetadataOperation::PrimaryKeys => {
+                wire::client_envelope::Payload::MetadataPrimaryKeys(request)
+            }
+            MetadataOperation::Indexes => wire::client_envelope::Payload::MetadataIndexes(request),
+            MetadataOperation::ForeignKeys => {
+                wire::client_envelope::Payload::MetadataForeignKeys(request)
+            }
+            MetadataOperation::TableTypes => {
+                wire::client_envelope::Payload::MetadataTableTypes(request)
+            }
+        };
+        let response = self
+            .send_session_request(JDBC_METADATA_CAPABILITY, payload, PendingLane::FatalOnUnknown)
+            .await?;
+        let Some(wire::server_envelope::Payload::MetadataResult(result)) = response.payload else {
+            return self
+                .client
+                .protocol_violation("expected metadata result response")
+                .await;
+        };
+        let columns = result
+            .columns
+            .into_iter()
+            .map(JdbcColumn::from_wire)
+            .collect::<Result<Vec<_>, String>>();
+        let rows = result
+            .rows
+            .into_iter()
+            .map(JdbcRow::from_wire)
+            .collect::<Result<Vec<_>, String>>();
+        let (Ok(columns), Ok(rows)) = (columns, rows) else {
+            return self
+                .client
+                .protocol_violation("invalid metadata result encoding")
+                .await;
+        };
+        Ok(MetadataResult {
+            columns,
+            rows,
+            truncated: result.truncated,
+        })
+    }
+
 
     /// Starts a credit-controlled typed JDBC query stream.
     ///

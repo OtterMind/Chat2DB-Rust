@@ -49,6 +49,14 @@ message ClientEnvelope {
     RollbackTransactionRequest rollback_transaction = 122;
     ExecuteQueryRequest execute_query = 130;
     ExecuteUpdateRequest execute_update = 131;
+    JdbcMetadataRequest metadata_catalogs = 140;
+    JdbcMetadataRequest metadata_schemas = 141;
+    JdbcMetadataRequest metadata_tables = 142;
+    JdbcMetadataRequest metadata_columns = 143;
+    JdbcMetadataRequest metadata_primary_keys = 144;
+    JdbcMetadataRequest metadata_indexes = 145;
+    JdbcMetadataRequest metadata_foreign_keys = 146;
+    JdbcMetadataRequest metadata_table_types = 147;
     GrantCreditsRequest grant_credits = 132;
     CancelOperationRequest cancel_operation = 133;
     ListCommunityPluginsRequest list_community_plugins = 200;
@@ -100,6 +108,7 @@ message ServerEnvelope {
     QueryStarted query_started = 130;
     RowBatch row_batch = 131;
     QueryCompleted query_completed = 132;
+    JdbcMetadataResult metadata_result = 140;
     UpdateCompleted update_completed = 133;
     CreditsGranted credits_granted = 134;
     OperationCancelled operation_cancelled = 135;

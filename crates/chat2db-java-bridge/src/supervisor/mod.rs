@@ -67,6 +67,7 @@ pub use jdbc::{
     QUERY_TYPED_BATCHES_CAPABILITY, QueryCompleted, QueryEvent, QueryOptions, QueryRequest,
     QueryStarted, QueryStream, RowBatch, SESSION_JDBC_CAPABILITY, Session, SessionConfig,
     TRANSACTION_LOCAL_CAPABILITY, Transaction, TransactionIsolation, TransactionOptions,
+    JDBC_METADATA_CAPABILITY, MetadataOperation, MetadataQuery, MetadataResult,
     UPDATE_JDBC_CAPABILITY, UpdateRequest, UpdateResult,
 };
 

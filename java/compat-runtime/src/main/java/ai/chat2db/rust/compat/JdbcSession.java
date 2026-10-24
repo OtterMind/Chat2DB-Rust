@@ -29,6 +29,11 @@ final class JdbcSession implements AutoCloseable {
     private final int defaultIsolation;
     private final SensitiveDataRedactor redactor;
 
+    /** Package-private accessor for the raw JDBC metadata calls. */
+    Connection connection() {
+        return connection;
+    }
+
     private State state = State.READY;
     private String transactionId;
     private String activeOperationId;

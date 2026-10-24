@@ -45,6 +45,7 @@ final class ProtocolLoop {
     static final String CREDIT_FLOW_CAPABILITY = "flow.credit.v1";
     static final String OPERATION_CANCEL_CAPABILITY = "operation.cancel.v1";
     static final String JDBC_UPDATE_CAPABILITY = "update.jdbc.v1";
+    static final String JDBC_METADATA_CAPABILITY = "metadata.jdbc.v1";
     static final String LOCAL_TRANSACTION_CAPABILITY = "transaction.local.v1";
     static final String COMMUNITY_PLUGIN_CATALOG_CAPABILITY = "community.plugin-catalog.v1";
     static final String COMMUNITY_SCHEMA_METADATA_CAPABILITY = "community.metadata.schemas.v1";
@@ -72,6 +73,7 @@ final class ProtocolLoop {
             CREDIT_FLOW_CAPABILITY,
             OPERATION_CANCEL_CAPABILITY,
             JDBC_UPDATE_CAPABILITY,
+            JDBC_METADATA_CAPABILITY,
             LOCAL_TRANSACTION_CAPABILITY,
             COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
             COMMUNITY_SCHEMA_METADATA_CAPABILITY,
@@ -257,6 +259,12 @@ final class ProtocolLoop {
                 }
                 case EXECUTE_UPDATE -> {
                     jdbcRuntime.executeUpdate(meta, envelope.getExecuteUpdate());
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case METADATA_CATALOGS, METADATA_SCHEMAS, METADATA_TABLES, METADATA_COLUMNS,
+                        METADATA_PRIMARY_KEYS, METADATA_INDEXES, METADATA_FOREIGN_KEYS,
+                        METADATA_TABLE_TYPES -> {
+                    jdbcRuntime.schedule(meta, () -> jdbcRuntime.metadata(meta, envelope));
                     yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
                 }
                 case GRANT_CREDITS -> response(jdbcRuntime.grantCredits(

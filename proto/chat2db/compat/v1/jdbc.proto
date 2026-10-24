@@ -368,3 +368,27 @@ message DatabaseErrorDetail {
   optional uint32 statement_position = 4;
   repeated DatabaseErrorCause causes = 5;
 }
+
+// Raw java.sql.DatabaseMetaData requests. The engine only forwards them; the
+// host maps the returned rows into product metadata and owns every dialect
+// decision (case folding, system schemas, comments, ...).
+message JdbcMetadataRequest {
+  // JDBC catalog/schema/table selectors; empty means "every entry".
+  optional string catalog = 1;
+  optional string schema = 2;
+  optional string table = 3;
+  // Table type filter for list_tables; empty selects the JDBC default set.
+  repeated string table_types = 4;
+  // JDBC pattern (% and _) used by the column lookup.
+  optional string pattern = 5;
+  // Caps the returned rows; zero selects the engine default.
+  uint32 max_rows = 6;
+}
+
+// Raw rows produced by one DatabaseMetaData call, in the column order the JDBC
+// driver reports. The host interprets them.
+message JdbcMetadataResult {
+  repeated JdbcColumn columns = 1;
+  repeated JdbcRow rows = 2;
+  bool truncated = 3;
+}

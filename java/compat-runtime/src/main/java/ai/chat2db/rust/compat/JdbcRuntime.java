@@ -78,6 +78,7 @@ import ai.chat2db.rust.compat.protocol.v1.ValidateCommunitySqlRequest;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -100,6 +101,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 final class JdbcRuntime implements AutoCloseable {
 
     private static final int DEFAULT_BATCH_ROWS = 256;
+    private static final int DEFAULT_METADATA_ROWS = 10_000;
     private static final int DEFAULT_BATCH_BYTES = 256 * 1024;
     private static final int QUERY_METADATA_ENVELOPE_OVERHEAD = 16;
     private static final Duration DEFAULT_SHUTDOWN_TIMEOUT = Duration.ofSeconds(5);
@@ -429,6 +431,102 @@ final class JdbcRuntime implements AutoCloseable {
         } finally {
             session.finishOperation(requestId);
         }
+    }
+
+    /**
+     * Forwards one raw {@link DatabaseMetaData} call. The engine deliberately
+     * does not interpret the rows: catalog, schema and table semantics belong to
+     * the host, which knows the dialect.
+     */
+    ServerEnvelope metadata(
+            RequestMeta meta, ai.chat2db.rust.compat.protocol.v1.ClientEnvelope envelope)
+            throws RuntimeFailure {
+        JdbcSession session = sessions.require(meta.getSessionId());
+        ai.chat2db.rust.compat.protocol.v1.JdbcMetadataRequest request =
+                switch (envelope.getPayloadCase()) {
+                    case METADATA_CATALOGS -> envelope.getMetadataCatalogs();
+                    case METADATA_SCHEMAS -> envelope.getMetadataSchemas();
+                    case METADATA_TABLES -> envelope.getMetadataTables();
+                    case METADATA_COLUMNS -> envelope.getMetadataColumns();
+                    case METADATA_PRIMARY_KEYS -> envelope.getMetadataPrimaryKeys();
+                    case METADATA_INDEXES -> envelope.getMetadataIndexes();
+                    case METADATA_FOREIGN_KEYS -> envelope.getMetadataForeignKeys();
+                    case METADATA_TABLE_TYPES -> envelope.getMetadataTableTypes();
+                    default -> throw new IllegalStateException("not a metadata request");
+                };
+        try {
+            ai.chat2db.rust.compat.protocol.v1.JdbcMetadataResult result =
+                    readMetadata(session.connection(), envelope.getPayloadCase(), request);
+            ServerEnvelope response = ProtocolResponses.response(meta, 0, true)
+                    .setMetadataResult(result)
+                    .build();
+            ensureFrameFits(response, "metadata_result");
+            return response;
+        } catch (SQLException failure) {
+            throw session.decorate(RuntimeFailure.database(
+                    "database.metadata_failed",
+                    "the metadata lookup failed",
+                    failure,
+                    OperationOutcome.OPERATION_OUTCOME_KNOWN_FAILED,
+                    false));
+        }
+    }
+
+    private static ai.chat2db.rust.compat.protocol.v1.JdbcMetadataResult readMetadata(
+            Connection connection,
+            ai.chat2db.rust.compat.protocol.v1.ClientEnvelope.PayloadCase operation,
+            ai.chat2db.rust.compat.protocol.v1.JdbcMetadataRequest request)
+            throws SQLException, RuntimeFailure {
+        DatabaseMetaData metadata = connection.getMetaData();
+        String catalog = request.hasCatalog() ? request.getCatalog() : null;
+        String schema = request.hasSchema() ? request.getSchema() : null;
+        String table = request.hasTable() ? request.getTable() : null;
+        String pattern = request.hasPattern() ? request.getPattern() : null;
+        String[] types = request.getTableTypesCount() == 0
+                ? null
+                : request.getTableTypesList().toArray(new String[0]);
+        try (ResultSet rows = switch (operation) {
+            case METADATA_CATALOGS -> metadata.getCatalogs();
+            case METADATA_SCHEMAS -> metadata.getSchemas();
+            case METADATA_TABLES -> metadata.getTables(catalog, schema, table, types);
+            case METADATA_COLUMNS -> metadata.getColumns(catalog, schema, table, pattern);
+            case METADATA_PRIMARY_KEYS -> metadata.getPrimaryKeys(catalog, schema, table);
+            case METADATA_INDEXES -> metadata.getIndexInfo(catalog, schema, table, false, false);
+            case METADATA_FOREIGN_KEYS -> metadata.getImportedKeys(catalog, schema, table);
+            case METADATA_TABLE_TYPES -> metadata.getTableTypes();
+            default -> throw new SQLException("unsupported metadata operation");
+        }) {
+            int maximum = request.getMaxRows() == 0 ? DEFAULT_METADATA_ROWS : request.getMaxRows();
+            return readMetadataRows(rows, maximum);
+        }
+    }
+
+    private static ai.chat2db.rust.compat.protocol.v1.JdbcMetadataResult readMetadataRows(
+            ResultSet rows, int maximumRows) throws SQLException, RuntimeFailure {
+        List<ai.chat2db.rust.compat.protocol.v1.JdbcColumn> columns =
+                ValueCodec.columns(rows.getMetaData(), ProtocolLimits.MAX_SCALAR_BYTES);
+        ai.chat2db.rust.compat.protocol.v1.JdbcMetadataResult.Builder result =
+                ai.chat2db.rust.compat.protocol.v1.JdbcMetadataResult.newBuilder()
+                        .addAllColumns(columns);
+        int count = 0;
+        while (rows.next()) {
+            if (count >= maximumRows) {
+                result.setTruncated(true);
+                break;
+            }
+            ai.chat2db.rust.compat.protocol.v1.JdbcRow.Builder row =
+                    ai.chat2db.rust.compat.protocol.v1.JdbcRow.newBuilder();
+            for (ai.chat2db.rust.compat.protocol.v1.JdbcColumn column : columns) {
+                try {
+                    row.addValues(ValueCodec.read(rows, column, ProtocolLimits.MAX_SCALAR_BYTES));
+                } catch (ValueCodec.ValueLimitExceeded exceeded) {
+                    throw RuntimeFailure.limit(exceeded.field(), ProtocolLimits.MAX_SCALAR_BYTES);
+                }
+            }
+            result.addRows(row);
+            count++;
+        }
+        return result.build();
     }
 
     private static void markCommunityFailure(JdbcSession session, RuntimeFailure failure) {
