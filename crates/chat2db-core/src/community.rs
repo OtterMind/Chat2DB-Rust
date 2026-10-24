@@ -1469,9 +1469,9 @@ impl Application {
     /// # Errors
     ///
     /// Currently never returns an error.
-    // The async signature is kept so a native provider can be plugged in without
-    // another cross-layer signature change.
-    #[allow(clippy::unused_async)]
+    // The signature stays async so a native provider can slot in later; the older
+    // and newer toolchains name the resulting lint differently.
+    #[allow(unknown_lints, clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn complete_community_sql(
         &self,
         _request: CompleteCommunitySqlRequest,

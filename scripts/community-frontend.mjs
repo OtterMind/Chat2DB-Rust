@@ -151,20 +151,34 @@ function setupUmi(worktree) {
   });
 }
 
+// The pinned client renames and retires its own regression scripts between
+// syncs. Run the ones this repository tracks that the pinned revision still
+// defines instead of failing on a name upstream removed.
+const COMMUNITY_TEST_SCRIPTS = [
+  'test:chat-answer-update',
+  'test:tree-title-highlight',
+  'test:deep-clone',
+  'test:ai-model-select',
+  'test:export-connections',
+  'test:host-file-transfer',
+  'test:canvas-lifecycle',
+  'test:result-error-boundary',
+  'test:result-resource-activity',
+  'test:result-table-lifecycle',
+  'test:workspace-resource-activity',
+];
+
 function test() {
   const worktree = createWorktree('test');
   setupUmi(worktree);
-  runYarn(['test:chat-answer-update'], worktree);
-  runYarn(['test:tree-title-highlight'], worktree);
-  runYarn(['test:deep-clone'], worktree);
-  runYarn(['test:ai-model-select'], worktree);
-  runYarn(['test:export-connections'], worktree);
-  runYarn(['test:host-file-transfer'], worktree);
-  runYarn(['test:canvas-lifecycle'], worktree);
-  runYarn(['test:result-error-boundary'], worktree);
-  runYarn(['test:result-resource-activity'], worktree);
-  runYarn(['test:result-table-lifecycle'], worktree);
-  runYarn(['test:workspace-resource-activity'], worktree);
+  const scripts = JSON.parse(readFileSync(join(worktree, 'package.json'), 'utf8')).scripts ?? {};
+  const selected = COMMUNITY_TEST_SCRIPTS.filter((name) => scripts[name]);
+  if (!selected.length) {
+    fail('the pinned client no longer exposes any tracked regression script');
+  }
+  for (const script of selected) {
+    runYarn([script], worktree);
+  }
 }
 
 function build() {
