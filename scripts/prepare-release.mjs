@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
@@ -95,9 +96,16 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       throw new Error('usage: GITHUB_SHA=<source commit> node prepare-release.mjs <artifacts directory> <empty output directory>');
     }
     const version = checkProductVersion(ROOT_DIR, process.env.GITHUB_REF_NAME);
-    const community = JSON.parse(await readFile(join(ROOT_DIR, 'scripts/community-frontend.lock.json'), 'utf8'));
+    // The manifests record the packaged Java source, which is the pinned
+    // Community submodule. The vendored client in the lock file can be pinned
+    // ahead of it, so the submodule gitlink is the value to verify.
+    const communityCommit = execFileSync(
+      'git',
+      ['rev-parse', 'HEAD:third_party/chat2db-community'],
+      { cwd: ROOT_DIR, encoding: 'utf8' },
+    ).trim();
     const assets = await prepareRelease({
-      artifactsDir, outputDir, version, commit: process.env.GITHUB_SHA, communityCommit: community.commit,
+      artifactsDir, outputDir, version, commit: process.env.GITHUB_SHA, communityCommit,
     });
     console.log(`prepared ${assets.length} release assets for v${version}`);
   } catch (error) {
