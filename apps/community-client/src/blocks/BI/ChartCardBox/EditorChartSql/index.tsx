@@ -5,13 +5,13 @@ import { IChartItem } from '@/typings/dashboard';
 import SQLExecute, { SQLExecuteRef } from '@/pages/main/workspace/components/SQLExecute';
 import { WorkspaceTabType } from '@/constants';
 import { getTemporaryId, randomLargeLong } from '@/utils';
+import { buildChartExecutionResult, type DatabaseInfoAndMetaData } from './executionResult';
 
 export interface IProps {
   className?: string;
   chartDetail: IChartItem;
 }
 
-type DatabaseInfoAndMetaData = Pick<IChartItem, 'databaseInfo' | 'metaData'>;
 export interface EditorChartSqlRef {
   getDatabaseInfoAndMetaData: () => DatabaseInfoAndMetaData;
 }
@@ -60,20 +60,7 @@ const EditorChartSql = forwardRef((props: IProps, ref: ForwardedRef<EditorChartS
   const workspaceTabId = useMemo(() => getTemporaryId(), []);
 
   const onExecuteSQLCallback = (params) => {
-    const {
-      databaseInfo: { dataSourceId, dataSourceName, databaseType, databaseName, schemaName, sql },
-      data,
-    } = params;
-
-    const { dataList, headerList } = data[0];
-
-    setDatabaseInfoAndMetaData({
-      databaseInfo: { dataSourceId, dataSourceName, databaseType, databaseName, schemaName, sql },
-      metaData: {
-        dataList,
-        headerList,
-      } as any,
-    });
+    setDatabaseInfoAndMetaData(buildChartExecutionResult(params));
   };
 
   return (

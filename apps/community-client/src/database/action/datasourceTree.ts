@@ -4,7 +4,7 @@ import { DataSourceTreeSchema, FilterInputSchema } from '../validation';
 // Database operation class
 class DataSourceTreeService {
   // create
-  async initFilter(datasourceId: number) {
+  async initFilter(datasourceId: string | number) {
     const input = FilterInputSchema.parse({ datasourceId });
     const data = DataSourceTreeSchema.parse({
       datasourceId: input.datasourceId,
@@ -25,22 +25,13 @@ class DataSourceTreeService {
   }
 
   // Modify the hiddenTreeNodeIds of a datasourceId
-  async updateHiddenTreeNodeIds(datasourceId: number, hiddenTreeNodeIds: string[]) {
-    // If there is no data source, initialize it first
-    let existData = await this.getTreeHiddenTreeNodeIds();
-    if (!existData[datasourceId]) {
-      await this.initFilter(datasourceId);
-      existData = await this.getTreeHiddenTreeNodeIds();
-    }
-
-    await db.dataSourceTree
-      .where('datasourceId')
-      .equals(datasourceId)
-      .modify({ hiddenTreeNodeIds });
+  async updateHiddenTreeNodeIds(datasourceId: string | number, hiddenTreeNodeIds: string[]) {
+    const data = DataSourceTreeSchema.parse({ datasourceId, hiddenTreeNodeIds });
+    await db.dataSourceTree.put(data);
   }
 
   // add or delete
-  async addOrDeleteHiddenTreeNodeIds(datasourceId: number, hiddenTreeNodeId: string) {
+  async addOrDeleteHiddenTreeNodeIds(datasourceId: string | number, hiddenTreeNodeId: string) {
     // If there is no data source, initialize it first
     let existData = await this.getTreeHiddenTreeNodeIds();
     if (!existData[datasourceId]) {
@@ -62,7 +53,7 @@ class DataSourceTreeService {
   }
 
   // Delete
-  async delete(datasourceId: number) {
+  async delete(datasourceId: string | number) {
     const input = FilterInputSchema.parse({ datasourceId });
     
     await db.dataSourceTree
@@ -72,7 +63,7 @@ class DataSourceTreeService {
   }
 
   // Clean invalid data
-  async cleanUpJunkData(deletedDataSourceId: number) {
+  async cleanUpJunkData(deletedDataSourceId: string | number) {
     await this.delete(deletedDataSourceId);
   }
 }

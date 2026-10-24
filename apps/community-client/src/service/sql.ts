@@ -1,4 +1,6 @@
 import createRequest from './base';
+import type { IExcelOptions, IJsonOptions, ICsvOptions } from '@/typings/importExport';
+import { ImportUnmappedTarget } from '@/constants/importExport';
 import {
   IPageResponse,
   IPageParams,
@@ -15,6 +17,18 @@ import {
 } from '@/typings';
 import { DatabaseTypeCode } from '@/constants';
 import { ExportSizeEnum, ExportTypeEnum } from '@/typings/resultTable';
+import type {
+  ActiveTransactionLockMetadataSource,
+  ActiveTransactionLockMetadataState,
+  ActiveTransactionQueryState,
+  ActiveTransactionSessionState,
+} from '@/constants/activeTransaction';
+import type {
+  IDdlExecuteRequest,
+  ISqlEditorExecuteRequest,
+  ITableBrowseRequest,
+  ITableEditExecuteRequest,
+} from './dmlRequest';
 
 export interface IGetTableListParams extends IPageParams {
   dataSourceId: number;
@@ -23,7 +37,7 @@ export interface IGetTableListParams extends IPageParams {
   databaseType?: DatabaseTypeCode;
 }
 
-export interface IExecuteSqlParams {
+interface IDmlResultRequest {
   sql?: string;
   single?: boolean;
   dataSourceId?: number;
@@ -43,12 +57,6 @@ export interface IExecuteSqlResponse {
   headerList: any[];
   dataList: any[];
 }
-export interface IConnectConsoleParams {
-  consoleId: number;
-  dataSourceId: number;
-  databaseName: string;
-}
-
 export interface IRoutineOperationParams {
   dataSourceId: number;
   databaseName?: string;
@@ -70,13 +78,13 @@ const getTableList = createRequest<IGetTableListParams, IPageResponse<ITable>>('
   errorLevel: false,
 });
 
-const executeSql = createRequest<IExecuteSqlParams, IManageResultData[]>('/api/rdb/dml/execute', {
+const executeSql = createRequest<ISqlEditorExecuteRequest, IManageResultData[]>('/api/rdb/dml/execute', {
   method: 'post',
   errorLevel: false,
   timeout: false,
 });
 
-const viewTable = createRequest<IExecuteSqlParams, IManageResultData[]>('/api/rdb/dml/execute_table', {
+const viewTable = createRequest<ITableBrowseRequest, IManageResultData[]>('/api/rdb/dml/execute_table', {
   method: 'post',
   errorLevel: false,
 });
@@ -86,12 +94,15 @@ const getLargeCellValue = createRequest<ILargeCellValueRequest, ILargeCellChunk>
   errorLevel: 'toast',
 });
 
+const releaseLargeCellValues = createRequest<{ largeValueIds: string[] }, void>('/api/rdb/cell/release', {
+  method: 'post',
+  errorLevel: false,
+});
+
 const downloadLargeCellValue = createRequest<ILargeCellDownloadRequest, string>('/api/rdb/cell/download_path', {
   method: 'post',
   errorLevel: 'toast',
 });
-
-const connectConsole = createRequest<IConnectConsoleParams, void>('/api/connection/console/connect', { method: 'get' });
 
 //Table operations
 export interface ITableParams {
@@ -99,13 +110,6 @@ export interface ITableParams {
   dataSourceId: number;
   databaseName: string;
   schemaName?: string;
-}
-
-export interface IExecuteTableParams {
-  sql: string;
-  consoleId: number;
-  dataSourceId: number;
-  databaseName: string;
 }
 
 export interface IColumn {
@@ -203,7 +207,6 @@ const updateTableExample = createRequest<{ dbType: DatabaseTypeCode }, string>('
   method: 'get',
 });
 const exportCreateTableSql = createRequest<ITableParams, string>('/api/rdb/ddl/export', { method: 'get' });
-const executeTable = createRequest<IExecuteTableParams, string>('/api/rdb/ddl/execute', { method: 'post' });
 
 const getColumnList = createRequest<ITableParams, ICountedListResponse<IColumn>>('/api/rdb/ddl/column_list', {
   method: 'get',
@@ -235,18 +238,13 @@ const addTablePin = createRequest<IUniversalTableParams, void>('/api/pin/table/a
 const deleteTablePin = createRequest<IUniversalTableParams, void>('/api/pin/table/delete', { method: 'post' });
 
 /** Get all rows of currently executing SQL */
-const getDMLCount = createRequest<IExecuteSqlParams, number>('/api/rdb/dml/count', { method: 'post' });
+const getDMLCount = createRequest<IDmlResultRequest, number>('/api/rdb/dml/count', { method: 'post' });
 
-export interface IExportParams extends IExecuteSqlParams {
+export interface IExportParams extends IDmlResultRequest {
   originalSql: string;
   exportType: ExportTypeEnum;
   exportSize: ExportSizeEnum;
 }
-/**
- * Export-Table
- */
-const exportResultTable = createRequest<IExportParams, any>('/api/rdb/dml/export', { method: 'post' });
-
 /** Get the view list */
 const getViewList = createRequest<IGetTableListParams, IPageResponse<IRoutines>>('/api/rdb/view/list', {
   method: 'get',
@@ -384,7 +382,7 @@ const getModifyTableSql = createRequest<IModifyTableSqlParams, { sql: string }[]
 });
 
 /** Execute sql for editing tables, specially designed for editing tables */
-const executeDDL = createRequest<IExecuteSqlParams, { success: boolean; message: string; originalSql: string }>(
+const executeDDL = createRequest<IDdlExecuteRequest, { success: boolean; message: string; originalSql: string }>(
   '/api/rdb/dml/execute_ddl',
   { method: 'post' },
 );
@@ -405,10 +403,10 @@ const executeRoutineMigration = createRequest<IRoutineMigrationParams, { success
 );
 
 // Execute sql that modifies table data
-const executeUpdateDataSql = createRequest<IExecuteSqlParams, { success: boolean; message: string; sql: string }>(
-  '/api/rdb/dml/execute_update',
-  { method: 'post', errorLevel: false },
-);
+const executeUpdateDataSql = createRequest<
+  ITableEditExecuteRequest,
+  { success: boolean; message: string; sql: string }
+>('/api/rdb/dml/execute_update', { method: 'post', errorLevel: false });
 
 /** Get the interface for modifying table data */
 const getExecuteUpdateSql = createRequest<any, string>('/api/rdb/dml/get_update_sql', { method: 'post' });
@@ -439,11 +437,139 @@ const truncateTable = createRequest<ITableParams, void>('/api/rdb/table/truncate
 
 export interface ICopyTableParams extends ITableParams {
   copyData: boolean;
+  newName: string;
 }
+
+const prepareCopyTable = createRequest<ITableParams, string>('/api/rdb/table/copy/prepare', { method: 'get' });
 
 // Copy table
 const copyTable = createRequest<ICopyTableParams, void>('/api/rdb/table/copy', { method: 'post' });
 
+/** Database-independent import preview and column mapping. */
+export interface IImportPreview {
+  sourceColumns: string[];
+  previewData: string[][];
+  targetTableName: string;
+  targetColumns: {
+    name: string;
+    dataType: string;
+    nullable: boolean;
+    autoIncrement: boolean;
+    defaultValue: string | null;
+    comment: string | null;
+  }[];
+  suggestedMapping: { sourceColumn: string; targetColumn: string }[];
+  previewLimit: number;
+}
+
+export interface IImportTaskSubmitResult {
+  taskId: number;
+}
+
+const uploadImportFile = createRequest<{ file: File }, string>('/api/rdb/import_preview/upload', {
+  method: 'post',
+  contentType: 'formData',
+});
+
+const stageDesktopImportFile = createRequest<{ sourceFile: string; originalFileName: string }, string>(
+  '/api/rdb/import_preview/upload_local',
+  { method: 'post' },
+);
+
+const getImportPreview = createRequest<
+  {
+    dataSourceId: number;
+    databaseName: string;
+    schemaName?: string;
+    tableName: string;
+    fileId: string;
+    csvOptions?: ICsvOptions;
+    excelOptions?: IExcelOptions;
+    jsonOptions?: IJsonOptions;
+  },
+  IImportPreview
+>('/api/rdb/import_preview/preview', { method: 'post', errorLevel: false });
+
+const getImportSheets = createRequest<
+  { dataSourceId: number; databaseName: string; schemaName?: string; fileId: string },
+  string[]
+>('/api/rdb/import_preview/sheets', { method: 'post', errorLevel: false });
+
+const executeImportWithMapping = createRequest<
+  {
+    dataSourceId: number;
+    databaseName: string;
+    schemaName?: string;
+    tableName: string;
+    fileId: string;
+    mappings: { sourceColumn: string | null; targetColumn: string }[];
+    unmappedTarget: ImportUnmappedTarget;
+    csvOptions?: ICsvOptions;
+    excelOptions?: IExcelOptions;
+    jsonOptions?: IJsonOptions;
+    mode?: import('@/typings/importExport').ImportExecutionMode;
+  },
+  IImportTaskSubmitResult
+>('/api/rdb/import_preview/execute', { method: 'post' });
+/** Active InnoDB transactions (MYSQL-OPS-002). */
+export interface IActiveTransactionItem {
+  trxId: string | null;
+  state: string | null;
+  startedAt: number | string | null;
+  ageSeconds: number | null;
+  isolationLevel: string | null;
+  rowsLocked: number | null;
+  rowsModified: number | null;
+  lockStructs: number | null;
+  threadId: number | null;
+  user: string | null;
+  host: string | null;
+  db: string | null;
+  query: string | null;
+  queryState?: ActiveTransactionQueryState;
+  sessionAvailable?: boolean;
+  sessionState?: ActiveTransactionSessionState;
+  canOpenSession?: boolean;
+  connectionInspectionSql: string | null;
+  waitingLockId?: string | null;
+  blockingLockId?: string | null;
+  blockingTrxId?: string | null;
+  waitingPerformanceSchemaThreadId?: number | null;
+  blockingPerformanceSchemaThreadId?: number | null;
+  blockingThreadId?: number | null;
+  blockingSessionAvailable?: boolean;
+  canOpenBlockingSession?: boolean;
+  blockingConnectionInspectionSql: string | null;
+  blockingUser?: string | null;
+  blockingHost?: string | null;
+  blockingDb?: string | null;
+  waitingObject?: string | null;
+  waitingIndex?: string | null;
+  waitingLockType?: string | null;
+  waitingLockMode?: string | null;
+  waitingLockStatus?: string | null;
+  waitingLockData?: string | null;
+  blockingObject?: string | null;
+  blockingIndex?: string | null;
+  blockingLockType?: string | null;
+  blockingLockMode?: string | null;
+  blockingLockStatus?: string | null;
+  blockingLockData?: string | null;
+  lockWaitAvailable?: boolean;
+  lockMetadataState?: ActiveTransactionLockMetadataState;
+  lockMetadataSource?: ActiveTransactionLockMetadataSource | null;
+}
+
+export interface IActiveTransactionRequest {
+  dataSourceId: number;
+  databaseName?: string;
+  schemaName?: string;
+}
+
+const getActiveTransactionList = createRequest<IActiveTransactionRequest, IActiveTransactionItem[]>(
+  '/api/rdb/active_transaction/list',
+  { method: 'get', errorLevel: false },
+);
 const checkIsSelectSQL = createRequest<{ sql: string; dbType: DatabaseTypeCode }, boolean>('/api/sql/valid_select');
 
 const getDataSourceList = createRequest<IPageParams, IPageResponse<IConnectionDetails>>(
@@ -455,7 +581,9 @@ const getDataSourceList = createRequest<IPageParams, IPageResponse<IConnectionDe
 
 export default {
   copyTable,
+  prepareCopyTable,
   downloadLargeCellValue,
+  releaseLargeCellValues,
   getLargeCellValue,
   truncateTable,
   getCreateSchemaSql,
@@ -482,8 +610,6 @@ export default {
   getViewList,
   getTableList,
   executeSql,
-  executeTable,
-  connectConsole,
   deleteTable,
   prepareDeleteDatabase,
   executeDeleteDatabase,
@@ -501,10 +627,14 @@ export default {
   addTablePin,
   deleteTablePin,
   getDMLCount,
-  // exportResultTable
   getAllTableList,
   getAllFieldByTable,
-  exportResultTable,
   checkIsSelectSQL,
+  getImportPreview,
+  getImportSheets,
+  executeImportWithMapping,
+  uploadImportFile,
+  stageDesktopImportFile,
+  getActiveTransactionList,
   getDataSourceList,
 };

@@ -7,7 +7,7 @@ import { handleSetValue } from '../../core/setValue';
 import { ContentDiffKind, EditorSetValueType } from '../../type';
 import './index.less';
 import { useStyles } from './style';
-import { setupMonacoEnvironment } from '@/utils/monaco';
+import { runMonacoDisposalSafely, setupMonacoEnvironment } from '@/utils/monaco';
 import {
   normalizeSqlInputPunctuation,
   shouldNormalizeSqlInputPunctuation,
@@ -808,6 +808,8 @@ const MonacoSQLEditor = forwardRef<MonacoEditorRef, MonacoSQLEditorProps>(
         });
         wrapperRef.current?.dispatchEvent(event);
       });
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Slash, () => {});
+      editor.addCommand(monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyA, () => {});
     };
 
     const handleHover = useCallback(
@@ -936,34 +938,4 @@ const getAdjacentContentDiffHunk = (
 
   const offset = direction === 'next' ? 1 : -1;
   return navigableHunks[(currentIndex + offset + navigableHunks.length) % navigableHunks.length];
-};
-
-const isMonacoCanceledError = (error: unknown) => {
-  if (error === 'Canceled') {
-    return true;
-  }
-  if (!error || typeof error !== 'object') {
-    return false;
-  }
-  const canceledError = error as { name?: unknown; message?: unknown };
-  return canceledError.name === 'Canceled' || canceledError.message === 'Canceled';
-};
-
-const runMonacoDisposalSafely = (task: () => unknown) => {
-  try {
-    const result = task();
-    if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
-      Promise.resolve(result).catch((error) => {
-        if (!isMonacoCanceledError(error)) {
-          setTimeout(() => {
-            throw error;
-          }, 0);
-        }
-      });
-    }
-  } catch (error) {
-    if (!isMonacoCanceledError(error)) {
-      throw error;
-    }
-  }
 };

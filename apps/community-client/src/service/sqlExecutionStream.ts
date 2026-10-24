@@ -1,6 +1,6 @@
 import { JcefEventBus, JavaPushActionType } from '@/jcef/eventBus';
 import createJcefApi from '@/jcef/base';
-import { IExecuteSqlParams } from '@/service/executeSql';
+import type { ISqlEditorExecuteRequest } from '@/service/dmlRequest';
 import { IManageResultData } from '@/typings';
 import { SqlTypeEnum } from '@/typings/sqlParser';
 
@@ -82,7 +82,7 @@ export interface SqlExecutionStatement {
   historySequence?: number;
 }
 
-export function startSqlExecution(params: IExecuteSqlParams, requestUuid: string) {
+export function startSqlExecution(params: ISqlEditorExecuteRequest, requestUuid: string) {
   return createJcefApi<SqlExecutionStartResult>('sql-execute', params, requestUuid);
 }
 
@@ -170,6 +170,39 @@ export function mergeRows(current: IManageResultData[], chunk: IManageResultData
     };
   });
   return matched ? next : [...next, normalizedChunk];
+}
+
+export type PendingSqlExecutionRows = Map<string, IManageResultData>;
+
+/**
+ * Accumulate streamed rows outside React state so high-volume result sets do
+ * not allocate a new complete dataList for every transport chunk.
+ */
+export function appendRowsToPendingResult(
+  pendingRows: PendingSqlExecutionRows,
+  resultKey: string,
+  chunk: IManageResultData,
+) {
+  const rows = Array.isArray(chunk.dataList) ? chunk.dataList : [];
+  const existing = pendingRows.get(resultKey);
+  if (!existing) {
+    pendingRows.set(resultKey, {
+      ...chunk,
+      dataList: [...rows],
+    });
+    return rows.length;
+  }
+
+  existing.dataList.push(...rows);
+  return existing.dataList.length;
+}
+
+export function discardPendingRowsForExecution(pendingRows: PendingSqlExecutionRows, executionId: string) {
+  for (const [resultKey, result] of pendingRows) {
+    if (result.extra?.executionId === executionId) {
+      pendingRows.delete(resultKey);
+    }
+  }
 }
 
 export function mergeResultFinished(current: IManageResultData[], result: IManageResultData) {
@@ -359,7 +392,6 @@ function ensureResultData(result: IManageResultData) {
     sql: normalized.sql || normalized.originalSql || '',
     originalSql: normalized.originalSql || normalized.sql || '',
     success: normalized.success ?? true,
-    duration: normalized.duration || 0,
     headerList: normalized.headerList || [],
     dataList: normalized.dataList || [],
     sqlType: normalized.sqlType || SqlTypeEnum.OTHER,

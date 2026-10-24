@@ -68,11 +68,6 @@ export enum QuestionType {
   CRUD_GENERATION = 'CRUD_GENERATION',
 
   /**
-   * Data insertion
-   */
-  DATA_INSERT = 'DATA_INSERT',
-
-  /**
    * SQL prompt
    */
   SQL_PROMPT = 'SQL_PROMPT',
@@ -108,10 +103,6 @@ export enum ChatSourceType {
    */
   DRAWER_CHAT = 'DRAWER_CHAT',
   /**
-   * Chat2Excel
-   */
-  EXCEL_CHAT = 'EXCEL_CHAT',
-  /**
    * Chat with dataSourceId
    */
   DATASOURCE_CHAT = 'DATASOURCE_CONSOLE_CHAT',
@@ -119,11 +110,6 @@ export enum ChatSourceType {
    * Chat without dataSourceId
    */
   SINGLE_TURN_CHAT = 'SINGLE_TURN_CHAT',
-}
-
-export enum ChatCornerstoneType {
-  EXCEL = 'EXCEL',
-  DATABASE = 'DATABASE',
 }
 
 // Message types supported for rendering in chat

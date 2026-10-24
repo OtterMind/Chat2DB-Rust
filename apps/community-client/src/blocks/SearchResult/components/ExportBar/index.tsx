@@ -1,14 +1,13 @@
 import { memo, useMemo } from 'react';
-import { Dropdown, MenuProps, Space } from 'antd';
-import { ChevronDown } from 'lucide-react';
+import { Dropdown, MenuProps } from 'antd';
+import DropdownChevronTrigger from '@/components/DropdownChevronTrigger';
 import { ExportSizeEnum, ExportTypeEnum } from '@/typings/resultTable';
 import i18n from '@/i18n';
-import sqlService, { IExportParams } from '@/service/sql';
-import { downloadFile } from '@/utils/file';
-import { useStyles } from './style';
-import { isDesktop } from '@/utils/env';
+import { IExportParams } from '@/service/sql';
 import { IManageResultData } from '@/typings';
-import jcefApi from '@/jcef';
+import importExportServices from '@/service/importExport';
+import { ImportExportFileType, ImportExportTaskType } from '@/constants/importExport';
+import { useImportExportStore } from '@/store/importExport';
 
 interface IProps {
   resultData: IManageResultData;
@@ -17,7 +16,10 @@ interface IProps {
 export default memo<IProps>((props) => {
   const { resultData } = props;
   const { executeSqlParams } = resultData;
-  const { styles } = useStyles();
+  const { getTaskList, openLogModal } = useImportExportStore((state) => ({
+    getTaskList: state.getTaskList,
+    openLogModal: state.openLogModal,
+  }));
   const handleExportSQLResult = async (exportType: ExportTypeEnum, exportSize: ExportSizeEnum) => {
     const params: IExportParams = {
       ...(executeSqlParams || {}),
@@ -26,13 +28,22 @@ export default memo<IProps>((props) => {
       exportType,
       exportSize,
     };
-    if (isDesktop) {
-      sqlService.exportResultTable(params).then((res) => {
-        jcefApi?.revealInExplorer(res);
-      });
-    } else {
-      downloadFile('/api/rdb/dml/export', params);
-    }
+    const format =
+      exportType === ExportTypeEnum.EXCEL
+        ? ImportExportFileType.XLSX
+        : exportType === ExportTypeEnum.INSERT
+        ? ImportExportFileType.SQL
+        : ImportExportFileType.CSV;
+    const tableName = resultData.tableName || params.tableName;
+    const result = await importExportServices.submitExport({
+      ...params,
+      schemaName: params.schemaName || undefined,
+      taskType: ImportExportTaskType.QUERY_RESULT_EXPORT,
+      tableNames: tableName ? [tableName] : undefined,
+      format,
+    });
+    getTaskList();
+    openLogModal(result.taskId);
   };
   // export sql menu item
   const exportDropdownItems: MenuProps['items'] = useMemo(
@@ -90,10 +101,7 @@ export default memo<IProps>((props) => {
   );
   return (
     <Dropdown destroyPopupOnHide menu={{ items: exportDropdownItems }} trigger={['click']}>
-      <Space className={styles.exportBar}>
-        {i18n('common.text.export')}
-        <ChevronDown size={14} />
-      </Space>
+      <DropdownChevronTrigger>{i18n('common.text.export')}</DropdownChevronTrigger>
     </Dropdown>
   );
 });

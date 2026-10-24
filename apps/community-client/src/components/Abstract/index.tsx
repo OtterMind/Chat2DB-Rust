@@ -18,13 +18,12 @@ const VText = VTable.VText;
 
 interface IProps {
   className?: string;
-  active?: boolean;
   data: any[];
   customOptions?: ICustomOptions;
 }
 
 export default memo<IProps>((props) => {
-  const { active = true, className, data, customOptions } = props;
+  const { className, data, customOptions } = props;
   const { styles, cx, theme } = useStyles();
   const tableRef = useRef<CanvasTableRef>(null);
   const setCurrentWorkspaceExtend = useWorkspaceStore((s) => s.setCurrentWorkspaceExtend);
@@ -229,7 +228,7 @@ export default memo<IProps>((props) => {
       },
       {
         title: i18n('common.text.time'),
-        field: 'duration',
+        field: 'cost',
         width: 'auto',
         minWidth: 80,
         fontSize: customFontSize,
@@ -250,7 +249,10 @@ export default memo<IProps>((props) => {
       return {
         originalSql: item.originalSql,
         success: item.success,
-        duration: `${item.duration || 0}ms`,
+        cost:
+          typeof item.executionMetrics?.totalDurationMs === 'number'
+            ? `${item.executionMetrics.totalDurationMs}ms`
+            : '-',
         message: renderMessage(item),
         updateCount: item.updateCount,
         executeSqlParams: item.executeSqlParams,
@@ -262,7 +264,6 @@ export default memo<IProps>((props) => {
     <>
       <div className={cx(styles.abstract, className)}>
         <CanvasTable
-          active={active}
           ref={tableRef}
           records={records}
           columns={columns}

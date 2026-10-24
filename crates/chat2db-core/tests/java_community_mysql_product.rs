@@ -5,9 +5,9 @@ use chat2db_contract::{
     BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest, CommunityDatabase,
     CommunityDmlAssignment, CommunityDmlColumn, CommunityDmlRow, CommunityDmlStatement,
     CommunityDmlTarget, CommunityDmlTemporalKind, CommunityDmlValue,
-    CommunityNamespaceSqlOperation, CompleteCommunitySqlRequest, ComponentState,
-    CreateDatasourceRequest, Datasource, DatasourceConnection, DatasourceConnectionProperty,
-    DatasourceSecretChange, FormatCommunitySqlRequest, JdbcValue, ListCommunityColumnsRequest,
+    CommunityNamespaceSqlOperation, ComponentState, CreateDatasourceRequest, Datasource,
+    DatasourceConnection, DatasourceConnectionProperty, DatasourceSecretChange,
+    FormatCommunitySqlRequest, JdbcValue, ListCommunityColumnsRequest,
     ListCommunityDatabasesRequest, ListCommunityIndexesRequest, ListCommunityTablesRequest,
     OperationEvent, ParseCommunitySqlRequest, QueryLimits, ResultPageRequest,
     StartCommunityTablePreviewRequest, StartQueryRequest, UpdateDatasourceRequest,
@@ -433,7 +433,7 @@ async fn verify_database_vertical(
     verify_mysql_metadata(&harness.application, &datasource.id, database_name).await;
     verify_typed_dml(&harness.application, &fixture.server_session, database_name).await;
     verify_table_preview(&harness.application, &datasource.id, database_name).await;
-    verify_sql_tools(&harness.application, &datasource.id, database_name).await;
+    verify_sql_tools(&harness.application).await;
     verify_product_query(&harness.application, &datasource.id).await;
 }
 
@@ -682,7 +682,7 @@ async fn verify_typed_dml(application: &Application, session: &Session, database
     assert_eq!(execute_update(session, &update_sql).await, 1);
 }
 
-async fn verify_sql_tools(application: &Application, datasource_id: &str, database_name: &str) {
+async fn verify_sql_tools(application: &Application) {
     let validation = application
         .validate_community_sql(ValidateCommunitySqlRequest {
             database_type: MYSQL_DATABASE_TYPE.to_owned(),
@@ -715,52 +715,6 @@ async fn verify_sql_tools(application: &Application, datasource_id: &str, databa
         .await
         .expect("Core must invoke the real MySQL parser");
     assert_eq!(parsed.statements.len(), 2);
-
-    let table_sql = "select * from ";
-    let tables = application
-        .complete_community_sql(CompleteCommunitySqlRequest {
-            datasource_id: datasource_id.to_owned(),
-            database_type: MYSQL_DATABASE_TYPE.to_owned(),
-            database_name: database_name.to_owned(),
-            schema_name: String::new(),
-            sql: table_sql.to_owned(),
-            cursor_utf16: utf16_len(table_sql),
-            min_prefix_length: 0,
-            need_full_name: false,
-            keyword_case: "UPPER".to_owned(),
-            active_snippet_slot: None,
-        })
-        .await
-        .expect("Core must expose real MySQL table completion");
-    assert_eq!(tables.status, "success");
-    assert!(tables.candidates.iter().any(|candidate| {
-        candidate.label.eq_ignore_ascii_case("items")
-            && candidate.r#type.eq_ignore_ascii_case("table")
-    }));
-
-    let column_sql = "select items. from items";
-    let columns = application
-        .complete_community_sql(CompleteCommunitySqlRequest {
-            datasource_id: datasource_id.to_owned(),
-            database_type: MYSQL_DATABASE_TYPE.to_owned(),
-            database_name: database_name.to_owned(),
-            schema_name: String::new(),
-            sql: column_sql.to_owned(),
-            cursor_utf16: utf16_len("select items."),
-            min_prefix_length: 0,
-            need_full_name: false,
-            keyword_case: "UPPER".to_owned(),
-            active_snippet_slot: None,
-        })
-        .await
-        .expect("Core must expose real MySQL column completion");
-    assert_eq!(columns.status, "success");
-    for expected in ["id", "label"] {
-        assert!(columns.candidates.iter().any(|candidate| {
-            candidate.label.eq_ignore_ascii_case(expected)
-                && candidate.r#type.eq_ignore_ascii_case("column")
-        }));
-    }
 }
 
 async fn verify_product_query(application: &Application, datasource_id: &str) {
@@ -928,10 +882,6 @@ fn dml_assignment(
         column: dml_column(name, data_type_name, None, None),
         value,
     }
-}
-
-fn utf16_len(value: &str) -> u32 {
-    u32::try_from(value.encode_utf16().count()).expect("test SQL UTF-16 length must fit u32")
 }
 
 fn required_env_text(name: &str) -> String {

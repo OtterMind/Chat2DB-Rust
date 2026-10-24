@@ -2,7 +2,7 @@
   "repository": "https://github.com/OtterMind/Chat2DB.git",
   "submodulePath": "third_party/chat2db-community",
   "sourcePath": "chat2db-community-client",
-  "commit": "a117f4895b3c63bbcedd2f79ab867ead800cf5c5",
-  "tree": "d8a24c8322700bc8373e165674092d4f0b446569",
+  "commit": "53f4174335ba2a247032314cac21006dc3ae42a4",
+  "tree": "6f81335d44e030e559087e2e14089ad02156d3e7",
   "packageManager": "yarn@1.22.22"
 }

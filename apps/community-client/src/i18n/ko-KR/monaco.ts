@@ -2,6 +2,7 @@ export default {
   'monaco.group.appearance': '모양 및 글꼴',
   'monaco.group.display': '편집기 표시',
   'monaco.group.completion': '자동 완성 및 상호 작용',
+  'monaco.group.behavior': '편집기 동작',
   'monaco.group.execution': 'SQL 실행',
   'monaco.theme': '편집기 테마',
   'monaco.theme.tooltip':
@@ -33,6 +34,8 @@ export default {
   'monaco.text.cut': '잘라내기',
   'monaco.text.caseConvert': '대소문자 변환',
   'monaco.text.formatSQL': 'SQL 서식 지정',
+  'monaco.text.toggleLineComment': 'SQL 줄 주석 토글',
+  'monaco.text.toggleBlockComment': 'SQL 블록 주석 토글',
   'monaco.text.saveSQL': '저장',
   'monaco.text.saveFile': '저장',
   'monaco.text.saveFileToDesktop': '파일로 저장',
@@ -70,10 +73,16 @@ export default {
   'monaco.completion.all': '정규화된 이름 전체 자동 완성',
   'monaco.completion.all.tooltip':
     '자동 완성 제안에 완전히 정규화된 이름을 사용할 데이터베이스 유형을 선택합니다. 선택하지 않은 유형은 짧은 이름을 사용합니다.',
+  'monaco.defaultPageSize': '기본 쿼리 행 수',
+  'monaco.defaultPageSize.tooltip':
+    'SQL 쿼리에 페이지 크기가 지정되지 않았을 때 반환할 최대 행 수입니다. 이후 쿼리에 적용됩니다.',
   'monaco.errorContinue': '오류 발생 후 계속',
   'monaco.errorContinue.tooltip': '여러 SQL 문을 실행할 때 한 문장이 실패해도 나머지 문장을 계속 실행합니다.',
   'monaco.errorContinue.true': '예',
   'monaco.errorContinue.false': '아니요',
+  'monaco.confirmBeforeClose': '닫기 전에 확인',
+  'monaco.confirmBeforeClose.tooltip':
+    '쿼리 또는 로컬 SQL 파일에 저장되지 않은 변경 사항이 있으면 탭을 닫기 전에 저장할지 확인합니다.',
   'monaco.tableDDLTriggerMode': '테이블 DDL 표시',
   'monaco.tableDDLTriggerMode.tooltip': '테이블 이름에 마우스를 올리거나 {1} 키를 누른 채 클릭할 때 DDL을 표시합니다.',
   'monaco.tableDDLTriggerMode.hover': '마우스 올리기',

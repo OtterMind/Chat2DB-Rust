@@ -1,12 +1,9 @@
 import * as monaco from 'monaco-editor';
 import keywordObj, { IFunctionParameter, IKeyword } from '../helper/keywords';
-import { DatabaseTypeCode } from '@/constants';
-import { quoteSqlCompletionIdentifier } from '@/utils/databaseJudgments';
+import { DatabaseCapability, DatabaseTypeCode } from '@/constants';
+import { isDatabaseCapabilitySupported, quoteSqlCompletionIdentifier } from '@/utils/databaseJudgments';
 import SQLParserService from '@/service/sqlParser';
-import {
-  isBackendCompletionDatabaseType,
-  isBackendCompletionModel,
-} from './sqlCompletionModelMode';
+import { isBackendCompletionModel } from './sqlCompletionModelMode';
 import {
   getBackendCompletionItemEffectiveFilterText,
   getBackendCompletionItemInsertText,
@@ -43,6 +40,8 @@ import { SORT_TEXT, TIP_TYPE } from '../type';
 import { IBoundInfo } from '@/typings';
 import i18n from '@/i18n';
 import { useGlobalStore } from '@/store/global';
+import { getSqlCompletionContextId } from './sqlCompletionContext';
+import { isExpectedSqlCompletionPermissionError } from './sqlCompletionRequestError';
 
 const triggerCharacters = [' ', '.', ',', '(', ')', '[', ']', '{', '}'];
 const ACTIVATE_SNIPPET_SLOT_COMMAND = 'chat2db.sqlCompletion.activateSnippetSlot';
@@ -197,14 +196,18 @@ class CompletionProviderManager {
     this.registerSnippetSlotCommand();
     this.registerQualifiedReferenceCompletionCommand();
 
-    const { consoleId, dataSourceId, databaseType, databaseName, schemaName } = dbInfo;
-    const backendCompletionMode = isBackendCompletionDatabaseType(databaseType);
+    const { dataSourceId, databaseType, databaseName, schemaName } = dbInfo;
+    const completionContextId = getSqlCompletionContextId(dbInfo);
+    const backendCompletionMode = isDatabaseCapabilitySupported(
+      databaseType,
+      DatabaseCapability.BACKEND_COMPLETION,
+    );
     if (databaseType && !backendCompletionMode) {
       this.registerBuiltInKeywordsProvider();
       this.registerBuiltInFunctionsProvider();
     }
 
-    if (!consoleId || !dataSourceId) return;
+    if (completionContextId === undefined || !dataSourceId) return;
     if (backendCompletionMode) {
       this.registerTipsProvider();
       return;
@@ -212,7 +215,7 @@ class CompletionProviderManager {
 
     // Call /api/sql_parser/get_keywords.
     const databaseAndSchema = await SQLParserService.queryDatabaseAndSchema({
-      consoleId,
+      consoleId: completionContextId,
       dataSourceId,
       databaseName,
       schemaName,
@@ -621,10 +624,11 @@ class CompletionProviderManager {
   private async fetchTipsResult(params: FetchTipsParams): Promise<ISqlCompletionResult | null> {
     const { model, keywordCase, activeSnippetSlot } = params;
     const dbInfo = this.getDBInfoForModel(model);
-    const { consoleId, dataSourceId, databaseName, schemaName, databaseType } = dbInfo || {};
+    const { dataSourceId, databaseName, schemaName, databaseType } = dbInfo || {};
+    const completionContextId = getSqlCompletionContextId(dbInfo);
 
     if (
-      !consoleId ||
+      completionContextId === undefined ||
       !dataSourceId
       // || (supportDatabase && !databaseName) || (supportSchema && !schemaName)
     ) {
@@ -633,7 +637,7 @@ class CompletionProviderManager {
 
     try {
       return await SQLParserService.queryTips({
-        consoleId,
+        consoleId: completionContextId,
         ...this.getTipsQuerySqlPayload(params),
         dataSourceId,
         databaseName,
@@ -643,7 +647,9 @@ class CompletionProviderManager {
         activeSnippetSlot,
       });
     } catch (error) {
-      console.error('Error fetching tips:', error);
+      if (!isExpectedSqlCompletionPermissionError(error)) {
+        console.error('Error fetching tips:', error);
+      }
       return null;
     }
   }
@@ -672,7 +678,7 @@ class CompletionProviderManager {
       return '';
     }
     return [
-      dbInfo.consoleId ?? '',
+      getSqlCompletionContextId(dbInfo) ?? '',
       dbInfo.dataSourceId ?? '',
       dbInfo.databaseType ?? '',
       dbInfo.databaseName ?? '',

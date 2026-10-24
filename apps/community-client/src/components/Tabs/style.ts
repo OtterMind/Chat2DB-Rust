@@ -29,7 +29,7 @@ export const useStyles = createStyles(
         right: 0px;
         top: 0px;
         height: 2px;
-        background-color: ${colorPrimary};
+        background-color: var(--chat2db-tab-accent-color, ${colorPrimary});
         z-index: 2;
       }
       &:before {
@@ -291,25 +291,6 @@ export const useStyles = createStyles(
         display: flex;
         justify-content: flex-end;
         align-items: center;
-      `,
-      iconButtonTrigger: css`
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 24px;
-        height: 24px;
-        margin: 0;
-        padding: 0;
-        border: 0;
-        border-radius: 4px;
-        outline: none;
-        color: inherit;
-        background: transparent;
-        cursor: pointer;
-
-        &:focus-visible {
-          box-shadow: inset 0 0 0 2px ${token.colorPrimary};
-        }
       `,
       moreTabsBox: css`
         display: flex;

@@ -22,7 +22,6 @@ pub(crate) struct ResolvedDatasourceConnection {
     pub(crate) datasource_id: String,
     pub(crate) datasource_revision: u64,
     pub(crate) driver_id: String,
-    pub(crate) datasource_name: String,
     pub(crate) connection: DatasourceConnection,
 }
 
@@ -75,7 +74,6 @@ pub(crate) async fn resolve_datasource_connection(
         datasource_id: datasource.id,
         datasource_revision: datasource.revision,
         driver_id: datasource.driver_id,
-        datasource_name: datasource.name,
         connection,
     })
 }
@@ -112,7 +110,6 @@ pub(crate) async fn jdbc_test_connection(
         datasource_id: "connection-test".to_owned(),
         datasource_revision: 0,
         driver_id: driver_id.to_owned(),
-        datasource_name: "Connection test".to_owned(),
         connection,
     };
     ManagedJdbcSession::open(application, resolved, SessionReadOnly::Configured, None)
@@ -415,7 +412,6 @@ fn session_config(
 ) -> SessionConfig {
     let ResolvedDatasourceConnection {
         driver_id,
-        datasource_name: _,
         connection,
         ..
     } = resolved;
@@ -484,7 +480,6 @@ mod tests {
             datasource_id: "datasource-1".to_owned(),
             datasource_revision: 1,
             driver_id: "driver-1".to_owned(),
-            datasource_name: "Local H2".to_owned(),
             connection: DatasourceConnection {
                 jdbc_url: "jdbc:h2:mem:test".to_owned(),
                 properties: vec![DatasourceConnectionProperty {

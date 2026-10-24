@@ -2,6 +2,7 @@ export default {
   'monaco.group.appearance': '外観とフォント',
   'monaco.group.display': 'エディタ表示',
   'monaco.group.completion': '補完と操作',
+  'monaco.group.behavior': 'エディターの動作',
   'monaco.group.execution': 'SQL 実行',
   'monaco.theme': 'エディターテーマ',
   'monaco.theme.tooltip':
@@ -33,6 +34,8 @@ export default {
   'monaco.text.cut': '切り取り',
   'monaco.text.caseConvert': '大文字小文字変換',
   'monaco.text.formatSQL': 'SQLをフォーマット',
+  'monaco.text.toggleLineComment': '行 SQL コメントの切り替え',
+  'monaco.text.toggleBlockComment': 'ブロック SQL コメントの切り替え',
   'monaco.text.saveSQL': '保存',
   'monaco.text.saveFile': '保存',
   'monaco.text.saveFileToDesktop': 'ファイルを保存',
@@ -70,10 +73,16 @@ export default {
   'monaco.completion.all': '全限定補完',
   'monaco.completion.all.tooltip':
     '補完候補で完全修飾名を使用するデータベース種別を選択します。未選択の種別では短い名前を使用します。',
+  'monaco.defaultPageSize': 'デフォルトのクエリ行数',
+  'monaco.defaultPageSize.tooltip':
+    'SQL クエリでページサイズを指定しない場合に返す最大行数です。以降のクエリに適用されます。',
   'monaco.errorContinue': 'エラー継続実行',
   'monaco.errorContinue.tooltip': '複数の SQL 文を実行するとき、1 つが失敗しても残りの文を続けて実行します。',
   'monaco.errorContinue.true': 'はい',
   'monaco.errorContinue.false': 'いいえ',
+  'monaco.confirmBeforeClose': '閉じる前に確認',
+  'monaco.confirmBeforeClose.tooltip':
+    'クエリまたはローカル SQL ファイルに未保存の変更がある場合、タブを閉じる前に保存するか確認します。',
   'monaco.tableDDLTriggerMode': 'テーブルDDLを表示',
   'monaco.tableDDLTriggerMode.tooltip':
     'テーブル名へのホバー時、または {1} を押しながらクリックしたときに DDL を表示します。',

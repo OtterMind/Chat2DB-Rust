@@ -1,5 +1,5 @@
 import { DatabaseTypeCode } from '@/constants';
-import { runtimeEditionConfig } from '@/constants/runtimeEdition';
+import { clientRuntime } from '@client-runtime';
 import { LangType } from '@/constants/settings';
 import { DataSourceStorageType } from '@/typings';
 import { AuthenticationType, InputType } from './enum';
@@ -213,8 +213,8 @@ export const sshConfig: IConnectionConfig['ssh'] = {
   ],
 };
 
-const envItem = {
-  defaultValue: 2,
+export const envItem = {
+  defaultValue: 1,
   inputType: InputType.SELECT,
   labelName: {
     [LangType.EN_US]: 'Env',
@@ -225,12 +225,16 @@ const envItem = {
   required: true,
   selects: [
     {
-      label: 'RELEASE',
-      value: 1,
-    },
-    {
       label: 'TEST',
       value: 2,
+    },
+    {
+      label: 'DEV',
+      value: 3,
+    },
+    {
+      label: 'RELEASE',
+      value: 1,
     },
   ],
   styles: {
@@ -238,7 +242,7 @@ const envItem = {
   },
 };
 
-const storageItem = {
+export const storageItem = {
   defaultValue: DataSourceStorageType.CLOUD,
   inputType: InputType.SELECT,
   labelName: {
@@ -265,12 +269,11 @@ const storageItem = {
       [LangType.ZH_CN]: '70px',
       [LangType.JA_JP]: '110px',
     },
-    labelAlign: 'right',
   },
-  hidden: runtimeEditionConfig.localPersistence,
+  hidden: clientRuntime.usesLocalPersistence,
 };
 
-const portItem: any = {
+export const portItem: any = {
   inputType: InputType.INPUT,
   labelName: {
     [LangType.EN_US]: 'Port',
@@ -396,7 +399,7 @@ export const dataSourceFormConfigs: IConnectionConfig[] = [
           required: false,
         },
         {
-          defaultValue: 'jdbc:mysql://localhost:3306',
+          defaultValue: 'mysql://localhost:3306',
           inputType: InputType.INPUT,
 
           labelName: {
@@ -409,8 +412,8 @@ export const dataSourceFormConfigs: IConnectionConfig[] = [
           required: true,
         },
       ],
-      pattern: /jdbc:mysql:\/\/(.*):(\d+)(\/([\w-]+))?/,
-      template: 'jdbc:mysql://{host}:{port}/{database}',
+      pattern: /(?:jdbc:)?mysql:\/\/(.*):(\d+)(\/([\w-]+))?/,
+      template: 'mysql://{host}:{port}/{database}',
     },
     ssh: sshConfig,
     extendInfo: [
@@ -524,7 +527,7 @@ export const dataSourceFormConfigs: IConnectionConfig[] = [
           required: false,
         },
         {
-          defaultValue: 'jdbc:postgresql://localhost:5432',
+          defaultValue: 'postgresql://localhost:5432',
           inputType: InputType.INPUT,
 
           labelName: {
@@ -536,8 +539,8 @@ export const dataSourceFormConfigs: IConnectionConfig[] = [
           required: true,
         },
       ],
-      pattern: /jdbc:postgresql:\/\/(.*):(\d+)(\/([\w-]+))?/,
-      template: 'jdbc:postgresql://{host}:{port}/{database}',
+      pattern: /(?:jdbc:)?postgresql:\/\/(.*):(\d+)(\/([\w-]+))?/,
+      template: 'postgresql://{host}:{port}/{database}',
     },
     ssh: sshConfig,
   },

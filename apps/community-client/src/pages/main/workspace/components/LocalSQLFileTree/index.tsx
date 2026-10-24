@@ -19,18 +19,24 @@ import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useState } 
 import PortalContextMenu from '@/components/ContextMenu/PortalContextMenu';
 import type { ContextMenuAction, ContextMenuEntry, ContextMenuIntent } from '@/components/ContextMenu/core';
 import { LOCAL_SQL_FILE_SAVED_EVENT, LOCAL_SQL_SESSION_DRAG_TYPE, WorkspaceTabType } from '@/constants';
-import { runtimeEditionConfig } from '@/constants/runtimeEdition';
+import { clientRuntime } from '@client-runtime';
+import { DEFAULT_TERMINAL_SETTINGS } from '@/constants/terminal';
 import {
   getEffectiveShortcutConfigMap,
   isShortcutEventMatch,
   ShortcutAction,
   ShortcutOverrides,
+  ShortcutScope,
 } from '@/constants/shortcut';
 import i18n from '@/i18n';
 import jcefApi from '@/jcef';
 import { useGlobalStore } from '@/store/global';
 import { useWorkspaceStore } from '@/store/workspace';
+import { osNow } from '@/utils';
+import { confirmDirtyWorkspaceEditors, waitForPendingWorkspaceEditors } from '@/utils/editorCloseConfirmation';
+import { getFileManagerLabelKey } from '@/utils/fileManagerLabel';
 import { getLocalTextFileIcon, LOCAL_TEXT_FILE_ICON_MAP, SQL_FILE_EXTENSION_NAME } from '../../utils/localTextFile';
+import { createLocalFileTreePathOperations } from './path';
 import { useStyles } from './style';
 import { LocalSQLFileTreeCreateType, LocalSQLFileTreeNode, LocalSQLFileTreeNodeType } from './type';
 
@@ -103,45 +109,21 @@ export interface LocalSQLFileTreeRef {
 }
 
 const SQL_FILE_EXTENSION = '.sql';
-const LOCAL_SQL_DIRECTORY_PATH_STORAGE_KEY = runtimeEditionConfig.localSqlDirectoryPathStorageKey;
-const LOCAL_SQL_DIRECTORY_PATHS_STORAGE_KEY = runtimeEditionConfig.localSqlDirectoryPathsStorageKey;
+const LOCAL_SQL_DIRECTORY_PATH_STORAGE_KEY = clientRuntime.localSqlDirectoryPathStorageKey;
+const LOCAL_SQL_DIRECTORY_PATHS_STORAGE_KEY = clientRuntime.localSqlDirectoryPathsStorageKey;
 const LOCAL_SQL_TOOLBAR_EXPANDED_MIN_WIDTH = 150;
 const LOCAL_SQL_TOOLBAR_BUTTON_SIZE = { boxSize: 24, iconSize: 16 };
 const LOCAL_SQL_TREE_BASE_INDENT = 0;
 const LOCAL_SQL_TREE_LEVEL_INDENT = 14;
-
-const normalizeComparablePath = (value: string) => value.replace(/\\/g, '/').replace(/\/+$/, '');
-
-const isSameOrChildPath = (filePath: string, targetPath: string, targetType: LocalSQLFileTreeNodeType) => {
-  const normalizedFilePath = normalizeComparablePath(filePath);
-  const normalizedTargetPath = normalizeComparablePath(targetPath);
-  if (targetType === 'file') {
-    return normalizedFilePath === normalizedTargetPath;
-  }
-  return normalizedFilePath === normalizedTargetPath || normalizedFilePath.startsWith(`${normalizedTargetPath}/`);
-};
-
-const replacePathPrefix = (filePath: string, sourcePath: string, targetPath: string) => {
-  const normalizedFilePath = filePath.replace(/\\/g, '/');
-  const normalizedSourcePath = normalizeComparablePath(sourcePath);
-  const suffix =
-    normalizeComparablePath(filePath) === normalizedSourcePath
-      ? ''
-      : normalizedFilePath.slice(normalizedSourcePath.length);
-  const separator = targetPath.includes('\\') ? '\\' : '/';
-  return `${targetPath}${suffix.replace(/\//g, separator)}`;
-};
-
-const getParentPath = (filePath: string) => {
-  const separatorIndex = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
-  return separatorIndex > 0 ? filePath.slice(0, separatorIndex) : '';
-};
+const LOCAL_SQL_FILE_TREE_REVEAL_LABEL = getFileManagerLabelKey('workspace');
+const { getComparablePath, getParentPath, getRenamedFilePaths, isSameOrChildPath } =
+  createLocalFileTreePathOperations(osNow().isWin);
 
 const isSameOrChildKey = (key: string, targetKey: string) =>
   key === targetKey ||
   (targetKey.endsWith(':') && key.startsWith(targetKey)) ||
   key.startsWith(`${targetKey}/`) ||
-  key.startsWith(`${targetKey}\\`);
+  (IS_WINDOWS_PLATFORM && key.startsWith(`${targetKey}\\`));
 
 const hasFileExtension = (name: string) => {
   const dotIndex = name.lastIndexOf('.');
@@ -185,7 +167,7 @@ const selectInputName = (input: HTMLInputElement, name: string, type: LocalSQLFi
 
 const getRootPath = (node: LocalSQLFileTreeNode) => node.rootPath || node.path;
 
-const getComparableRootPath = (path?: string) => normalizeComparablePath(path || '').toLowerCase();
+const getComparableRootPath = (path?: string) => getComparablePath(path || '');
 
 const normalizeRootNode = (node: LocalSQLFileTreeNode): LocalSQLFileTreeNode => ({
   ...node,
@@ -348,19 +330,20 @@ const LocalSQLFileTree = forwardRef<LocalSQLFileTreeRef, LocalSQLFileTreeProps>(
   const [dropTargetKey, setDropTargetKey] = useState<string>();
   const selectedRowRef = React.useRef<HTMLDivElement | null>(null);
   const shortcutOverrides = useGlobalStore((state) => state.shortcutOverrides);
+  const terminalShellId = useGlobalStore((state) => state.terminalSettings.shellId);
+  const terminalOpenPosition = useGlobalStore(
+    (state) => state.terminalSettings.openPosition || DEFAULT_TERMINAL_SETTINGS.openPosition,
+  );
   const shortcutConfig = useMemo(
     () => getEffectiveShortcutConfigMap(shortcutOverrides as ShortcutOverrides),
     [shortcutOverrides],
   );
   const readFile = useWorkspaceStore((state) => state.readFile);
-  const { activeConsoleId, workspaceTabList, setWorkspaceTabList, setActiveConsoleId, deleteEditor } =
-    useWorkspaceStore((state) => ({
-      activeConsoleId: state.activeConsoleId,
-      workspaceTabList: state.workspaceTabList,
-      setWorkspaceTabList: state.setWorkspaceTabList,
-      setActiveConsoleId: state.setActiveConsoleId,
-      deleteEditor: state.deleteEditor,
-    }));
+  const { workspaceTabList, setWorkspaceTabList, setActiveConsoleId } = useWorkspaceStore((state) => ({
+    workspaceTabList: state.workspaceTabList,
+    setWorkspaceTabList: state.setWorkspaceTabList,
+    setActiveConsoleId: state.setActiveConsoleId,
+  }));
 
   const selectedNodeResult = useMemo(() => {
     if (!rootNodes.length || !selectedNodeKey) {
@@ -381,10 +364,10 @@ const LocalSQLFileTree = forwardRef<LocalSQLFileTreeRef, LocalSQLFileTreeProps>(
       return false;
     }
 
-    const normalizedTargetPath = normalizeComparablePath(filePath).toLowerCase();
+    const normalizedTargetPath = getComparablePath(filePath);
     const result = findTreeNodeWithAncestors(
       rootNodes,
-      (node) => node.type === 'file' && normalizeComparablePath(node.path).toLowerCase() === normalizedTargetPath,
+      (node) => node.type === 'file' && getComparablePath(node.path) === normalizedTargetPath,
     );
 
     if (!result) {
@@ -582,7 +565,7 @@ const LocalSQLFileTree = forwardRef<LocalSQLFileTreeRef, LocalSQLFileTreeProps>(
           rootNodes,
           (node) =>
             node.type === 'directory' &&
-            normalizeComparablePath(node.path).toLowerCase() === normalizeComparablePath(parentPath).toLowerCase(),
+            getComparablePath(node.path) === getComparablePath(parentPath),
         )
       : undefined;
     if (parentResult?.node) {
@@ -884,6 +867,18 @@ const LocalSQLFileTree = forwardRef<LocalSQLFileTreeRef, LocalSQLFileTreeProps>(
     const loadingRenamingNode = { ...currentRenamingNode, loading: true };
     renamingRef.current = loadingRenamingNode;
     setRenamingNode(loadingRenamingNode);
+    if (
+      originalNode &&
+      !(await waitForPendingWorkspaceEditors(
+        getWorkspaceTabsForNode(originalNode),
+        useWorkspaceStore.getState().editorList || {},
+      ))
+    ) {
+      const retryRenamingNode = { ...currentRenamingNode, loading: false };
+      renamingRef.current = retryRenamingNode;
+      setRenamingNode(retryRenamingNode);
+      return;
+    }
     try {
       const result = (await jcefApi.renameSqlDirectoryChild({
         rootToken: currentRenamingNode.rootToken,
@@ -918,7 +913,9 @@ const LocalSQLFileTree = forwardRef<LocalSQLFileTreeRef, LocalSQLFileTreeProps>(
     } catch (error) {
       console.error('rename sql directory child error', error);
       feedback.error(i18n('workspace.localSqlFileTree.renameFailed'));
-      setRenamingNode((current) => (current ? { ...current, loading: false } : current));
+      const retryRenamingNode = { ...currentRenamingNode, loading: false };
+      renamingRef.current = retryRenamingNode;
+      setRenamingNode(retryRenamingNode);
     }
   }
 
@@ -932,13 +929,15 @@ const LocalSQLFileTree = forwardRef<LocalSQLFileTreeRef, LocalSQLFileTreeProps>(
   }
 
   function syncRenamedWorkspaceTabs(sourceNode: LocalSQLFileTreeNode, targetNode: LocalSQLFileTreeNode) {
-    if (!workspaceTabList?.length) {
+    const workspace = useWorkspaceStore.getState();
+    const currentWorkspaceTabList = workspace.workspaceTabList || [];
+    if (!currentWorkspaceTabList.length) {
       return;
     }
 
-    let nextActiveConsoleId = activeConsoleId;
+    let nextActiveConsoleId = workspace.activeConsoleId;
     let changed = false;
-    const nextWorkspaceTabList = workspaceTabList.map((tab) => {
+    const nextWorkspaceTabList = currentWorkspaceTabList.map((tab) => {
       if (tab.type !== WorkspaceTabType.LocalSQLFile || !tab.uniqueData?.filePath) {
         return tab;
       }
@@ -947,8 +946,15 @@ const LocalSQLFileTree = forwardRef<LocalSQLFileTreeRef, LocalSQLFileTreeProps>(
       }
 
       changed = true;
-      const filePath = replacePathPrefix(tab.uniqueData.filePath, sourceNode.path, targetNode.path);
-      if (tab.id === activeConsoleId) {
+      const { filePath, fileRelativePath } = getRenamedFilePaths({
+        filePath: tab.uniqueData.filePath,
+        fileRelativePath: tab.uniqueData.fileRelativePath,
+        sourcePath: sourceNode.path,
+        sourceRelativePath: sourceNode.relativePath,
+        targetPath: targetNode.path,
+        targetRelativePath: targetNode.relativePath,
+      });
+      if (tab.id === workspace.activeConsoleId) {
         nextActiveConsoleId = tab.id;
       }
       return {
@@ -957,24 +963,27 @@ const LocalSQLFileTree = forwardRef<LocalSQLFileTreeRef, LocalSQLFileTreeProps>(
         uniqueData: {
           ...tab.uniqueData,
           filePath,
+          fileRelativePath,
           fileExtension: sourceNode.type === 'file' ? targetNode.fileExtension : tab.uniqueData.fileExtension,
         },
       };
     });
 
     if (changed) {
-      setWorkspaceTabList(nextWorkspaceTabList);
-      setActiveConsoleId(nextActiveConsoleId);
+      workspace.setWorkspaceTabList(nextWorkspaceTabList);
+      workspace.setActiveConsoleId(nextActiveConsoleId);
     }
   }
 
   function removeDeletedWorkspaceTabs(targetNode: LocalSQLFileTreeNode) {
-    if (!workspaceTabList?.length) {
+    const workspace = useWorkspaceStore.getState();
+    const currentWorkspaceTabList = workspace.workspaceTabList || [];
+    if (!currentWorkspaceTabList.length) {
       return;
     }
 
     const removedTabIds: Array<string | number> = [];
-    const nextWorkspaceTabList = workspaceTabList.filter((tab) => {
+    const nextWorkspaceTabList = currentWorkspaceTabList.filter((tab) => {
       if (tab.type !== WorkspaceTabType.LocalSQLFile || !tab.uniqueData?.filePath) {
         return true;
       }
@@ -990,17 +999,31 @@ const LocalSQLFileTree = forwardRef<LocalSQLFileTreeRef, LocalSQLFileTreeProps>(
     }
 
     removedTabIds.forEach((tabId) => {
-      if (typeof tabId === 'number') {
-        deleteEditor(tabId);
-      }
+      workspace.deleteEditor(tabId);
     });
-    setWorkspaceTabList(nextWorkspaceTabList);
-    if (removedTabIds.includes(activeConsoleId as string | number)) {
+    workspace.setWorkspaceTabList(nextWorkspaceTabList);
+    if (removedTabIds.includes(workspace.activeConsoleId as string | number)) {
       const nextActiveId = nextWorkspaceTabList.length
         ? nextWorkspaceTabList[nextWorkspaceTabList.length - 1].id
         : null;
-      setActiveConsoleId(nextActiveId);
+      workspace.setActiveConsoleId(nextActiveId);
     }
+  }
+
+  function getWorkspaceTabsForNode(node: LocalSQLFileTreeNode) {
+    return (useWorkspaceStore.getState().workspaceTabList || []).filter(
+      (tab) =>
+        tab.type === WorkspaceTabType.LocalSQLFile &&
+        !!tab.uniqueData?.filePath &&
+        isSameOrChildPath(tab.uniqueData.filePath, node.path, node.type),
+    );
+  }
+
+  async function confirmWorkspaceFileTabsBeforeRemoval(node: LocalSQLFileTreeNode) {
+    return confirmDirtyWorkspaceEditors(
+      getWorkspaceTabsForNode(node),
+      useWorkspaceStore.getState().editorList || {},
+    );
   }
 
   async function deleteNode(node: LocalSQLFileTreeNode) {
@@ -1043,18 +1066,26 @@ const LocalSQLFileTree = forwardRef<LocalSQLFileTreeRef, LocalSQLFileTreeProps>(
   }
 
   function confirmDeleteNode(node: LocalSQLFileTreeNode) {
-    modal.confirm({
+    const confirmation = modal.confirm({
       title: i18n('common.text.deleteConfirmTitle'),
       content: i18n('common.text.deleteConfirmTip', node.name),
       okText: i18n('common.button.delete'),
       okButtonProps: { danger: true },
       cancelText: i18n('common.button.cancel'),
-      onOk: () => deleteNode(node),
+      onOk: async () => {
+        confirmation.destroy();
+        if (await confirmWorkspaceFileTabsBeforeRemoval(node)) {
+          await deleteNode(node);
+        }
+      },
     });
   }
 
-  function removeRootNode(node: LocalSQLFileTreeNode) {
+  async function removeRootNode(node: LocalSQLFileTreeNode) {
     if (!node.rootPath) {
+      return;
+    }
+    if (!(await confirmWorkspaceFileTabsBeforeRemoval(node))) {
       return;
     }
 
@@ -1095,10 +1126,33 @@ const LocalSQLFileTree = forwardRef<LocalSQLFileTreeRef, LocalSQLFileTreeProps>(
 
   async function openNodeTerminal(node: LocalSQLFileTreeNode) {
     try {
-      await jcefApi.openSqlDirectoryTerminal({
+      const terminal = await jcefApi.createSqlDirectoryTerminal({
         rootToken: node.rootToken,
         relativePath: node.relativePath,
+        columns: 100,
+        rows: 30,
+        shellId: terminalShellId,
       });
+      const id = `${WorkspaceTabType.Terminal}:${terminal.sessionId}`;
+      const nextTabs = [
+        ...(workspaceTabList || []),
+        {
+          id,
+          type: WorkspaceTabType.Terminal,
+          title: `${i18n('workspace.terminal.title')}: ${node.type === 'directory' ? node.name : terminal.cwd}`,
+          uniqueData: {
+            terminalSessionId: terminal.sessionId,
+            terminalCwd: terminal.cwd,
+            terminalShell: terminal.shell,
+            terminalShellId: terminal.shellId,
+            terminalOpenPosition,
+          },
+        },
+      ];
+      setWorkspaceTabList(nextTabs);
+      if (terminalOpenPosition === 'tab') {
+        setActiveConsoleId(id);
+      }
     } catch (error) {
       console.error('open sql directory terminal error', error);
       feedback.error(i18n('workspace.localSqlFileTree.openTerminalFailed'));
@@ -1130,11 +1184,15 @@ const LocalSQLFileTree = forwardRef<LocalSQLFileTreeRef, LocalSQLFileTreeProps>(
   }
 
   function openFile(node: LocalSQLFileTreeNode) {
-    if (node.type !== 'file' || node.disabled || (!node.textFile && !node.sqlFile)) {
+    if (node.type !== 'file' || node.disabled || (!node.textFile && !node.sqlFile && !node.previewFile)) {
       return;
     }
     setSelectedNodeKey(node.key);
-    readFile(node.path, node.fileExtension);
+    readFile(node.path, node.fileExtension, {
+      rootToken: node.rootToken,
+      relativePath: node.relativePath,
+      previewFile: node.previewFile,
+    });
   }
 
   function handleSelectedNodeOpen() {
@@ -1355,7 +1413,7 @@ const LocalSQLFileTree = forwardRef<LocalSQLFileTreeRef, LocalSQLFileTreeProps>(
     const commonItems: ContextMenuEntry<LocalSQLFileTreeContextIntent>[] = [
       createContextMenuAction({
         id: 'reveal',
-        label: i18n('workspace.localSqlFileTree.revealInFinder'),
+        label: i18n(LOCAL_SQL_FILE_TREE_REVEAL_LABEL),
         shortcutAction: ShortcutAction.LocalSqlFileTreeRevealInFinder,
         execute: () => revealNode(node),
       }),
@@ -1415,11 +1473,13 @@ const LocalSQLFileTree = forwardRef<LocalSQLFileTreeRef, LocalSQLFileTreeProps>(
         ];
 
     if (node.type === 'file') {
+      const canOpen = node.textFile || node.sqlFile || node.previewFile;
       return [
         createContextMenuAction({
           id: 'open',
           label: i18n('workspace.localSqlFileTree.open'),
           shortcutAction: ShortcutAction.LocalSqlFileTreeOpen,
+          disabled: !canOpen,
           execute: () => openFile(node),
         }),
         {
@@ -1693,6 +1753,7 @@ const LocalSQLFileTree = forwardRef<LocalSQLFileTreeRef, LocalSQLFileTreeProps>(
       className={styles.fileTreeModule}
       tabIndex={active ? 0 : -1}
       aria-hidden={!active}
+      data-shortcut-scope={ShortcutScope.LocalSqlFileTree}
       onKeyDown={handleLocalShortcut}
       onContextMenuCapture={handleFileTreeContextMenu}
       onDragEnd={handleTreeDragEnd}

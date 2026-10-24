@@ -3,5 +3,5 @@
   "identifier": "main-window",
   "description": "Core Tauri capabilities for the Chat2DB main window.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
 }

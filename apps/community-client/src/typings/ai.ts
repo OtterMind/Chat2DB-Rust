@@ -3,47 +3,6 @@ import { DatabaseTypeCode } from '@/constants';
 import { PromptTableVO } from './chat';
 import { ChatSourceType } from '@/constants/chat';
 
-export enum AIType {
-  CHAT2DBAI = 'CHAT2DBAI',
-  ZHIPUAI = 'ZHIPUAI',
-  BAICHUANAI = 'BAICHUANAI',
-  WENXINAI = 'WENXINAI',
-  // TONGYIQIANWENAI='TONGYIQIANWENAI',
-  OPENAI = 'OPENAI',
-  AZUREAI = 'AZUREAI',
-  RESTAI = 'RESTAI',
-}
-
-export interface IRemainingUse {
-  key: string;
-  wechatMpUrl: string;
-  expiry: number;
-  remainingUses: number;
-}
-
-export interface ILoginAndQrCode {
-  token: string;
-  wechatQrCodeUrl: string;
-  apiKey: string;
-  tip: string;
-}
-
-export interface IInviteQrCode {
-  wechatQrCodeUrl: string;
-  tip: string;
-}
-
-export interface IAIConfig {
-  aiSqlSource: AIType;
-  apiKey?: string;
-  apiHost?: string;
-  httpProxyHost?: string;
-  httpProxyPort?: string;
-  stream?: boolean;
-  secretKey?: string;
-  model?: string;
-}
-
 // Natural language to SQL
 export interface TextToSQLParams {
   /**
@@ -66,17 +25,6 @@ export interface TextToSQLParams {
    * List of table names
    */
   tableList?: PromptTableVO[];
-  /**
-   *Data collection id
-   */
-  dataSourceCollectionId?: number;
-}
-
-// Convert natural language with a dataset ID to SQL.
-export interface TextToSQLWithCollectionIdParams {
-  dataSourceCollectionId: number;
-  message: string;
-  source: ChatSourceType;
 }
 
 // Natural language creation table

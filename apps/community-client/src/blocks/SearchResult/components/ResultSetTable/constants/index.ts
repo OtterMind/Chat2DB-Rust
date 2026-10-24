@@ -6,8 +6,6 @@ export enum ContextmenuType {
   viewRowDetail = 'viewRowDetail',
   // View the complete large field
   viewFullValue = 'viewFullValue',
-  // Copy large field preview
-  copyPreview = 'copyPreview',
   // Save large fields to file
   saveToFile = 'saveToFile',
   // copy
@@ -40,4 +38,10 @@ export enum ContextmenuType {
   tabSplitFieldAndValue = 'tabSplitFieldAndValue',
   // Markdown table
   markdownTable = 'markdownTable',
+  showFieldType = 'showFieldType',
+  showFieldComment = 'showFieldComment',
+  hideColumn = 'hideColumn',
+  showAllColumns = 'showAllColumns',
+  freezeColumn = 'freezeColumn',
+  unfreezeAllColumns = 'unfreezeAllColumns',
 }

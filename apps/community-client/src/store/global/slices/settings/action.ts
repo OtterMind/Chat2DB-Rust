@@ -1,6 +1,6 @@
-import { EditorSettings } from '@/components/SQLEditor';
+import type { EditorSettings } from '@/components/SQLEditor/type';
 import { APP_URL_CONFIG_CHINA, APP_URL_CONFIG_OVERSEAS } from '@/constants/appConfig';
-import { runtimeEditionConfig } from '@/constants/runtimeEdition';
+import { clientRuntime } from '@client-runtime';
 import {
   EffectiveShortcutConfig,
   getEffectiveShortcutConfigMap,
@@ -8,26 +8,19 @@ import {
   normalizeShortcutBinding,
   ShortcutAction,
 } from '@/constants/shortcut';
-import i18n from '@/i18n';
-import aiService from '@/service/ai';
-import configService from '@/service/config';
-import oauthService from '@/service/enterprise/oauth';
-import miscServices from '@/service/misc';
-import { AIType, IAIConfig, IRemainingUse } from '@/typings/ai';
+import appConfigService from '@/service/appConfig';
 import {
   DataTableSettings,
-  GlobalAISettings,
   GlobalBaseSettings,
   IUpdateDetail,
   ShortcutOverrides,
+  TerminalSettings,
 } from '@/typings/settings';
 import { getSystemThemeMode } from '@/utils/color';
 import { isDesktop, isDesktopEnv, isOfflineEnv } from '@/utils/env';
-import { deepEqual } from '@/utils/equal';
-import { deepMerge } from '@/utils/merge';
 import { getMacAddress } from '@/utils/os';
 import { openWebPage } from '@/utils/url';
-import { staticMessage, ThemeAppearance } from '@chat2db/ui';
+import { ThemeAppearance } from '@chat2db/ui';
 import { produce } from 'immer';
 import { DeepPartial } from 'utility-types';
 import type { StateCreator } from 'zustand/vanilla';
@@ -63,41 +56,6 @@ export interface SettingsAction {
    * Set custom font size
    */
   setCustomFontSize: (customFontSize: GlobalBaseSettings['customFontSize']) => void;
-
-  // ====================== AISetting ======================
-  /**
-   * Set AI configuration
-   */
-  setAISetting: (settings: DeepPartial<GlobalAISettings>) => void;
-  /**
-   * Set AI model related configurations
-   */
-  setAIConfig: (aiConfig: Partial<IAIConfig>) => void;
-  /**
-   * Set configuration related to user remaining times
-   */
-  setRemainUse: (remainingUse?: Partial<IRemainingUse>) => void;
-  /**
-   * Set whether to enable whitelist
-   */
-  setAIWithWhite: (hasWhite: boolean) => void;
-  /**
-   * Get AI model configuration
-   */
-  fetchAIConfig: () => void;
-  /**
-   * Update AI model configuration
-   */
-  updateAIConfig: (aiConfig: Partial<IAIConfig>) => void;
-  /**
-   * Update user remaining number configuration
-   */
-  updateRemainingUse: (apiKey?: string) => void;
-  /**
-   * Update AI whitelist
-   */
-  updateAIWithWhite: (apiKey?: string) => void;
-  // ====================== AIConfig ======================
 
   /**
    * Update Update status
@@ -137,6 +95,7 @@ export interface SettingsAction {
    * Update table settings
    */
   updateDataTableSettings: (dataTableSettings: DataTableSettings) => void;
+  updateTerminalSettings: (terminalSettings: Partial<TerminalSettings>) => void;
 }
 
 export const createSettingsAction: StateCreator<GlobalStore, [['zustand/devtools', never]], [], SettingsAction> = (
@@ -169,58 +128,6 @@ export const createSettingsAction: StateCreator<GlobalStore, [['zustand/devtools
   setCustomFontSize: (customFontSize) => {
     get().setBaseSetting({ customFontSize });
   },
-  // ====================== AISetting ======================
-  setAISetting: (aiSettings) => {
-    const prevAISetting = get().aiSettings;
-    const nextAISetting = deepMerge(prevAISetting, aiSettings) as GlobalAISettings;
-    if (deepEqual(prevAISetting, nextAISetting)) return;
-    set({
-      aiSettings: nextAISetting,
-    });
-  },
-  setAIConfig: (aiConfig) => {
-    get().setAISetting({ aiConfig });
-  },
-  setRemainUse: (remainingUse) => {
-    get().setAISetting({ remainingUse });
-  },
-  setAIWithWhite: (hasWhite) => {
-    get().setAISetting({ hasWhite });
-  },
-  fetchAIConfig: () => {
-    configService.getAISystemConfig({}).then((res) => {
-      get().setAIConfig(res);
-      if (res?.aiSqlSource === AIType.CHAT2DBAI && res.apiKey) {
-        get().updateAIWithWhite(res.apiKey);
-      }
-    });
-  },
-  updateAIConfig: (aiConfig) => {
-    configService.setAISystemConfig(aiConfig).then(() => {
-      staticMessage.success(i18n('common.text.submittedSuccessfully'));
-      get().setAIConfig(aiConfig);
-    });
-    if (aiConfig?.aiSqlSource === AIType.CHAT2DBAI) {
-      get().updateAIWithWhite(aiConfig?.apiKey);
-    } else {
-      get().setAIWithWhite(false);
-    }
-  },
-  updateAIWithWhite: (apiKey) => {
-    configService.getAIWhiteAccess({ apiKey: apiKey ?? '' }).then((hasWhite) => {
-      get().setAIWithWhite(hasWhite);
-    });
-  },
-  updateRemainingUse: (apiKey) => {
-    const aiSqlSource = get().aiSettings.aiConfig.aiSqlSource;
-    if (!apiKey || aiSqlSource !== AIType.CHAT2DBAI) {
-      get().setRemainUse(undefined);
-      return;
-    }
-    aiService.getRemainingUse().then((res) => {
-      get().setRemainUse(res);
-    });
-  },
   setUpdateDetail: (updateDetail) => {
     set({
       updateDetail: produce(get().updateDetail, (draft) => {
@@ -229,12 +136,12 @@ export const createSettingsAction: StateCreator<GlobalStore, [['zustand/devtools
     });
   },
   queryAppConfig: () => {
-    if (!runtimeEditionConfig.remoteAppConfig && runtimeEditionConfig.localAppConfig) {
+    if (!clientRuntime.loadAppConfigFromServer && clientRuntime.localAppConfig) {
       set({
         appConfig: produce(get().appConfig, (draft) => {
-          Object.assign(draft, runtimeEditionConfig.localAppConfig);
-          if (runtimeEditionConfig.localAppUrlConfig) {
-            get().setAppUrlConfig(runtimeEditionConfig.localAppUrlConfig);
+          Object.assign(draft, clientRuntime.localAppConfig);
+          if (clientRuntime.localAppUrlConfig) {
+            get().setAppUrlConfig(clientRuntime.localAppUrlConfig);
           }
           draft.version = __APP_VERSION__;
           draft.isReady = true;
@@ -243,7 +150,7 @@ export const createSettingsAction: StateCreator<GlobalStore, [['zustand/devtools
       return;
     }
 
-    oauthService.getAppConfig().then((res) => {
+    appConfigService.getAppConfig().then((res) => {
       set({
         appConfig: produce(get().appConfig, (draft) => {
           res?.countries?.forEach((item) => {
@@ -317,7 +224,8 @@ export const createSettingsAction: StateCreator<GlobalStore, [['zustand/devtools
       return;
     }
 
-    miscServices.fetchSpm({
+    const { default: clientExtension } = await import('@client-extension');
+    await clientExtension.reportClient?.({
       deviceUuid,
       clientVersion: get().appConfig.version,
       userAgent: window.navigator.userAgent,
@@ -353,6 +261,14 @@ export const createSettingsAction: StateCreator<GlobalStore, [['zustand/devtools
   updateDataTableSettings: (dataTableSettings) => {
     set({
       dataTableSettings,
+    });
+  },
+  updateTerminalSettings: (terminalSettings) => {
+    set({
+      terminalSettings: {
+        ...get().terminalSettings,
+        ...terminalSettings,
+      },
     });
   },
 });

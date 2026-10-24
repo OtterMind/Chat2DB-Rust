@@ -113,6 +113,7 @@ const UploadLocalFile = forwardRef((props: IProps, ref: ForwardedRef<UploadLocal
     if (fileSize) {
       const isLtxM = file.size / 1024 / 1024 < fileSize;
       if (!isLtxM) {
+        setFileList([]);
         staticMessage.error(i18n('common.text.singleUploadFileSize', fileSize));
         return Upload.LIST_IGNORE;
       }
@@ -128,7 +129,7 @@ const UploadLocalFile = forwardRef((props: IProps, ref: ForwardedRef<UploadLocal
         return type.replace('.', '');
       }) || [];
 
-    jcefApi.selectFile({ fileTypeList, fileSize, multiple }).then((data) => {
+    jcefApi.selectFile({ fileTypeList, fileSize }).then((data) => {
       if (data) {
         setFileList(data);
       }

@@ -6,6 +6,7 @@
 mod cli_install;
 mod java_runtime_install;
 mod legacy_files;
+mod sqlx;
 
 use std::{
     collections::HashMap,
@@ -925,6 +926,49 @@ async fn legacy_client_command_for(
             };
             Ok(Some(client_command_response(&serde_json::json!(cancelled))))
         }
+        "minimize-window" => {
+            window.minimize().map_err(|error| error.to_string())?;
+            Ok(Some(client_command_response(&serde_json::json!(true))))
+        }
+        "maximize-window" => {
+            window.maximize().map_err(|error| error.to_string())?;
+            Ok(Some(client_command_response(&serde_json::json!(true))))
+        }
+        "double-click-app-bar" => {
+            let maximized = window.is_maximized().map_err(|error| error.to_string())?;
+            if maximized {
+                window.unmaximize().map_err(|error| error.to_string())?;
+            } else {
+                window.maximize().map_err(|error| error.to_string())?;
+            }
+            Ok(Some(client_command_response(&serde_json::json!(
+                !maximized
+            ))))
+        }
+        "close-window" => {
+            window.close().map_err(|error| error.to_string())?;
+            Ok(Some(client_command_response(&serde_json::json!(true))))
+        }
+        "get-sqlx-status" | "check-sqlx-update" => {
+            let status = sqlx::status(window.app_handle())?;
+            Ok(Some(client_command_response(&serde_json::json!(status))))
+        }
+        "set-sqlx-binary" => {
+            let message = request.get("message").cloned().unwrap_or_default();
+            let path = message
+                .get("path")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let status = sqlx::set_binary(window.app_handle(), path)?;
+            Ok(Some(client_command_response(&serde_json::json!(status))))
+        }
+        "cancel-sqlx-operation" => Ok(Some(client_command_response(&serde_json::json!(true)))),
+        "install-sqlx" => Err(sqlx::unsupported("Installing SQLX")),
+        "update-sqlx" => Err(sqlx::unsupported("Updating SQLX")),
+        "import-sqlx-datasources" => {
+            Err(sqlx::unsupported("Importing Chat2DB datasources into SQLX"))
+        }
+        "get-sqlx-datasource-states" => Ok(Some(client_command_response(&serde_json::json!([])))),
         _ => Ok(None),
     }
 }

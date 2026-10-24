@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import type { IManageResultData } from '@/typings';
 import {
+  appendRowsToPendingResult,
   clearClosedSqlExecutionResults,
   cancelSqlExecutionWithReconciliation,
+  discardPendingRowsForExecution,
   isSqlExecutionResultClosed,
   markSqlExecutionResultsClosed,
   mergeRows,
+  upsertResultFinished,
   type ClosedSqlExecutionResults,
 } from './sqlExecutionStream';
 
@@ -18,7 +21,6 @@ function chunk(rows: unknown[][]): IManageResultData {
     sql: 'select 1',
     originalSql: 'select 1',
     success: true,
-    duration: 0,
     sqlType: 'SELECT' as any,
     refreshTargets: [],
     extra: {
@@ -42,6 +44,38 @@ assert.deepEqual(restoredAfterClear[0].dataList, [['first']]);
 const appendedRows = mergeRows(restoredAfterClear, chunk([['second']]));
 assert.equal(appendedRows.length, 1, 'later chunks stay in the same execution result');
 assert.deepEqual(appendedRows[0].dataList, [['first'], ['second']]);
+
+const completedStreamingResult = upsertResultFinished(
+  appendedRows,
+  {
+    ...chunk([]),
+    pageSize: 50_000,
+    fuzzyTotal: '50000+',
+    hasNextPage: true,
+  },
+);
+assert.deepEqual(
+  completedStreamingResult[0].dataList,
+  [['first'], ['second']],
+  'metadata-only completion preserves rows already received from the stream',
+);
+assert.equal(completedStreamingResult[0].pageSize, 50_000);
+assert.equal(completedStreamingResult[0].fuzzyTotal, '50000+');
+
+const pendingRows = new Map<string, IManageResultData>();
+assert.equal(
+  appendRowsToPendingResult(pendingRows, 'execution-1:1:1', chunk([['first']])),
+  1,
+  'the first streamed chunk is buffered without changing the source chunk',
+);
+assert.equal(
+  appendRowsToPendingResult(pendingRows, 'execution-1:1:1', chunk([['second'], ['third']])),
+  3,
+  'subsequent chunks append to one pending result buffer',
+);
+assert.deepEqual(pendingRows.get('execution-1:1:1')!.dataList, [['first'], ['second'], ['third']]);
+discardPendingRowsForExecution(pendingRows, 'execution-1');
+assert.equal(pendingRows.size, 0, 'terminal cleanup discards buffered rows for the completed execution');
 
 const closedResults: ClosedSqlExecutionResults = new Map();
 markSqlExecutionResultsClosed(closedResults, [

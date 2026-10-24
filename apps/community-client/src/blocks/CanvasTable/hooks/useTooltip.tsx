@@ -25,13 +25,7 @@ export const useStyles = createStyles(({ css, token }) => {
   };
 });
 
-interface IProps {
-  active: boolean;
-  tableInstance: ITableInstance | null;
-  tooltip?: boolean;
-}
-
-const useTooltip = ({ active, tableInstance, tooltip }: IProps) => {
+const useTooltip = ({ tableInstance, tooltip }: { tableInstance: ITableInstance | null; tooltip?: boolean }) => {
   const contextMenuRef = useRef<ContextMenuRef>(null);
   const { styles } = useStyles();
 
@@ -41,9 +35,8 @@ const useTooltip = ({ active, tableInstance, tooltip }: IProps) => {
   };
 
   useEffect(() => {
-    if (!active || !tableInstance || !tooltip) return;
+    if (!tableInstance || !tooltip) return;
     let mouseenterTimeout: any = null;
-    let disposed = false;
 
     const mouseenter_cell_id = tableInstance?.on('mouseenter_cell', (args) => {
       const { col, row, cellRange } = args;
@@ -55,9 +48,6 @@ const useTooltip = ({ active, tableInstance, tooltip }: IProps) => {
       }
 
       mouseenterTimeout = setTimeout(() => {
-        if (disposed) {
-          return;
-        }
         // Read the current pointer position.
         contextMenuRef?.current?.openDropdown({
           position: 'absolute',
@@ -90,17 +80,11 @@ const useTooltip = ({ active, tableInstance, tooltip }: IProps) => {
     });
 
     return () => {
-      disposed = true;
-      clearMouseenter();
-      [mouseenter_cell_id, mouseleave_cell_id, mouseleave_table].forEach((eventId) => {
-        try {
-          tableInstance.off(eventId);
-        } catch (error) {
-          console.error('Failed to detach CanvasTable tooltip event', error);
-        }
-      });
+      tableInstance.off(mouseenter_cell_id);
+      tableInstance.off(mouseleave_cell_id);
+      tableInstance.off(mouseleave_table);
     };
-  }, [active, tableInstance, tooltip]);
+  }, [tableInstance]);
 
   if (!tooltip) return null;
 

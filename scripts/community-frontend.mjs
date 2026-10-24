@@ -178,6 +178,10 @@ function build() {
       `--app_version=${productVersion()}`,
     ],
     worktree,
+    {
+      APP_DISPLAY_NAME: 'Chat2DB Rust',
+      APP_VERSION: productVersion(),
+    },
   );
   const builtDist = join(worktree, 'dist');
   if (!existsSync(join(builtDist, 'index.html'))) {
@@ -200,14 +204,38 @@ function build() {
   console.log(`community frontend: built ${lock.commit} into ${relative(ROOT_DIR, OUTPUT_DIR)}`);
 }
 
+/**
+ * Serves the desktop bridge from the dev server so `umi dev` talks to the
+ * Tauri backend instead of the HTTP proxy. The production build injects the
+ * same script into the exported `index.html`.
+ */
+function injectTauriBridge(worktree) {
+  mkdirSync(join(worktree, 'public'), { recursive: true });
+  cpSync(TAURI_BRIDGE_PATH, join(worktree, 'public', TAURI_BRIDGE_NAME));
+  const configPath = join(worktree, '.umirc.ts');
+  const config = readFileSync(configPath, 'utf8');
+  const bridge = `{ src: '/${TAURI_BRIDGE_NAME}' }`;
+  const markers = [
+    ['headScripts: [createStorageVersionScript()],', `headScripts: [createStorageVersionScript(), ${bridge}],`],
+    ['headScripts: createHeadScripts(),', `headScripts: [...createHeadScripts(), ${bridge}],`],
+  ];
+  const match = markers.find(([from]) => config.includes(from));
+  if (!match) {
+    fail('community dev config no longer exposes a known headScripts entry point');
+  }
+  writeFileSync(configPath, config.replace(match[0], match[1]));
+}
+
 function dev() {
   const worktree = createWorktree('dev');
+  injectTauriBridge(worktree);
   runYarn(
     ['umi', 'dev', '--public_path=/', '--proxy_target=http://127.0.0.1:4200'],
     worktree,
     {
       UMI_ENV: 'community',
       APP_NAME: 'chat2db-community',
+      APP_DISPLAY_NAME: 'Chat2DB Rust',
       APP_VERSION: productVersion(),
       DISABLE_MFSU: 'true',
       HOST: '127.0.0.1',

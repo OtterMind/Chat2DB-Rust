@@ -1,6 +1,5 @@
 import { initializeMonacoEditor } from '@/components/SQLEditor';
 import { ServiceStatus } from '@/constants/common';
-import { runtimeEditionConfig } from '@/constants/runtimeEdition';
 import useDocumentListener from '@/hooks/useDocumentListener';
 import useCopyFocusData from '@/hooks/useFocusData';
 import useJavaMessageReceiver from '@/jcef/useProcessJavaPush';
@@ -8,7 +7,6 @@ import miscServices from '@/service/misc';
 import { useGlobalStore } from '@/store/global';
 import { clearOlderLocalStorage } from '@/utils';
 import { isDesktop } from '@/utils/env';
-import { initGoogleAds } from '@/utils/googleAds';
 import { initializeDevEnvironmentIcon } from '@/utils/initLocalIcon';
 import queryString from 'query-string';
 import { useEffect, useLayoutEffect } from 'react';
@@ -20,6 +18,7 @@ import useEnglish from './useEnglish';
 import useIframe from './useIframe';
 import useJcef from './useJcef';
 import useOpenFile from './useOpenFile';
+import useApplicationExit from './useApplicationExit';
 
 const useInit = () => {
   const { reload } = queryString.parse(location.search);
@@ -28,20 +27,6 @@ const useInit = () => {
     serviceStatus: state.serviceStatus,
     setServiceStatus: state.setServiceStatus,
   }));
-  const { curCountry, isCN } = useGlobalStore((state) => ({
-    curCountry: state.appConfig.curCountry,
-    isCN: state.appConfig.isCN,
-  }));
-
-  // Initialize Google Ads after the country is known.
-  // This only applies to the overseas web app, and initGoogleAds is idempotent.
-  useEffect(() => {
-    if (isDesktop || !runtimeEditionConfig.googleAds) {
-      return;
-    }
-    initGoogleAds();
-  }, [curCountry, isCN]);
-
   useLayoutEffect(() => {
     modifiedGlobalVariable();
     // Initialize the icon of the development environment
@@ -69,6 +54,7 @@ const useInit = () => {
   useCopyFocusData();
   useDocumentListener();
   useOpenFile();
+  useApplicationExit();
   useJavaMessageReceiver();
 
   // Check service status

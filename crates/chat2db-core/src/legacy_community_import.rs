@@ -106,7 +106,6 @@ impl Application {
                 datasource_id: "legacy-community-import".to_owned(),
                 datasource_revision: 0,
                 driver_id: h2_driver.driver_id,
-                datasource_name: "Legacy Chat2DB migration snapshot".to_owned(),
                 connection: DatasourceConnection {
                     jdbc_url,
                     properties: vec![DatasourceConnectionProperty {

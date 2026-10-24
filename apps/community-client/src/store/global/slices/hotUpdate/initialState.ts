@@ -4,6 +4,8 @@ import { IHotUpdateConfig, IUpdateDetail } from '@/typings/settings';
 export interface HotUpdateState {
   hotUpdateConfig: IHotUpdateConfig;
   updateDetail: IUpdateDetail;
+  /** True when the product was activated offline: update checks then report nothing. */
+  offlineActivation: boolean;
 }
 
 export const initialHotUpdateState: HotUpdateState = {
@@ -20,8 +22,13 @@ export const initialHotUpdateState: HotUpdateState = {
      * Whether to install automatically
      */
     autoInstall: false,
+    /**
+     * Whether beta versions are included in update checks
+     */
+    receiveBeta: false,
   },
   updateDetail: {
     status: UpdatedStatus.Default,
   },
+  offlineActivation: false,
 };

@@ -29,12 +29,6 @@ const getRowNumberList = (tableInstance) => {
   return rowNumberList;
 };
 
-interface TableSortState {
-  field: VTable.TYPES.FieldDef;
-  order: 'asc' | 'desc';
-  icon: 'sort-asc' | 'sort-desc';
-}
-
 // Upper bound on VTable render-settling poll iterations (100ms interval * 100 = 10s).
 const MAX_POLL_ITERATIONS = 100;
 
@@ -52,7 +46,6 @@ const useFilterAndSort: IUseFilterAndSort = ({
       filteredValues: string[];
     }[]
   >([]);
-  const sortStateRef = useRef<TableSortState | null>(null);
   const [activeFilterCount, setActiveFilterCount] = useState(0);
 
   // Track active VTable render-settling pollers so they can be cleared on unmount
@@ -151,7 +144,7 @@ const useFilterAndSort: IUseFilterAndSort = ({
         bgColor,
       },
       cursor: 'pointer',
-      positionType: VTable.TYPES.IconPosition.contentRight,
+      positionType: VTable.TYPES.IconPosition.right,
       svg: `<svg t="1732068283200" fill="${theme.colorText}" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="5401" width="200" height="200"><path d="M810.73102903 431.17967796c14.1942501 0 25.70897341 11.5147233 25.70897341 25.70897342 0 12.89069653-9.48697329 23.60880375-21.87073231 25.41929483l-3.76582145 0.28967857h-178.15232277c-14.04941082-0.28967857-25.2020359-11.6595626-25.2020359-25.70897341 0-12.74585724 9.26971435-23.31912517 21.58105373-25.34687519l3.76582145-0.36209822h177.93506384z m-1e-8 106.45687581c14.12183047 0.43451786 25.12961627 11.80440188 25.12961627 25.7089734 0 12.60101795-9.12487507 23.17428589-21.36379481 25.27445555l-3.76582146 0.36209822h-178.15232275c-13.97699119-0.28967857-25.2020359-11.6595626-25.20203591-25.70897342 0-12.74585724 9.26971435-23.31912517 21.58105373-25.34687518l3.76582146-0.36209822h178.00748348z m0 106.45687579c14.1942501 0 25.70897341 11.5147233 25.70897342 25.70897342 0 12.89069653-9.48697329 23.60880375-21.87073231 25.41929483l-3.76582145 0.28967857h-178.15232277c-13.97699119-0.28967857-25.2020359-11.6595626-25.2020359-25.70897341 0-12.74585724 9.26971435-23.31912517 21.58105373-25.34687518l3.76582145-0.36209823h177.93506384zM677.55130482 218.338346c23.31912517 0 38.59966993 17.88765193 33.96481275 42.07581282l-1.23113393 4.92453576-158.01966191 211.97229624v328.35066317l-51.41794681-20.56717872v-322.26741314l1.59323215-4.77969646 140.56652785-188.43591214H259.40028381l149.18446541 187.56687642 1.73807144 4.92453574V748.81223393l-51.41794681-20.56717873V477.31099081L189.00839043 262.58674813c-5.64873218-20.92927695 5.72115184-39.17902708 25.27445555-43.37936641l4.34517859-0.65177679 4.56243754-0.21725893h454.36084271z" p-id="5402"></path></svg>`,
     });
 
@@ -165,43 +158,18 @@ const useFilterAndSort: IUseFilterAndSort = ({
         bgColor,
       },
       cursor: 'pointer',
-      positionType: VTable.TYPES.IconPosition.contentRight,
+      positionType: VTable.TYPES.IconPosition.right,
       svg: `<svg t="1732068283200" fill="${theme.colorPrimary}" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="5401" width="200" height="200"><path d="M810.73102903 431.17967796c14.1942501 0 25.70897341 11.5147233 25.70897341 25.70897342 0 12.89069653-9.48697329 23.60880375-21.87073231 25.41929483l-3.76582145 0.28967857h-178.15232277c-14.04941082-0.28967857-25.2020359-11.6595626-25.2020359-25.70897341 0-12.74585724 9.26971435-23.31912517 21.58105373-25.34687519l3.76582145-0.36209822h177.93506384z m-1e-8 106.45687581c14.12183047 0.43451786 25.12961627 11.80440188 25.12961627 25.7089734 0 12.60101795-9.12487507 23.17428589-21.36379481 25.27445555l-3.76582146 0.36209822h-178.15232275c-13.97699119-0.28967857-25.2020359-11.6595626-25.20203591-25.70897342 0-12.74585724 9.26971435-23.31912517 21.58105373-25.34687518l3.76582146-0.36209822h178.00748348z m0 106.45687579c14.1942501 0 25.70897341 11.5147233 25.70897342 25.70897342 0 12.89069653-9.48697329 23.60880375-21.87073231 25.41929483l-3.76582145 0.28967857h-178.15232277c-13.97699119-0.28967857-25.2020359-11.6595626-25.2020359-25.70897341 0-12.74585724 9.26971435-23.31912517 21.58105373-25.34687518l3.76582145-0.36209823h177.93506384zM677.55130482 218.338346c23.31912517 0 38.59966993 17.88765193 33.96481275 42.07581282l-1.23113393 4.92453576-158.01966191 211.97229624v328.35066317l-51.41794681-20.56717872v-322.26741314l1.59323215-4.77969646 140.56652785-188.43591214H259.40028381l149.18446541 187.56687642 1.73807144 4.92453574V748.81223393l-51.41794681-20.56717873V477.31099081L189.00839043 262.58674813c-5.64873218-20.92927695 5.72115184-39.17902708 25.27445555-43.37936641l4.34517859-0.65177679 4.56243754-0.21725893h454.36084271z" p-id="5402"></path></svg>`,
     });
   }, [theme]);
-
-  useEffect(() => {
-    if (!tableInstance) {
-      return;
-    }
-
-    const filterFields = new Set(filterRulesRef.current.map((rule) => rule.filterKey));
-    const sortState = sortStateRef.current;
-    const columns = [...tableInstance.columns];
-    columns.forEach((column) => {
-      if (!column.headerIcon) {
-        return;
-      }
-      column.headerIcon[0] = sortState && sortState.field === column.field ? sortState.icon : 'sort';
-      column.headerIcon[1] = filterFields.has(String(column.field)) ? 'filter-active' : 'filter';
-    });
-    tableInstance.updateColumns(columns);
-
-    if (filterRulesRef.current.length) {
-      tableInstance.updateFilterRules(filterRulesRef.current);
-    }
-    if (sortState && !resultData.canEdit) {
-      tableInstance.updateSortState({ field: sortState.field, order: sortState.order });
-    }
-  }, [resultData.canEdit, tableInstance]);
 
   // table sorting
   const handleSort = (col, row, name: 'sort-asc' | 'sort-desc' | 'sort') => {
     if (!tableInstance) return;
     const field = tableInstance.getHeaderField(col, row);
     // const sortState: any = tableInstance.sortState;
-    let order: TableSortState['order'] | 'normal' = 'desc';
-    let headerSortIcon: TableSortState['icon'] | 'sort' = 'sort-desc';
+    let order: any = 'desc';
+    let headerSortIcon = 'sort-desc';
 
     // if (sortState && sortState.field === field) {
     if (name === 'sort-desc') {
@@ -214,14 +182,6 @@ const useFilterAndSort: IUseFilterAndSort = ({
       order = 'desc';
       headerSortIcon = 'sort-desc';
     }
-    sortStateRef.current =
-      order === 'normal'
-        ? null
-        : {
-            field,
-            order,
-            icon: order === 'asc' ? 'sort-asc' : 'sort-desc',
-          };
     // }
 
     const columns = [...tableInstance.columns];
@@ -229,9 +189,9 @@ const useFilterAndSort: IUseFilterAndSort = ({
     columns.forEach((column) => {
       if (!column.headerIcon) return;
       if (column.field === field) {
-        column.headerIcon[0] = headerSortIcon;
+        column.headerIcon[1] = headerSortIcon;
       } else {
-        column.headerIcon[0] = 'sort';
+        column.headerIcon[1] = 'sort';
       }
     });
 
@@ -280,7 +240,7 @@ const useFilterAndSort: IUseFilterAndSort = ({
         columns.forEach((column) => {
           if (!column.headerIcon) return;
           if (column.field === field) {
-            column.headerIcon[1] = 'filter';
+            column.headerIcon[0] = 'filter';
           }
         });
         tableInstance.updateColumns(columns);
@@ -306,7 +266,7 @@ const useFilterAndSort: IUseFilterAndSort = ({
       columns.forEach((column) => {
         if (!column.headerIcon) return;
         if (column.field === field) {
-          column.headerIcon[1] = 'filter-active';
+          column.headerIcon[0] = 'filter-active';
         }
       });
 
@@ -357,8 +317,8 @@ const useFilterAndSort: IUseFilterAndSort = ({
     const columns = [...tableInstance.columns];
     columns.forEach((column) => {
       if (!column.headerIcon) return;
-      if (column.headerIcon[1] === 'filter-active') {
-        column.headerIcon[1] = 'filter';
+      if (column.headerIcon[0] === 'filter-active') {
+        column.headerIcon[0] = 'filter';
       }
     });
     filterRulesRef.current = [];

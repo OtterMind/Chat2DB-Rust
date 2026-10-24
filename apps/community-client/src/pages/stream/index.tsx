@@ -7,8 +7,8 @@ import CustomTabs, { ITabItem } from '@/components/Tabs';
 import { IViewTableParams } from '@/typings';
 import { ConsoleStatus, WorkspaceTabType } from '@/constants';
 import { getDatabaseSupport } from '@/utils/database';
+import { buildWorkspaceObjectTabTitle } from '@/utils/workspaceObjectTabTitle';
 import { useStyles } from './style';
-import { useGlobalStore } from '@/store/global';
 
 interface IRightTab {
   key: string;
@@ -23,9 +23,6 @@ interface IRightTab {
 
 export default function StreamPage() {
   const { styles } = useStyles();
-  const streamVisible = useGlobalStore(
-    (state) => state.mainPageActiveTab === 'stream' && state.settingPageActiveTab === false,
-  );
   const [rightTabs, setRightTabs] = useState<IRightTab[]>([]);
   const [activeTabKey, setActiveTabKey] = useState<string | number | null>(null);
   const [sizes, setSizes] = useState<(number | string)[]>(['100%', 0]);
@@ -59,7 +56,12 @@ export default function StreamPage() {
         return;
       }
 
-      const label = tableName + (context.dataSourceName ? `[${context.dataSourceName}]` : '');
+      const label = buildWorkspaceObjectTabTitle({
+        dataSourceName: context.dataSourceName,
+        databaseName: context.databaseName,
+        schemaName: context.schemaName,
+        objectName: tableName,
+      });
       const tab: IRightTab = { key, label, type: 'table', tableParams: params };
       setRightTabs((prev) => [...prev, tab]);
       setActiveTabKey(key);
@@ -70,7 +72,18 @@ export default function StreamPage() {
   const pinIdRef = React.useRef(0);
 
   const handlePinSql = useCallback((sql: string, context: ITableClickContext) => {
-    const { dataSourceId, databaseName, schemaName, databaseType, dataSourceName } = context;
+    const {
+      dataSourceId,
+      databaseName,
+      schemaName,
+      databaseType,
+      dataSourceName,
+      environmentId,
+      environment,
+      identityColor,
+      watermarkEnabled,
+      watermarkContent,
+    } = context;
     if (!dataSourceId || !databaseType) return;
 
     const name = `${[databaseName || schemaName].filter(Boolean).join('-')}${
@@ -86,6 +99,11 @@ export default function StreamPage() {
       databaseType,
       databaseName,
       schemaName,
+      environmentId,
+      environment,
+      identityColor,
+      watermarkEnabled,
+      watermarkContent,
       status: ConsoleStatus.DRAFT,
       connectable: true,
       ...getDatabaseSupport(databaseType),
@@ -130,19 +148,14 @@ export default function StreamPage() {
     canClosed: true,
     children:
       tab.type === 'table' && tab.tableParams ? (
-        <ViewTable
-          key={tab.key}
-          active={streamVisible && activeTabKey === tab.key}
-          viewTableParams={tab.tableParams}
-        />
+        <ViewTable key={tab.key} viewTableParams={tab.tableParams} />
       ) : tab.type === 'console' && tab.consoleParams ? (
         <SQLExecute
           key={tab.key}
           boundInfo={tab.consoleParams.boundInfo}
           initDDL={tab.consoleParams.initDDL}
           type={WorkspaceTabType.CONSOLE}
-          isActive={streamVisible && activeTabKey === tab.key}
-          resourceActive={streamVisible && activeTabKey === tab.key}
+          isActive={activeTabKey === tab.key}
           isConsole={false}
         />
       ) : null,

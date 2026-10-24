@@ -8190,6 +8190,56 @@ async fn dispatch_inner(
             Err(error) => Err(error),
         },
         ("get", "/api/common/environment/list_all") => serialized(Ok(environments())),
+        // Every database type this product supports is built into the client, so
+        // there is nothing for the backend to register dynamically.
+        ("get", "/api/database/supported") => serialized(Ok(Vec::<serde_json::Value>::new())),
+        ("get" | "post", "/api/system/get-version-a") => serialized(Ok(serde_json::json!(true))),
+        ("get", "/api/system/get_latest_version") => {
+            serialized(Ok(crate::legacy_update::latest_version().await))
+        }
+        ("get", "/api/system/is_update_success") => {
+            let version = request
+                .message
+                .get("version")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            serialized(Ok(crate::legacy_update::is_update_success(&version)))
+        }
+        ("post", "/api/system/set_update_type") => {
+            let kind = request
+                .message
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| {
+                    request
+                        .message
+                        .get("type")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+                .unwrap_or_default();
+            serialized(Ok(crate::legacy_update::set_update_type(&kind)))
+        }
+        ("post", "/api/system/update_desktop_version") => {
+            let version = request
+                .message
+                .get("version")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let download_link = request
+                .message
+                .get("downloadLink")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            serialized(Ok(crate::legacy_update::stage_update(
+                &version,
+                &download_link,
+            )
+            .await))
+        }
         ("get", "/api/jdbc/driver/list") => decode(request.message)
             .map(|query: LegacyDriverQuery| drivers(application, &query.db_type))
             .and_then(serialize_data),
@@ -8914,6 +8964,12 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/v1/chart/update",
     "/api/chart",
     "/api/common/environment/list_all",
+    "/api/database/supported",
+    "/api/system/get-version-a",
+    "/api/system/get_latest_version",
+    "/api/system/is_update_success",
+    "/api/system/set_update_type",
+    "/api/system/update_desktop_version",
     "/api/jdbc/driver/list",
     "/api/jdbc/driver/download",
     "/api/jdbc/driver/save",

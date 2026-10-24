@@ -1,4 +1,4 @@
-import { runtimeEditionConfig } from '@/constants/runtimeEdition';
+import { clientRuntime } from '@client-runtime';
 import { LangType } from '@/constants/settings';
 import { ITreeNode, TreeNodeData } from '@/typings';
 import _copyToClipboard from 'copy-to-clipboard';
@@ -7,8 +7,74 @@ import queryString from 'query-string';
 import React from 'react';
 import { v4 as uuid } from 'uuid';
 import { isDesktop } from './env';
+import { normalizeClipboardText } from './clipboardText';
 import { clearInternalClipboard } from './internalClipboard';
-export { deepClone } from './deepClone';
+import { findNode } from './treeNodeLookup';
+
+export { findNode, getParentNode } from './treeNodeLookup';
+
+export function deepClone(target: any) {
+  const map = new WeakMap();
+
+  function isObject(_target: any) {
+    return (typeof _target === 'object' && _target) || typeof _target === 'function';
+  }
+
+  function clone(data: any) {
+    if (!isObject(data)) {
+      return data;
+    }
+    if ([Date, RegExp].includes(data.constructor)) {
+      return new data.constructor(data);
+    }
+    if (typeof data === 'function') {
+      return new Function('return ' + data.toString())();
+    }
+    const exist = map.get(data);
+    if (exist) {
+      return exist;
+    }
+    if (data instanceof Map) {
+      const result = new Map();
+      map.set(data, result);
+      data.forEach((val, key) => {
+        if (isObject(val)) {
+          result.set(key, clone(val));
+        } else {
+          result.set(key, val);
+        }
+      });
+      return result;
+    }
+    if (data instanceof Set) {
+      const result = new Set();
+      map.set(data, result);
+      data.forEach((val) => {
+        if (isObject(val)) {
+          result.add(clone(val));
+        } else {
+          result.add(val);
+        }
+      });
+      return result;
+    }
+    const keys = Reflect.ownKeys(data);
+    const allDesc = Object.getOwnPropertyDescriptors(data);
+    const result = Object.create(Object.getPrototypeOf(data), allDesc);
+    map.set(data, result);
+    keys.forEach((key) => {
+      const val = data[key];
+      if (isObject(val)) {
+        result[key] = clone(val);
+      } else {
+        result[key] = val;
+      }
+    });
+    return result;
+  }
+
+  return clone(target);
+}
 
 // Fuzzy match tree and highlight
 export function approximateTreeNode(treeData: ITreeNode[], target: string = '', isDelete = true) {
@@ -83,15 +149,15 @@ export function findObjListValue<T, K extends keyof T>(list: T[], key: K, value:
 // Clean up incompatible LocalStorage for the current edition only. This avoids
 // clearing Pro, Local, and Community state when they share the same origin.
 export function clearOlderLocalStorage() {
-  const versionKey = runtimeEditionConfig.localStorageVersionKey;
+  const versionKey = clientRuntime.localStorageVersionKey;
   if (localStorage.getItem(versionKey) !== 'v6') {
     [
-      runtimeEditionConfig.globalStoreName,
-      runtimeEditionConfig.userStoreName,
-      runtimeEditionConfig.orgStoreName,
-      runtimeEditionConfig.workspaceStoreName,
-      runtimeEditionConfig.aiStoreName,
-      runtimeEditionConfig.treeStoreName,
+      clientRuntime.globalStoreName,
+      clientRuntime.userStoreName,
+      clientRuntime.orgStoreName,
+      clientRuntime.workspaceStoreName,
+      clientRuntime.aiStoreName,
+      clientRuntime.treeStoreName,
     ].forEach((key) => localStorage.removeItem(key));
     localStorage.setItem(versionKey, 'v6');
   }
@@ -99,10 +165,10 @@ export function clearOlderLocalStorage() {
 
 // Log out and clean up localStorage of some record locations
 export function logoutClearSomeLocalStorage() {
-  localStorage.removeItem(runtimeEditionConfig.currentWorkspaceDatabaseStorageKey);
-  localStorage.removeItem(runtimeEditionConfig.currentConnectionStorageKey);
-  localStorage.removeItem(runtimeEditionConfig.activeConsoleIdStorageKey);
-  localStorage.removeItem(runtimeEditionConfig.currentPageStorageKey);
+  localStorage.removeItem(clientRuntime.currentWorkspaceDatabaseStorageKey);
+  localStorage.removeItem(clientRuntime.currentConnectionStorageKey);
+  localStorage.removeItem(clientRuntime.activeConsoleIdStorageKey);
+  localStorage.removeItem(clientRuntime.currentPageStorageKey);
 }
 
 // Determine whether an updated version is needed
@@ -223,40 +289,52 @@ export function clipboardToArray(text: string): Array<Array<string | null>> {
   }
 }
 
+type ClipboardData = string | number | Array<string | number | null> | Array<Array<string | null>>;
+
+function getClipboardText(
+  data: ClipboardData,
+  direction: 'horizontal' | 'vertical',
+) {
+  if (typeof data === 'string' || typeof data === 'number') return data.toString();
+  if (data[0] instanceof Array) {
+    return (data as Array<Array<string | null>>)
+      .map((row) => row.map((item) => (item === null ? '' : item)).join('\t'))
+      .join('\n');
+  }
+  const separator = direction === 'horizontal' ? '\t' : '\n';
+  const text = (data as Array<string | number | null>)
+    .map((item) => (item === null ? '' : item.toString()))
+    .join(separator);
+  return direction === 'vertical' && text ? `${text}\n` : text;
+}
+
+export async function copyToClipboardAsync(data: ClipboardData): Promise<boolean> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(normalizeClipboardText(getClipboardText(data, 'horizontal'), navigator.userAgent));
+      clearInternalClipboard();
+      return true;
+    } catch {
+      // Older embedded browsers may require the existing clipboard fallback.
+    }
+  }
+  return copyToClipboard(data);
+}
+
 export function copyToClipboard(
-  data: string | number | Array<string | number | null> | Array<Array<string | null>>,
+  data: ClipboardData,
   direction: 'horizontal' | 'vertical' = 'horizontal',
 ) {
   clearInternalClipboard();
   try {
-    let text = '';
-    if (typeof data === 'string' || typeof data === 'number') {
-      text = data.toString();
-    } else if (data instanceof Array) {
-      if (data[0] instanceof Array) {
-        // two-dimensional array
-        text = (data as Array<Array<string | null>>)
-          .map((row) => row.map((item) => (item === null ? '' : item)).join('\t'))
-          .join('\n');
-      } else {
-        // one-dimensional array
-        const separator = direction === 'horizontal' ? '\t' : '\n';
-        text = (data as Array<string | number | null>)
-          .map((item) => (item === null ? '' : item.toString()))
-          .join(separator);
-        // Ensure last item is accounted for in the text
-        if (direction === 'vertical' && text.length > 0) {
-          text += '\n';
-        }
-      }
-    }
+    const text = getClipboardText(data, direction);
 
     // For empty strings, we force a space and then delete it to ensure the clipboard is cleared
     if (text === '') {
       _copyToClipboard(' ', { format: 'text/plain' });
       return _copyToClipboard('', { format: 'text/plain' });
     }
-    return _copyToClipboard(text, { format: 'text/plain' });
+    return _copyToClipboard(normalizeClipboardText(text, navigator.userAgent), { format: 'text/plain' });
 
     // staticMessage.success('Copied to clipboard');
   } catch {
@@ -318,22 +396,6 @@ export function getLanguageType(language?: string) {
   }
 }
 
-// Find the parent node of a tree node
-export const getParentNode = (key: React.Key, tree: TreeNodeData[]): TreeNodeData => {
-  let finalNode: any;
-  for (let i = 0; i < tree.length; i++) {
-    const node = tree[i];
-    if (node.children) {
-      if (node.children.some((item) => item.key === key)) {
-        finalNode = node;
-      } else if (getParentNode(key, node.children)) {
-        finalNode = getParentNode(key, node.children);
-      }
-    }
-  }
-  return finalNode!;
-};
-
 export function removeSubkeys(expandedKeys: React.Key[], tree: TreeNodeData[], targetKey: React.Key): React.Key[] {
   function getSubkeys(node: TreeNodeData): React.Key[] {
     let keys = [node.key]; // Includes the key of the current node
@@ -358,22 +420,6 @@ export function removeSubkeys(expandedKeys: React.Key[], tree: TreeNodeData[], t
   // Delete the keys of the target node and its child nodes from expandedKeys
   return expandedKeys.filter((key) => !keysToRemove.has(key));
 }
-
-// Find the node of the tree
-export const findNode = (key: React.Key, tree: TreeNodeData[]): TreeNodeData => {
-  let finalNode: any;
-  for (let i = 0; i < tree.length; i++) {
-    const node = tree[i];
-    if (node.key === key) {
-      finalNode = node;
-    } else if (node.children) {
-      if (findNode(key, node.children)) {
-        finalNode = findNode(key, node.children);
-      }
-    }
-  }
-  return finalNode!;
-};
 
 // Find a node in the tree, operate on this node, and then return the new tree
 export const findNodeAndOperate = (
@@ -462,15 +508,6 @@ export function truncateString(str: string | null | undefined, length: number = 
     return str;
   }
   return str.substring(0, length) + '...';
-}
-
-// Return the inclusive range between two numbers, with an optional offset.
-export function generateNumberSequence(start?: number, end?: number, offset: number = 0) {
-  // If one of the numbers does not exist, returns an empty array
-  if (start === undefined || end === undefined) {
-    return [];
-  }
-  return Array.from({ length: end - start + 1 }, (_, i) => start + i + offset);
 }
 
 // Parse JSON values and return all other values unchanged.

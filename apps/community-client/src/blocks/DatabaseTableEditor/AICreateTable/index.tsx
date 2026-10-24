@@ -4,7 +4,7 @@ import { useStyles } from './style';
 import { ChatInput, IconfontSvg } from '@chat2db/ui';
 import FieldPromptInput, { FieldPromptInputRef } from '@/components/FieldPromptInput';
 import ExecuteSQL from '@/components/ExecuteSQL';
-import { ChatSourceType, QuestionType } from '@/constants/chat';
+import { QuestionType } from '@/constants/chat';
 import { IDatabaseBaseInfo } from '@/typings';
 import useSSERequest, { SSERequestStatus } from '@/hooks/useSSERequest';
 import DraggableResizableModal, { DraggableResizableModalRef } from '@/components/DraggableResizableModal';
@@ -36,12 +36,16 @@ const AICreateTable = forwardRef((props: IProps, ref: ForwardedRef<IAICreateTabl
   const draggableResizableModalRef = useRef<DraggableResizableModalRef>(null);
   const [chatInputValue, setChatInputValue] = useState('');
   const [content, setContent] = useState('');
-  const { status, request } = useSSERequest(
+  const {
+    status,
+    request,
+    stop: stopAiStream,
+  } = useSSERequest(
     {
-      baseURL: '/api/v2/ai/chat',
+      baseURL: '/api/v3/ai/chat/stream',
     },
     (parsedData) => {
-      if (parsedData.type === 'MARKDOWN') {
+      if ((parsedData.type as string) === 'answer') {
         setContent((prev) => prev + parsedData.content);
         // If the editor is not initialized, the lastFragment is accumulated
         if (!monacoEditorRef.current) {
@@ -68,7 +72,9 @@ const AICreateTable = forwardRef((props: IProps, ref: ForwardedRef<IAICreateTabl
     }
   }, [status]);
 
-  const closeEventSource = () => {};
+  const closeEventSource = () => {
+    stopAiStream();
+  };
 
   useEffect(() => {
     if (!content) {
@@ -123,10 +129,12 @@ const AICreateTable = forwardRef((props: IProps, ref: ForwardedRef<IAICreateTabl
       const columnList = fieldPromptInputColumnNameRef.current?.getValue() || '';
       request({
         ...databaseBaseInfo,
+        input: `Create table ${tableName} with these columns: ${columnList}`,
         tableName,
         columnList,
         questionType: QuestionType.TEXT_TO_CREATE_TABLE_STREAM,
-        source: ChatSourceType.SINGLE_TURN_CHAT,
+        enableTools: false,
+        persistHistory: false,
         databaseType: databaseBaseInfo.databaseType!,
       });
     } else {
@@ -134,7 +142,8 @@ const AICreateTable = forwardRef((props: IProps, ref: ForwardedRef<IAICreateTabl
         ...databaseBaseInfo,
         input: chatInputValue,
         questionType: QuestionType.TEXT_MODIFY_COLUMN,
-        source: ChatSourceType.SINGLE_TURN_CHAT,
+        enableTools: false,
+        persistHistory: false,
         databaseType: databaseBaseInfo.databaseType!,
       });
     }

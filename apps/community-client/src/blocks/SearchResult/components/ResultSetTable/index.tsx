@@ -1,4 +1,14 @@
-import { memo, useEffect, useMemo, forwardRef, useImperativeHandle, ForwardedRef, useCallback } from 'react';
+import {
+  memo,
+  useEffect,
+  useMemo,
+  forwardRef,
+  useImperativeHandle,
+  ForwardedRef,
+  useCallback,
+  useRef,
+  useState,
+} from 'react';
 import { useStyles } from './style';
 import CanvasTable from '@/blocks/CanvasTable';
 import { ITableInstance } from '@/blocks/CanvasTable/typings';
@@ -6,38 +16,58 @@ import { IManageResultData } from '@/typings/database';
 import onContextmenuCell from './event/onContextmenuCell';
 import onChangeCellValue from './event/onChangeCellValue';
 import onCopyData from './event/onCopyData';
+import { cancelResultCopy } from './copyResultData';
+
 import onPasteData from './event/onPasteData';
-import dataTreating from './utils/dataTreating';
+import { buildResultColumns, buildResultRecords } from './utils/dataTreating';
 import useOperationRecord, { OperationRecordUtils } from './hooks/useOperationRecord';
 import useFilterAndSort from './hooks/useFilterAndSort';
 import useHeaderTooltip from './hooks/useHeaderTooltip';
 import { ITableOperationUtils } from './typings';
 import { useGlobalStore } from '@/store/global';
-import { getActiveTableInstance } from '@/blocks/CanvasTable/lifecycle';
+import ColumnVisibilityModal, { ResultColumnVisibilityOption } from './ColumnVisibilityModal';
+import {
+  getResultFrozenColumnCount,
+  getResultColumnFields,
+  getResultColumnDisplayOrder,
+  getNextFrozenResultColumnFields,
+  hideResultColumnFields,
+  mergeResultColumnOrderFromDisplay,
+  orderResultColumns,
+  reconcileHiddenResultColumnFields,
+  getResultFieldAtTableColumn,
+} from './columnState';
+import { resolveResultSelectionActiveCell, ResultSelectionCause } from './selectionState';
+import { RESULT_TABLE_CONTENT_LAYOUT_OPTIONS } from './layoutOptions';
+import { resetResultTableLayout, updateResultTableRowExpansion } from './rowHeight';
+import { hasActiveResultEditorChange } from '../ResultSet/resultEditActions';
 
 interface IProps {
   className?: string;
-  active: boolean;
   resultData: IManageResultData;
   // There are operational changes in the table
   onOperationChange?: (hasOperationRecord: any) => void;
   // table
   onTableOperationUtils: ITableOperationUtils;
   tableInstance: ITableInstance | null;
-  setTableInstance: (tableInstance: ITableInstance | null) => void;
+  setTableInstance: (tableInstance: ITableInstance) => void;
   setOrderByText?: (orderByText: string) => void;
   onFilterCountChange?: (count: number) => void;
+  onActiveEditChange?: (hasChange: boolean) => void;
   onSelectionChange?: (selection: IResultSetSelection) => void;
 }
 
 export interface IResultSetSelection {
   values: unknown[];
   rowCount: number;
+  cause: ResultSelectionCause;
+  interactionRevision: number;
   activeCell?: {
     tableInstance: ITableInstance;
     col: number;
     row: number;
     rowId?: string | number;
+    field?: string;
   };
 }
 
@@ -46,38 +76,223 @@ export interface ResultSetTableRef {
   tableInstance: ITableInstance | null;
   activeFilterCount: number;
   clearAllFilters: () => void;
+  isFieldFrozen: (field: string | number) => boolean;
+  openColumnVisibility: () => void;
+  getInteractionRevision: () => number;
 }
 
 const ResultSetTable = forwardRef((props: IProps, ref: ForwardedRef<ResultSetTableRef>) => {
-  const { active, resultData, onOperationChange, onTableOperationUtils, tableInstance, setTableInstance } = props;
+  const { resultData, onOperationChange, onTableOperationUtils, tableInstance, setTableInstance } = props;
   const { styles, theme } = useStyles();
-  const activeTableInstance = getActiveTableInstance(active, tableInstance);
+  const [hiddenColumnFields, setHiddenColumnFields] = useState<Set<string>>(() => new Set());
+  const [frozenColumnFields, setFrozenColumnFields] = useState<string[]>([]);
+  const [columnOrder, setColumnOrder] = useState<string[]>([]);
+  const [columnVisibilityOpen, setColumnVisibilityOpen] = useState(false);
+  const interactionRevisionRef = useRef(0);
+  const { customFontSize, showFieldType, showFieldComment } = useGlobalStore((state) => ({
+    customFontSize: state.baseSetting.customFontSize ?? 13,
+    showFieldType: state.dataTableSettings.showFieldType ?? true,
+    showFieldComment: state.dataTableSettings.showFieldComment ?? true,
+  }));
+  const columnVisibilityOptions = useMemo<ResultColumnVisibilityOption[]>(
+    () =>
+      (resultData.headerList || []).slice(1).map((header, index) => ({
+        field: String(index + 1),
+        header,
+      })),
+    [resultData.headerList],
+  );
+  const resultColumnFields = useMemo(
+    () => columnVisibilityOptions.map((column) => column.field),
+    [columnVisibilityOptions],
+  );
+
+  useEffect(() => {
+    setHiddenColumnFields((current) => {
+      const next = reconcileHiddenResultColumnFields(resultColumnFields, current);
+      return next.size === current.size && [...next].every((field) => current.has(field)) ? current : next;
+    });
+    setColumnOrder((current) => {
+      const next = [...current.filter((field) => resultColumnFields.includes(field))];
+      resultColumnFields.forEach((field) => {
+        if (!next.includes(field)) {
+          next.push(field);
+        }
+      });
+      return next.length === current.length && next.every((field, index) => field === current[index])
+        ? current
+        : next;
+    });
+    setFrozenColumnFields((current) => current.filter((field) => resultColumnFields.includes(field)));
+  }, [resultColumnFields]);
 
   // Registry data manipulation method
   const { operationRecordUtils, hasOperationRecord, reCalculateCellStyle } = useOperationRecord({
-    // Keep edit tracking attached until CanvasTable completes the active editor during release.
     tableInstance,
     theme,
   });
 
-  const { dataTableSettings } = useGlobalStore((s) => ({
-    dataTableSettings: s.dataTableSettings,
-  }));
+  useEffect(() => {
+    if (!tableInstance || !props.onActiveEditChange) {
+      return;
+    }
+    let frameId: number | null = null;
+    const syncActiveEditState = () => {
+      if (frameId !== null) {
+        cancelAnimationFrame(frameId);
+      }
+      frameId = requestAnimationFrame(() => {
+        frameId = null;
+        props.onActiveEditChange?.(hasActiveResultEditorChange(tableInstance));
+      });
+    };
+    const eventIds = [
+      tableInstance.on('click_cell', syncActiveEditState),
+      tableInstance.on('dblclick_cell', syncActiveEditState),
+      tableInstance.on('keydown', syncActiveEditState),
+      tableInstance.on('change_cell_value', syncActiveEditState),
+    ];
+    const tableElement = tableInstance.getElement();
+    tableElement.addEventListener('input', syncActiveEditState, true);
+    tableElement.addEventListener('change', syncActiveEditState, true);
+    syncActiveEditState();
+    return () => {
+      if (frameId !== null) {
+        cancelAnimationFrame(frameId);
+      }
+      eventIds.forEach((eventId) => tableInstance.off(eventId));
+      tableElement.removeEventListener('input', syncActiveEditState, true);
+      tableElement.removeEventListener('change', syncActiveEditState, true);
+    };
+  }, [props.onActiveEditChange, tableInstance]);
 
   // Filter and sort
   const { activeFilterCount, clearAllFilters } = useFilterAndSort({
     theme,
-    tableInstance: activeTableInstance,
+    tableInstance,
     resultData,
     sortAfter: reCalculateCellStyle,
     filterAfter: reCalculateCellStyle,
     setOrderByText: props.setOrderByText,
   });
-  const headerTooltip = useHeaderTooltip({ tableInstance: activeTableInstance });
+  const columns = useMemo(() => {
+    const nextColumns = buildResultColumns({
+      data: resultData,
+      theme,
+      visibility: { showFieldType, showFieldComment },
+      hiddenFields: hiddenColumnFields,
+      readOnlyFields: new Set(frozenColumnFields),
+    });
+    const displayOrder = getResultColumnDisplayOrder(columnOrder, frozenColumnFields);
+    return orderResultColumns(nextColumns, displayOrder);
+  }, [
+    columnOrder,
+    frozenColumnFields,
+    resultData,
+    theme.appearance,
+    customFontSize,
+    showFieldType,
+    showFieldComment,
+    hiddenColumnFields,
+  ]);
+  const records = useMemo(() => buildResultRecords(resultData), [resultData]);
+  useEffect(() => () => {
+    if (tableInstance) cancelResultCopy(tableInstance);
+  }, [tableInstance, resultData.dataList]);
+  const headerTooltip = useHeaderTooltip({ tableInstance });
 
-  const [columns, records] = useMemo(() => {
-    return dataTreating({ data: resultData, theme, dataTableSettings });
-  }, [resultData, theme.appearance, dataTableSettings]);
+  useEffect(() => {
+    if (!tableInstance) {
+      return;
+    }
+    const eventId = tableInstance.on('resize_row_end', ({ row, rowHeight }) => {
+      updateResultTableRowExpansion(tableInstance, row, rowHeight);
+    });
+    return () => tableInstance.off(eventId);
+  }, [tableInstance]);
+
+  const clearColumnSensitiveSelection = useCallback(() => {
+    interactionRevisionRef.current += 1;
+    tableInstance?.clearSelected();
+    props.onSelectionChange?.({
+      values: [],
+      rowCount: 0,
+      cause: 'table-selection',
+      interactionRevision: interactionRevisionRef.current,
+    });
+  }, [props.onSelectionChange, tableInstance]);
+
+  const handleColumnVisibilityConfirm = useCallback(
+    (nextHiddenFields: Set<string>) => {
+      const reconciledHiddenFields = reconcileHiddenResultColumnFields(resultColumnFields, nextHiddenFields);
+      setHiddenColumnFields(reconciledHiddenFields);
+      setFrozenColumnFields((current) => current.filter((field) => !reconciledHiddenFields.has(field)));
+      setColumnVisibilityOpen(false);
+      clearColumnSensitiveSelection();
+    },
+    [clearColumnSensitiveSelection, resultColumnFields],
+  );
+
+  const handleHideColumns = useCallback(
+    (fields: string[]) => {
+      const nextHiddenFields = hideResultColumnFields(resultColumnFields, hiddenColumnFields, fields);
+      setHiddenColumnFields(nextHiddenFields);
+      setFrozenColumnFields((current) => current.filter((field) => !nextHiddenFields.has(field)));
+      clearColumnSensitiveSelection();
+    },
+    [clearColumnSensitiveSelection, hiddenColumnFields, resultColumnFields],
+  );
+
+  const handleShowAllColumns = useCallback(() => {
+    setHiddenColumnFields(new Set());
+    clearColumnSensitiveSelection();
+  }, [clearColumnSensitiveSelection]);
+
+  const handleFreezeColumns = useCallback(
+    (fields: string[]) => {
+      setFrozenColumnFields((current) =>
+        getNextFrozenResultColumnFields(tableInstance?.columns || [], current, fields),
+      );
+      clearColumnSensitiveSelection();
+    },
+    [clearColumnSensitiveSelection, tableInstance],
+  );
+
+  const handleUnfreezeAllColumns = useCallback(() => {
+    setFrozenColumnFields([]);
+    clearColumnSensitiveSelection();
+  }, [clearColumnSensitiveSelection]);
+
+  const applyFrozenColumnCount = useCallback(() => {
+    if (!tableInstance) {
+      return;
+    }
+    tableInstance.setFrozenColCount(
+      getResultFrozenColumnCount(tableInstance.columns || [], frozenColumnFields),
+    );
+  }, [frozenColumnFields, tableInstance]);
+
+  useEffect(() => {
+    applyFrozenColumnCount();
+    reCalculateCellStyle();
+  }, [applyFrozenColumnCount, columns, reCalculateCellStyle]);
+
+  useEffect(() => {
+    if (!tableInstance) {
+      return;
+    }
+    const eventId = tableInstance.on('change_header_position', () => {
+      const displayOrder = getResultColumnFields(tableInstance.columns || []);
+      setColumnOrder((current) => {
+        const nextOrder = mergeResultColumnOrderFromDisplay(current, displayOrder, frozenColumnFields);
+        return nextOrder.length === current.length && nextOrder.every((field, index) => field === current[index])
+          ? current
+          : nextOrder;
+      });
+      applyFrozenColumnCount();
+    });
+    return () => tableInstance.off(eventId);
+  }, [applyFrozenColumnCount, frozenColumnFields, tableInstance]);
 
   useEffect(() => {
     onOperationChange?.(hasOperationRecord);
@@ -88,64 +303,86 @@ const ResultSetTable = forwardRef((props: IProps, ref: ForwardedRef<ResultSetTab
   }, [activeFilterCount]);
 
   useEffect(() => {
-    if (!activeTableInstance || !operationRecordUtils) return;
+    if (!tableInstance || !operationRecordUtils) return;
     // monitors the right mouse click on a cell
     const { id: onContextmenuCellId } = onContextmenuCell({
       resultData,
-      tableInstance: activeTableInstance,
+      tableInstance,
       operationRecordUtils,
       onTableOperationUtils,
+      frozenColumnFields,
+      onHideColumns: handleHideColumns,
+      onShowAllColumns: handleShowAllColumns,
+      onFreezeColumns: handleFreezeColumns,
+      onUnfreezeAllColumns: handleUnfreezeAllColumns,
     });
+    // monitors cell value changes
+    const onChangeCellValueId = onChangeCellValue(
+      tableInstance,
+      operationRecordUtils.handleCellValueChange,
+      new Set(frozenColumnFields),
+    );
+    // monitors copied data
     return () => {
-      activeTableInstance.off(onContextmenuCellId);
+      tableInstance?.off(onContextmenuCellId);
+      tableInstance?.off(onChangeCellValueId);
     };
-  }, [activeTableInstance, operationRecordUtils]);
+  }, [
+    frozenColumnFields,
+    handleHideColumns,
+    handleShowAllColumns,
+    handleFreezeColumns,
+    handleUnfreezeAllColumns,
+    onTableOperationUtils,
+    operationRecordUtils,
+    resultData,
+    tableInstance,
+  ]);
 
   useEffect(() => {
-    if (!tableInstance || !operationRecordUtils) return;
-    const onChangeCellValueId = onChangeCellValue(tableInstance, operationRecordUtils.handleCellValueChange);
-    return () => {
-      tableInstance.off(onChangeCellValueId);
-    };
-  }, [tableInstance, operationRecordUtils]);
-
-  useEffect(() => {
-    if (!activeTableInstance || !props.onSelectionChange) {
+    if (!tableInstance || !props.onSelectionChange) {
       return;
     }
 
     let frameId: number | null = null;
     let latestActiveCell: { col: number; row: number } | undefined;
+    let pendingCause: ResultSelectionCause = 'table-selection';
     const emitSelection = () => {
       frameId = null;
-      const cells = (activeTableInstance.getSelectedCellInfos() || [])
+      const cells = (tableInstance.getSelectedCellInfos() || [])
         .flat()
-        .filter((cell) => cell.col > 0 && !activeTableInstance.isHeader(cell.col, cell.row));
-      const fallbackCell = cells[cells.length - 1];
-      const activeCell =
-        latestActiveCell || (fallbackCell ? { col: fallbackCell.col, row: fallbackCell.row } : undefined);
-      const activeRecord = activeCell
-        ? activeTableInstance.getRecordByCell(activeCell.col, activeCell.row)
-        : undefined;
+        .filter((cell) => cell.col > 0 && !tableInstance.isHeader(cell.col, cell.row));
+      const activeCell = resolveResultSelectionActiveCell(cells, latestActiveCell);
+      latestActiveCell = activeCell;
+      const activeRecord = activeCell ? tableInstance.getRecordByCell(activeCell.col, activeCell.row) : undefined;
       props.onSelectionChange?.({
         values: cells.map((cell) => (cell.dataValue !== undefined ? cell.dataValue : cell.value)),
         rowCount: new Set(cells.map((cell) => cell.row)).size,
+        cause: pendingCause,
+        interactionRevision: interactionRevisionRef.current,
         activeCell: activeCell
           ? {
-              tableInstance: activeTableInstance,
+              tableInstance,
               col: activeCell.col,
               row: activeCell.row,
               rowId: activeRecord?.CHAT2DB_ROW_NUMBER,
+              field: getResultFieldAtTableColumn(tableInstance, activeCell.col, activeCell.row),
             }
           : undefined,
       });
     };
-    const scheduleSelection = (event?: { col?: number; row?: number }) => {
+    const scheduleSelection = (
+      cause: ResultSelectionCause,
+      event?: { col?: number; row?: number },
+    ) => {
+      if (cause === 'table-selection' || frameId === null) {
+        pendingCause = cause;
+      }
       if (
         event?.col !== undefined &&
         event?.row !== undefined &&
         event.col > 0 &&
-        !activeTableInstance.isHeader(event.col, event.row)
+        !tableInstance.isHeader(event.col, event.row)
       ) {
         latestActiveCell = { col: event.col, row: event.row };
       }
@@ -156,69 +393,80 @@ const ResultSetTable = forwardRef((props: IProps, ref: ForwardedRef<ResultSetTab
     };
     const clearSelection = () => {
       latestActiveCell = undefined;
-      scheduleSelection();
+      scheduleSelection('table-selection');
     };
 
     const eventIds = [
-      activeTableInstance.on('selected_cell', scheduleSelection),
-      activeTableInstance.on('drag_select_end', scheduleSelection),
-      activeTableInstance.on('selected_clear', clearSelection),
-      activeTableInstance.on('change_cell_value', scheduleSelection),
+      tableInstance.on('selected_cell', (event) => scheduleSelection('table-selection', event)),
+      tableInstance.on('drag_select_end', (event) => scheduleSelection('table-selection', event)),
+      tableInstance.on('selected_clear', clearSelection),
+      tableInstance.on('change_cell_value', (event) => scheduleSelection('value-change', event)),
     ];
-    scheduleSelection();
+    scheduleSelection('table-selection');
 
     return () => {
       if (frameId !== null) {
         cancelAnimationFrame(frameId);
       }
-      eventIds.forEach((eventId) => activeTableInstance.off(eventId));
+      eventIds.forEach((eventId) => tableInstance.off(eventId));
     };
-  }, [activeTableInstance, props.onSelectionChange]);
+  }, [tableInstance, props.onSelectionChange]);
 
   // callback after initialization is completed
-  const onInit = useCallback(
-    (_tableInstance) => {
-      setTableInstance(_tableInstance);
-    },
-    [setTableInstance],
-  );
-
-  const onRelease = useCallback(() => {
-    setTableInstance(null);
-    props.onSelectionChange?.({ values: [], rowCount: 0 });
-  }, [props.onSelectionChange, setTableInstance]);
+  const onInit = useCallback((_tableInstance) => {
+    setTableInstance(_tableInstance);
+  }, []);
 
   useImperativeHandle(ref, () => {
     return {
       operationRecordUtils,
-      tableInstance: activeTableInstance,
+      tableInstance,
       activeFilterCount,
       clearAllFilters,
+      isFieldFrozen: (field) => frozenColumnFields.includes(String(field)),
+      openColumnVisibility: () => setColumnVisibilityOpen(true),
+      getInteractionRevision: () => interactionRevisionRef.current,
     };
-  }, [operationRecordUtils, activeTableInstance, activeFilterCount, clearAllFilters]);
+  }, [operationRecordUtils, tableInstance, activeFilterCount, clearAllFilters, frozenColumnFields]);
 
   const onCopy = useCallback(() => {
-    if (!activeTableInstance) return;
-    onCopyData(activeTableInstance);
-  }, [activeTableInstance]);
+    if (!tableInstance) return;
+    onCopyData(tableInstance);
+  }, [tableInstance]);
 
   const onPaste = useCallback(() => {
-    if (!activeTableInstance) return;
-    onPasteData(activeTableInstance, operationRecordUtils);
-  }, [activeTableInstance, operationRecordUtils]);
+    if (!tableInstance) return;
+    onPasteData(tableInstance, operationRecordUtils, new Set(frozenColumnFields));
+  }, [frozenColumnFields, tableInstance, operationRecordUtils]);
+
+  const handleTablePointerDown = useCallback(() => {
+    interactionRevisionRef.current += 1;
+  }, []);
+
+  const handleTableKeyDown = useCallback(() => {
+    interactionRevisionRef.current += 1;
+  }, []);
+
+  const handleBeforeRecordsChange = useCallback((table: ITableInstance) => {
+    cancelResultCopy(table);
+    resetResultTableLayout(table);
+  }, []);
 
   return (
     <>
       <CanvasTable
-        active={active}
         columns={columns}
         records={records}
         onInit={onInit}
-        onRelease={onRelease}
+        onBeforeRecordsChange={handleBeforeRecordsChange}
         className={styles.canvasTable}
         onCopy={onCopy}
         onPaste={onPaste}
+        onKeyDown={handleTableKeyDown}
+        onPointerDown={handleTablePointerDown}
+        customOptions={{ showFrozenColumnDivider: frozenColumnFields.length > 0 }}
         options={{
+          ...RESULT_TABLE_CONTENT_LAYOUT_OPTIONS,
           rowSeriesNumber: {
             title: undefined,
             width: 'auto' as any,
@@ -230,10 +478,19 @@ const ResultSetTable = forwardRef((props: IProps, ref: ForwardedRef<ResultSetTab
             selectAllOnCtrlA: true, // Turn on all selections
           },
           frozenColCount: 1, // Number of frozen columns
+          unfreezeAllOnExceedsMaxWidth: false,
+          frozenColDragHeaderMode: 'disabled',
+          defaultHeaderRowHeight: 'auto',
         }}
       />
-      {/* plug-in area */}
-      <>{headerTooltip}</>
+      {headerTooltip}
+      <ColumnVisibilityModal
+        open={columnVisibilityOpen}
+        columns={columnVisibilityOptions}
+        hiddenFields={hiddenColumnFields}
+        onCancel={() => setColumnVisibilityOpen(false)}
+        onConfirm={handleColumnVisibilityConfirm}
+      />
     </>
   );
 });

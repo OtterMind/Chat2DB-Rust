@@ -1,7 +1,7 @@
 import Iconfont from '@/components/Iconfont';
 import Logo from '@/components/Logo';
 import { APP_CONFIG } from '@/constants/appConfig';
-import { runtimeEditionConfig } from '@/constants/runtimeEdition';
+import { clientRuntime } from '@client-runtime';
 import { UpdatedStatus } from '@/constants/settings';
 import i18n from '@/i18n';
 import jcefApi from '@/jcef';
@@ -10,53 +10,87 @@ import { isDesktop } from '@/utils/env';
 import { openWebPage } from '@/utils/url';
 import { staticMessage } from '@chat2db/ui';
 import { Button, Checkbox, Progress } from 'antd';
-import { useMemo } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useStyles } from './style';
 
 // About Us
 export default function AboutUs() {
   const { styles } = useStyles();
-  const { appUrlConfig, hotUpdateConfig, updateDetail, updateHotUpdateConfig, updateAndRestartApp, handleCheckUpdate } =
-    useGlobalStore((state) => ({
-      appUrlConfig: state.appUrlConfig,
-      hotUpdateConfig: state.hotUpdateConfig,
-      updateDetail: state.updateDetail,
-      updateHotUpdateConfig: state.updateHotUpdateConfig,
-      updateAndRestartApp: state.updateAndRestartApp,
-      handleCheckUpdate: state.handleCheckUpdate,
-    }));
+  const {
+    appUrlConfig,
+    hotUpdateConfig,
+    updateDetail,
+    updateHotUpdateConfig,
+    updateAndRestartApp,
+    handleCheckUpdate,
+    setUpdateDetail,
+  } = useGlobalStore((state) => ({
+    appUrlConfig: state.appUrlConfig,
+    hotUpdateConfig: state.hotUpdateConfig,
+    updateDetail: state.updateDetail,
+    updateHotUpdateConfig: state.updateHotUpdateConfig,
+    updateAndRestartApp: state.updateAndRestartApp,
+    handleCheckUpdate: state.handleCheckUpdate,
+    setUpdateDetail: state.setUpdateDetail,
+  }));
 
   const jumpDoc = () => {
     let CHANGE_LOG_URL = appUrlConfig.CHANGE_LOG_URL;
-    if (runtimeEditionConfig.localPersistence) {
+    if (clientRuntime.usesLocalPersistence) {
       CHANGE_LOG_URL = `${CHANGE_LOG_URL}?type=local`;
     }
     openWebPage(CHANGE_LOG_URL);
   };
 
-  const checkUpdate = () => {
-    handleCheckUpdate().then((available) => {
+  const checkingRef = useRef(false);
+  const [checking, setChecking] = useState(false);
+
+  const checkUpdate = async () => {
+    // One click, one request, one message: a second click while the check runs is ignored here and
+    // reuses the running check inside the store.
+    if (checkingRef.current) {
+      return;
+    }
+    checkingRef.current = true;
+    setChecking(true);
+    try {
+      const available = await handleCheckUpdate('manual');
       if (available) {
         return;
       }
+      if (useGlobalStore.getState().updateDetail.status === UpdatedStatus.UpdateFailed) {
+        // The check could not reach the update source, which is not the same as "no new version".
+        staticMessage.error(i18n('setting.text.checkUpdateFailed'));
+        return;
+      }
       staticMessage.info(i18n('setting.text.notAvailable'));
-    });
+    } finally {
+      checkingRef.current = false;
+      setChecking(false);
+    }
+  };
+
+  const triggerDownload = () => {
+    jcefApi
+      .triggerDownload()
+      .then((accepted) => {
+        if (!accepted) {
+          setUpdateDetail({ status: UpdatedStatus.UpdateFailed });
+        }
+      })
+      .catch(() => {
+        setUpdateDetail({ status: UpdatedStatus.UpdateFailed });
+      });
   };
 
   const updateButton = useMemo(() => {
-    if (!isDesktop || !runtimeEditionConfig.autoUpdate) {
+    if (!isDesktop || !clientRuntime.enableAutoUpdate) {
       return false;
     }
     switch (updateDetail.status) {
       case UpdatedStatus.Available:
         return (
-          <Button
-            type="primary"
-            size="small"
-            onClick={() => {
-              jcefApi.triggerDownload();
-            }}
-          >
+          <Button type="primary" size="small" onClick={triggerDownload}>
             {i18n('setting.button.startDownloading')}
           </Button>
         );
@@ -81,12 +115,12 @@ export default function AboutUs() {
         );
       default:
         return (
-          <Button onClick={checkUpdate} type="primary" size="small">
+          <Button onClick={checkUpdate} type="primary" size="small" loading={checking}>
             {i18n('setting.title.checkUpdate')}
           </Button>
         );
     }
-  }, [updateDetail, hotUpdateConfig]);
+  }, [updateDetail, hotUpdateConfig, checking]);
 
   return (
     <div>
@@ -107,7 +141,7 @@ export default function AboutUs() {
           </div> */}
           <div className={styles.updateButton}>
             {updateButton}
-            {!runtimeEditionConfig.localPersistence && (
+            {!clientRuntime.usesLocalPersistence && (
               <Button size="small" onClick={jumpDoc}>
                 {i18n('setting.button.changeLog')}
               </Button>
@@ -115,7 +149,7 @@ export default function AboutUs() {
           </div>
         </div>
       </div>
-      {isDesktop && runtimeEditionConfig.autoUpdate && (
+      {isDesktop && clientRuntime.enableAutoUpdate && (
         <>
           {!!updateDetail.progress && (
             <div className={styles.updateRule}>
@@ -152,6 +186,16 @@ export default function AboutUs() {
               >
                 {i18n('setting.text.autoInstallNewVersion')}
               </Checkbox>
+              {clientRuntime.supportsBetaUpdates !== false && (
+                <Checkbox
+                  onChange={(e) => {
+                    updateHotUpdateConfig('receiveBeta', e.target.checked);
+                  }}
+                  checked={Boolean(hotUpdateConfig.receiveBeta)}
+                >
+                  {i18n('setting.text.receiveBetaVersion')}
+                </Checkbox>
+              )}
             </div>
           </div>
         </>

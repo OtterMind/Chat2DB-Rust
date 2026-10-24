@@ -5,6 +5,7 @@ mod error;
 mod extract;
 pub mod legacy;
 pub mod legacy_ai;
+pub mod legacy_update;
 
 use std::{
     error::Error,

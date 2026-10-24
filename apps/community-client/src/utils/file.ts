@@ -2,13 +2,21 @@ import { BucketTypeEnum, UploadTypeEnum, uploadTypeObject } from '@/typings/uplo
 import OSS from 'ali-oss';
 import miscService from '@/service/misc';
 import { v4 as uuid } from 'uuid';
-import { useUserStore } from '@/store/user';
+import { useUserStore } from '@/store/session';
 import html2canvas from 'html2canvas';
 import { isDesktop } from '@/utils/env';
 import jcefApi from '@/jcef';
 import sqlService from '@/service/sql';
 import { LOCAL_SQL_FILE_SAVED_EVENT } from '@/constants';
-import { downloadHttpAttachment } from './hostFileTransfer';
+import type { LocalFileEncodingMetadata } from '@/utils/localFileEncoding';
+import { staticMessage } from '@chat2db/ui';
+import i18n from '@/i18n';
+import { getDownloadFilename } from './downloadFilename';
+import {
+  localFileSaveCoordinator,
+  type LocalFileSaveRequest,
+  type LocalFileSaveResult,
+} from './localFileSaveCoordinator';
 
 export type LargeCellDownloadFormat = 'raw' | 'text' | 'hex';
 
@@ -18,31 +26,110 @@ export type LargeCellDownloadFormat = 'raw' | 'text' | 'hex';
  * @param url
  * @param params
  */
-export function downloadFile(url: string, params: any) {
-  void downloadHttpAttachment(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(params),
-  }).catch((error) => {
-    console.error('Failed to download file:', error);
-  });
+export async function downloadFile(url: string, params: any) {
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json', // Or set other content types according to the requirements of the server
+      },
+      body: JSON.stringify(params), // Convert parameters to JSON string
+    });
+
+    const contentType = response.headers.get('content-type') ?? '';
+    if (contentType.includes('application/json')) {
+      const result = await response.json();
+      throw new Error(result?.errorMessage || result?.message || i18n('common.text.failure'));
+    }
+    if (!response.ok) {
+      throw new Error(`${response.status}: ${response.statusText}`);
+    }
+
+    const blob = await response.blob();
+    const filename = getDownloadFilename(response.headers.get('content-disposition'));
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.style.display = 'none';
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(blobUrl);
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : i18n('common.text.failure');
+    staticMessage.error(message);
+    return false;
+  }
 }
 
 export async function downloadLargeCellValue(largeValueId: string, format: LargeCellDownloadFormat = 'raw') {
-  if (!isDesktop) {
+  if (isDesktop) {
+    const filePath = await sqlService.downloadLargeCellValue({ largeValueId, format });
+    if (filePath) {
+      jcefApi?.revealInExplorer(filePath);
+    }
     return;
   }
-  const filePath = await sqlService.downloadLargeCellValue({ largeValueId, format });
-  if (filePath) {
-    jcefApi?.revealInExplorer(filePath);
+  // Browsers cannot reveal a server side file, and the endpoint already answers with a Content-Disposition
+  // attachment header, so the content is streamed straight into the browser download.
+  const response = await fetch(
+    `/api/rdb/cell/download?largeValueId=${encodeURIComponent(largeValueId)}&format=${encodeURIComponent(format)}`,
+  );
+  const contentType = response.headers.get('content-type') ?? '';
+  if (contentType.includes('application/json')) {
+    const result = await response.json();
+    // Keep the error code so the caller can tell an expired handle from a real failure
+    throw Object.assign(new Error(result?.errorMessage || result?.message || i18n('common.text.failure')), {
+      errorCode: result?.errorCode,
+    });
   }
+  if (!response.ok) {
+    throw new Error(`${response.status}: ${response.statusText}`);
+  }
+  const blob = await response.blob();
+  saveResponseAsFile(response, blob);
+}
+
+function saveResponseAsFile(response: Response, blob: Blob) {
+  const filename = getDownloadFilename(response.headers.get('content-disposition'));
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.style.display = 'none';
+  a.href = blobUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // Revoking in the same tick can cancel the download in some browsers
+  window.setTimeout(() => URL.revokeObjectURL(blobUrl), 0);
 }
 
 // Update file content
-export function updateFileContent({ filePath, fileContent }: { filePath: string; fileContent: string }) {
-  jcefApi?.updateFileContent({ filePath, fileContent });
+export function saveLocalFileContent(params: LocalFileSaveRequest): Promise<LocalFileSaveResult> {
+  return localFileSaveCoordinator.save(params, async (request) => {
+    const updated = await jcefApi.updateFileContent(request);
+    if (updated !== true) {
+      throw new Error('Failed to update local file');
+    }
+  });
+}
+
+export function waitForLocalFileSave(filePath: string) {
+  return localFileSaveCoordinator.waitForIdle(filePath);
+}
+
+export function updateFileContent({
+  filePath,
+  fileContent,
+  charset,
+  bom,
+}: {
+  filePath: string;
+  fileContent: string;
+} & LocalFileEncodingMetadata) {
+  return saveLocalFileContent({ filePath, fileContent, charset, bom }).then(() => true);
 }
 
 interface SavedDesktopFile {

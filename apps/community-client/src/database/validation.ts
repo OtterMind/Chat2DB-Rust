@@ -1,14 +1,18 @@
 import { z } from 'zod';
 
+// The Rust product persists UUID strings while the Community client was
+// written for numeric ids; both are valid cache keys.
+const datasourceIdSchema = z.union([z.number(), z.string()]);
+
 // Validation schema for DataSourceTree
 export const DataSourceTreeSchema = z.object({
-  datasourceId: z.number(),
+  datasourceId: datasourceIdSchema,
   hiddenTreeNodeIds: z.array(z.string()),
 });
 
 // Schema used to validate input parameters
 export const FilterInputSchema = z.object({
-  datasourceId: z.number(),
+  datasourceId: datasourceIdSchema,
   hiddenTreeNodeIds: z.array(z.string()).optional(),
 });
 

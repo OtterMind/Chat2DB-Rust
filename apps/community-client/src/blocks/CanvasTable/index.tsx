@@ -7,7 +7,6 @@ import React, {
   useState,
   useRef,
   useMemo,
-  useCallback,
 } from 'react';
 import { useStyles } from './style';
 import * as VTable from '@visactor/vtable';
@@ -24,11 +23,12 @@ import {
   isShortcutEventMatch,
 } from '@/constants/shortcut';
 import { useGlobalStore } from '@/store/global';
-import { isCurrentTableInstance, releaseTableInstanceSafely, type TableViewport } from './lifecycle';
 
 export interface ICustomOptions {
   // Whether to display the left border
   showLeftBorder?: boolean;
+  // Whether to draw a divider after the frozen data columns.
+  showFrozenColumnDivider?: boolean;
 }
 
 interface IProps {
@@ -40,10 +40,11 @@ interface IProps {
   customOptions?: ICustomOptions;
   // callback after initialization is completed
   onInit?: (tableInstance: ITableInstance) => void;
-  onRelease?: () => void;
-  active?: boolean;
+  onBeforeRecordsChange?: (tableInstance: ITableInstance) => void;
   onCopy?: () => void;
   onPaste?: () => void;
+  onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>;
+  onPointerDown?: React.PointerEventHandler<HTMLDivElement>;
 }
 
 export interface CanvasTableRef {
@@ -90,53 +91,27 @@ const CanvasTable = forwardRef((props: IProps, ref: ForwardedRef<CanvasTableRef>
     records,
     columns,
     onInit,
-    onRelease,
-    active = true,
+    onBeforeRecordsChange,
     tooltip,
     options = null,
     customOptions,
     onCopy,
     onPaste,
+    onKeyDown,
+    onPointerDown,
   } = props;
   const { styles, theme, cx } = useStyles();
   const [tableInstance, setTableInstance] = useState<ITableInstance | null>(null);
-  const tableInstanceRef = useRef<ITableInstance | null>(null);
-  const viewportRef = useRef<TableViewport>({ scrollLeft: 0, scrollTop: 0 });
-  const restoreViewportFrameRef = useRef<number | null>(null);
-  const onInitRef = useRef(onInit);
-  const onReleaseRef = useRef(onRelease);
   const tableRef = useRef<HTMLDivElement>(null);
   const tableTheme = useTableTheme({ antdTheme: theme, options, customOptions });
   const contextMenuRef = useRef<ContextMenuRef>(null);
-  const tooltipTongs = useTooltip({ active, tableInstance, tooltip });
+  const tooltipTongs = useTooltip({ tableInstance, tooltip });
   const containerRef = React.useRef<HTMLDivElement>(null);
   const shortcutOverrides = useGlobalStore((s) => s.shortcutOverrides);
   const shortcutConfig = useMemo(
     () => getEffectiveShortcutConfigMap(shortcutOverrides as ShortcutOverrides),
     [shortcutOverrides],
   );
-
-  onInitRef.current = onInit;
-  onReleaseRef.current = onRelease;
-
-  const cancelViewportRestore = useCallback(() => {
-    if (restoreViewportFrameRef.current !== null) {
-      cancelAnimationFrame(restoreViewportFrameRef.current);
-      restoreViewportFrameRef.current = null;
-    }
-  }, []);
-
-  const releaseCurrentTable = useCallback(() => {
-    cancelViewportRestore();
-    const result = releaseTableInstanceSafely(tableInstanceRef, () => onReleaseRef.current?.());
-    if (result.viewport) {
-      viewportRef.current = result.viewport;
-    }
-    if (result.error) {
-      console.error('Failed to release CanvasTable instance', result.error);
-    }
-    return result.released;
-  }, [cancelViewportRestore]);
 
   useEffect(() => {
     // On Windows, this area conflicts with the table's horizontal scrollbar.
@@ -159,12 +134,12 @@ const CanvasTable = forwardRef((props: IProps, ref: ForwardedRef<CanvasTableRef>
     registeredEditor();
   }, []);
 
-  useEffect(
-    () => () => {
-      releaseCurrentTable();
-    },
-    [releaseCurrentTable],
-  );
+  useEffect(() => {
+    // releases resources when destroyed
+    return () => {
+      tableInstance?.release();
+    };
+  }, [tableInstance]);
 
   // This only takes effect once, subsequent changes in tableTheme and options have special useEffect processing
   const tableOption = useMemo(() => {
@@ -205,18 +180,11 @@ const CanvasTable = forwardRef((props: IProps, ref: ForwardedRef<CanvasTableRef>
 
   // initialize table according to option
   useEffect(() => {
-    if (!active) {
-      if (releaseCurrentTable()) {
-        setTableInstance(null);
-      }
-      return;
-    }
-
     if (!tableRef.current || !tableOption) {
       return;
     }
 
-    if (!tableInstanceRef.current) {
+    if (!tableInstance) {
       // Release measurement text
       // VTable.restoreMeasureText();
       const _tableInstance: ITableInstance = new VTable.ListTable(tableRef.current, tableOption);
@@ -224,24 +192,11 @@ const CanvasTable = forwardRef((props: IProps, ref: ForwardedRef<CanvasTableRef>
       // Add right-click menu/click pop-up window
       _tableInstance.contextMenuRef = contextMenuRef;
 
-      tableInstanceRef.current = _tableInstance;
       setTableInstance(_tableInstance);
 
-      onInitRef.current?.(_tableInstance);
-
-      const viewport = viewportRef.current;
-      if (viewport.scrollLeft || viewport.scrollTop) {
-        restoreViewportFrameRef.current = requestAnimationFrame(() => {
-          restoreViewportFrameRef.current = null;
-          if (tableInstanceRef.current !== _tableInstance) {
-            return;
-          }
-          _tableInstance.setScrollLeft(viewport.scrollLeft);
-          _tableInstance.setScrollTop(viewport.scrollTop);
-        });
-      }
+      onInit && onInit(_tableInstance);
     }
-  }, [active, releaseCurrentTable, tableOption]);
+  }, [tableOption]);
 
   // To update options, all options need to be passed in. This will not work.
   // useEffect(() => {
@@ -251,19 +206,20 @@ const CanvasTable = forwardRef((props: IProps, ref: ForwardedRef<CanvasTableRef>
 
   // update theme
   useEffect(() => {
-    if (!isCurrentTableInstance(active, tableInstance, tableInstanceRef)) return;
-    tableInstance.theme = tableTheme;
-  }, [active, tableInstance, tableTheme]);
+    if (!tableInstance) return;
+    tableInstance.updateTheme(tableTheme);
+  }, [tableTheme]);
 
   // update records
   useEffect(() => {
-    if (!isCurrentTableInstance(active, tableInstance, tableInstanceRef)) return;
+    if (!tableInstance) return;
+    onBeforeRecordsChange?.(tableInstance);
     tableInstance.setRecords(records);
-  }, [active, records, tableInstance]);
+  }, [records, onBeforeRecordsChange, tableInstance]);
 
   // update columns
   useEffect(() => {
-    if (!isCurrentTableInstance(active, tableInstance, tableInstanceRef)) return;
+    if (!tableInstance) return;
     const oldColumns = tableInstance.columns;
     // Keep the original headerIcon after refreshing
     const resColumns = columns.map((column) => {
@@ -275,13 +231,10 @@ const CanvasTable = forwardRef((props: IProps, ref: ForwardedRef<CanvasTableRef>
       return column;
     });
     tableInstance.updateColumns(resColumns);
-  }, [active, columns, tableInstance]);
+  }, [columns]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (!isCurrentTableInstance(active, tableInstance, tableInstanceRef)) {
-        return;
-      }
       if (isEditableElement(e.target)) {
         return;
       }
@@ -330,16 +283,21 @@ const CanvasTable = forwardRef((props: IProps, ref: ForwardedRef<CanvasTableRef>
       // clean up event monitoring
       containerRef.current?.removeEventListener('keydown', handleKeyDown);
     };
-  }, [active, onCopy, onPaste, shortcutConfig, tableInstance]);
+  }, [onCopy, onPaste, shortcutConfig, tableInstance]);
 
   useImperativeHandle(ref, () => ({
     getInstance: () => {
-      return tableInstanceRef.current;
+      return tableInstance;
     },
   }));
 
   return (
-    <div className={cx(className, styles.container)} ref={containerRef}>
+    <div
+      className={cx(className, styles.container)}
+      ref={containerRef}
+      onKeyDown={onKeyDown}
+      onPointerDown={onPointerDown}
+    >
       <div ref={tableRef} className={styles.table} />
       <ContextMenu ref={contextMenuRef} />
       {tooltipTongs}

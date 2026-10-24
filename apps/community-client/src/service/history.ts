@@ -25,6 +25,9 @@ export interface IGetHistoryListParams extends IPageParams {
   databaseName?: string;
   schemaName?: string;
   searchKey?: string;
+  operatorUserId?: number;
+  startTime?: string;
+  endTime?: string;
   operationType: OperationTypeEnum;
 }
 export interface ISaveBasicInfo {
@@ -60,6 +63,8 @@ export interface IHistoryRecord {
    * ddl content
    */
   ddl?: null | string;
+  /** SQL preview returned by the audit list. */
+  sqlPreview?: null | string;
   /**
    * Whether ddl is truncated by the list interface
    */
@@ -105,12 +110,15 @@ export interface IHistoryRecord {
    *Execution user name
    */
   userName?: string;
+  /** Stable execution user id. */
+  operatorUserId?: number;
 }
 
 const createConsole = createRequest<ICreateConsole, number>('/api/operation/saved/create', { method: 'post' });
 
 const getSavedConsole = createRequest<{ id: number }, IConsole | null>('/api/operation/saved', {
   method: 'get',
+  errorLevel: false,
 });
 
 const updateSavedConsole = createRequest<Partial<IConsole> & { id: number }, number>('/api/operation/saved/update', {

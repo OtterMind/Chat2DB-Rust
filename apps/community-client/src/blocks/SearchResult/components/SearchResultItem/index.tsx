@@ -5,22 +5,22 @@ import StatusBar from '../StatusBar';
 import ResultSet from '../ResultSet';
 import i18n from '@/i18n';
 import { useStyles } from './style';
-import { IManageResultData } from '@/typings';
+import { IExecuteSqlParams, IManageResultData } from '@/typings';
 import { useAIStore } from '@/store/ai';
 import { useGlobalStore } from '@/store/global';
 import { useWorkspaceStore } from '@/store/workspace';
 import { QuestionType } from '@/constants/chat';
-import ResultSetErrorBoundary from './ResultSetErrorBoundary';
 
 interface IProps {
   resultData: IManageResultData;
   active: boolean;
   viewTable?: boolean;
+  onResultPagingChange?: (resultData: IManageResultData, params: IExecuteSqlParams) => Promise<unknown> | void;
 }
 
 export default memo<IProps>(
   (props) => {
-    const { active, resultData, viewTable } = props;
+    const { active, resultData, viewTable, onResultPagingChange } = props;
     const { styles } = useStyles();
     const setCurrentWorkspaceExtend = useWorkspaceStore((s) => s.setCurrentWorkspaceExtend);
 
@@ -53,20 +53,12 @@ export default memo<IProps>(
       return (
         <div className={styles.successResult}>
           {needTable ? (
-            <ResultSetErrorBoundary
-              resetKey={`${resultData.uuid}:${active}`}
-              fallback={(error, retry) => (
-                <div className={styles.errorResult}>
-                  <Iconfont className={styles.errorIcon} code={''} />
-                  <div className={styles.errorMessage}>{error.message || i18n('stream.trace.unknownError')}</div>
-                  <Button type="primary" onClick={retry}>
-                    {i18n('common.button.refresh')}
-                  </Button>
-                </div>
-              )}
-            >
-              <ResultSet active={active} viewTable={viewTable} resultData={resultData} />
-            </ResultSetErrorBoundary>
+            <ResultSet
+              active={active}
+              viewTable={viewTable}
+              resultData={resultData}
+              onResultPagingChange={onResultPagingChange}
+            />
           ) : (
             <div className={styles.updateCountBox}>
               <div className={styles.updateCount}>{i18n('common.text.affectedRows', resultData.updateCount)}</div>
@@ -90,11 +82,16 @@ export default memo<IProps>(
     }
 
     return (
-      <Fragment key={resultData.uuid}>{resultData.success ? renderSuccessResult() : renderErrorResult()}</Fragment>
+      <Fragment key={resultData.uuid}>
+        <div className={styles.resultContent}>
+          {resultData.success ? renderSuccessResult() : renderErrorResult()}
+        </div>
+      </Fragment>
     );
   },
   (prevProps, nextProps) =>
     prevProps.active === nextProps.active &&
     prevProps.resultData === nextProps.resultData &&
-    prevProps.viewTable === nextProps.viewTable,
+    prevProps.viewTable === nextProps.viewTable &&
+    prevProps.onResultPagingChange === nextProps.onResultPagingChange,
 );

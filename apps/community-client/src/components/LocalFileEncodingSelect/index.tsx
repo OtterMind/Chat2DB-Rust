@@ -1,0 +1,82 @@
+import { useState } from 'react';
+import { Select, Tooltip, type SelectProps } from 'antd';
+import { staticMessage } from '@chat2db/ui';
+import i18n from '@/i18n';
+import { LOCAL_FILE_CHARSETS, formatLocalFileEncoding } from '@/utils/localFileEncoding';
+import styles from './index.less';
+
+const AUTO_DETECT_VALUE = '__auto_detect__';
+
+interface LocalFileEncodingSelectProps {
+  className?: string;
+  charset?: string;
+  bom?: boolean;
+  disabled?: boolean;
+  allowAutoDetect?: boolean;
+  size?: SelectProps['size'];
+  variant?: SelectProps['variant'];
+  onEncodingChange: (charset?: string) => Promise<void>;
+}
+
+const LocalFileEncodingSelect = ({
+  className,
+  charset,
+  bom,
+  disabled,
+  allowAutoDetect = true,
+  size = 'small',
+  variant = 'borderless',
+  onEncodingChange,
+}: LocalFileEncodingSelectProps) => {
+  const [loading, setLoading] = useState(false);
+  const currentLabel = formatLocalFileEncoding(charset, bom);
+  const charsetOptions: Array<{ value: string; label: string }> = LOCAL_FILE_CHARSETS.map((value) => ({
+    value,
+    label: value === charset ? currentLabel : value,
+  }));
+  if (charset && !LOCAL_FILE_CHARSETS.some((value) => value === charset)) {
+    charsetOptions.unshift({ value: charset, label: currentLabel });
+  }
+
+  const handleChange = async (value: string) => {
+    setLoading(true);
+    try {
+      await onEncodingChange(value === AUTO_DETECT_VALUE ? undefined : value);
+    } catch (error) {
+      console.error('reload local file with encoding error', error);
+      staticMessage.error(i18n('workspace.fileEncoding.reloadFailed'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const label = i18n('workspace.fileEncoding.label');
+  const autoDetectLabel = i18n('workspace.fileEncoding.autoDetect');
+  const selectedLabel = charset ? currentLabel : autoDetectLabel;
+  return (
+    <Tooltip title={label}>
+      <span className={`${styles.wrapper} ${className || ''}`}>
+        <span className={styles.sizer} aria-hidden="true">
+          {selectedLabel}
+        </span>
+        <Select<string>
+          className={styles.selector}
+          size={size}
+          variant={variant}
+          value={charset || AUTO_DETECT_VALUE}
+          loading={loading}
+          disabled={disabled || loading}
+          aria-label={label}
+          popupMatchSelectWidth={180}
+          options={[
+            ...(allowAutoDetect ? [{ value: AUTO_DETECT_VALUE, label: autoDetectLabel }] : []),
+            ...charsetOptions,
+          ]}
+          onChange={handleChange}
+        />
+      </span>
+    </Tooltip>
+  );
+};
+
+export default LocalFileEncodingSelect;

@@ -5,11 +5,9 @@ import { useGlobalStore } from '@/store/global';
 import { debounce } from 'lodash';
 import MonacoEditor, { MonacoEditorRef } from '../MonacoEditor';
 import CompletionProviderManager from '../../core/completionProviderManager';
-import {
-  isBackendCompletionDatabaseType,
-  isBackendEditorHintsDatabaseType,
-  setBackendCompletionModel,
-} from '../../core/sqlCompletionModelMode';
+import { setBackendCompletionModel } from '../../core/sqlCompletionModelMode';
+import { DatabaseCapability } from '@/constants';
+import { isDatabaseCapabilitySupported } from '@/utils/databaseJudgments';
 import {
   SqlCompletionHintScope,
   createSqlCompletionHintStore,
@@ -60,6 +58,7 @@ import {
   shortcutBindingToMonacoKeybinding,
 } from '@/constants/shortcut';
 import { useStyles } from './style';
+import LocalFileEncodingSelect from '@/components/LocalFileEncodingSelect';
 
 const INSERT_VALUE_HINT_ACTION_ID = 'chat2db-insert-value-hints';
 const EDITOR_ESCAPE_KEY_CODE = 'Escape';
@@ -77,6 +76,7 @@ export interface SQLEditorProps {
   onChange?: (value: string) => void;
   /** Immediate editor value change callback for lightweight UI state. */
   onContentChange?: (value: string) => void;
+  onFileEncodingChange?: (charset?: string) => Promise<void>;
 
   dbInfo: IBoundInfo;
   active?: boolean;
@@ -135,6 +135,7 @@ const SQLEditor = forwardRef<SQLEditorRef, SQLEditorProps>(
       active,
       onChange,
       onContentChange,
+      onFileEncodingChange,
       onContextMenu,
       className,
       readOnly,
@@ -149,7 +150,7 @@ const SQLEditor = forwardRef<SQLEditorRef, SQLEditorProps>(
     },
     ref,
   ) => {
-    const { styles } = useStyles();
+    const { styles, theme } = useStyles();
     const [sqlTemp, setSqlTemp] = useState<string>(defaultValue ?? '');
     const [hoverHelperInfo, setHoverHelpInfo] = useState<HoverHelperInfo>(hoverHelpDefaultConfig);
 
@@ -174,12 +175,13 @@ const SQLEditor = forwardRef<SQLEditorRef, SQLEditorProps>(
     const backendEditorHintsRequestRef = useRef(0);
     const backendEditorHintsEpochRef = useRef(0);
     const autoFillEditInProgressRef = useRef(false);
-    const cursorPositionRef = useRef<HTMLDivElement | null>(null);
-
+    const editorSurfaceRef = useRef<HTMLDivElement | null>(null);
+    const cursorPositionRef = useRef<HTMLSpanElement | null>(null);
     const sqlStatementListRef = useRef<SqlStatement[]>([]);
     const markMessageListRef = useRef<MarkMessage[]>([]);
     const tableDDLTriggerMode = useGlobalStore((s) => getTableDDLTriggerMode(s.editorSettings));
     const shortcutOverrides = useGlobalStore((s) => s.shortcutOverrides);
+    const activeEditorTheme = useGlobalStore((s) => s.getEditorTheme(theme.appearance));
     const [isObjectClickModifierPressed, setIsObjectClickModifierPressed] = useState(false);
     const shortcutConfig = getEffectiveShortcutConfigMap(shortcutOverrides as ShortcutOverrides);
 
@@ -207,6 +209,30 @@ const SQLEditor = forwardRef<SQLEditorRef, SQLEditorProps>(
       return editorRef?.current?.getInstance() ?? null;
     }, []);
 
+    const syncEditorSurfaceBackground = useCallback((editor: monaco.editor.IStandaloneCodeEditor | null) => {
+      const editorDomNode = editor?.getDomNode();
+      if (!editorDomNode || !editorSurfaceRef.current) {
+        return;
+      }
+
+      const editorStyle = window.getComputedStyle(editorDomNode);
+      const editorBackground =
+        editorStyle.getPropertyValue('--vscode-editor-background').trim() || editorStyle.backgroundColor;
+      const editorForeground =
+        editorStyle.getPropertyValue('--vscode-editor-foreground').trim() || editorStyle.color;
+      if (editorBackground) {
+        editorSurfaceRef.current.style.setProperty('--chat2db-sql-editor-background', editorBackground);
+      }
+      if (editorForeground) {
+        editorSurfaceRef.current.style.setProperty('--chat2db-sql-editor-foreground', editorForeground);
+      }
+    }, []);
+
+    useEffect(() => {
+      const frame = window.requestAnimationFrame(() => syncEditorSurfaceBackground(getInstance()));
+      return () => window.cancelAnimationFrame(frame);
+    }, [activeEditorTheme, getInstance, syncEditorSurfaceBackground]);
+
     const getValue = useCallback(() => {
       return editorRef.current?.getValue() ?? '';
     }, []);
@@ -217,7 +243,10 @@ const SQLEditor = forwardRef<SQLEditorRef, SQLEditorProps>(
         if (!model) {
           return;
         }
-        const backendCompletionMode = isBackendCompletionDatabaseType(dbInfo.databaseType);
+        const backendCompletionMode = isDatabaseCapabilitySupported(
+          dbInfo.databaseType,
+          DatabaseCapability.BACKEND_COMPLETION,
+        );
         setBackendCompletionModel(model, backendCompletionMode);
         completionProvider.current?.bindModelDBInfo(model, dbInfo);
         if (!backendCompletionMode) {
@@ -674,7 +703,11 @@ const SQLEditor = forwardRef<SQLEditorRef, SQLEditorProps>(
         positionSnapshot?: monaco.Position | null,
         scope?: SqlCompletionHintScope | null,
       ) => {
-        if (!isBackendEditorHintsDatabaseType(dbInfo.databaseType) || !completionProvider.current || !editor) {
+        if (
+          !isDatabaseCapabilitySupported(dbInfo.databaseType, DatabaseCapability.BACKEND_EDITOR_HINTS) ||
+          !completionProvider.current ||
+          !editor
+        ) {
           return;
         }
         const model = editor.getModel();
@@ -945,12 +978,20 @@ const SQLEditor = forwardRef<SQLEditorRef, SQLEditorProps>(
           updateParameterHint(editor, localInsertValueParameterHint(editor));
         });
         parameterHintFocusedRef.current = editor.hasTextFocus();
+        syncEditorSurfaceBackground(editor);
         syncBackendCompletionModel(editor);
         bindSnippetPlaceholderCompletion(editor);
         onReady?.();
         onMount && onMount(editor);
       },
-      [bindSnippetPlaceholderCompletion, handleHover, onMount, onReady, syncBackendCompletionModel],
+      [
+        bindSnippetPlaceholderCompletion,
+        handleHover,
+        onMount,
+        onReady,
+        syncBackendCompletionModel,
+        syncEditorSurfaceBackground,
+      ],
     );
 
     /**
@@ -978,7 +1019,7 @@ const SQLEditor = forwardRef<SQLEditorRef, SQLEditorProps>(
     }, []);
 
     return (
-      <div className={styles.editor}>
+      <div ref={editorSurfaceRef} className={styles.editor}>
         <div className={styles.editorBody}>
           <MonacoEditor
             {...rest}
@@ -1005,8 +1046,17 @@ const SQLEditor = forwardRef<SQLEditorRef, SQLEditorProps>(
             canShow={() => !contextMenuInfo?.open}
           />
         </div>
-        <div ref={cursorPositionRef} className={styles.cursorStatus}>
-          Ln 1, Col 1
+        <div className={styles.cursorStatus}>
+          {dbInfo.filePath && onFileEncodingChange && (
+            <LocalFileEncodingSelect
+              charset={dbInfo.fileCharset}
+              bom={dbInfo.fileBom}
+              onEncodingChange={onFileEncodingChange}
+            />
+          )}
+          <span ref={cursorPositionRef} className={styles.cursorPosition}>
+            Ln 1, Col 1
+          </span>
         </div>
       </div>
     );

@@ -4,6 +4,7 @@ import { ContextmenuType } from '../constants';
 import { ITableInstance } from '@/blocks/CanvasTable/typings';
 import { OperationRecordUtils } from '../hooks/useOperationRecord';
 import { IManageResultData, IResultCell } from '@/typings';
+import type { CopyRequestSignal, ResultCopyOperation } from '../copyValues';
 
 // selected cell
 export type ISelectEvent = VTable.TYPES.MousePointerMultiCellEvent;
@@ -14,6 +15,11 @@ export interface IOnContextmenuEvent {
   tableInstance: ITableInstance;
   operationRecordUtils: OperationRecordUtils;
   onTableOperationUtils: ITableOperationUtils;
+  frozenColumnFields: readonly string[];
+  onHideColumns: (fields: string[]) => void;
+  onShowAllColumns: () => void;
+  onFreezeColumns: (fields: string[]) => void;
+  onUnfreezeAllColumns: () => void;
 }
 
 // The type of seat that needs to be processed when copying row data
@@ -48,20 +54,22 @@ export interface IHandleViewUpdateDataParams {
   col: number;
   row: number;
   cellMeta?: IResultCell;
+  field?: string;
 }
 
 export interface IHandleViewRowDetailParams {
   tableInstance: ITableInstance;
   col: number;
   row: number;
+  field?: string;
 }
 
 // Callback after some operations on the table
 export interface ITableOperationUtils {
   // Copy as sql statement such as insert, update, where
-  copyGenerateSQL: (operations: any) => void;
+  generateCopySQL: (operations: ResultCopyOperation[], signal: CopyRequestSignal) => Promise<string>;
   // Copy as SQL IN list of values
-  copyGenerateInValues?: (operations: any) => void;
+  generateCopyInValues: (operations: ResultCopyOperation[], signal: CopyRequestSignal) => Promise<string>;
   // View or modify data
   handleViewUpdateData?: (params: IHandleViewUpdateDataParams) => void;
   // View single line details

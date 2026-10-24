@@ -4,6 +4,8 @@ import {
   IConnectionEnv,
   IConnectionListItem,
   ICreateConnectionDetails,
+  IDataSourceIdentityColorResponse,
+  IDataSourceIdentityColorUpdateRequest,
   IDatabaseItem,
   IPageParams,
   IPageResponse,
@@ -11,6 +13,7 @@ import {
 import { ISchemaItem } from '@/typings/schema';
 import { UpdatePositionInTree } from '@/typings/tree';
 import createRequest from './base';
+import { connectionCloseRequest } from './connectionCloseRequest';
 
 export interface IDriverResponse {
   driverConfigList: {
@@ -27,9 +30,9 @@ interface IDriverParams {
   dbType: DatabaseTypeCode;
 }
 
-interface IUploadDriver {
-  file: any;
-  jdbcDriverClass: string;
+interface ISaveDriver {
+  jdbcDriver: string[];
+  jdbcDriverClass?: string;
   dbType: string;
 }
 
@@ -47,8 +50,6 @@ const save = createRequest<ICreateConnectionDetails, IConnectionDetails>('/api/c
   delayTime: true,
 });
 
-const close = createRequest<IConnectionDetails, void>('/api/connection/datasource/close', { method: 'post' });
-
 const test = createRequest<IConnectionDetails, boolean>('/api/connection/datasource/pre_connect', {
   method: 'post',
   delayTime: true,
@@ -63,9 +64,12 @@ const update = createRequest<IConnectionDetails, IConnectionDetails>('/api/conne
   method: 'post',
 });
 
-const remove = createRequest<{ id: number }, void>('/api/connection/datasource', { method: 'delete' });
+const updateIdentityColor = createRequest<IDataSourceIdentityColorUpdateRequest, IDataSourceIdentityColorResponse>(
+  '/api/connection/datasource/identity_color',
+  { method: 'post' },
+);
 
-const clone = createRequest<{ id: number }, number>('/api/connection/datasource/clone', { method: 'post' });
+const remove = createRequest<{ id: number }, void>('/api/connection/datasource', { method: 'delete' });
 
 const getDatabaseList = createRequest<{ dataSourceId: number; refresh?: boolean }, IDatabaseItem[]>(
   '/api/rdb/database/list',
@@ -84,15 +88,21 @@ const downloadDriver = createRequest<{ dbType: string }, void>('/api/jdbc/driver
   method: 'get',
 });
 
-const saveDriver = createRequest<IUploadDriver, void>('/api/jdbc/driver/save', { method: 'post' });
+const uploadDriver = createRequest<{ file: File }, string[]>('/api/jdbc/driver/upload', {
+  method: 'post',
+  contentType: 'formData',
+});
+
+const saveDriver = createRequest<ISaveDriver, void>('/api/jdbc/driver/save', { method: 'post' });
 
 const deleteDriver = createRequest<{ dbType: string; jdbcDriver: string[] }, void>('/api/jdbc/driver/delete', {
   method: 'delete',
+  requestBody: true,
 });
 
 const getEnvList = createRequest<void, IConnectionEnv[]>('/api/common/environment/list_all', { errorLevel: false });
 
-const importConnection = createRequest<{ file: File | string[] }, void>('/api/converter/upload');
+const importConnection = createRequest<{ file: FormData }, void>('/api/converter/upload');
 
 const importCommunitDataSource = createRequest<void, void>('/api/connection/datasource/import_community');
 
@@ -127,17 +137,17 @@ const updatePosition = createRequest<UpdatePositionInTree, void>('/api/namespace
 });
 
 // Import data source
-const importNavicatConnections = createRequest<{ file: File | string[] }, void>('/api/converter/ncx/upload', {
+const importNavicatConnections = createRequest<{ file: FormData }, void>('/api/converter/ncx/upload', {
   method: 'post',
   contentType: 'formData',
 });
 
-const importDBeaverConnections = createRequest<{ file: File | string[] }, void>('/api/converter/dbp/upload', {
+const importDBeaverConnections = createRequest<{ file: FormData }, void>('/api/converter/dbp/upload', {
   method: 'post',
   contentType: 'formData',
 });
 
-const importChat2DBConnections = createRequest<{ file: File | string[] }, void>('/api/converter/chat2db/upload', {
+const importChat2DBConnections = createRequest<{ file: FormData }, void>('/api/converter/chat2db/upload', {
   method: 'post',
   contentType: 'formData',
 });
@@ -156,8 +166,8 @@ const exportDataSource = createRequest<
   method: 'post',
 });
 
-const closeConnection = createRequest<{ id: number }, void>('/api/connection/close', {
-  method: 'get',
+const closeConnection = createRequest<{ id: number }, void>(connectionCloseRequest.path, {
+  method: connectionCloseRequest.method,
 });
 
 export default {
@@ -167,14 +177,14 @@ export default {
   save,
   test,
   update,
+  updateIdentityColor,
   remove,
-  clone,
   getDatabaseList,
   getSchemaList,
-  close,
   testSSH,
   getDriverList,
   downloadDriver,
+  uploadDriver,
   saveDriver,
   deleteDriver,
   importConnection,

@@ -1,5 +1,5 @@
 import { Platform } from '@/constants/os';
-import { runtimeEditionConfig } from '@/constants/runtimeEdition';
+import { clientRuntime } from '@client-runtime';
 import { UpdatedStatus } from '@/constants/settings';
 import i18n from '@/i18n';
 import jcefApi from '@/jcef';
@@ -8,8 +8,9 @@ import { useGlobalStore } from '@/store/global';
 import { openWebPage } from '@/utils/url';
 import { Icon } from '@chat2db/ui';
 import { Button, notification } from 'antd';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useStyles } from './style';
+import { isCheckDue, nextCheckDueAt, nextNotifiedVersion, updateCheckDelayMs } from './updateCheckSchedule';
 
 const createTop = () => {
   switch (window.navigator.os_type) {
@@ -22,8 +23,9 @@ const createTop = () => {
   }
 };
 
-const UpdateDetection = () => {
+const UpdateDetection = ({ offlineActivation = false }: { offlineActivation?: boolean }) => {
   const { styles } = useStyles();
+  const notifiedVersionRef = useRef('');
 
   const {
     appConfig,
@@ -33,6 +35,8 @@ const UpdateDetection = () => {
     updateDetail,
     handleCheckUpdate,
     updateAndRestartApp,
+    syncUpdatePreferences,
+    setOfflineActivation,
     setSettingPageActiveTab,
   } = useGlobalStore((state) => ({
     appConfig: state.appConfig,
@@ -42,6 +46,8 @@ const UpdateDetection = () => {
     updateDetail: state.updateDetail,
     handleCheckUpdate: state.handleCheckUpdate,
     updateAndRestartApp: state.updateAndRestartApp,
+    syncUpdatePreferences: state.syncUpdatePreferences,
+    setOfflineActivation: state.setOfflineActivation,
     setSettingPageActiveTab: state.setSettingPageActiveTab,
   }));
 
@@ -50,8 +56,21 @@ const UpdateDetection = () => {
     top: createTop(),
   });
 
+  const triggerDownload = () => {
+    jcefApi
+      .triggerDownload()
+      .then((accepted) => {
+        if (!accepted) {
+          setUpdateDetail({ status: UpdatedStatus.UpdateFailed });
+        }
+      })
+      .catch(() => {
+        setUpdateDetail({ status: UpdatedStatus.UpdateFailed });
+      });
+  };
+
   useEffect(() => {
-    if (!runtimeEditionConfig.autoUpdate) {
+    if (!clientRuntime.enableAutoUpdate) {
       return;
     }
     JcefEventBus.on(
@@ -69,31 +88,102 @@ const UpdateDetection = () => {
   }, []);
 
   useEffect(() => {
-    if (!runtimeEditionConfig.autoUpdate) {
+    setOfflineActivation(offlineActivation);
+  }, [offlineActivation, setOfflineActivation]);
+
+  useEffect(() => {
+    if (!clientRuntime.enableAutoUpdate) {
       return;
     }
     // Check for updates, check for updates after app initialization is completed
     if (appConfig.isReady) {
-      handleCheckUpdate();
+      syncUpdatePreferences()
+        .then(() => handleCheckUpdate('startup'))
+        .catch(() => undefined);
     }
   }, [appConfig.isReady]);
 
   useEffect(() => {
-    if (!runtimeEditionConfig.autoUpdate) {
+    if (!clientRuntime.enableAutoUpdate || !appConfig.isReady) {
+      return undefined;
+    }
+    // Keep checking while the desktop session runs: 30m, 1h, 2h, 4h, 6h and then repeat. The next round
+    // is only scheduled after the previous check settles, so slow checks never stack up.
+    let cancelled = false;
+    let running = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let round = 0;
+    let dueAt = 0;
+    const runCheck = () => {
+      if (running) {
+        return Promise.resolve();
+      }
+      running = true;
+      return handleCheckUpdate('scheduled')
+        .catch(() => undefined)
+        .finally(() => {
+          running = false;
+          if (!cancelled) {
+            round += 1;
+            scheduleNext();
+          }
+        });
+    };
+    const scheduleNext = () => {
+      dueAt = nextCheckDueAt(Date.now(), round);
+      timer = setTimeout(() => {
+        if (!cancelled) {
+          runCheck();
+        }
+      }, updateCheckDelayMs(round));
+    };
+    // A hidden renderer does not run its timers, and macOS can nap the whole process, so a check that
+    // came due while the window was in the background is run as soon as the user comes back.
+    const catchUp = () => {
+      if (cancelled || document.visibilityState !== 'visible' || !isCheckDue(Date.now(), dueAt)) {
+        return;
+      }
+      if (timer) {
+        clearTimeout(timer);
+      }
+      runCheck();
+    };
+    scheduleNext();
+    document.addEventListener('visibilitychange', catchUp);
+    window.addEventListener('focus', catchUp);
+    return () => {
+      cancelled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+      document.removeEventListener('visibilitychange', catchUp);
+      window.removeEventListener('focus', catchUp);
+    };
+  }, [appConfig.isReady]);
+
+  useEffect(() => {
+    if (!clientRuntime.enableAutoUpdate) {
       return;
     }
     switch (updateDetail.status) {
-      case UpdatedStatus.Available:
-        if (hotUpdateConfig.remindMe) {
+      case UpdatedStatus.Available: {
+        const nextNotified = nextNotifiedVersion(
+          hotUpdateConfig.remindMe,
+          updateDetail.version,
+          notifiedVersionRef.current,
+        );
+        if (nextNotified !== notifiedVersionRef.current) {
+          notifiedVersionRef.current = nextNotified;
           openFindNewVersionNotification();
         }
         if (hotUpdateConfig.autoDownload) {
-          jcefApi.triggerDownload();
+          triggerDownload();
         }
         break;
+      }
       case UpdatedStatus.Updated:
         if (hotUpdateConfig.autoInstall) {
-          jcefApi.triggerInstallation();
+          updateAndRestartApp();
           return;
         }
         openNotificationAuto();
@@ -144,7 +234,7 @@ const UpdateDetection = () => {
   const openFindNewVersionNotification = () => {
     const key = `open${Date.now()}`;
     let CHANGE_LOG_URL = appUrlConfig.CHANGE_LOG_URL;
-    if (runtimeEditionConfig.localPersistence) {
+    if (clientRuntime.usesLocalPersistence) {
       CHANGE_LOG_URL = `${CHANGE_LOG_URL}?type=local`;
     }
 

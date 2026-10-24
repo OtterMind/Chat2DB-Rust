@@ -2,6 +2,7 @@ export default {
   'monaco.group.appearance': 'Appearance and font',
   'monaco.group.display': 'Editor display',
   'monaco.group.completion': 'Completion and interaction',
+  'monaco.group.behavior': 'Editor behavior',
   'monaco.group.execution': 'SQL execution',
   'monaco.theme': 'Editor Theme',
   'monaco.theme.tooltip':
@@ -33,6 +34,8 @@ export default {
   'monaco.text.cut': 'Cut',
   'monaco.text.caseConvert': 'Case Convert',
   'monaco.text.formatSQL': 'Format SQL',
+  'monaco.text.toggleLineComment': 'Toggle Line Comment',
+  'monaco.text.toggleBlockComment': 'Toggle Block Comment',
   'monaco.text.saveSQL': 'Save',
   'monaco.text.saveFile': 'Save',
   'monaco.text.saveFileToDesktop': 'Save as File',
@@ -70,11 +73,17 @@ export default {
   'monaco.completion.all': 'All Qualified Completion',
   'monaco.completion.all.tooltip':
     'Select database types whose completion suggestions should use fully qualified names. Unselected types use shorter names.',
+  'monaco.defaultPageSize': 'Default query rows',
+  'monaco.defaultPageSize.tooltip':
+    'Maximum rows returned when a SQL query does not specify a page size. Applies to subsequent queries.',
   'monaco.errorContinue': 'Error Continue',
   'monaco.errorContinue.tooltip':
     'When running multiple SQL statements, continue with the remaining statements after one fails.',
   'monaco.errorContinue.true': 'Yes',
   'monaco.errorContinue.false': 'No',
+  'monaco.confirmBeforeClose': 'Confirm before closing',
+  'monaco.confirmBeforeClose.tooltip':
+    'When a query or local SQL file has unsaved changes, ask whether to save before closing its tab.',
   'monaco.tableDDLTriggerMode': 'Show Table DDL',
   'monaco.tableDDLTriggerMode.tooltip':
     'Show table DDL either when hovering a table name or when holding {1} and clicking it.',

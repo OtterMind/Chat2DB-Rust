@@ -18,7 +18,6 @@ import type { OperationRecordUtils } from '@/blocks/SearchResult/components/Resu
 import sqlService from '@/service/sql';
 import { IResultCell } from '@/typings/database';
 import { downloadLargeCellValue } from '@/utils/file';
-import { isDesktop } from '@/utils/env';
 import {
   LoadedLargeCellChunk,
   LargeCellViewerMode,
@@ -32,12 +31,29 @@ import {
   getLargeCellViewerLimit,
   getLargeCellViewerValue,
   getNextLargeCellChunkLimit,
+  LARGE_CELL_ERROR_CODE,
   LARGE_CELL_ERROR_MESSAGE,
   isBinaryDisplayMode,
   isLargeCellTokenExpiredError,
+  LARGE_VALUE_TYPE,
 } from './largeCellValue';
 import { getLargeCellDisplayMessage, getLargeCellErrorMessage } from './largeCellValueMessage';
 import JsonAwareMonacoEditor from './JsonAwareMonacoEditor';
+import { getResultFieldAtTableColumn } from '../ResultSetTable/columnState';
+
+/**
+ * Picks the viewer that makes sense for the cell type, so an image does not open as mojibake text.
+ */
+function defaultViewerModeFor(valueType?: string | null): LargeCellViewerMode {
+  const normalized = String(valueType || '').toUpperCase();
+  if (normalized === LARGE_VALUE_TYPE.IMAGE) {
+    return LARGE_CELL_VIEWER_MODE.IMAGE;
+  }
+  if (normalized === LARGE_VALUE_TYPE.BINARY) {
+    return LARGE_CELL_VIEWER_MODE.HEX;
+  }
+  return LARGE_CELL_VIEWER_MODE.TEXT;
+}
 
 interface IProps {
   className?: string;
@@ -52,6 +68,14 @@ interface IViewData extends IHandleViewUpdateDataParams {
   operationRecordUtils?: OperationRecordUtils;
 }
 
+function resolveViewDataLocation(viewData: IViewData) {
+  const { tableInstance, row } = viewData;
+  const field = viewData.field || getResultFieldAtTableColumn(tableInstance, viewData.col, row);
+  const tableCol = field ? tableInstance.getTableIndexByField(field) : viewData.col;
+  const record = tableInstance.getRecordByCell(tableCol >= 1 ? tableCol : 1, row);
+  return { field, tableCol, record };
+}
+
 type LargeValueLoadingAction = 'initial' | 'more' | 'all' | null;
 
 const cloneCellMeta = (cellMeta?: IResultCell) => (cellMeta ? { ...cellMeta } : undefined);
@@ -63,6 +87,7 @@ export interface ViewDataRef {
 const ViewData = forwardRef((_props: IProps, ref: ForwardedRef<ViewDataRef>) => {
   const [viewData, setViewData] = useState<IViewData | null>(null);
   const [editorValue, setEditorContent] = useState('');
+  const [editorViewRevision, setEditorViewRevision] = useState(0);
   const [isJsonContent, setIsJsonContent] = useState(false);
   const activeViewDataRef = useRef<IViewData | null>(null);
   const editorValueRef = useRef('');
@@ -73,6 +98,8 @@ const ViewData = forwardRef((_props: IProps, ref: ForwardedRef<ViewDataRef>) => 
   const [largeValueError, setLargeValueError] = useState<string>('');
   const [largeValueExpired, setLargeValueExpired] = useState(false);
   const [viewerMode, setViewerMode] = useState<LargeCellViewerMode>(LARGE_CELL_VIEWER_MODE.TEXT);
+  const lastViewerCellKeyRef = useRef('');
+  const viewerModeTouchedRef = useRef(false);
   const [imagePreviewSrc, setImagePreviewSrc] = useState('');
   const largeValueRequestVersionRef = useRef(0);
   const activeLargeValueIdRef = useRef<string>('');
@@ -91,7 +118,9 @@ const ViewData = forwardRef((_props: IProps, ref: ForwardedRef<ViewDataRef>) => 
 
   useEffect(() => {
     if (viewData) {
-      const { row, col, tableInstance, cellMeta } = viewData;
+      const { cellMeta } = viewData;
+      const { field, record } = resolveViewDataLocation(viewData);
+      const tableValue = field ? record?.[field] : undefined;
       setLargeValueChunks([]);
       setLargeValueLoading(false);
       setLargeValueLoadingAction(null);
@@ -99,18 +128,20 @@ const ViewData = forwardRef((_props: IProps, ref: ForwardedRef<ViewDataRef>) => 
       setLargeValueDownloading(false);
       setLargeValueExpired(false);
       setIsJsonContent(false);
-      setViewerMode(LARGE_CELL_VIEWER_MODE.TEXT);
+      const viewerCellKey = `${cellMeta?.largeValueId || ''}:${field || ''}:${viewData.rowId ?? ''}`;
+      if (lastViewerCellKeyRef.current !== viewerCellKey) {
+        lastViewerCellKeyRef.current = viewerCellKey;
+        viewerModeTouchedRef.current = false;
+        setViewerMode(defaultViewerModeFor(cellMeta?.valueType));
+      }
       originalLargeValueRef.current = null;
       if (cellMeta?.largeValue) {
         originalLargeValueRef.current = {
           value: cellMeta.value || '',
-          restoreValue: tableInstance.getCellOriginValue(col, row),
+          restoreValue: tableValue ?? null,
           cellMeta: cloneCellMeta(cellMeta),
         };
         setEditorValue(cellMeta.value || '');
-        if (!isDesktop) {
-          return;
-        }
         if (cellMeta.largeValueId) {
           loadLargeValueChunk(cellMeta.largeValueId, 0, false, undefined, 'initial');
         } else if (cellMeta.unsupportedReason) {
@@ -118,8 +149,7 @@ const ViewData = forwardRef((_props: IProps, ref: ForwardedRef<ViewDataRef>) => 
         }
         return;
       }
-      const data = tableInstance.getCellOriginValue(col, row);
-      setEditorValue(data);
+      setEditorValue(tableValue);
     } else {
       activeLargeValueIdRef.current = '';
       originalLargeValueRef.current = null;
@@ -143,7 +173,7 @@ const ViewData = forwardRef((_props: IProps, ref: ForwardedRef<ViewDataRef>) => 
   const latestChunk = largeValueChunks[largeValueChunks.length - 1];
   const largeValueMeta = viewData?.cellMeta;
   const isLargeValue = !!largeValueMeta?.largeValue;
-  const canUseLargeValueActions = isLargeValue && isDesktop;
+  const canUseLargeValueActions = isLargeValue;
   const displayMode = latestChunk?.displayMode || largeValueMeta?.valueType;
   const editorLimit = getLargeCellViewerLimit(viewerMode, displayMode);
   const loadedSize = getLargeCellLoadedBytes(largeValueChunks);
@@ -218,10 +248,25 @@ const ViewData = forwardRef((_props: IProps, ref: ForwardedRef<ViewDataRef>) => 
     }
     originalLargeValueRef.current = {
       value: largeValueViewerValue,
-      restoreValue: viewData.tableInstance.getCellOriginValue(viewData.col, viewData.row),
+      restoreValue: (() => {
+        const { field, record } = resolveViewDataLocation(viewData);
+        return field ? record?.[field] ?? null : null;
+      })(),
       cellMeta: cloneCellMeta(largeValueMeta),
     };
   }, [isLargeValue, viewerMode, displayMode, latestChunk?.eof, largeValueViewerValue, largeValueMeta, viewData]);
+
+  // The cell metadata can be incomplete (for example when a blob only turns out to be an image once it is read),
+  // so the display mode reported with the first loaded chunk has the final say unless the user picked a view.
+  useEffect(() => {
+    if (!isLargeValue || viewerModeTouchedRef.current) {
+      return;
+    }
+    const detected = defaultViewerModeFor(latestChunk?.displayMode || largeValueMeta?.valueType);
+    if (detected !== LARGE_CELL_VIEWER_MODE.TEXT && detected !== viewerMode) {
+      setViewerMode(detected);
+    }
+  }, [isLargeValue, largeValueMeta?.valueType, latestChunk?.displayMode, viewerMode]);
 
   const loadLargeValueChunk = async (
     largeValueId: string,
@@ -292,7 +337,14 @@ const ViewData = forwardRef((_props: IProps, ref: ForwardedRef<ViewDataRef>) => 
         if (requestVersion !== largeValueRequestVersionRef.current || activeLargeValueIdRef.current !== largeValueId) {
           break;
         }
-        loadedChunks.push(decodeLargeCellChunk(chunk));
+        const decoded = decodeLargeCellChunk(chunk);
+        if (!chunk.eof && chunk.nextOffset <= chunk.offset) {
+          // A chunk that carries no progress would spin here forever
+          throw Object.assign(new Error(LARGE_CELL_ERROR_MESSAGE.LOAD_FAILED), {
+            errorCode: LARGE_CELL_ERROR_CODE.READ_FAILED,
+          });
+        }
+        loadedChunks.push(decoded);
         eof = chunk.eof;
         nextLoadedSize += chunk.nextOffset - chunk.offset;
         offset = chunk.nextOffset;
@@ -337,6 +389,7 @@ const ViewData = forwardRef((_props: IProps, ref: ForwardedRef<ViewDataRef>) => 
 
   const changeViewerMode = (value: LargeCellViewerMode) => {
     setIsJsonContent(false);
+    viewerModeTouchedRef.current = true;
     setViewerMode(value);
   };
 
@@ -344,16 +397,16 @@ const ViewData = forwardRef((_props: IProps, ref: ForwardedRef<ViewDataRef>) => 
     if (!viewData || !editorCanEdit) {
       return;
     }
-    const { row, col, tableInstance, operationRecordUtils } = viewData;
-    const originData = tableInstance.getRecordByCell(col, row);
-    if (!originData) {
+    const { row, tableInstance, operationRecordUtils } = viewData;
+    const { field, tableCol, record: originData } = resolveViewDataLocation(viewData);
+    if (!originData || !field) {
       return;
     }
     if (viewData.rowId !== undefined && String(originData.CHAT2DB_ROW_NUMBER) !== String(viewData.rowId)) {
       return;
     }
     const originalLargeValue = originalLargeValueRef.current;
-    const currentTableValue = tableInstance.getCellOriginValue(col, row);
+    const currentTableValue = originData[field];
     if (!originalLargeValue && currentTableValue === data) {
       return;
     }
@@ -363,8 +416,9 @@ const ViewData = forwardRef((_props: IProps, ref: ForwardedRef<ViewDataRef>) => 
     const hasChanged = currentValue !== data;
     const nextTableValue = hasChanged ? data : (restoreValue ?? data);
 
-    originData[col] = nextTableValue;
-    const nextCellMeta = originData.__CHAT2DB_CELL_META__?.[col];
+    const sourceIndex = Number(field);
+    originData[field] = nextTableValue;
+    const nextCellMeta = originData.__CHAT2DB_CELL_META__?.[sourceIndex];
     if (hasChanged && nextCellMeta) {
       nextCellMeta.value = data;
       if (nextCellMeta.largeValue) {
@@ -376,12 +430,16 @@ const ViewData = forwardRef((_props: IProps, ref: ForwardedRef<ViewDataRef>) => 
         nextCellMeta.unsupportedReason = undefined;
       }
     } else if (!hasChanged && restoreCellMeta && originData.__CHAT2DB_CELL_META__) {
-      originData.__CHAT2DB_CELL_META__[col] = restoreCellMeta;
+      originData.__CHAT2DB_CELL_META__[sourceIndex] = restoreCellMeta;
     }
 
-    tableInstance.changeCellValue(col, row, nextTableValue);
+    if (tableCol >= 1) {
+      tableInstance.changeCellValue(tableCol, row, nextTableValue);
+    } else {
+      tableInstance.render();
+    }
     operationRecordUtils?.handleCellValueChange({
-      field: String(tableInstance.getHeaderField(col, row)),
+      field,
       rowId: originData.CHAT2DB_ROW_NUMBER,
       rawValue: currentValue,
       currentValue,
@@ -396,13 +454,21 @@ const ViewData = forwardRef((_props: IProps, ref: ForwardedRef<ViewDataRef>) => 
     applyEditorValue(value);
   };
 
+  const applyJsonPresentation = (value: string) => {
+    setEditorContent(value);
+    setEditorViewRevision((revision) => revision + 1);
+    if (!isLargeValue) {
+      applyEditorValue(value);
+    }
+  };
+
   const formatJson = () => {
     try {
       const parsed = JSON.parse(editorValue);
       const formatted = JSON.stringify(parsed, null, 2);
-      handleEditorValueChange(formatted);
+      applyJsonPresentation(formatted);
     } catch (err) {
-      console.error('无效的 JSON 格式，请检查语法', err);
+      console.error('Invalid JSON format. Check the syntax.', err);
     }
   };
 
@@ -410,9 +476,9 @@ const ViewData = forwardRef((_props: IProps, ref: ForwardedRef<ViewDataRef>) => 
     try {
       const parsed = JSON.parse(editorValue);
       const compressed = JSON.stringify(parsed);
-      handleEditorValueChange(compressed);
+      applyJsonPresentation(compressed);
     } catch (err) {
-      console.error('无效的 JSON 格式，请检查语法', err);
+      console.error('Invalid JSON format. Check the syntax.', err);
     }
   };
 
@@ -510,6 +576,7 @@ const ViewData = forwardRef((_props: IProps, ref: ForwardedRef<ViewDataRef>) => 
             <JsonAwareMonacoEditor
               id={uuid}
               value={editorValue}
+              resetViewRevision={editorViewRevision}
               readOnly={!editorCanEdit}
               onChange={handleEditorValueChange}
               onJsonChange={setIsJsonContent}
@@ -533,6 +600,7 @@ const ViewData = forwardRef((_props: IProps, ref: ForwardedRef<ViewDataRef>) => 
     largeValueStatus,
     displayMode,
     editorValue,
+    editorViewRevision,
     editorCanEdit,
     isJsonContent,
     viewerMode,
@@ -545,27 +613,30 @@ const ViewData = forwardRef((_props: IProps, ref: ForwardedRef<ViewDataRef>) => 
 
   const openPanel = (params) => {
     if (!params) return;
-    const { col, tableInstance } = params;
-    const field = tableInstance?.columns?.[col - 1]?.title || col;
-    const nextViewData = { ...params, field } as IViewData;
-    const record = tableInstance.getRecordByCell(params.col, params.row);
+    const { tableInstance } = params;
+    const field = params.field || getResultFieldAtTableColumn(tableInstance, params.col, params.row);
+    if (!field) {
+      return;
+    }
+    const tableCol = tableInstance.getTableIndexByField(field);
+    const record = tableInstance.getRecordByCell(tableCol >= 1 ? tableCol : 1, params.row);
+    const cellMeta = params.cellMeta ?? record?.__CHAT2DB_CELL_META__?.[Number(field)];
+    const nextViewData = { ...params, col: tableCol, field, cellMeta } as IViewData;
     nextViewData.rowId = params.rowId ?? record?.CHAT2DB_ROW_NUMBER;
     const current = activeViewDataRef.current;
     const isSameCell =
       current?.tableInstance === tableInstance &&
-      current.col === params.col &&
+      current.field === field &&
       current.row === params.row &&
       String(current.rowId) === String(nextViewData.rowId);
-    const nextValue = params.cellMeta?.largeValue
-      ? params.cellMeta.value || ''
-      : tableInstance.getCellOriginValue(params.col, params.row);
+    const nextValue = cellMeta?.largeValue ? cellMeta.value || '' : record?.[field];
     const nextEditorValue = nextValue === null || nextValue === undefined ? '' : String(nextValue);
     if (isSameCell && nextEditorValue === editorValueRef.current) {
       return;
     }
     if (!isSameCell) {
       largeValueRequestVersionRef.current += 1;
-      activeLargeValueIdRef.current = params.cellMeta?.largeValueId || '';
+      activeLargeValueIdRef.current = cellMeta?.largeValueId || '';
     }
     activeViewDataRef.current = nextViewData;
     setViewData(nextViewData);

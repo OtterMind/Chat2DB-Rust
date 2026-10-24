@@ -2,14 +2,14 @@ import createRequest from './base';
 import { IChatAttachment } from './aiAttachment';
 
 export interface IModelCatalogItem {
-  provider: 'OPENAI' | 'CLAUDE' | 'GEMINI';
+  provider: 'OPENAI' | 'CLAUDE' | 'GEMINI' | 'MINIMAX';
   models: string[];
 }
 
 export interface IModelOptionItem {
   value: string;
   label: string;
-  provider: 'OPENAI' | 'CLAUDE' | 'GEMINI';
+  provider: 'OPENAI' | 'CLAUDE' | 'GEMINI' | 'MINIMAX';
   model: string;
   modelConfigId?: string;
   customOption?: boolean;
@@ -40,6 +40,9 @@ const getChatMessages = createRequest<{ sessionId: string }, IChatMessage[]>('/a
 const deleteChatSession = createRequest<{ id: string }, void>('/api/v3/ai/chat/history/session/delete', {
   method: 'post',
 });
+const renameChatSession = createRequest<{ id: string; title: string }, void>('/api/v3/ai/chat/history/session/rename', {
+  method: 'post',
+});
 
 export default {
   getModelCatalog,
@@ -47,4 +50,5 @@ export default {
   getChatSessions,
   getChatMessages,
   deleteChatSession,
+  renameChatSession,
 };

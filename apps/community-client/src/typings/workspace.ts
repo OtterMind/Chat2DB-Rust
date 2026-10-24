@@ -1,5 +1,7 @@
 import { CreateTabIntroType, WorkspaceTabType, DatabaseTypeCode, ConsoleStatus } from '@/constants';
 import { ITreeNode } from '@/typings';
+import type { TerminalOpenPosition } from '@/typings/settings';
+import type { IConnectionEnv } from './connection';
 
 export interface ICreateTabIntro {
   type: CreateTabIntroType;
@@ -25,6 +27,7 @@ export type IWorkspaceTabPaneNode =
     }
   | {
       type: 'split';
+      nodeId?: string;
       direction: WorkspaceTabSplitDirection;
       size?: number | string;
       first: IWorkspaceTabPaneNode;
@@ -34,6 +37,7 @@ export type IWorkspaceTabPaneNode =
 export interface IWorkspaceTabSplitLayout {
   direction: WorkspaceTabSplitDirection;
   activePane: WorkspaceTabPaneId;
+  lastNonTerminalActiveTabId?: number | string | null;
   paneTabIds: Record<WorkspaceTabPaneId, Array<number | string>>;
   activeTabIds: Partial<Record<WorkspaceTabPaneId, number | string | null>>;
   root?: IWorkspaceTabPaneNode;
@@ -61,19 +65,16 @@ export interface TableCommentExt {
   columnAlias: ColumnAlias[];
 }
 
-export interface AITableComment {
-  dataSourceId: number;
-  databaseName?: string;
-  schemaName?: string;
-  tableName: string;
-  tableCommentExt: TableCommentExt;
-}
-
 export interface IBoundInfo {
   consoleId?: number;
   workspaceTabId?: number | string;
   dataSourceId?: number;
   dataSourceName?: string;
+  environmentId?: number | null;
+  environment?: IConnectionEnv | null;
+  identityColor?: string | null;
+  watermarkEnabled?: boolean | null;
+  watermarkContent?: string | null;
   databaseType?: DatabaseTypeCode;
   databaseName?: string;
   schemaName?: string;
@@ -81,9 +82,21 @@ export interface IBoundInfo {
   connectable?: boolean;
   supportDatabase?: boolean;
   supportSchema?: boolean;
+  nameCustomized?: boolean | null;
 
   filePath?: string;
   fileExtension?: string;
+  fileCharset?: string;
+  fileBom?: boolean;
+  filePreviewUrl?: string;
+  filePreviewMimeType?: string;
+  fileRootToken?: string;
+  fileRelativePath?: string;
+  terminalSessionId?: string;
+  terminalCwd?: string;
+  terminalShell?: string;
+  terminalShellId?: string;
+  terminalOpenPosition?: TerminalOpenPosition;
   viewName?: string;
   functionName?: string;
   procedureName?: string;

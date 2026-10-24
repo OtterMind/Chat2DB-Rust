@@ -15,7 +15,9 @@ import { SearchComponent } from '@visactor/vtable-search';
 import { ITableInstance } from '@/blocks/CanvasTable/typings';
 import { hexToRgba } from '@/utils/color';
 import { debounce } from 'lodash';
-import { IconButton, SearchBar } from '@chat2db/ui';
+import { IconButton } from '@chat2db/ui';
+import SearchBar, { type SearchBarRef } from '@/components/SearchBar';
+import { matchResultSearchValue } from './searchMatcher';
 
 interface IProps {
   className?: string;
@@ -34,20 +36,19 @@ const FESearch = forwardRef((props: IProps, ref: ForwardedRef<FESearchRef>) => {
   const { className, tableInstance, searchAreaId, onClose } = props;
   const { styles, cx } = useStyles();
   const searchRef = useRef<SearchComponent | null>(null);
-  const lastSearchValueRef = useRef('');
   // The value of the last search
   const [searchResult, setSearchResult] = useState<any>(null);
   const [value, setValue] = useState('');
   const [lastSearchValue, setLastSearchValue] = useState('');
   const feSearchRef = useRef<HTMLDivElement>(null);
-  const searchBarRef = useRef<HTMLDivElement>(null);
+  const searchBarRef = useRef<SearchBarRef>(null);
 
   useEffect(() => {
     if (!tableInstance) return;
     const highlightCellStyleBgColor = hexToRgba('#ff0', 20);
     const focuseHighlightCellStyleBgColor = hexToRgba('#ff0', 60);
 
-    const search = new SearchComponent({
+    searchRef.current = new SearchComponent({
       table: tableInstance,
       autoJump: true,
       highlightCellStyle: {
@@ -56,22 +57,19 @@ const FESearch = forwardRef((props: IProps, ref: ForwardedRef<FESearchRef>) => {
       focuseHighlightCellStyle: {
         bgColor: focuseHighlightCellStyleBgColor,
       } as any,
+      queryMethod: (query, cellValue, context) =>
+        matchResultSearchValue(
+          query,
+          cellValue,
+          context
+            ? {
+                col: context.col,
+                row: context.row,
+                table: context.table as ITableInstance,
+              }
+            : undefined,
+        ),
     });
-    searchRef.current = search;
-
-    if (lastSearchValueRef.current) {
-      const res = search.search(lastSearchValueRef.current);
-      setSearchResult({
-        index: res.index,
-        count: res.results.length,
-      });
-    }
-
-    return () => {
-      if (searchRef.current === search) {
-        searchRef.current = null;
-      }
-    };
   }, [tableInstance]);
 
   useImperativeHandle(ref, () => ({
@@ -120,14 +118,11 @@ const FESearch = forwardRef((props: IProps, ref: ForwardedRef<FESearchRef>) => {
       index: res?.index,
       count: res?.results.length,
     });
-    const nextSearchValue = _value || value;
-    lastSearchValueRef.current = nextSearchValue;
-    setLastSearchValue(nextSearchValue);
+    setLastSearchValue(_value || value);
   };
 
   const handleClearSearch = () => {
     searchRef.current?.clear();
-    lastSearchValueRef.current = '';
     setLastSearchValue('');
     setSearchResult(null);
   };

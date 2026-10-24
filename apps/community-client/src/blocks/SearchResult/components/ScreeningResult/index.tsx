@@ -1,7 +1,8 @@
 import React, { memo, useEffect, forwardRef, ForwardedRef, useImperativeHandle } from 'react';
 import classnames from 'classnames';
-import Iconfont from '@/components/Iconfont';
-import SingleFileMonacoEditor from '@/components/SingleFileMonacoEditor';
+import SingleFileMonacoEditor, {
+  ISingleFileMonacoEditorRefFunction,
+} from '@/components/SingleFileMonacoEditor';
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api';
 import { useStyles } from './style';
 import { useUpdateEffect } from 'ahooks';
@@ -61,8 +62,8 @@ const ScreeningResult = forwardRef((props: IProps, ref: ForwardedRef<IScreeningR
   const [isActive, setIsActive] = React.useState(false);
   const keywordHintRef = React.useRef<any>(null);
   const fieldHintRef = React.useRef<any>(null);
-  const whereSingleFileMonacoEditorRef = React.useRef<any>(null);
-  const orderBySingleFileMonacoEditorRef = React.useRef<any>(null);
+  const whereSingleFileMonacoEditorRef = React.useRef<ISingleFileMonacoEditorRefFunction>(null);
+  const orderBySingleFileMonacoEditorRef = React.useRef<ISingleFileMonacoEditorRefFunction>(null);
 
   useEffect(() => {
     keywordHintRef.current && keywordHintRef.current.dispose();
@@ -143,7 +144,6 @@ const ScreeningResult = forwardRef((props: IProps, ref: ForwardedRef<IScreeningR
     <div className={styles.screeningResult}>
       <div className={styles.whereBox}>
         <div className={styles.titleBox}>
-          <Iconfont box boxSize={20} classNameBox={styles.titleIcon} code="&#xe66a;" />
           <div
             className={classnames(styles.title, {
               [styles.activeTitle]: true,
@@ -161,7 +161,6 @@ const ScreeningResult = forwardRef((props: IProps, ref: ForwardedRef<IScreeningR
       </div>
       <div className={styles.orderByBox}>
         <div className={styles.titleBox}>
-          <Iconfont box boxSize={20} classNameBox={styles.titleIcon} code="&#xe69a;" />
           <div
             className={classnames(styles.title, {
               [styles.activeTitle]: true,

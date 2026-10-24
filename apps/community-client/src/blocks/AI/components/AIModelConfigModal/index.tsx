@@ -11,7 +11,10 @@ import {
   saveAIModelConfig,
   testAIModelConfig,
 } from '@/service/aiModelConfig';
+import { resolveBaseUrlOnProviderChange, resolveProviderBaseUrl } from './modelConfigDefaults';
 import { useStyles } from './style';
+import { usePermission } from '@/hooks/usePermission';
+import { clientRuntime } from '@client-runtime';
 
 interface AIModelConfigModalProps {
   open: boolean;
@@ -23,6 +26,7 @@ const providerOptions = [
   { label: 'OpenAI', value: 'OPENAI' },
   { label: 'Claude', value: 'CLAUDE' },
   { label: 'Gemini', value: 'GEMINI' },
+  { label: 'MiniMax', value: 'MINIMAX' },
 ];
 
 const emptyFormValues: IAIModelConfigSaveRequest = {
@@ -39,8 +43,24 @@ const emptyFormValues: IAIModelConfigSaveRequest = {
   defaultConfig: false,
 };
 
+const toFormValues = (config?: Partial<IAIModelConfigSaveRequest>): IAIModelConfigSaveRequest => {
+  const values = {
+    ...emptyFormValues,
+    ...config,
+    apiKey: '',
+  };
+  return {
+    ...values,
+    baseUrl: resolveProviderBaseUrl(values.provider, values.baseUrl),
+  };
+};
+
 export default function AIModelConfigModal({ open, onClose, onChanged }: AIModelConfigModalProps) {
   const { styles, cx } = useStyles();
+  const { can } = usePermission();
+  const canCreate = clientRuntime.usesLocalPersistence || can('ai', 'model', 'create');
+  const canUpdate = clientRuntime.usesLocalPersistence || can('ai', 'model', 'update');
+  const canDelete = clientRuntime.usesLocalPersistence || can('ai', 'model', 'delete');
   const [modal, modalContextHolder] = Modal.useModal();
   const [form] = Form.useForm<IAIModelConfigSaveRequest>();
   const [loading, setLoading] = useState(false);
@@ -50,6 +70,7 @@ export default function AIModelConfigModal({ open, onClose, onChanged }: AIModel
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const currentConfig = useMemo(() => configs.find((item) => item.id === editingId) || null, [configs, editingId]);
+  const canSaveCurrent = editingId ? canUpdate : canCreate;
 
   const currentProvider = Form.useWatch('provider', form) as AIProvider | undefined;
 
@@ -70,11 +91,7 @@ export default function AIModelConfigModal({ open, onClose, onChanged }: AIModel
         const activeId = editingId && list.some((item) => item.id === editingId) ? editingId : list[0].id;
         setEditingId(activeId);
         const activeConfig = list.find((item) => item.id === activeId);
-        form.setFieldsValue({
-          ...emptyFormValues,
-          ...activeConfig,
-          apiKey: '',
-        });
+        form.setFieldsValue(toFormValues(activeConfig));
       } else {
         resetForm();
       }
@@ -91,11 +108,11 @@ export default function AIModelConfigModal({ open, onClose, onChanged }: AIModel
 
   const handleSelectConfig = (config: IAIModelConfigItem) => {
     setEditingId(config.id);
-    form.setFieldsValue({
-      ...emptyFormValues,
-      ...config,
-      apiKey: '',
-    });
+    form.setFieldsValue(toFormValues(config));
+  };
+
+  const handleProviderChange = (provider: AIProvider) => {
+    form.setFieldValue('baseUrl', resolveBaseUrlOnProviderChange(provider, form.getFieldValue('baseUrl')));
   };
 
   const handleSave = async () => {
@@ -164,7 +181,10 @@ export default function AIModelConfigModal({ open, onClose, onChanged }: AIModel
     } catch (error: any) {
       modal.error({
         title: i18n('setting.modelConfig.testFailed'),
-        content: error?.errorMessage || error?.message || String(error),
+        content: (
+          <pre className={styles.testResult}>{error?.errorMessage || error?.message || String(error)}</pre>
+        ),
+        width: 680,
       });
     } finally {
       setTesting(false);
@@ -186,9 +206,11 @@ export default function AIModelConfigModal({ open, onClose, onChanged }: AIModel
         <div className={styles.sidebar}>
           <div className={styles.sidebarHeader}>
             <div>{i18n('setting.modelConfig.listTitle')}</div>
-            <Button size="small" onClick={resetForm}>
-              {i18n('setting.modelConfig.new')}
-            </Button>
+            {canCreate ? (
+              <Button size="small" onClick={resetForm}>
+                {i18n('setting.modelConfig.new')}
+              </Button>
+            ) : null}
           </div>
           <div className={styles.list}>
             {loading
@@ -216,26 +238,28 @@ export default function AIModelConfigModal({ open, onClose, onChanged }: AIModel
                       <div>{config.model}</div>
                       {config.apiKeyMasked ? <div>{config.apiKeyMasked}</div> : null}
                     </div>
-                    <div className={styles.listItemActions}>
-                      <Popconfirm
-                        title={i18n('setting.modelConfig.deleteConfirm')}
-                        onConfirm={(e) => {
-                          e?.stopPropagation();
-                          handleDelete(config.id);
-                        }}
-                        onCancel={(e) => e?.stopPropagation()}
-                      >
-                        <Button
-                          size="small"
-                          danger
-                          onClick={(e) => {
-                            e.stopPropagation();
+                    {canDelete ? (
+                      <div className={styles.listItemActions}>
+                        <Popconfirm
+                          title={i18n('setting.modelConfig.deleteConfirm')}
+                          onConfirm={(e) => {
+                            e?.stopPropagation();
+                            handleDelete(config.id);
                           }}
+                          onCancel={(e) => e?.stopPropagation()}
                         >
-                          {i18n('common.button.delete')}
-                        </Button>
-                      </Popconfirm>
-                    </div>
+                          <Button
+                            size="small"
+                            danger
+                            onClick={(e) => {
+                              e.stopPropagation();
+                            }}
+                          >
+                            {i18n('common.button.delete')}
+                          </Button>
+                        </Popconfirm>
+                      </div>
+                    ) : null}
                   </div>
                 ))
               : null}
@@ -247,7 +271,7 @@ export default function AIModelConfigModal({ open, onClose, onChanged }: AIModel
             form={form}
             layout="horizontal"
             initialValues={emptyFormValues}
-            disabled={saving}
+            disabled={saving || !canSaveCurrent}
             labelCol={{ flex: '120px' }}
             wrapperCol={{ flex: 1 }}
             labelAlign="left"
@@ -264,7 +288,11 @@ export default function AIModelConfigModal({ open, onClose, onChanged }: AIModel
               label={i18n('setting.modelConfig.provider')}
               rules={[{ required: true, message: i18n('setting.modelConfig.validation.provider') }]}
             >
-              <Select options={providerOptions} placeholder={i18n('setting.modelConfig.placeholder.provider')} />
+              <Select
+                options={providerOptions}
+                placeholder={i18n('setting.modelConfig.placeholder.provider')}
+                onChange={handleProviderChange}
+              />
             </Form.Item>
             <Form.Item
               name="model"
@@ -279,7 +307,11 @@ export default function AIModelConfigModal({ open, onClose, onChanged }: AIModel
               tooltip={currentConfig?.apiKeyMasked || undefined}
               rules={[
                 {
-                  required: (currentProvider === 'OPENAI' || currentProvider === 'CLAUDE') && !currentConfig?.hasApiKey,
+                  required:
+                    (currentProvider === 'OPENAI' ||
+                      currentProvider === 'CLAUDE' ||
+                      currentProvider === 'MINIMAX') &&
+                    !currentConfig?.hasApiKey,
                   message: i18n('setting.modelConfig.validation.apiKey'),
                 },
               ]}
@@ -334,12 +366,16 @@ export default function AIModelConfigModal({ open, onClose, onChanged }: AIModel
 
           <div className={styles.formActions}>
             <Button onClick={onClose}>{i18n('common.button.cancel')}</Button>
-            <Button loading={testing} onClick={handleTestConnection}>
-              {i18n('setting.modelConfig.testConnection')}
-            </Button>
-            <Button type="primary" loading={saving} onClick={handleSave}>
-              {i18n('common.button.save')}
-            </Button>
+            {canSaveCurrent ? (
+              <Button loading={testing} onClick={handleTestConnection}>
+                {i18n('setting.modelConfig.testConnection')}
+              </Button>
+            ) : null}
+            {canSaveCurrent ? (
+              <Button type="primary" loading={saving} onClick={handleSave}>
+                {i18n('common.button.save')}
+              </Button>
+            ) : null}
           </div>
         </div>
       </div>

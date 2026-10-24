@@ -46,7 +46,27 @@ export function getSettingSearchItems(menuCode: string): SettingSearchItem[] {
         settingItem('editor.completionAcceptKey', 'monaco.completionAcceptKey', ['completion key', 'enter', 'tab']),
         settingItem('editor.completion', 'monaco.completion.all', ['qualified completion', 'autocomplete']),
         settingItem('editor.tableDDLTriggerMode', 'monaco.tableDDLTriggerMode', ['ddl', 'hover', 'click']),
+        settingItem('editor.confirmBeforeClose', 'monaco.confirmBeforeClose', [
+          'close editor',
+          'unsaved changes',
+          'confirmation',
+        ]),
+        settingItem('editor.defaultPageSize', 'monaco.defaultPageSize', [
+          'default page size',
+          'query rows',
+          'row limit',
+        ]),
         settingItem('editor.errorContinue', 'monaco.errorContinue', ['continue on error', 'execution']),
+      ];
+    case 'terminal':
+      return [
+        settingItem('terminal.position', 'setting.terminal.openPosition', ['terminal position', 'panel']),
+        settingItem('terminal.confirmBeforeClose', 'setting.terminal.confirmBeforeClose', [
+          'close terminal',
+          'confirmation',
+        ]),
+        settingItem('terminal.shell', 'setting.terminal.shell', ['shell', 'command environment']),
+        settingItem('terminal.theme', 'setting.terminal.theme', ['terminal theme', 'color']),
       ];
     case 'shortcut':
       return [
@@ -69,6 +89,32 @@ export function getSettingSearchItems(menuCode: string): SettingSearchItem[] {
           keywords: ['mcp token', 'authentication', 'reset token'],
         },
       ];
+    case 'cli':
+      return [
+        {
+          targetId: 'sqlx.install',
+          title: i18n('setting.title.sqlxCli'),
+          keywords: [
+            i18n('setting.sqlx.button.install'),
+            i18n('setting.sqlx.button.checkUpdate'),
+            i18n('setting.sqlx.button.redetect'),
+            'sqlx',
+            'cli',
+            'command line',
+            'install',
+          ],
+        },
+        {
+          targetId: 'sqlx.datasource',
+          title: i18n('setting.sqlx.section.datasource'),
+          keywords: ['sqlx', 'datasource', 'import', 'agent'],
+        },
+        {
+          targetId: 'sqlx.agent',
+          title: i18n('setting.sqlx.section.agent'),
+          keywords: ['sqlx', 'skill', 'agent', 'plugin', 'marketplace', 'claude', 'codex', 'dsh', 'pi'],
+        },
+      ];
     case 'networkProxy':
       return [
         {
@@ -81,6 +127,12 @@ export function getSettingSearchItems(menuCode: string): SettingSearchItem[] {
           title: i18n('setting.networkProxy.testUrl'),
           keywords: [i18n('setting.networkProxy.testConnection'), 'test url', 'connection test'],
         },
+      ];
+    case 'personal':
+      return [
+        settingItem('personal.profile', 'setting.nav.personalInformation', ['profile', 'avatar', 'display name']),
+        settingItem('personal.email', 'setting.nav.resetEmail', ['email', 'mailbox', 'account']),
+        settingItem('personal.password', 'setting.nav.resetPassword', ['password', 'credential', 'security']),
       ];
     default:
       return [];
