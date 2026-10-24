@@ -3067,8 +3067,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sql_completion_command_maps_unavailable_storage_errors() {
-        let error = complete_community_sql_for(
+    async fn sql_completion_command_reports_unavailable_without_storage() {
+        let completion = complete_community_sql_for(
             &Application::new(),
             CompleteCommunitySqlRequest {
                 datasource_id: "datasource-1".to_owned(),
@@ -3084,9 +3084,14 @@ mod tests {
             },
         )
         .await
-        .expect_err("completion without storage must fail");
+        .expect("completion must not need the engine or storage");
 
-        assert_eq!(error.code, "storage_unavailable");
+        assert_eq!(completion.status, "unavailable");
+        assert!(completion.candidates.is_empty());
+        assert_eq!(
+            completion.reason_code.as_deref(),
+            Some("sql_completion_removed")
+        );
     }
 
     #[test]
