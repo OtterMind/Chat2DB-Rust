@@ -429,11 +429,23 @@ impl Application {
 
     pub async fn list_community_indexes(
         &self,
-        _request: ListCommunityIndexesRequest,
+        request: ListCommunityIndexesRequest,
     ) -> Result<CommunityTableIndexList, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
+            return metadata
+                .list_indexes(self, request.into())
+                .await
+                .map(crate::native_api_adapter::index_list_response);
+        }
+        Err(native_capability_not_supported(
+            "this datasource",
+            "the requested metadata",
         ))
     }
 
@@ -446,11 +458,23 @@ impl Application {
 
     pub async fn list_community_primary_keys(
         &self,
-        _request: ListCommunityTableKeysRequest,
+        request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityPrimaryKeyList, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
+            return metadata
+                .list_primary_keys(self, request.into())
+                .await
+                .map(crate::native_api_adapter::primary_key_list_response);
+        }
+        Err(native_capability_not_supported(
+            "this datasource",
+            "the requested metadata",
         ))
     }
 
@@ -486,11 +510,23 @@ impl Application {
 
     pub async fn list_community_views(
         &self,
-        _request: ListCommunityViewsRequest,
+        request: ListCommunityViewsRequest,
     ) -> Result<CommunityViewList, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
+            return metadata
+                .list_views(self, request.into())
+                .await
+                .map(crate::native_api_adapter::view_list_response);
+        }
+        Err(native_capability_not_supported(
+            "this datasource",
+            "the requested metadata",
         ))
     }
 
