@@ -8985,6 +8985,7 @@ const LEGACY_PATHS: &[&str] = &[
     "/api/connection/datasource/export",
     "/api/connection/datasource/import_community",
     "/api/converter/upload",
+    "/api/jdbc/driver/upload",
     "/api/converter/ncx/upload",
     "/api/converter/dbp/upload",
     "/api/converter/chat2db/upload",
@@ -9223,6 +9224,10 @@ pub(crate) fn routes() -> Router<Application> {
         .route(
             "/api/connection/datasource/import_community",
             get(import_community_handler).post(import_community_handler),
+        )
+        .route(
+            "/api/jdbc/driver/upload",
+            post(driver_upload_handler).layer(DefaultBodyLimit::max(MAX_LEGACY_MULTIPART_BYTES)),
         )
         .route(
             "/api/converter/upload",
@@ -9708,6 +9713,51 @@ async fn import_community_handler(
         )));
     };
     envelope(import_legacy_datasources(&application, document).await)
+}
+
+/// Stores one uploaded JDBC driver archive so the driver save step can use it.
+fn internal_failure() -> LegacyFailure {
+    LegacyFailure {
+        code: "internal_error".to_owned(),
+        message: "The operation could not be completed".to_owned(),
+    }
+}
+
+async fn driver_upload_handler(multipart: Multipart) -> Json<LegacyEnvelope<Vec<String>>> {
+    envelope(store_uploaded_driver(multipart).await)
+}
+
+async fn store_uploaded_driver(multipart: Multipart) -> LegacyResult<Vec<String>> {
+    let upload = read_legacy_multipart_file(multipart).await?;
+    if upload.content.is_empty() {
+        return Err(LegacyFailure::invalid(
+            "invalid_driver_archive",
+            "the uploaded driver archive is empty",
+        ));
+    }
+    if !upload.content.starts_with(b"PK") {
+        return Err(LegacyFailure::invalid(
+            "invalid_driver_archive",
+            "the uploaded driver must be a JAR archive",
+        ));
+    }
+    let name = std::path::Path::new(&upload.file_name)
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            LegacyFailure::invalid(
+                "invalid_driver_archive",
+                "the driver archive needs a file name",
+            )
+        })?;
+    let root = chat2db_storage::Storage::default_data_dir()
+        .map_err(|_| internal_failure())?
+        .join("driver-uploads");
+    std::fs::create_dir_all(&root).map_err(|_| internal_failure())?;
+    let target = root.join(name);
+    std::fs::write(&target, &upload.content).map_err(|_| internal_failure())?;
+    Ok(vec![target.display().to_string()])
 }
 
 async fn converter_upload_handler(

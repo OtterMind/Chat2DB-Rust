@@ -250,7 +250,10 @@ impl ManagedJdbcSession {
         query: chat2db_java_bridge::MetadataQuery,
     ) -> Result<chat2db_java_bridge::MetadataResult, AppError> {
         let session = self.session.as_ref().expect("open JDBC session is present");
-        let result = session.metadata(operation, query).await.map_err(AppError::from);
+        let result = session
+            .metadata(operation, query)
+            .await
+            .map_err(AppError::from);
         self.finish(result).await
     }
 

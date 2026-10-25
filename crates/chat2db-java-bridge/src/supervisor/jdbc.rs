@@ -1432,7 +1432,11 @@ impl Session {
             }
         };
         let response = self
-            .send_session_request(JDBC_METADATA_CAPABILITY, payload, PendingLane::FatalOnUnknown)
+            .send_session_request(
+                JDBC_METADATA_CAPABILITY,
+                payload,
+                PendingLane::FatalOnUnknown,
+            )
             .await?;
         let Some(wire::server_envelope::Payload::MetadataResult(result)) = response.payload else {
             return self
@@ -1462,7 +1466,6 @@ impl Session {
             truncated: result.truncated,
         })
     }
-
 
     /// Starts a credit-controlled typed JDBC query stream.
     ///

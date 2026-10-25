@@ -2,7 +2,7 @@
 // keeping them warning-free makes that diff a pure wiring change.
 #![allow(dead_code)]
 
-//! Maps raw JDBC \`DatabaseMetaData\` rows into product metadata.
+//! Maps raw JDBC `DatabaseMetaData` rows into product metadata.
 //!
 //! The Java bridge only forwards the driver's own rows and labels. Every
 //! dialect decision - catalog versus schema, system objects, case folding,
@@ -98,13 +98,12 @@ fn integer_value(value: &JdbcValue) -> Option<i64> {
         JdbcValue::SignedInteger(value) => Some(*value),
         JdbcValue::UnsignedInteger(value) => i64::try_from(*value).ok(),
         JdbcValue::Text(value) | JdbcValue::Decimal(value) => value.trim().parse().ok(),
-        JdbcValue::Float64(value) => Some(*value as i64),
         JdbcValue::Boolean(value) => Some(i64::from(*value)),
         _ => None,
     }
 }
 
-/// Maps \`getSchemas\` rows into schema metadata.
+/// Maps `getSchemas` rows into schema metadata.
 pub(crate) fn schemas(result: &MetadataResult, database_name: &str) -> SchemaList {
     let rows = MetadataRows::new(result);
     let items = result
@@ -129,7 +128,7 @@ pub(crate) fn schemas(result: &MetadataResult, database_name: &str) -> SchemaLis
     SchemaList { items }
 }
 
-/// Maps \`getTables\` rows into table metadata.
+/// Maps `getTables` rows into table metadata.
 /** Maps getCatalogs rows into database metadata. */
 pub(crate) fn databases(result: &MetadataResult) -> DatabaseList {
     let rows = MetadataRows::new(result);
@@ -186,7 +185,7 @@ pub(crate) fn tables(
     TableList { items }
 }
 
-/// Maps \`getColumns\` rows into column metadata.
+/// Maps `getColumns` rows into column metadata.
 pub(crate) fn columns(
     result: &MetadataResult,
     database_name: &str,
@@ -242,11 +241,16 @@ pub(crate) fn columns(
 fn is_system_schema(name: &str) -> bool {
     matches!(
         name.trim().to_ascii_lowercase().as_str(),
-        "information_schema" | "pg_catalog" | "pg_toast" | "sys" | "system" | "mysql"
-            | "performance_schema" | "sysaux"
+        "information_schema"
+            | "pg_catalog"
+            | "pg_toast"
+            | "sys"
+            | "system"
+            | "mysql"
+            | "performance_schema"
+            | "sysaux"
     )
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -394,4 +398,3 @@ mod tests {
         assert_eq!(schemas.items[1].name, "INFORMATION_SCHEMA");
     }
 }
-

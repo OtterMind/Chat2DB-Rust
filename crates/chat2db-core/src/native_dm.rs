@@ -1,4 +1,3 @@
-
 // The vendor SQL metadata helpers stay until indexes and keys are migrated;
 // keeping them avoids a deletion-only follow-up in the same change.
 #![allow(dead_code)]
@@ -209,7 +208,12 @@ pub(crate) async fn list_tables(
         },
     )
     .await?;
-    Ok(crate::jdbc_metadata::tables(&result, database_name, schema_name, "DM"))
+    Ok(crate::jdbc_metadata::tables(
+        &result,
+        database_name,
+        schema_name,
+        "DM",
+    ))
 }
 
 pub(crate) async fn list_columns(
@@ -232,7 +236,11 @@ pub(crate) async fn list_columns(
         },
     )
     .await?;
-    Ok(crate::jdbc_metadata::columns(&result, database_name, schema_name))
+    Ok(crate::jdbc_metadata::columns(
+        &result,
+        database_name,
+        schema_name,
+    ))
 }
 
 pub(crate) fn map_schemas(

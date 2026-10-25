@@ -61,13 +61,13 @@ pub use community::{
 
 pub use jdbc::{
     CancelDisposition, ColumnNullability, ConnectionProperty, DRIVER_EXTERNAL_JAR_CAPABILITY,
-    DatabaseProduct, DriverArtifact, DriverClient, DriverSpec, FLOW_CREDIT_CAPABILITY, JdbcColumn,
-    JdbcParameter, JdbcRow, JdbcValue, JdbcValueType, LoadedDriver, MAX_DRIVER_ARTIFACT_BYTES,
-    MAX_DRIVER_ARTIFACTS, MAX_DRIVER_TOTAL_BYTES, OPERATION_CANCEL_CAPABILITY,
+    DatabaseProduct, DriverArtifact, DriverClient, DriverSpec, FLOW_CREDIT_CAPABILITY,
+    JDBC_METADATA_CAPABILITY, JdbcColumn, JdbcParameter, JdbcRow, JdbcValue, JdbcValueType,
+    LoadedDriver, MAX_DRIVER_ARTIFACT_BYTES, MAX_DRIVER_ARTIFACTS, MAX_DRIVER_TOTAL_BYTES,
+    MetadataOperation, MetadataQuery, MetadataResult, OPERATION_CANCEL_CAPABILITY,
     QUERY_TYPED_BATCHES_CAPABILITY, QueryCompleted, QueryEvent, QueryOptions, QueryRequest,
     QueryStarted, QueryStream, RowBatch, SESSION_JDBC_CAPABILITY, Session, SessionConfig,
     TRANSACTION_LOCAL_CAPABILITY, Transaction, TransactionIsolation, TransactionOptions,
-    JDBC_METADATA_CAPABILITY, MetadataOperation, MetadataQuery, MetadataResult,
     UPDATE_JDBC_CAPABILITY, UpdateRequest, UpdateResult,
 };
 
