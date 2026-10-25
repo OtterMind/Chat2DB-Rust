@@ -9,7 +9,7 @@
 //! comment enrichment - belongs to this module, which is why the bridge never
 //! needs to know about a specific database.
 
-use chat2db_java_bridge::{JdbcColumn, JdbcRow, JdbcValue, MetadataResult};
+use chat2db_java_bridge::{JdbcRow, JdbcValue, MetadataResult};
 
 use crate::native_driver_types::{
     ColumnList, ColumnMetadata, SchemaList, SchemaMetadata, TableList, TableMetadata,
@@ -228,7 +228,7 @@ fn is_system_schema(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use chat2db_java_bridge::{ColumnNullability, JdbcValueType};
+    use chat2db_java_bridge::{ColumnNullability, JdbcColumn, JdbcValueType};
 
     use super::*;
 

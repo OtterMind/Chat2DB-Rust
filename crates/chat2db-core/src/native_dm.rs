@@ -1,3 +1,7 @@
+
+// The vendor SQL metadata helpers stay until indexes and keys are migrated;
+// keeping them avoids a deletion-only follow-up in the same change.
+#![allow(dead_code)]
 use chat2db_contract::{QueryLimits, StartQueryRequest};
 use chat2db_java_bridge::{JdbcColumn, JdbcParameter, JdbcRow, JdbcValue};
 
@@ -151,18 +155,18 @@ pub(crate) async fn list_schemas(
     datasource_id: &str,
     database_name: &str,
 ) -> Result<SchemaList, AppError> {
-    let query = list_schemas_query();
-    let result = jdbc_query(
+    let result = crate::datasource_session::jdbc_metadata(
         application,
         &DM_DRIVER_DESCRIPTOR,
         datasource_id,
-        query.sql,
-        query.parameters,
-        SCHEMA_QUERY_LIMITS,
+        chat2db_java_bridge::MetadataOperation::Schemas,
+        chat2db_java_bridge::MetadataQuery {
+            catalog: Some(database_name.to_owned()),
+            ..chat2db_java_bridge::MetadataQuery::default()
+        },
     )
     .await?;
-    ensure_complete_metadata(&result, "schemas")?;
-    map_schemas(database_name, &result.columns, &result.rows)
+    Ok(crate::jdbc_metadata::schemas(&result, database_name))
 }
 
 pub(crate) async fn list_databases(
@@ -190,18 +194,20 @@ pub(crate) async fn list_tables(
     schema_name: &str,
     table_name_pattern: &str,
 ) -> Result<TableList, AppError> {
-    let query = list_tables_query(schema_name, table_name_pattern)?;
-    let result = jdbc_query(
+    let result = crate::datasource_session::jdbc_metadata(
         application,
         &DM_DRIVER_DESCRIPTOR,
         datasource_id,
-        query.sql,
-        query.parameters,
-        TABLE_QUERY_LIMITS,
+        chat2db_java_bridge::MetadataOperation::Tables,
+        chat2db_java_bridge::MetadataQuery {
+            catalog: Some(database_name.to_owned()),
+            schema: Some(schema_name.to_owned()),
+            pattern: Some(table_name_pattern.to_owned()),
+            ..chat2db_java_bridge::MetadataQuery::default()
+        },
     )
     .await?;
-    ensure_complete_metadata(&result, "tables")?;
-    map_tables(database_name, schema_name, &result.columns, &result.rows)
+    Ok(crate::jdbc_metadata::tables(&result, database_name, schema_name, "DM"))
 }
 
 pub(crate) async fn list_columns(
@@ -211,24 +217,20 @@ pub(crate) async fn list_columns(
     schema_name: &str,
     table_name: &str,
 ) -> Result<ColumnList, AppError> {
-    let query = list_columns_query(schema_name, table_name)?;
-    let result = jdbc_query(
+    let result = crate::datasource_session::jdbc_metadata(
         application,
         &DM_DRIVER_DESCRIPTOR,
         datasource_id,
-        query.sql,
-        query.parameters,
-        COLUMN_QUERY_LIMITS,
+        chat2db_java_bridge::MetadataOperation::Columns,
+        chat2db_java_bridge::MetadataQuery {
+            catalog: Some(database_name.to_owned()),
+            schema: Some(schema_name.to_owned()),
+            table: Some(table_name.to_owned()),
+            ..chat2db_java_bridge::MetadataQuery::default()
+        },
     )
     .await?;
-    ensure_complete_metadata(&result, "columns")?;
-    map_columns(
-        database_name,
-        schema_name,
-        table_name,
-        &result.columns,
-        &result.rows,
-    )
+    Ok(crate::jdbc_metadata::columns(&result, database_name, schema_name))
 }
 
 pub(crate) fn map_schemas(

@@ -149,6 +149,33 @@ pub(crate) async fn jdbc_query(
     session.query(sql, parameters, limits).await
 }
 
+/// Forwards one raw `DatabaseMetaData` call for a native SPI driver.
+///
+/// The engine returns the driver's own rows; mapping them into product metadata
+/// stays in `crate::jdbc_metadata`.
+///
+/// # Errors
+///
+/// Returns datasource, driver, session, or remote JDBC errors.
+pub(crate) async fn jdbc_metadata(
+    application: &Application,
+    descriptor: &'static NativeDriverDescriptor,
+    datasource_id: &str,
+    operation: chat2db_java_bridge::MetadataOperation,
+    query: chat2db_java_bridge::MetadataQuery,
+) -> Result<chat2db_java_bridge::MetadataResult, AppError> {
+    let storage = application.require_storage()?;
+    let resolved = resolve_datasource_connection(&storage, datasource_id).await?;
+    let session = ManagedJdbcSession::open(
+        application,
+        resolved,
+        SessionReadOnly::Forced,
+        Some(descriptor),
+    )
+    .await?;
+    session.metadata(operation, query).await
+}
+
 /// Normal paths consume this owner through `finish`, which awaits `Session::close`
 /// before releasing the engine lease. `Drop` is only a cancellation/panic guard.
 struct ManagedJdbcSession {
@@ -195,6 +222,36 @@ impl ManagedJdbcSession {
                 Err(AppError::internal())
             }
         }
+    }
+
+    /// Forwards one raw metadata call and closes the session afterwards.
+    async fn metadata(
+        self,
+        operation: chat2db_java_bridge::MetadataOperation,
+        query: chat2db_java_bridge::MetadataQuery,
+    ) -> Result<chat2db_java_bridge::MetadataResult, AppError> {
+        let task = tokio::spawn(async move { self.run_metadata(operation, query).await });
+        match task.await {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::error!(
+                    cancelled = error.is_cancelled(),
+                    panicked = error.is_panic(),
+                    "managed JDBC metadata task ended without a product result"
+                );
+                Err(AppError::internal())
+            }
+        }
+    }
+
+    async fn run_metadata(
+        self,
+        operation: chat2db_java_bridge::MetadataOperation,
+        query: chat2db_java_bridge::MetadataQuery,
+    ) -> Result<chat2db_java_bridge::MetadataResult, AppError> {
+        let session = self.session.as_ref().expect("open JDBC session is present");
+        let result = session.metadata(operation, query).await.map_err(AppError::from);
+        self.finish(result).await
     }
 
     async fn run_query(
