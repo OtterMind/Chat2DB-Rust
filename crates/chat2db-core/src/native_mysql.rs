@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chat2db_contract::{
     ApiError, DatasourceConnection, JdbcValue, JdbcValueType, QueryLimits, ResultColumn,

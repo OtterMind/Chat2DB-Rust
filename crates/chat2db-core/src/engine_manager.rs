@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::{fmt, ops::Deref, sync::Arc, time::Duration};
 
 use chat2db_contract::JdbcDriver;
@@ -86,15 +87,6 @@ impl EngineProvider {
     #[must_use]
     pub(crate) const fn is_configured(&self) -> bool {
         !matches!(self, Self::Disabled)
-    }
-
-    #[must_use]
-    pub(crate) fn community_compatibility_configured(&self) -> bool {
-        match self {
-            Self::Disabled => false,
-            Self::Static(client) => client.community_compatibility_configured(),
-            Self::Managed(manager) => manager.community_compatibility_configured,
-        }
     }
 }
 
@@ -260,7 +252,7 @@ impl EngineManagerOwner {
         drivers: PreparedDriverPacks,
         idle_timeout: Duration,
     ) -> Self {
-        let community_compatibility_configured = config.community_compatibility_configured();
+        let community_compatibility_configured = false;
         let inventory = drivers.inventory();
         let drivers = Arc::new(drivers);
         let (commands, receiver) = mpsc::unbounded_channel();

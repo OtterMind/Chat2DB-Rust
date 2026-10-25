@@ -6,7 +6,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.chat2db.rust.compat.protocol.v1.ClientEnvelope;
 import ai.chat2db.rust.compat.protocol.v1.ClientHello;
-import ai.chat2db.rust.compat.protocol.v1.FormatCommunitySqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.Ping;
 import ai.chat2db.rust.compat.protocol.v1.ProtocolVersion;
 import ai.chat2db.rust.compat.protocol.v1.RequestMeta;
@@ -57,75 +56,6 @@ class ExecutableJarIT {
         }
     }
 
-    @Test
-    void shadedJarRunsTheBinaryProtocolWithoutStdoutContamination() throws Exception {
-        Path runtimeJar = Path.of(System.getProperty("compat.runtime.jar"));
-        assertTrue(Files.isRegularFile(runtimeJar), "shaded runtime jar must exist");
-
-        Process process = new ProcessBuilder(javaExecutable(), "-jar", runtimeJar.toString()).start();
-        ExecutorService readers = Executors.newFixedThreadPool(2);
-        Future<String> diagnostics = readers.submit(() -> new String(
-                process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8));
-        try {
-            FrameCodec.writeFrame(process.getOutputStream(), hello());
-            ServerEnvelope serverHello = readResponse(readers, process.getInputStream());
-            assertEquals(ServerEnvelope.PayloadCase.HELLO, serverHello.getPayloadCase());
-            assertEquals(1, serverHello.getHello().getSelectedVersion().getMajor());
-            assertEquals(0, serverHello.getHello().getSelectedVersion().getMinor());
-            assertEquals(
-                    ProtocolLoop.capabilities(
-                            isCommunityCompatibilityConfigured(),
-                            serverHello.getHello().getSelectedVersion()),
-                    serverHello.getHello().getCapabilitiesList());
-
-            FrameCodec.writeFrame(
-                    process.getOutputStream(),
-                    ClientEnvelope.newBuilder()
-                            .setMeta(meta("ping"))
-                            .setPing(Ping.newBuilder().setNonce(99))
-                            .build());
-            ServerEnvelope pong = readResponse(readers, process.getInputStream());
-            assertEquals(99, pong.getPong().getNonce());
-
-            FrameCodec.writeFrame(
-                    process.getOutputStream(),
-                    ClientEnvelope.newBuilder()
-                            .setMeta(meta("format"))
-                            .setFormatCommunitySql(FormatCommunitySqlRequest.newBuilder()
-                                    .setDatabaseType("H2")
-                                    .setSql("select id,name from items where id=1"))
-                            .build());
-            ServerEnvelope formatted = readResponse(readers, process.getInputStream());
-            assertEquals(
-                    ServerEnvelope.PayloadCase.COMMUNITY_FORMATTED_SQL,
-                    formatted.getPayloadCase());
-            assertTrue(formatted.getCommunityFormattedSql().getSql().contains("from\n  items"));
-
-            FrameCodec.writeFrame(
-                    process.getOutputStream(),
-                    ClientEnvelope.newBuilder()
-                            .setMeta(meta("shutdown"))
-                            .setShutdown(Shutdown.newBuilder().setReason("integration test"))
-                            .build());
-            ServerEnvelope shutdown = readResponse(readers, process.getInputStream());
-            assertEquals(ServerEnvelope.PayloadCase.SHUTDOWN_ACK, shutdown.getPayloadCase());
-
-            assertTrue(process.waitFor(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS));
-            assertEquals(CompatibilityRuntime.EXIT_OK, process.exitValue());
-            assertEquals(-1, process.getInputStream().read(), "stdout must end after the final frame");
-
-            String diagnosticText = get(diagnostics);
-            assertTrue(diagnosticText.contains("handshake accepted protocol=1.0"));
-            assertTrue(diagnosticText.contains("shutdown accepted request_id=shutdown"));
-            assertFalse(diagnosticText.contains("integration test"), "shutdown reason must not be logged");
-        } finally {
-            if (process.isAlive()) {
-                process.destroyForcibly();
-                process.waitFor(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
-            }
-            readers.shutdownNow();
-        }
-    }
 
     private static ServerEnvelope readResponse(ExecutorService readers, InputStream input)
             throws Exception {
@@ -166,8 +96,4 @@ class ExecutableJarIT {
         return Path.of(System.getProperty("java.home"), "bin", executable).toString();
     }
 
-    private static boolean isCommunityCompatibilityConfigured() {
-        String classpath = System.getenv(CommunityPluginRegistry.CLASSPATH_ENV);
-        return classpath != null && !classpath.isBlank();
-    }
 }

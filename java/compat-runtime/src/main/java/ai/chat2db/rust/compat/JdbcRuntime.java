@@ -2,63 +2,19 @@ package ai.chat2db.rust.compat;
 
 import ai.chat2db.rust.compat.protocol.v1.BeginTransactionRequest;
 import ai.chat2db.rust.compat.protocol.v1.CancelOperationRequest;
-import ai.chat2db.rust.compat.protocol.v1.BuildCommunityCreateSchemaRequest;
-import ai.chat2db.rust.compat.protocol.v1.BuildCommunityDmlRequest;
-import ai.chat2db.rust.compat.protocol.v1.BuildCommunityNamespaceSqlRequest;
-import ai.chat2db.rust.compat.protocol.v1.BuildCommunityTablePreviewSqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.CloseSessionRequest;
-import ai.chat2db.rust.compat.protocol.v1.CommunityDatabaseList;
-import ai.chat2db.rust.compat.protocol.v1.CommunityBuiltDml;
-import ai.chat2db.rust.compat.protocol.v1.CommunityBuiltNamespaceSql;
-import ai.chat2db.rust.compat.protocol.v1.CommunityBuiltTablePreviewSql;
-import ai.chat2db.rust.compat.protocol.v1.CommunityForeignKeyList;
-import ai.chat2db.rust.compat.protocol.v1.CommunityFormattedSql;
-import ai.chat2db.rust.compat.protocol.v1.CommunityFunction;
-import ai.chat2db.rust.compat.protocol.v1.CommunityFunctionList;
-import ai.chat2db.rust.compat.protocol.v1.CommunityFunctionParameterList;
-import ai.chat2db.rust.compat.protocol.v1.CommunityPluginCatalog;
-import ai.chat2db.rust.compat.protocol.v1.CommunityPrimaryKeyList;
-import ai.chat2db.rust.compat.protocol.v1.CommunityProcedure;
-import ai.chat2db.rust.compat.protocol.v1.CommunityProcedureList;
-import ai.chat2db.rust.compat.protocol.v1.CommunityProcedureParameterList;
-import ai.chat2db.rust.compat.protocol.v1.CommunitySchemaList;
-import ai.chat2db.rust.compat.protocol.v1.CommunitySqlAnalysis;
-import ai.chat2db.rust.compat.protocol.v1.CommunitySqlCompletion;
-import ai.chat2db.rust.compat.protocol.v1.CommunitySqlValidation;
-import ai.chat2db.rust.compat.protocol.v1.CommunityTableColumnList;
-import ai.chat2db.rust.compat.protocol.v1.CommunityTableIndexList;
-import ai.chat2db.rust.compat.protocol.v1.CommunityTableList;
-import ai.chat2db.rust.compat.protocol.v1.CommunityTrigger;
-import ai.chat2db.rust.compat.protocol.v1.CommunityTriggerList;
-import ai.chat2db.rust.compat.protocol.v1.CommunityViewList;
 import ai.chat2db.rust.compat.protocol.v1.CommitTransactionRequest;
 import ai.chat2db.rust.compat.protocol.v1.CreditsGranted;
 import ai.chat2db.rust.compat.protocol.v1.DriverLoaded;
 import ai.chat2db.rust.compat.protocol.v1.DriverUnloaded;
 import ai.chat2db.rust.compat.protocol.v1.ExecuteQueryRequest;
 import ai.chat2db.rust.compat.protocol.v1.ExecuteUpdateRequest;
-import ai.chat2db.rust.compat.protocol.v1.FormatCommunitySqlRequest;
-import ai.chat2db.rust.compat.protocol.v1.CompleteCommunitySqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.GrantCreditsRequest;
-import ai.chat2db.rust.compat.protocol.v1.GetCommunityFunctionRequest;
-import ai.chat2db.rust.compat.protocol.v1.GetCommunityProcedureRequest;
-import ai.chat2db.rust.compat.protocol.v1.GetCommunityTriggerRequest;
 import ai.chat2db.rust.compat.protocol.v1.JdbcRow;
 import ai.chat2db.rust.compat.protocol.v1.LoadDriverRequest;
-import ai.chat2db.rust.compat.protocol.v1.ListCommunityColumnsRequest;
-import ai.chat2db.rust.compat.protocol.v1.ListCommunityDatabasesRequest;
-import ai.chat2db.rust.compat.protocol.v1.ListCommunityFunctionsRequest;
-import ai.chat2db.rust.compat.protocol.v1.ListCommunityIndexesRequest;
-import ai.chat2db.rust.compat.protocol.v1.ListCommunityProceduresRequest;
-import ai.chat2db.rust.compat.protocol.v1.ListCommunitySchemasRequest;
-import ai.chat2db.rust.compat.protocol.v1.ListCommunityTableKeysRequest;
-import ai.chat2db.rust.compat.protocol.v1.ListCommunityTablesRequest;
-import ai.chat2db.rust.compat.protocol.v1.ListCommunityTriggersRequest;
-import ai.chat2db.rust.compat.protocol.v1.ListCommunityViewsRequest;
 import ai.chat2db.rust.compat.protocol.v1.OpenSessionRequest;
 import ai.chat2db.rust.compat.protocol.v1.OperationCancelled;
 import ai.chat2db.rust.compat.protocol.v1.OperationOutcome;
-import ai.chat2db.rust.compat.protocol.v1.ParseCommunitySqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.QueryCompleted;
 import ai.chat2db.rust.compat.protocol.v1.QueryOptions;
 import ai.chat2db.rust.compat.protocol.v1.QueryStarted;
@@ -74,7 +30,6 @@ import ai.chat2db.rust.compat.protocol.v1.TransactionRolledBack;
 import ai.chat2db.rust.compat.protocol.v1.TransactionStarted;
 import ai.chat2db.rust.compat.protocol.v1.UnloadDriverRequest;
 import ai.chat2db.rust.compat.protocol.v1.UpdateCompleted;
-import ai.chat2db.rust.compat.protocol.v1.ValidateCommunitySqlRequest;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.sql.Connection;
@@ -110,8 +65,6 @@ final class JdbcRuntime implements AutoCloseable {
     private final DriverRegistry drivers = new DriverRegistry();
     private final SessionRegistry sessions = new SessionRegistry(drivers);
     private final OperationRegistry operations = new OperationRegistry();
-    private final CommunityPluginRegistry community = CommunityPluginRegistry.openConfigured();
-    private final CommunitySqlFormatter communitySqlFormatter = new CommunitySqlFormatter();
     private final ThreadPoolExecutor controlWorkers;
     private final ProtocolWriter writer;
     private final PrintStream diagnostics;
@@ -378,60 +331,9 @@ final class JdbcRuntime implements AutoCloseable {
                 .build();
     }
 
-    ServerEnvelope listCommunityPlugins(RequestMeta meta) throws RuntimeFailure {
-        CommunityPluginCatalog catalog = community.catalog();
-        return terminal(meta).setCommunityPluginCatalog(catalog).build();
-    }
 
-    ServerEnvelope listCommunitySchemas(
-            RequestMeta meta, ListCommunitySchemasRequest request) throws RuntimeFailure {
-        String sessionId = requireSessionId(meta);
-        JdbcSession session = sessions.require(sessionId);
-        community.validateSchemasRequest(
-                request.getDatabaseType(), request.getDatabaseName());
-        Optional<String> transactionId = request.hasTransactionId()
-                ? Optional.of(request.getTransactionId())
-                : Optional.empty();
-        CommunitySchemaList schemas = invokeCommunitySchemas(
-                session,
-                meta.getRequestId(),
-                transactionId,
-                connection -> community.schemas(
-                        request.getDatabaseType(), connection, request.getDatabaseName()));
-        return terminal(meta).setCommunitySchemaList(schemas).build();
-    }
 
-    static CommunitySchemaList invokeCommunitySchemas(
-            JdbcSession session,
-            String requestId,
-            Optional<String> transactionId,
-            CommunitySchemaInvocation invocation)
-            throws RuntimeFailure {
-        return invokeCommunityMetadata(session, requestId, transactionId, invocation::invoke);
-    }
 
-    private static <T> T invokeCommunityMetadata(
-            JdbcSession session,
-            String requestId,
-            Optional<String> transactionId,
-            CommunityMetadataInvocation<T> invocation)
-            throws RuntimeFailure {
-        Connection connection = session.claimOperation(requestId, transactionId);
-        try {
-            return invocation.invoke(connection);
-        } catch (RuntimeFailure failure) {
-            markCommunityFailure(session, failure);
-            throw session.decorate(afterOperationClaim(failure));
-        } catch (RuntimeException | LinkageError failure) {
-            session.markQueryFailure();
-            throw session.decorate(afterOperationClaim(RuntimeFailure.internal(
-                    "community.metadata_failed",
-                    "the Community metadata request failed internally",
-                    failure)));
-        } finally {
-            session.finishOperation(requestId);
-        }
-    }
 
     /**
      * Forwards one raw {@link DatabaseMetaData} call. The engine deliberately
@@ -529,14 +431,6 @@ final class JdbcRuntime implements AutoCloseable {
         return result.build();
     }
 
-    private static void markCommunityFailure(JdbcSession session, RuntimeFailure failure) {
-        if (failure.code().equals("community.sql_completion_connection_closed")
-                || failure.code().equals("community.sql_completion_connection_state_failed")) {
-            session.markBroken();
-        } else {
-            session.markQueryFailure();
-        }
-    }
 
     private static RuntimeFailure afterOperationClaim(RuntimeFailure failure) {
         if (failure.outcome() == OperationOutcome.OPERATION_OUTCOME_NOT_STARTED) {
@@ -545,482 +439,36 @@ final class JdbcRuntime implements AutoCloseable {
         return failure;
     }
 
-    @FunctionalInterface
-    interface CommunitySchemaInvocation {
-        CommunitySchemaList invoke(Connection connection) throws RuntimeFailure;
-    }
 
-    @FunctionalInterface
-    private interface CommunityMetadataInvocation<T> {
-        T invoke(Connection connection) throws RuntimeFailure;
-    }
 
-    ServerEnvelope listCommunityDatabases(
-            RequestMeta meta, ListCommunityDatabasesRequest request) throws RuntimeFailure {
-        String sessionId = requireSessionId(meta);
-        JdbcSession session = sessions.require(sessionId);
-        community.validateDatabasesRequest(request.getDatabaseType());
-        Optional<String> transactionId = request.hasTransactionId()
-                ? Optional.of(request.getTransactionId())
-                : Optional.empty();
-        CommunityDatabaseList databases = invokeCommunityMetadata(
-                session,
-                meta.getRequestId(),
-                transactionId,
-                connection -> community.databases(request.getDatabaseType(), connection));
-        return terminal(meta).setCommunityDatabaseList(databases).build();
-    }
 
-    ServerEnvelope listCommunityTables(
-            RequestMeta meta, ListCommunityTablesRequest request) throws RuntimeFailure {
-        String sessionId = requireSessionId(meta);
-        JdbcSession session = sessions.require(sessionId);
-        community.validateTablesRequest(
-                request.getDatabaseType(),
-                request.getDatabaseName(),
-                request.getSchemaName(),
-                request.getTableNamePattern());
-        Optional<String> transactionId = request.hasTransactionId()
-                ? Optional.of(request.getTransactionId())
-                : Optional.empty();
-        CommunityTableList tables = invokeCommunityMetadata(
-                session,
-                meta.getRequestId(),
-                transactionId,
-                connection -> community.tables(
-                        request.getDatabaseType(),
-                        connection,
-                        request.getDatabaseName(),
-                        request.getSchemaName(),
-                        request.getTableNamePattern()));
-        return terminal(meta).setCommunityTableList(tables).build();
-    }
 
-    ServerEnvelope listCommunityColumns(
-            RequestMeta meta, ListCommunityColumnsRequest request) throws RuntimeFailure {
-        String sessionId = requireSessionId(meta);
-        JdbcSession session = sessions.require(sessionId);
-        community.validateTableObjectRequest(
-                request.getDatabaseType(),
-                request.getDatabaseName(),
-                request.getSchemaName(),
-                request.getTableName());
-        Optional<String> transactionId = request.hasTransactionId()
-                ? Optional.of(request.getTransactionId())
-                : Optional.empty();
-        CommunityTableColumnList columns = invokeCommunityMetadata(
-                session,
-                meta.getRequestId(),
-                transactionId,
-                connection -> community.columns(
-                        request.getDatabaseType(),
-                        connection,
-                        request.getDatabaseName(),
-                        request.getSchemaName(),
-                        request.getTableName()));
-        return terminal(meta).setCommunityTableColumnList(columns).build();
-    }
 
-    ServerEnvelope listCommunityIndexes(
-            RequestMeta meta, ListCommunityIndexesRequest request) throws RuntimeFailure {
-        String sessionId = requireSessionId(meta);
-        JdbcSession session = sessions.require(sessionId);
-        community.validateTableObjectRequest(
-                request.getDatabaseType(),
-                request.getDatabaseName(),
-                request.getSchemaName(),
-                request.getTableName());
-        Optional<String> transactionId = request.hasTransactionId()
-                ? Optional.of(request.getTransactionId())
-                : Optional.empty();
-        CommunityTableIndexList indexes = invokeCommunityMetadata(
-                session,
-                meta.getRequestId(),
-                transactionId,
-                connection -> community.indexes(
-                        request.getDatabaseType(),
-                        connection,
-                        request.getDatabaseName(),
-                        request.getSchemaName(),
-                        request.getTableName()));
-        return terminal(meta).setCommunityTableIndexList(indexes).build();
-    }
 
-    ServerEnvelope listCommunityViews(
-            RequestMeta meta, ListCommunityViewsRequest request) throws RuntimeFailure {
-        String sessionId = requireSessionId(meta);
-        JdbcSession session = sessions.require(sessionId);
-        community.validateViewsRequest(
-                request.getDatabaseType(),
-                request.getDatabaseName(),
-                request.getSchemaName(),
-                request.getViewNamePattern());
-        Optional<String> transactionId = request.hasTransactionId()
-                ? Optional.of(request.getTransactionId())
-                : Optional.empty();
-        CommunityViewList views = invokeCommunityMetadata(
-                session,
-                meta.getRequestId(),
-                transactionId,
-                connection -> community.views(
-                        request.getDatabaseType(),
-                        connection,
-                        request.getDatabaseName(),
-                        request.getSchemaName(),
-                        request.getViewNamePattern()));
-        return terminal(meta).setCommunityViewList(views).build();
-    }
 
-    ServerEnvelope listCommunityImportedKeys(
-            RequestMeta meta, ListCommunityTableKeysRequest request) throws RuntimeFailure {
-        CommunityForeignKeyList keys = invokeCommunityTableKeys(
-                meta,
-                request,
-                (connection, databaseType, databaseName, schemaName, tableName) ->
-                        community.importedKeys(
-                                databaseType,
-                                connection,
-                                databaseName,
-                                schemaName,
-                                tableName));
-        return terminal(meta).setCommunityImportedKeyList(keys).build();
-    }
 
-    ServerEnvelope listCommunityExportedKeys(
-            RequestMeta meta, ListCommunityTableKeysRequest request) throws RuntimeFailure {
-        CommunityForeignKeyList keys = invokeCommunityTableKeys(
-                meta,
-                request,
-                (connection, databaseType, databaseName, schemaName, tableName) ->
-                        community.exportedKeys(
-                                databaseType,
-                                connection,
-                                databaseName,
-                                schemaName,
-                                tableName));
-        return terminal(meta).setCommunityExportedKeyList(keys).build();
-    }
 
-    ServerEnvelope listCommunityPrimaryKeys(
-            RequestMeta meta, ListCommunityTableKeysRequest request) throws RuntimeFailure {
-        String sessionId = requireSessionId(meta);
-        JdbcSession session = sessions.require(sessionId);
-        community.validateTableObjectRequest(
-                request.getDatabaseType(),
-                request.getDatabaseName(),
-                request.getSchemaName(),
-                request.getTableName());
-        Optional<String> transactionId = request.hasTransactionId()
-                ? Optional.of(request.getTransactionId())
-                : Optional.empty();
-        CommunityPrimaryKeyList keys = invokeCommunityMetadata(
-                session,
-                meta.getRequestId(),
-                transactionId,
-                connection -> community.primaryKeys(
-                        request.getDatabaseType(),
-                        connection,
-                        request.getDatabaseName(),
-                        request.getSchemaName(),
-                        request.getTableName()));
-        return terminal(meta).setCommunityPrimaryKeyList(keys).build();
-    }
 
-    private CommunityForeignKeyList invokeCommunityTableKeys(
-            RequestMeta meta,
-            ListCommunityTableKeysRequest request,
-            CommunityForeignKeyInvocation invocation)
-            throws RuntimeFailure {
-        String sessionId = requireSessionId(meta);
-        JdbcSession session = sessions.require(sessionId);
-        community.validateTableObjectRequest(
-                request.getDatabaseType(),
-                request.getDatabaseName(),
-                request.getSchemaName(),
-                request.getTableName());
-        Optional<String> transactionId = request.hasTransactionId()
-                ? Optional.of(request.getTransactionId())
-                : Optional.empty();
-        return invokeCommunityMetadata(
-                session,
-                meta.getRequestId(),
-                transactionId,
-                connection -> invocation.invoke(
-                        connection,
-                        request.getDatabaseType(),
-                        request.getDatabaseName(),
-                        request.getSchemaName(),
-                        request.getTableName()));
-    }
 
-    @FunctionalInterface
-    private interface CommunityForeignKeyInvocation {
-        CommunityForeignKeyList invoke(
-                Connection connection,
-                String databaseType,
-                String databaseName,
-                String schemaName,
-                String tableName)
-                throws RuntimeFailure;
-    }
 
-    ServerEnvelope listCommunityFunctions(
-            RequestMeta meta, ListCommunityFunctionsRequest request) throws RuntimeFailure {
-        String sessionId = requireSessionId(meta);
-        JdbcSession session = sessions.require(sessionId);
-        community.validateProgrammabilityListRequest(
-                request.getDatabaseType(), request.getDatabaseName(), request.getSchemaName());
-        Optional<String> transactionId = request.hasTransactionId()
-                ? Optional.of(request.getTransactionId())
-                : Optional.empty();
-        CommunityFunctionList functions = invokeCommunityMetadata(
-                session,
-                meta.getRequestId(),
-                transactionId,
-                connection -> community.functions(
-                        request.getDatabaseType(),
-                        connection,
-                        request.getDatabaseName(),
-                        request.getSchemaName()));
-        return terminal(meta).setCommunityFunctionList(functions).build();
-    }
 
-    ServerEnvelope getCommunityFunction(
-            RequestMeta meta, GetCommunityFunctionRequest request) throws RuntimeFailure {
-        String sessionId = requireSessionId(meta);
-        JdbcSession session = sessions.require(sessionId);
-        community.validateFunctionRequest(
-                request.getDatabaseType(),
-                request.getDatabaseName(),
-                request.getSchemaName(),
-                request.getFunctionName());
-        Optional<String> transactionId = request.hasTransactionId()
-                ? Optional.of(request.getTransactionId())
-                : Optional.empty();
-        CommunityFunction function = invokeCommunityMetadata(
-                session,
-                meta.getRequestId(),
-                transactionId,
-                connection -> community.function(
-                        request.getDatabaseType(),
-                        connection,
-                        request.getDatabaseName(),
-                        request.getSchemaName(),
-                        request.getFunctionName()));
-        return terminal(meta).setCommunityFunction(function).build();
-    }
 
-    ServerEnvelope listCommunityFunctionParameters(
-            RequestMeta meta, GetCommunityFunctionRequest request) throws RuntimeFailure {
-        String sessionId = requireSessionId(meta);
-        JdbcSession session = sessions.require(sessionId);
-        community.validateFunctionRequest(
-                request.getDatabaseType(),
-                request.getDatabaseName(),
-                request.getSchemaName(),
-                request.getFunctionName());
-        Optional<String> transactionId = request.hasTransactionId()
-                ? Optional.of(request.getTransactionId())
-                : Optional.empty();
-        CommunityFunctionParameterList parameters = invokeCommunityMetadata(
-                session,
-                meta.getRequestId(),
-                transactionId,
-                connection -> community.functionParameters(
-                        request.getDatabaseType(),
-                        connection,
-                        request.getDatabaseName(),
-                        request.getSchemaName(),
-                        request.getFunctionName()));
-        return terminal(meta).setCommunityFunctionParameterList(parameters).build();
-    }
 
-    ServerEnvelope listCommunityProcedures(
-            RequestMeta meta, ListCommunityProceduresRequest request) throws RuntimeFailure {
-        String sessionId = requireSessionId(meta);
-        JdbcSession session = sessions.require(sessionId);
-        community.validateProgrammabilityListRequest(
-                request.getDatabaseType(), request.getDatabaseName(), request.getSchemaName());
-        Optional<String> transactionId = request.hasTransactionId()
-                ? Optional.of(request.getTransactionId())
-                : Optional.empty();
-        CommunityProcedureList procedures = invokeCommunityMetadata(
-                session,
-                meta.getRequestId(),
-                transactionId,
-                connection -> community.procedures(
-                        request.getDatabaseType(),
-                        connection,
-                        request.getDatabaseName(),
-                        request.getSchemaName()));
-        return terminal(meta).setCommunityProcedureList(procedures).build();
-    }
 
-    ServerEnvelope getCommunityProcedure(
-            RequestMeta meta, GetCommunityProcedureRequest request) throws RuntimeFailure {
-        String sessionId = requireSessionId(meta);
-        JdbcSession session = sessions.require(sessionId);
-        community.validateProcedureRequest(
-                request.getDatabaseType(),
-                request.getDatabaseName(),
-                request.getSchemaName(),
-                request.getProcedureName());
-        Optional<String> transactionId = request.hasTransactionId()
-                ? Optional.of(request.getTransactionId())
-                : Optional.empty();
-        CommunityProcedure procedure = invokeCommunityMetadata(
-                session,
-                meta.getRequestId(),
-                transactionId,
-                connection -> community.procedure(
-                        request.getDatabaseType(),
-                        connection,
-                        request.getDatabaseName(),
-                        request.getSchemaName(),
-                        request.getProcedureName()));
-        return terminal(meta).setCommunityProcedure(procedure).build();
-    }
 
-    ServerEnvelope listCommunityProcedureParameters(
-            RequestMeta meta, GetCommunityProcedureRequest request) throws RuntimeFailure {
-        String sessionId = requireSessionId(meta);
-        JdbcSession session = sessions.require(sessionId);
-        community.validateProcedureRequest(
-                request.getDatabaseType(),
-                request.getDatabaseName(),
-                request.getSchemaName(),
-                request.getProcedureName());
-        Optional<String> transactionId = request.hasTransactionId()
-                ? Optional.of(request.getTransactionId())
-                : Optional.empty();
-        CommunityProcedureParameterList parameters = invokeCommunityMetadata(
-                session,
-                meta.getRequestId(),
-                transactionId,
-                connection -> community.procedureParameters(
-                        request.getDatabaseType(),
-                        connection,
-                        request.getDatabaseName(),
-                        request.getSchemaName(),
-                        request.getProcedureName()));
-        return terminal(meta).setCommunityProcedureParameterList(parameters).build();
-    }
 
-    ServerEnvelope listCommunityTriggers(
-            RequestMeta meta, ListCommunityTriggersRequest request) throws RuntimeFailure {
-        String sessionId = requireSessionId(meta);
-        JdbcSession session = sessions.require(sessionId);
-        community.validateProgrammabilityListRequest(
-                request.getDatabaseType(), request.getDatabaseName(), request.getSchemaName());
-        Optional<String> transactionId = request.hasTransactionId()
-                ? Optional.of(request.getTransactionId())
-                : Optional.empty();
-        CommunityTriggerList triggers = invokeCommunityMetadata(
-                session,
-                meta.getRequestId(),
-                transactionId,
-                connection -> community.triggers(
-                        request.getDatabaseType(),
-                        connection,
-                        request.getDatabaseName(),
-                        request.getSchemaName()));
-        return terminal(meta).setCommunityTriggerList(triggers).build();
-    }
 
-    ServerEnvelope getCommunityTrigger(
-            RequestMeta meta, GetCommunityTriggerRequest request) throws RuntimeFailure {
-        String sessionId = requireSessionId(meta);
-        JdbcSession session = sessions.require(sessionId);
-        community.validateTriggerRequest(
-                request.getDatabaseType(),
-                request.getDatabaseName(),
-                request.getSchemaName(),
-                request.getTriggerName());
-        Optional<String> transactionId = request.hasTransactionId()
-                ? Optional.of(request.getTransactionId())
-                : Optional.empty();
-        CommunityTrigger trigger = invokeCommunityMetadata(
-                session,
-                meta.getRequestId(),
-                transactionId,
-                connection -> community.trigger(
-                        request.getDatabaseType(),
-                        connection,
-                        request.getDatabaseName(),
-                        request.getSchemaName(),
-                        request.getTriggerName()));
-        return terminal(meta).setCommunityTrigger(trigger).build();
-    }
 
-    ServerEnvelope buildCommunityCreateSchema(
-            RequestMeta meta, BuildCommunityCreateSchemaRequest request)
-            throws RuntimeFailure {
-        return terminal(meta)
-                .setCommunityBuiltSql(community.buildCreateSchema(
-                        request.getDatabaseType(),
-                        request.hasSchema() ? request.getSchema() : null))
-                .build();
-    }
 
-    ServerEnvelope buildCommunityDml(RequestMeta meta, BuildCommunityDmlRequest request)
-            throws RuntimeFailure {
-        CommunityBuiltDml built = community.buildDml(request);
-        return terminal(meta).setCommunityBuiltDml(built).build();
-    }
 
-    ServerEnvelope buildCommunityNamespaceSql(
-            RequestMeta meta, BuildCommunityNamespaceSqlRequest request)
-            throws RuntimeFailure {
-        CommunityBuiltNamespaceSql built = community.buildNamespace(request);
-        return terminal(meta).setCommunityBuiltNamespaceSql(built).build();
-    }
 
-    ServerEnvelope buildCommunityTablePreviewSql(
-            RequestMeta meta, BuildCommunityTablePreviewSqlRequest request)
-            throws RuntimeFailure {
-        CommunityBuiltTablePreviewSql built = community.buildTablePreviewSql(request);
-        return terminal(meta).setCommunityBuiltTablePreviewSql(built).build();
-    }
 
-    ServerEnvelope parseCommunitySql(RequestMeta meta, ParseCommunitySqlRequest request)
-            throws RuntimeFailure {
-        CommunitySqlAnalysis analysis =
-                community.parse(request.getDatabaseType(), request.getSql());
-        return terminal(meta).setCommunitySqlAnalysis(analysis).build();
-    }
 
-    ServerEnvelope validateCommunitySql(
-            RequestMeta meta, ValidateCommunitySqlRequest request) throws RuntimeFailure {
-        CommunitySqlValidation validation =
-                community.validate(request.getDatabaseType(), request.getSql());
-        return terminal(meta).setCommunitySqlValidation(validation).build();
-    }
 
-    ServerEnvelope formatCommunitySql(
-            RequestMeta meta, FormatCommunitySqlRequest request) throws RuntimeFailure {
-        CommunityFormattedSql formatted =
-                communitySqlFormatter.format(request.getDatabaseType(), request.getSql());
-        return terminal(meta).setCommunityFormattedSql(formatted).build();
-    }
 
-    ServerEnvelope completeCommunitySql(
-            RequestMeta meta, CompleteCommunitySqlRequest request) throws RuntimeFailure {
-        String sessionId = requireSessionId(meta);
-        JdbcSession session = sessions.require(sessionId);
-        community.validateSqlCompletionRequest(request);
-        Optional<String> transactionId = request.hasTransactionId()
-                ? Optional.of(request.getTransactionId())
-                : Optional.empty();
-        CommunitySqlCompletion completion = invokeCommunityMetadata(
-                session,
-                meta.getRequestId(),
-                transactionId,
-                connection -> community.completeSql(connection, request));
-        return terminal(meta).setCommunitySqlCompletion(completion).build();
-    }
 
     boolean communityCompatibilityConfigured() {
-        return community.configured();
+        return false;
     }
 
     RuntimeFailure attachSessionState(RequestMeta meta, RuntimeFailure failure) {
@@ -1062,7 +510,6 @@ final class JdbcRuntime implements AutoCloseable {
             if (Thread.currentThread().isInterrupted() || System.nanoTime() >= deadlineNanos) {
                 return false;
             }
-            community.close();
             drivers.close();
             return true;
         });

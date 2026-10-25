@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Stable identity and runtime-selection metadata for one native Rust driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NativeDriverDescriptor {

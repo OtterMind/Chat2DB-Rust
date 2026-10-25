@@ -7,10 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.chat2db.rust.compat.protocol.v1.CancelDisposition;
 import ai.chat2db.rust.compat.protocol.v1.CancelOperationRequest;
-import ai.chat2db.rust.compat.protocol.v1.BuildCommunityTablePreviewSqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.ClientEnvelope;
 import ai.chat2db.rust.compat.protocol.v1.ClientHello;
-import ai.chat2db.rust.compat.protocol.v1.CompleteCommunitySqlRequest;
 import ai.chat2db.rust.compat.protocol.v1.Ping;
 import ai.chat2db.rust.compat.protocol.v1.ProtocolVersion;
 import ai.chat2db.rust.compat.protocol.v1.Quiesce;
@@ -60,7 +58,7 @@ class ProtocolLoopTest {
         assertEquals(ServerEnvelope.PayloadCase.HELLO, serverHello.getPayloadCase());
         assertEquals(version(1, 1), serverHello.getHello().getSelectedVersion());
         assertEquals(
-                expectedCapabilities(),
+                ProtocolLoop.capabilities(false),
                 serverHello.getHello().getCapabilitiesList());
         assertEquals(FrameCodec.MAX_FRAME_BYTES, serverHello.getHello().getMaxReceiveFrameBytes());
         assertResponseMeta(serverHello, "hello");
@@ -264,143 +262,8 @@ class ProtocolLoopTest {
                 result.responses().get(7).getPayloadCase());
     }
 
-    @Test
-    void advertisesSqlToolsOnlyWithCommunityCompatibility() {
-        assertFalse(ProtocolLoop.capabilities(false)
-                .contains(ProtocolLoop.COMMUNITY_SQL_VALIDATION_CAPABILITY));
-        assertFalse(ProtocolLoop.capabilities(false)
-                .contains(ProtocolLoop.COMMUNITY_SQL_FORMATTER_CAPABILITY));
-        assertFalse(ProtocolLoop.capabilities(false)
-                .contains(ProtocolLoop.COMMUNITY_SQL_COMPLETION_CAPABILITY));
-        assertFalse(ProtocolLoop.capabilities(false)
-                .contains(ProtocolLoop.COMMUNITY_DML_BUILDER_CAPABILITY));
-        assertFalse(ProtocolLoop.capabilities(false)
-                .contains(ProtocolLoop.COMMUNITY_NAMESPACE_BUILDER_CAPABILITY));
-        assertFalse(ProtocolLoop.capabilities(false)
-                .contains(ProtocolLoop.COMMUNITY_DQL_BUILDER_CAPABILITY));
-        assertTrue(ProtocolLoop.capabilities(true)
-                .contains(ProtocolLoop.COMMUNITY_SQL_VALIDATION_CAPABILITY));
-        assertTrue(ProtocolLoop.capabilities(true)
-                .contains(ProtocolLoop.COMMUNITY_SQL_FORMATTER_CAPABILITY));
-        assertTrue(ProtocolLoop.capabilities(true)
-                .contains(ProtocolLoop.COMMUNITY_SQL_COMPLETION_CAPABILITY));
-        assertTrue(ProtocolLoop.capabilities(true)
-                .contains(ProtocolLoop.COMMUNITY_DML_BUILDER_CAPABILITY));
-        assertTrue(ProtocolLoop.capabilities(true)
-                .contains(ProtocolLoop.COMMUNITY_NAMESPACE_BUILDER_CAPABILITY));
-        assertTrue(ProtocolLoop.capabilities(true)
-                .contains(ProtocolLoop.COMMUNITY_DQL_BUILDER_CAPABILITY));
-        assertEquals(
-                ProtocolLoop.capabilities(false).size() + 6,
-                ProtocolLoop.capabilities(true).size());
-    }
 
-    @Test
-    void dispatchesCommunityTablePreviewSqlToJdbcRuntime() throws Exception {
-        ClientEnvelope preview = ClientEnvelope.newBuilder()
-                .setMeta(meta("preview"))
-                .setBuildCommunityTablePreviewSql(
-                        BuildCommunityTablePreviewSqlRequest.newBuilder()
-                                .setDatabaseType("MYSQL")
-                                .setDatabaseName("inventory")
-                                .setTableName("items")
-                                .setRowLimit(200))
-                .build();
-        ClientEnvelope shutdown = ClientEnvelope.newBuilder()
-                .setMeta(meta("shutdown"))
-                .setShutdown(Shutdown.getDefaultInstance())
-                .build();
-        ExecutorService executor = Executors.newFixedThreadPool(2);
-        try (PipedInputStream runtimeInput = new PipedInputStream(64 * 1024);
-                PipedOutputStream clientOutput = new PipedOutputStream(runtimeInput);
-                PipedInputStream clientInput = new PipedInputStream(64 * 1024);
-                PipedOutputStream runtimeOutput = new PipedOutputStream(clientInput);
-                PrintStream diagnostics = new PrintStream(
-                        new ByteArrayOutputStream(), true, StandardCharsets.UTF_8)) {
-            ProtocolLoop loop = new ProtocolLoop(diagnostics);
-            Future<Integer> loopResult =
-                    executor.submit(() -> loop.serve(runtimeInput, runtimeOutput));
 
-            FrameCodec.writeFrame(
-                    clientOutput,
-                    hello(
-                            "hello",
-                            List.of(version(1, 0)),
-                            List.of(ProtocolLoop.SHUTDOWN_CAPABILITY)));
-            assertEquals(
-                    ServerEnvelope.PayloadCase.HELLO,
-                    read(clientInput, executor).getPayloadCase());
-
-            FrameCodec.writeFrame(clientOutput, preview);
-            ServerEnvelope previewResponse = read(clientInput, executor);
-            assertEquals(ServerEnvelope.PayloadCase.ERROR, previewResponse.getPayloadCase());
-            assertEquals("community.plugin_not_found", previewResponse.getError().getCode());
-
-            FrameCodec.writeFrame(clientOutput, shutdown);
-            assertEquals(
-                    ServerEnvelope.PayloadCase.SHUTDOWN_ACK,
-                    read(clientInput, executor).getPayloadCase());
-            assertEquals(CompatibilityRuntime.EXIT_OK, loopResult.get(5, TimeUnit.SECONDS));
-        } finally {
-            executor.shutdownNow();
-            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
-        }
-    }
-
-    @Test
-    void dispatchesCommunitySqlCompletionToJdbcRuntime() throws Exception {
-        ClientEnvelope completion = ClientEnvelope.newBuilder()
-                .setMeta(meta("complete"))
-                .setCompleteCommunitySql(CompleteCommunitySqlRequest.newBuilder()
-                        .setDatabaseType("H2")
-                        .setDatabaseName("catalog")
-                        .setSchemaName("PUBLIC")
-                        .setDatasourceName("test")
-                        .setSql("SELECT ")
-                        .setCursorUtf16(7)
-                        .setKeywordCase("UPPER")
-                        .setDatasourceScope(1))
-                .build();
-        ClientEnvelope shutdown = ClientEnvelope.newBuilder()
-                .setMeta(meta("shutdown"))
-                .setShutdown(Shutdown.getDefaultInstance())
-                .build();
-        ExecutorService executor = Executors.newFixedThreadPool(2);
-        try (PipedInputStream runtimeInput = new PipedInputStream(64 * 1024);
-                PipedOutputStream clientOutput = new PipedOutputStream(runtimeInput);
-                PipedInputStream clientInput = new PipedInputStream(64 * 1024);
-                PipedOutputStream runtimeOutput = new PipedOutputStream(clientInput);
-                PrintStream diagnostics = new PrintStream(
-                        new ByteArrayOutputStream(), true, StandardCharsets.UTF_8)) {
-            ProtocolLoop loop = new ProtocolLoop(diagnostics);
-            Future<Integer> loopResult =
-                    executor.submit(() -> loop.serve(runtimeInput, runtimeOutput));
-
-            FrameCodec.writeFrame(
-                    clientOutput,
-                    hello(
-                            "hello",
-                            List.of(version(1, 0)),
-                            List.of(ProtocolLoop.SHUTDOWN_CAPABILITY)));
-            assertEquals(
-                    ServerEnvelope.PayloadCase.HELLO,
-                    read(clientInput, executor).getPayloadCase());
-
-            FrameCodec.writeFrame(clientOutput, completion);
-            ServerEnvelope completionResponse = read(clientInput, executor);
-            assertEquals(ServerEnvelope.PayloadCase.ERROR, completionResponse.getPayloadCase());
-            assertEquals("session.id_required", completionResponse.getError().getCode());
-
-            FrameCodec.writeFrame(clientOutput, shutdown);
-            assertEquals(
-                    ServerEnvelope.PayloadCase.SHUTDOWN_ACK,
-                    read(clientInput, executor).getPayloadCase());
-            assertEquals(CompatibilityRuntime.EXIT_OK, loopResult.get(5, TimeUnit.SECONDS));
-        } finally {
-            executor.shutdownNow();
-            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
-        }
-    }
 
     @Test
     void rejectsIncompatibleVersionsWithAStructuredFatalError() throws Exception {
@@ -575,14 +438,7 @@ class ProtocolLoopTest {
                 requests);
     }
 
-    private static List<String> expectedCapabilities() {
-        return ProtocolLoop.capabilities(isCommunityCompatibilityConfigured());
-    }
 
-    private static boolean isCommunityCompatibilityConfigured() {
-        String classpath = System.getenv(CommunityPluginRegistry.CLASSPATH_ENV);
-        return classpath != null && !classpath.isBlank();
-    }
 
     private static RunResult runWithRuntime(
             RuntimeInfo runtimeInfo, String engineInstanceId, ClientEnvelope... requests)

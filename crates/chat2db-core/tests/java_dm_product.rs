@@ -286,13 +286,14 @@ fn verify_dm_driver_compatibility(application: &Application, driver: &JdbcDriver
 }
 
 fn verify_legacy_compatibility_disabled(application: &Application) {
-    let compatibility = application
-        .health()
-        .components
-        .into_iter()
-        .find(|component| component.id == "community-compatibility")
-        .expect("legacy compatibility health must be explicit");
-    assert_eq!(compatibility.state, ComponentState::Disabled);
+    assert!(
+        application
+            .health()
+            .components
+            .into_iter()
+            .all(|component| component.id != "community-compatibility"),
+        "the Community compatibility layer must be gone"
+    );
 }
 
 async fn provision_fixture(

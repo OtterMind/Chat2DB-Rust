@@ -1,5 +1,6 @@
 //! Adapts retained public API contracts to the database-neutral native driver SPI.
 
+#![allow(dead_code)]
 use chat2db_contract::{
     CommunityAccount, CommunityAccountAction, CommunityAccountCapability,
     CommunityAccountCommandRequest, CommunityAccountExecution, CommunityAccountGrantList,

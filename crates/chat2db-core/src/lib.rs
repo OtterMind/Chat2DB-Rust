@@ -47,12 +47,7 @@ use chat2db_contract::{
     JdbcDriverList, OperationSnapshot, ProductInfo, ResultPage, ResultPageRequest, RuntimeStatus,
     UpdateDatasourceRequest,
 };
-use chat2db_java_bridge::{
-    COMMUNITY_DQL_BUILDER_CAPABILITY, COMMUNITY_OBJECT_METADATA_CAPABILITY,
-    COMMUNITY_PLUGIN_CATALOG_CAPABILITY, COMMUNITY_RELATION_METADATA_CAPABILITY,
-    COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
-    COMMUNITY_SQL_PARSER_CAPABILITY, EngineClient, EngineConfig, EngineState, EngineSupervisor,
-};
+use chat2db_java_bridge::{EngineClient, EngineConfig, EngineState, EngineSupervisor};
 use chat2db_storage::{
     CreateDatasource, EncryptedFileVault, PageRequest, SecretChange, SecretValue, SecretVault,
     Storage, StorageError, UpdateDatasource,
@@ -61,7 +56,6 @@ use tokio::{sync::Mutex, task::JoinHandle};
 
 use agent::AgentRunHub;
 pub use agent::AgentRunSubscription;
-pub use community::load_fixed_community_classpath;
 pub use engine_manager::EngineLease;
 pub use error::{AppError, AppErrorKind};
 pub use large_value::{
@@ -484,7 +478,6 @@ impl Application {
         } else {
             self.inner.runtime_status
         };
-        let community_component = community_health(&self.inner.engine);
         HealthResponse {
             product: ProductInfo::community(env!("CARGO_PKG_VERSION")),
             status,
@@ -497,7 +490,6 @@ impl Application {
                     detail: "Ready".to_owned(),
                 },
                 engine_component,
-                community_component,
                 if self.inner.drivers.is_empty() {
                     ComponentHealth {
                         id: "jdbc-drivers".to_owned(),
@@ -1126,96 +1118,6 @@ fn engine_health(engine: &EngineProvider) -> ComponentHealth {
         detail,
     }
 }
-
-fn community_health(engine: &EngineProvider) -> ComponentHealth {
-    if !engine.community_compatibility_configured() {
-        return ComponentHealth {
-            id: "community-compatibility".to_owned(),
-            label: "Community compatibility".to_owned(),
-            state: ComponentState::Disabled,
-            detail: "Fixed Community classpath not configured".to_owned(),
-        };
-    }
-    let (state, detail) = match engine.status() {
-        Some(EngineManagerStatus::Idle) => (
-            ComponentState::Ready,
-            "Available on demand; Java is not running".to_owned(),
-        ),
-        Some(EngineManagerStatus::Starting) => {
-            (ComponentState::Ready, "Starting on demand".to_owned())
-        }
-        Some(EngineManagerStatus::Ready(EngineState::Ready { identity, .. }))
-            if [
-                COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
-                COMMUNITY_SCHEMA_METADATA_CAPABILITY,
-                COMMUNITY_OBJECT_METADATA_CAPABILITY,
-                COMMUNITY_RELATION_METADATA_CAPABILITY,
-                COMMUNITY_DQL_BUILDER_CAPABILITY,
-                COMMUNITY_SQL_BUILDER_CAPABILITY,
-                COMMUNITY_SQL_PARSER_CAPABILITY,
-            ]
-            .iter()
-            .all(|required| {
-                identity
-                    .capabilities
-                    .iter()
-                    .any(|capability| capability == required)
-            }) =>
-        {
-            (
-                ComponentState::Ready,
-                "Fixed Community plugin, metadata, builder, and parser services ready".to_owned(),
-            )
-        }
-        Some(EngineManagerStatus::Quiescing { .. }) => (
-            ComponentState::Ready,
-            "Preparing Community compatibility for standby".to_owned(),
-        ),
-        Some(EngineManagerStatus::Parked { .. }) => (
-            ComponentState::Ready,
-            "Community compatibility is parked; ready to resume".to_owned(),
-        ),
-        Some(EngineManagerStatus::Resuming { .. }) => (
-            ComponentState::Ready,
-            "Resuming Community compatibility from standby".to_owned(),
-        ),
-        Some(EngineManagerStatus::Stopping {
-            reason: EngineStopReason::Idle,
-            ..
-        }) => (
-            ComponentState::Ready,
-            "Releasing the idle Java process".to_owned(),
-        ),
-        Some(EngineManagerStatus::Ready(EngineState::Ready { .. })) => (
-            ComponentState::Unavailable,
-            "Required Community capabilities are unavailable".to_owned(),
-        ),
-        Some(EngineManagerStatus::Failed(_)) => (
-            ComponentState::Unavailable,
-            "The last Community engine startup failed; the next request can retry".to_owned(),
-        ),
-        Some(EngineManagerStatus::Ready(state)) => (
-            ComponentState::Unavailable,
-            format!("Compatibility engine is {}", state.label()),
-        ),
-        Some(
-            EngineManagerStatus::Stopping { .. }
-            | EngineManagerStatus::ShuttingDown
-            | EngineManagerStatus::Stopped,
-        )
-        | None => (
-            ComponentState::Unavailable,
-            "Compatibility engine is shutting down".to_owned(),
-        ),
-    };
-    ComponentHealth {
-        id: "community-compatibility".to_owned(),
-        label: "Community compatibility".to_owned(),
-        state,
-        detail,
-    }
-}
-
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn production_os_vault(data_dir: &std::path::Path) -> Result<Arc<dyn SecretVault>, AppError> {
     chat2db_storage::OsSecretVault::new(data_dir)
@@ -1308,12 +1210,6 @@ mod tests {
                 .iter()
                 .any(|component| component.id == "database-engine")
         );
-        let community = health
-            .components
-            .iter()
-            .find(|component| component.id == "community-compatibility")
-            .expect("Community compatibility health must be explicit");
-        assert_eq!(community.state, ComponentState::Disabled);
     }
 
     #[tokio::test]

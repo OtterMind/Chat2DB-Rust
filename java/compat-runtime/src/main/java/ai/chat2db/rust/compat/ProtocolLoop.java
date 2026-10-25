@@ -159,322 +159,6 @@ final class ProtocolLoop {
         return CompatibilityRuntime.EXIT_OK;
     }
 
-    private Dispatch dispatch(
-            ClientEnvelope envelope, JdbcRuntime jdbcRuntime, ProtocolWriter writer) {
-        RequestMeta meta = envelope.hasMeta()
-                ? envelope.getMeta()
-                : RequestMeta.getDefaultInstance();
-        if (!envelope.hasMeta()
-                || meta.getRequestId().isBlank()
-                || meta.getTraceId().isBlank()) {
-            return error(
-                    compactCorrelationMeta(meta),
-                    "protocol.invalid_request_meta",
-                    "request_id and trace_id are required",
-                    ErrorCategory.ERROR_CATEGORY_VALIDATION,
-                    true,
-                    CompatibilityRuntime.EXIT_PROTOCOL);
-        }
-        try {
-            validateRequestMeta(meta);
-        } catch (RuntimeFailure failure) {
-            return error(
-                    compactCorrelationMeta(meta),
-                    failure.code(),
-                    failure.getMessage(),
-                    ErrorCategory.ERROR_CATEGORY_VALIDATION,
-                    true,
-                    CompatibilityRuntime.EXIT_PROTOCOL);
-        }
-
-        if (state == State.NEW) {
-            if (envelope.getPayloadCase() != ClientEnvelope.PayloadCase.HELLO) {
-                return error(
-                        meta,
-                        "protocol.handshake_required",
-                        "the first request must be a client hello",
-                        ErrorCategory.ERROR_CATEGORY_PROTOCOL,
-                        true,
-                        CompatibilityRuntime.EXIT_PROTOCOL);
-            }
-            return handshake(meta, envelope.getHello(), writer, jdbcRuntime);
-        }
-
-        if (state == State.PARKED && !allowedWhileParked(envelope.getPayloadCase())) {
-            return lifecycleError(
-                    meta,
-                    "lifecycle.parked",
-                    "the Java compatibility runtime is parked",
-                    ErrorCategory.ERROR_CATEGORY_UNAVAILABLE,
-                    true);
-        }
-
-        try {
-            return switch (envelope.getPayloadCase()) {
-                case PING -> pong(meta, envelope.getPing().getNonce());
-                case SHUTDOWN -> shutdown(meta);
-                case QUIESCE -> quiesce(meta, envelope.getQuiesce(), jdbcRuntime);
-                case RESUME -> resume(meta, envelope.getResume());
-                case LOAD_DRIVER -> {
-                    jdbcRuntime.schedule(
-                            meta, () -> jdbcRuntime.loadDriver(meta, envelope.getLoadDriver()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case UNLOAD_DRIVER -> {
-                    jdbcRuntime.schedule(
-                            meta, () -> jdbcRuntime.unloadDriver(meta, envelope.getUnloadDriver()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case OPEN_SESSION -> {
-                    jdbcRuntime.schedule(
-                            meta, () -> jdbcRuntime.openSession(meta, envelope.getOpenSession()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case CLOSE_SESSION -> {
-                    jdbcRuntime.schedule(
-                            meta, () -> jdbcRuntime.closeSession(meta, envelope.getCloseSession()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case BEGIN_TRANSACTION -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.beginTransaction(meta, envelope.getBeginTransaction()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case COMMIT_TRANSACTION -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.commitTransaction(meta, envelope.getCommitTransaction()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case ROLLBACK_TRANSACTION -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.rollbackTransaction(meta, envelope.getRollbackTransaction()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case EXECUTE_QUERY -> {
-                    jdbcRuntime.executeQuery(meta, envelope.getExecuteQuery());
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case EXECUTE_UPDATE -> {
-                    jdbcRuntime.executeUpdate(meta, envelope.getExecuteUpdate());
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case METADATA_CATALOGS, METADATA_SCHEMAS, METADATA_TABLES, METADATA_COLUMNS,
-                        METADATA_PRIMARY_KEYS, METADATA_INDEXES, METADATA_FOREIGN_KEYS,
-                        METADATA_TABLE_TYPES -> {
-                    jdbcRuntime.schedule(meta, () -> jdbcRuntime.metadata(meta, envelope));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case GRANT_CREDITS -> response(jdbcRuntime.grantCredits(
-                        meta, envelope.getGrantCredits()));
-                case CANCEL_OPERATION -> response(jdbcRuntime.cancelOperation(
-                        meta, envelope.getCancelOperation()));
-                case LIST_COMMUNITY_PLUGINS -> {
-                    jdbcRuntime.schedule(meta, () -> jdbcRuntime.listCommunityPlugins(meta));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case LIST_COMMUNITY_SCHEMAS -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.listCommunitySchemas(
-                                    meta, envelope.getListCommunitySchemas()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case LIST_COMMUNITY_DATABASES -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.listCommunityDatabases(
-                                    meta, envelope.getListCommunityDatabases()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case LIST_COMMUNITY_TABLES -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.listCommunityTables(
-                                    meta, envelope.getListCommunityTables()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case LIST_COMMUNITY_COLUMNS -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.listCommunityColumns(
-                                    meta, envelope.getListCommunityColumns()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case LIST_COMMUNITY_INDEXES -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.listCommunityIndexes(
-                                    meta, envelope.getListCommunityIndexes()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case LIST_COMMUNITY_VIEWS -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.listCommunityViews(
-                                    meta, envelope.getListCommunityViews()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case LIST_COMMUNITY_IMPORTED_KEYS -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.listCommunityImportedKeys(
-                                    meta, envelope.getListCommunityImportedKeys()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case LIST_COMMUNITY_EXPORTED_KEYS -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.listCommunityExportedKeys(
-                                    meta, envelope.getListCommunityExportedKeys()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case LIST_COMMUNITY_PRIMARY_KEYS -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.listCommunityPrimaryKeys(
-                                    meta, envelope.getListCommunityPrimaryKeys()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case LIST_COMMUNITY_FUNCTIONS -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.listCommunityFunctions(
-                                    meta, envelope.getListCommunityFunctions()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case GET_COMMUNITY_FUNCTION -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.getCommunityFunction(
-                                    meta, envelope.getGetCommunityFunction()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case LIST_COMMUNITY_FUNCTION_PARAMETERS -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.listCommunityFunctionParameters(
-                                    meta, envelope.getListCommunityFunctionParameters()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case LIST_COMMUNITY_PROCEDURES -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.listCommunityProcedures(
-                                    meta, envelope.getListCommunityProcedures()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case GET_COMMUNITY_PROCEDURE -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.getCommunityProcedure(
-                                    meta, envelope.getGetCommunityProcedure()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case LIST_COMMUNITY_PROCEDURE_PARAMETERS -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.listCommunityProcedureParameters(
-                                    meta, envelope.getListCommunityProcedureParameters()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case LIST_COMMUNITY_TRIGGERS -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.listCommunityTriggers(
-                                    meta, envelope.getListCommunityTriggers()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case GET_COMMUNITY_TRIGGER -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.getCommunityTrigger(
-                                    meta, envelope.getGetCommunityTrigger()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case BUILD_COMMUNITY_CREATE_SCHEMA -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.buildCommunityCreateSchema(
-                                    meta, envelope.getBuildCommunityCreateSchema()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case PARSE_COMMUNITY_SQL -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.parseCommunitySql(
-                                    meta, envelope.getParseCommunitySql()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case VALIDATE_COMMUNITY_SQL -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.validateCommunitySql(
-                                    meta, envelope.getValidateCommunitySql()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case FORMAT_COMMUNITY_SQL -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.formatCommunitySql(
-                                    meta, envelope.getFormatCommunitySql()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case COMPLETE_COMMUNITY_SQL -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.completeCommunitySql(
-                                    meta, envelope.getCompleteCommunitySql()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case BUILD_COMMUNITY_DML -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.buildCommunityDml(
-                                    meta, envelope.getBuildCommunityDml()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case BUILD_COMMUNITY_NAMESPACE_SQL -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.buildCommunityNamespaceSql(
-                                    meta, envelope.getBuildCommunityNamespaceSql()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case BUILD_COMMUNITY_TABLE_PREVIEW_SQL -> {
-                    jdbcRuntime.schedule(
-                            meta,
-                            () -> jdbcRuntime.buildCommunityTablePreviewSql(
-                                    meta, envelope.getBuildCommunityTablePreviewSql()));
-                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
-                }
-                case HELLO -> error(
-                        meta,
-                        "protocol.handshake_already_completed",
-                        "client hello is only valid as the first request",
-                        ErrorCategory.ERROR_CATEGORY_PROTOCOL,
-                        true,
-                        CompatibilityRuntime.EXIT_PROTOCOL);
-                case PAYLOAD_NOT_SET -> error(
-                        meta,
-                        "protocol.unsupported_message",
-                        "the request does not contain a supported payload",
-                        ErrorCategory.ERROR_CATEGORY_PROTOCOL,
-                        false,
-                        CompatibilityRuntime.EXIT_OK);
-            };
-        } catch (RuntimeFailure failure) {
-            failure = jdbcRuntime.attachSessionState(meta, failure);
-            diagnostics.printf(
-                    "[compat-runtime] JDBC request failed code=%s request_id=%s%n",
-                    failure.code(),
-                    meta.getRequestId());
-            return response(ProtocolResponses.failure(
-                    meta, 0, failure, writer.peerMaximumFrameBytes()));
-        }
-    }
 
     private Dispatch handshake(
             RequestMeta meta,
@@ -885,4 +569,143 @@ final class ProtocolLoop {
     interface QuiescenceProbe {
         QuiescenceSnapshot snapshot(JdbcRuntime runtime);
     }
+
+    private Dispatch dispatch(
+            ClientEnvelope envelope, JdbcRuntime jdbcRuntime, ProtocolWriter writer) {
+        RequestMeta meta = envelope.hasMeta()
+                ? envelope.getMeta()
+                : RequestMeta.getDefaultInstance();
+        if (!envelope.hasMeta()
+                || meta.getRequestId().isBlank()
+                || meta.getTraceId().isBlank()) {
+            return error(
+                    compactCorrelationMeta(meta),
+                    "protocol.invalid_request_meta",
+                    "request_id and trace_id are required",
+                    ErrorCategory.ERROR_CATEGORY_VALIDATION,
+                    true,
+                    CompatibilityRuntime.EXIT_PROTOCOL);
+        }
+        try {
+            validateRequestMeta(meta);
+        } catch (RuntimeFailure failure) {
+            return error(
+                    compactCorrelationMeta(meta),
+                    failure.code(),
+                    failure.getMessage(),
+                    ErrorCategory.ERROR_CATEGORY_VALIDATION,
+                    true,
+                    CompatibilityRuntime.EXIT_PROTOCOL);
+        }
+
+        if (state == State.NEW) {
+            if (envelope.getPayloadCase() != ClientEnvelope.PayloadCase.HELLO) {
+                return error(
+                        meta,
+                        "protocol.handshake_required",
+                        "the first request must be a client hello",
+                        ErrorCategory.ERROR_CATEGORY_PROTOCOL,
+                        true,
+                        CompatibilityRuntime.EXIT_PROTOCOL);
+            }
+            return handshake(meta, envelope.getHello(), writer, jdbcRuntime);
+        }
+
+        if (state == State.PARKED && !allowedWhileParked(envelope.getPayloadCase())) {
+            return lifecycleError(
+                    meta,
+                    "lifecycle.parked",
+                    "the Java compatibility runtime is parked",
+                    ErrorCategory.ERROR_CATEGORY_UNAVAILABLE,
+                    true);
+        }
+
+        try {
+            return switch (envelope.getPayloadCase()) {
+                case PING -> pong(meta, envelope.getPing().getNonce());
+                case SHUTDOWN -> shutdown(meta);
+                case QUIESCE -> quiesce(meta, envelope.getQuiesce(), jdbcRuntime);
+                case RESUME -> resume(meta, envelope.getResume());
+                case LOAD_DRIVER -> {
+                    jdbcRuntime.schedule(
+                            meta, () -> jdbcRuntime.loadDriver(meta, envelope.getLoadDriver()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case UNLOAD_DRIVER -> {
+                    jdbcRuntime.schedule(
+                            meta, () -> jdbcRuntime.unloadDriver(meta, envelope.getUnloadDriver()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case OPEN_SESSION -> {
+                    jdbcRuntime.schedule(
+                            meta, () -> jdbcRuntime.openSession(meta, envelope.getOpenSession()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case CLOSE_SESSION -> {
+                    jdbcRuntime.schedule(
+                            meta, () -> jdbcRuntime.closeSession(meta, envelope.getCloseSession()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case BEGIN_TRANSACTION -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.beginTransaction(meta, envelope.getBeginTransaction()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case COMMIT_TRANSACTION -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.commitTransaction(meta, envelope.getCommitTransaction()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case ROLLBACK_TRANSACTION -> {
+                    jdbcRuntime.schedule(
+                            meta,
+                            () -> jdbcRuntime.rollbackTransaction(meta, envelope.getRollbackTransaction()));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case EXECUTE_QUERY -> {
+                    jdbcRuntime.executeQuery(meta, envelope.getExecuteQuery());
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case EXECUTE_UPDATE -> {
+                    jdbcRuntime.executeUpdate(meta, envelope.getExecuteUpdate());
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case METADATA_CATALOGS, METADATA_SCHEMAS, METADATA_TABLES, METADATA_COLUMNS,
+                        METADATA_PRIMARY_KEYS, METADATA_INDEXES, METADATA_FOREIGN_KEYS,
+                        METADATA_TABLE_TYPES -> {
+                    jdbcRuntime.schedule(meta, () -> jdbcRuntime.metadata(meta, envelope));
+                    yield new Dispatch(null, false, CompatibilityRuntime.EXIT_OK);
+                }
+                case GRANT_CREDITS -> response(jdbcRuntime.grantCredits(
+                        meta, envelope.getGrantCredits()));
+                case CANCEL_OPERATION -> response(jdbcRuntime.cancelOperation(
+                        meta, envelope.getCancelOperation()));
+                case HELLO -> error(
+                        meta,
+                        "protocol.handshake_already_completed",
+                        "client hello is only valid as the first request",
+                        ErrorCategory.ERROR_CATEGORY_PROTOCOL,
+                        true,
+                        CompatibilityRuntime.EXIT_PROTOCOL);
+                case PAYLOAD_NOT_SET -> error(
+                        meta,
+                        "protocol.unsupported_message",
+                        "the request does not contain a supported payload",
+                        ErrorCategory.ERROR_CATEGORY_PROTOCOL,
+                        false,
+                        CompatibilityRuntime.EXIT_OK);
+            };
+        } catch (RuntimeFailure failure) {
+            failure = jdbcRuntime.attachSessionState(meta, failure);
+            diagnostics.printf(
+                    "[compat-runtime] JDBC request failed code=%s request_id=%s%n",
+                    failure.code(),
+                    meta.getRequestId());
+            return response(ProtocolResponses.failure(
+                    meta, 0, failure, writer.peerMaximumFrameBytes()));
+        }
+    }
+
 }

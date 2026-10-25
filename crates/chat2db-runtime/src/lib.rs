@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use chat2db_core::{RuntimeConfig, load_fixed_community_classpath};
+use chat2db_core::RuntimeConfig;
 use chat2db_java_bridge::{BridgeError, EngineCommand, EngineConfig};
 use thiserror::Error;
 
@@ -196,15 +196,10 @@ pub fn runtime_config_from_environment(
     };
     let resources =
         resolve_runtime_resource_paths(options.executable, options.resource_dir, overrides)?;
-    let mut engine = EngineConfig::new(EngineCommand::java_jar(
+    let engine = EngineConfig::new(EngineCommand::java_jar(
         resources.java_bin,
         resources.java_engine_jar,
     ));
-    if let Some(community_classpath_dir) = resources.community_classpath_dir {
-        let classpath = load_fixed_community_classpath(community_classpath_dir)
-            .map_err(|error| RuntimeConfigError::CommunityClasspath(Box::new(error)))?;
-        engine = engine.with_community_classpath(classpath);
-    }
     let mut config = RuntimeConfig::new(engine);
 
     let data_dir = match options.data_dir {

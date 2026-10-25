@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // `async_trait` stamps `#[must_use]` on the generated boxed futures, which
 // `clippy::double_must_use` rejects because the type is already `#[must_use]`.
 #![allow(clippy::double_must_use)]

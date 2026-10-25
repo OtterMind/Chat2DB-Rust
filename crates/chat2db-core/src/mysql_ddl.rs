@@ -1,5 +1,6 @@
 //! MySQL-specific structured SQL builders.
 
+#![allow(dead_code)]
 use std::fmt::Write as _;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};

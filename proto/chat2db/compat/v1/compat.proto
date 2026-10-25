@@ -3,7 +3,6 @@ syntax = "proto3";
 package chat2db.compat.v1;
 
 import "chat2db/compat/v1/jdbc.proto";
-import "chat2db/compat/v1/community.proto";
 
 option java_multiple_files = true;
 option java_package = "ai.chat2db.rust.compat.protocol.v1";
@@ -59,32 +58,6 @@ message ClientEnvelope {
     JdbcMetadataRequest metadata_table_types = 147;
     GrantCreditsRequest grant_credits = 132;
     CancelOperationRequest cancel_operation = 133;
-    ListCommunityPluginsRequest list_community_plugins = 200;
-    ListCommunitySchemasRequest list_community_schemas = 201;
-    BuildCommunityCreateSchemaRequest build_community_create_schema = 202;
-    ParseCommunitySqlRequest parse_community_sql = 203;
-    ListCommunityDatabasesRequest list_community_databases = 204;
-    ListCommunityTablesRequest list_community_tables = 205;
-    ListCommunityColumnsRequest list_community_columns = 206;
-    ListCommunityIndexesRequest list_community_indexes = 207;
-    ListCommunityViewsRequest list_community_views = 208;
-    ListCommunityTableKeysRequest list_community_imported_keys = 209;
-    ListCommunityTableKeysRequest list_community_exported_keys = 210;
-    ListCommunityTableKeysRequest list_community_primary_keys = 211;
-    ListCommunityFunctionsRequest list_community_functions = 212;
-    GetCommunityFunctionRequest get_community_function = 213;
-    GetCommunityFunctionRequest list_community_function_parameters = 214;
-    ListCommunityProceduresRequest list_community_procedures = 215;
-    GetCommunityProcedureRequest get_community_procedure = 216;
-    GetCommunityProcedureRequest list_community_procedure_parameters = 217;
-    ListCommunityTriggersRequest list_community_triggers = 218;
-    GetCommunityTriggerRequest get_community_trigger = 219;
-    ValidateCommunitySqlRequest validate_community_sql = 220;
-    FormatCommunitySqlRequest format_community_sql = 221;
-    CompleteCommunitySqlRequest complete_community_sql = 222;
-    BuildCommunityDmlRequest build_community_dml = 223;
-    BuildCommunityNamespaceSqlRequest build_community_namespace_sql = 224;
-    BuildCommunityTablePreviewSqlRequest build_community_table_preview_sql = 225;
   }
 }
 
@@ -112,32 +85,6 @@ message ServerEnvelope {
     UpdateCompleted update_completed = 133;
     CreditsGranted credits_granted = 134;
     OperationCancelled operation_cancelled = 135;
-    CommunityPluginCatalog community_plugin_catalog = 200;
-    CommunitySchemaList community_schema_list = 201;
-    CommunityBuiltSql community_built_sql = 202;
-    CommunitySqlAnalysis community_sql_analysis = 203;
-    CommunityDatabaseList community_database_list = 204;
-    CommunityTableList community_table_list = 205;
-    CommunityTableColumnList community_table_column_list = 206;
-    CommunityTableIndexList community_table_index_list = 207;
-    CommunityViewList community_view_list = 208;
-    CommunityForeignKeyList community_imported_key_list = 209;
-    CommunityForeignKeyList community_exported_key_list = 210;
-    CommunityPrimaryKeyList community_primary_key_list = 211;
-    CommunityFunctionList community_function_list = 212;
-    CommunityFunction community_function = 213;
-    CommunityFunctionParameterList community_function_parameter_list = 214;
-    CommunityProcedureList community_procedure_list = 215;
-    CommunityProcedure community_procedure = 216;
-    CommunityProcedureParameterList community_procedure_parameter_list = 217;
-    CommunityTriggerList community_trigger_list = 218;
-    CommunityTrigger community_trigger = 219;
-    CommunitySqlValidation community_sql_validation = 220;
-    CommunityFormattedSql community_formatted_sql = 221;
-    CommunitySqlCompletion community_sql_completion = 222;
-    CommunityBuiltDml community_built_dml = 223;
-    CommunityBuiltNamespaceSql community_built_namespace_sql = 224;
-    CommunityBuiltTablePreviewSql community_built_table_preview_sql = 225;
   }
 }
 

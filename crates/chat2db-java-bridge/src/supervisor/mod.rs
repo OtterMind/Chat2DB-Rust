@@ -31,33 +31,10 @@ use self::{
 };
 
 mod actor;
-mod community;
+
 mod io;
 mod jdbc;
 mod pending;
-
-pub use community::{
-    BuildCommunityDmlRequest, BuildCommunityNamespaceSqlRequest,
-    BuildCommunityTablePreviewSqlRequest, COMMUNITY_DML_BUILDER_CAPABILITY,
-    COMMUNITY_DQL_BUILDER_CAPABILITY, COMMUNITY_NAMESPACE_BUILDER_CAPABILITY,
-    COMMUNITY_OBJECT_METADATA_CAPABILITY, COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
-    COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY, COMMUNITY_RELATION_METADATA_CAPABILITY,
-    COMMUNITY_SCHEMA_METADATA_CAPABILITY, COMMUNITY_SQL_BUILDER_CAPABILITY,
-    COMMUNITY_SQL_COMPLETION_CAPABILITY, COMMUNITY_SQL_FORMATTER_CAPABILITY,
-    COMMUNITY_SQL_PARSER_CAPABILITY, COMMUNITY_SQL_VALIDATION_CAPABILITY,
-    CommunityBuiltTablePreviewSql, CommunityClasspath, CommunityClient, CommunityDatabase,
-    CommunityDmlAssignment, CommunityDmlColumn, CommunityDmlRow, CommunityDmlStatement,
-    CommunityDmlTarget, CommunityDmlTemporal, CommunityDmlTemporalKind, CommunityDmlValue,
-    CommunityDriverConfig, CommunityForeignKey, CommunityFormattedSql, CommunityFunction,
-    CommunityFunctionParameter, CommunityNamespaceSqlOperation, CommunityParsedStatement,
-    CommunityPlugin, CommunityPluginBehavior, CommunityPluginCatalog, CommunityPluginServices,
-    CommunityPrimaryKey, CommunityProcedure, CommunityProcedureParameter, CommunitySchema,
-    CommunitySqlAnalysis, CommunitySqlCompletion, CommunitySqlCompletionActiveSnippetSlot,
-    CommunitySqlCompletionCandidate, CommunitySqlCompletionEditorHint,
-    CommunitySqlCompletionEditorHintItem, CommunitySqlCompletionRange, CommunitySqlDiagnostic,
-    CommunitySqlValidation, CommunityTable, CommunityTableColumn, CommunityTableIndex,
-    CommunityTableIndexColumn, CommunityTrigger, CompleteCommunitySqlRequest,
-};
 
 pub use jdbc::{
     CancelDisposition, ColumnNullability, ConnectionProperty, DRIVER_EXTERNAL_JAR_CAPABILITY,
@@ -100,7 +77,6 @@ pub struct EngineConfig {
     stderr_tail_bytes: usize,
     registration_ack_delay: Duration,
     driver_snapshot_parent: Option<PathBuf>,
-    community_classpath: Option<CommunityClasspath>,
 }
 
 impl EngineConfig {
@@ -120,7 +96,6 @@ impl EngineConfig {
             stderr_tail_bytes: DEFAULT_STDERR_TAIL_BYTES,
             registration_ack_delay: Duration::ZERO,
             driver_snapshot_parent: None,
-            community_classpath: None,
         }
     }
 
@@ -180,41 +155,6 @@ impl EngineConfig {
         self
     }
 
-    /// Supplies the fixed Community compatibility classpath for this process.
-    #[must_use]
-    pub fn with_community_classpath(mut self, classpath: CommunityClasspath) -> Self {
-        for capability in [
-            COMMUNITY_PLUGIN_CATALOG_CAPABILITY,
-            COMMUNITY_SCHEMA_METADATA_CAPABILITY,
-            COMMUNITY_OBJECT_METADATA_CAPABILITY,
-            COMMUNITY_RELATION_METADATA_CAPABILITY,
-            COMMUNITY_PROGRAMMABILITY_METADATA_CAPABILITY,
-            COMMUNITY_SQL_BUILDER_CAPABILITY,
-            COMMUNITY_SQL_PARSER_CAPABILITY,
-            COMMUNITY_SQL_VALIDATION_CAPABILITY,
-            COMMUNITY_SQL_FORMATTER_CAPABILITY,
-            COMMUNITY_SQL_COMPLETION_CAPABILITY,
-            COMMUNITY_DML_BUILDER_CAPABILITY,
-            COMMUNITY_NAMESPACE_BUILDER_CAPABILITY,
-        ] {
-            if !self
-                .required_capabilities
-                .iter()
-                .any(|required| required == capability)
-            {
-                self.required_capabilities.push(capability.to_owned());
-            }
-        }
-        self.community_classpath = Some(classpath);
-        self
-    }
-
-    /// Returns whether this generation will load the fixed Community classpath.
-    #[must_use]
-    pub const fn community_compatibility_configured(&self) -> bool {
-        self.community_classpath.is_some()
-    }
-
     #[cfg(feature = "test-fixture")]
     #[doc(hidden)]
     #[must_use]
@@ -265,39 +205,19 @@ impl EngineConfig {
         Ok(())
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn build_process_command(
         &self,
         snapshot_root: &DriverSnapshotRoot,
     ) -> Result<(tokio::process::Command, String), BridgeError> {
-        let community_snapshot = self
-            .community_classpath
-            .as_ref()
-            .map(|classpath| classpath.snapshot_into(&snapshot_root.canonical_path))
-            .transpose()?;
-        let community_source_commit = self
-            .community_classpath
-            .as_ref()
-            .map_or_else(String::new, |classpath| {
-                classpath.source_commit().to_owned()
-            });
-
         let mut command = self.command.build();
         command
             .env(JDBC_SNAPSHOT_ROOT_ENV, &snapshot_root.wire_path)
-            .env_remove(community::COMMUNITY_CLASSPATH_ENV)
-            .env_remove(community::COMMUNITY_SOURCE_COMMIT_ENV)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        if let Some(snapshot) = community_snapshot {
-            command.env(community::COMMUNITY_CLASSPATH_ENV, snapshot);
-            command.env(
-                community::COMMUNITY_SOURCE_COMMIT_ENV,
-                &community_source_commit,
-            );
-        }
-        Ok((command, community_source_commit))
+        Ok((command, String::new()))
     }
 }
 
