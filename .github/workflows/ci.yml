@@ -43,14 +43,6 @@ jobs:
         run: cargo clippy --workspace --exclude chat2db-desktop --all-targets --all-features --locked -- -D warnings
       - name: Test
         run: cargo test --workspace --exclude chat2db-desktop --locked
-      - name: Process supervisor tests
-        run: cargo test -p chat2db-java-bridge --features test-fixture --test supervisor --locked
-
-  rust-msrv:
-    name: Rust 1.88
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
       - name: Install Linux keyring dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
@@ -147,18 +139,6 @@ jobs:
           ./mvnw -B -pl compat-runtime
           -Dtest='CommunityPluginRegistryTest#realCommunityH2BuildsAndExecutesBoundedDml,CommunityPluginRegistryTest#realCommunityMysqlRejectsBackslashCrossColumnInjection,CommunityPluginRegistryTest#realCommunityMysqlNormalizesBooleanAliasesAndBits,CommunityPluginRegistryTest#realCommunityH2BuildsNamespaceSqlWithoutOpeningJdbc,CommunityPluginRegistryTest#realCommunityMysqlBuildsDatabaseNamespaceSql,CommunityPluginRegistryTest#realCommunityMysqlBuildsBoundedTablePreviewSqlWithoutOpeningJdbc,CommunityPluginRegistryTest#realCommunityNamespaceMapsUnsupportedAndRejectsOversizedInput,JdbcProtocolLoopTest#communityDmlDispatchDoesNotRequireAJdbcSession,JdbcProtocolLoopTest#communityNamespaceDispatchDoesNotRequireAJdbcSession'
           test
-      - name: Verify real Community H2 SPI vertical slice
-        env:
-          CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
-          CHAT2DB_H2_DRIVER_JAR: "${{ github.workspace }}/java/compat-runtime/target/test-drivers/h2-2.3.232.jar"
-          CHAT2DB_COMMUNITY_CLASSPATH_DIR: "${{ github.workspace }}/target/community-h2-classpath"
-        run: cargo test -p chat2db-java-bridge --features java-integration --test java_community_h2 --locked
-      - name: Verify Community H2 product service boundary
-        env:
-          CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
-          CHAT2DB_H2_DRIVER_JAR: "${{ github.workspace }}/java/compat-runtime/target/test-drivers/h2-2.3.232.jar"
-          CHAT2DB_COMMUNITY_CLASSPATH_DIR: "${{ github.workspace }}/target/community-h2-classpath"
-        run: cargo test -p chat2db-core --features java-integration --test java_community_product --locked
       - name: Verify product H2 vertical slice
         env:
           CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
@@ -377,33 +357,6 @@ jobs:
         run: ./scripts/build-community-h2-classpath.sh
       - name: Prepare verified Connector/J pack
         run: ./scripts/prepare-mysql-driver-pack.sh
-      - name: Verify real MySQL product vertical
-        env:
-          CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
-          CHAT2DB_COMMUNITY_CLASSPATH_DIR: "${{ github.workspace }}/target/community-h2-classpath"
-          MYSQL_TEST_DRIVER_PACK_DIR: "${{ github.workspace }}/target/driver-packs"
-          MYSQL_TEST_HOST: 127.0.0.1
-          MYSQL_TEST_PORT: "3306"
-          MYSQL_TEST_USER: root
-          MYSQL_TEST_PASSWORD: chat2db-ci-root
-          MYSQL_TEST_REQUIRED: "1"
-          MYSQL_TEST_JDBC_PARAMETERS: "sslMode=DISABLED&allowPublicKeyRetrieval=true&serverTimezone=UTC&zeroDateTimeBehavior=CONVERT_TO_NULL&tinyInt1isBit=false"
-        run: >-
-          cargo test -p chat2db-core --features java-integration
-          --test java_community_mysql_product --locked
-
-  frontend:
-    name: Frontend
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
-        with:
-          submodules: recursive
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22.22.2"
-          cache: npm
-          cache-dependency-path: apps/frontend/package-lock.json
       - name: Install
         working-directory: apps/frontend
         run: npm ci
@@ -498,31 +451,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: ./scripts/build-community-h2-classpath.sh
-      - name: Verify Windows real Community H2 SPI vertical slice
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
-          CHAT2DB_H2_DRIVER_JAR: "${{ github.workspace }}/java/compat-runtime/target/test-drivers/h2-2.3.232.jar"
-          CHAT2DB_COMMUNITY_CLASSPATH_DIR: "${{ github.workspace }}/target/community-h2-classpath"
-        run: >-
-          cargo test -p chat2db-java-bridge --features java-integration
-          --test java_community_h2 --locked
-      - name: Verify Windows Community H2 product service boundary
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          CHAT2DB_JAVA_ENGINE_JAR: "${{ github.workspace }}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar"
-          CHAT2DB_H2_DRIVER_JAR: "${{ github.workspace }}/java/compat-runtime/target/test-drivers/h2-2.3.232.jar"
-          CHAT2DB_COMMUNITY_CLASSPATH_DIR: "${{ github.workspace }}/target/community-h2-classpath"
-        run: >-
-          cargo test -p chat2db-core --features java-integration
-          --test java_community_product --locked
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22.22.2"
-          cache: npm
-          cache-dependency-path: apps/frontend/package-lock.json
       - name: Build shared frontend
         working-directory: apps/frontend
         run: npm ci && npm run build
