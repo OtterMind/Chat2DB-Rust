@@ -49,7 +49,6 @@ cp -- "${repository_root}/third_party/chat2db-community/LICENSE" \
 for path in \
   "${repository_root}/target/windows-runtime/bin/java.exe" \
   "${repository_root}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar" \
-  "${repository_root}/target/community-h2-classpath" \
   "${repository_root}/target/windows-driver-packs" \
   "${license_resource_directory}/Chat2DB-Rust-LICENSE.txt" \
   "${license_resource_directory}/Chat2DB-Community-LICENSE.txt" \
@@ -174,7 +173,6 @@ pwsh -NoProfile -NonInteractive -Command \
   windows-x86_64 \
   "${repository_root}/target/windows-runtime" \
   "${repository_root}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar" \
-  "${repository_root}/target/community-h2-classpath" \
   "${repository_root}/target/windows-driver-packs" \
   "${package_directory}"
 

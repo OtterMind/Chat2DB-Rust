@@ -2,19 +2,18 @@
 set -euo pipefail
 
 # Packages the on-demand Java runtime archive: jlink runtime, compatibility
-# engine, fixed Community classpath, and driver packs under one root layout.
+# engine, and driver packs under one root layout.
 
-if [[ "$#" -ne 6 ]]; then
-  echo "usage: $0 <platform-id> <runtime-dir> <engine-jar> <classpath-dir> <driver-packs-dir> <output-dir>" >&2
+if [[ "$#" -ne 5 ]]; then
+  echo "usage: $0 <platform-id> <runtime-dir> <engine-jar> <driver-packs-dir> <output-dir>" >&2
   exit 1
 fi
 
 platform_id="$1"
 runtime_directory="$2"
 engine_jar="$3"
-classpath_directory="$4"
-driver_packs_directory="$5"
-output_directory="$6"
+driver_packs_directory="$4"
+output_directory="$5"
 
 case "${platform_id}" in
   macos-arm64 | macos-x64 | windows-x86_64 | linux-x86_64 | linux-arm64) ;;
@@ -24,7 +23,7 @@ case "${platform_id}" in
     ;;
 esac
 
-for directory in "${runtime_directory}" "${classpath_directory}" "${driver_packs_directory}"; do
+for directory in "${runtime_directory}" "${driver_packs_directory}"; do
   if [[ ! -d "${directory}" || -L "${directory}" ]]; then
     echo "Java runtime input directory is missing or unsafe: ${directory}" >&2
     exit 1
@@ -50,7 +49,6 @@ trap cleanup EXIT
 cp -R "${runtime_directory}" "${staging_directory}/java"
 mkdir -p "${staging_directory}/engine"
 cp "${engine_jar}" "${staging_directory}/engine/chat2db-compat-runtime.jar"
-cp -R "${classpath_directory}" "${staging_directory}/community-classpath"
 cp -R "${driver_packs_directory}" "${staging_directory}/driver-packs"
 
 if [[ "${platform_id}" == windows-* ]]; then
@@ -69,12 +67,12 @@ done
 (
   cd "${staging_directory}"
   if command -v zip >/dev/null 2>&1; then
-    zip -q -r -y "${archive_path}" java engine community-classpath driver-packs
+    zip -q -r -y "${archive_path}" java engine driver-packs
   elif command -v 7z >/dev/null 2>&1; then
-    7z a -tzip -bso0 -bsp0 "${archive_path}" java engine community-classpath driver-packs
+    7z a -tzip -bso0 -bsp0 "${archive_path}" java engine driver-packs
   elif command -v pwsh >/dev/null 2>&1; then
     pwsh -NoProfile -NonInteractive -Command \
-      "Compress-Archive -Path 'java','engine','community-classpath','driver-packs' -DestinationPath '$(cygpath -w "${archive_path}")' -Force"
+      "Compress-Archive -Path 'java','engine','driver-packs' -DestinationPath '$(cygpath -w "${archive_path}")' -Force"
   else
     echo "no zip, 7z, or pwsh available to package the Java runtime" >&2
     exit 1
