@@ -173,6 +173,8 @@ pub(crate) async fn list_databases(
     application: &Application,
     datasource_id: &str,
 ) -> Result<DatabaseList, AppError> {
+    // DM exposes no JDBC catalogs: getCatalogs() returns an empty result set, so
+    // the current database name still comes from the vendor view below.
     let query = list_databases_query();
     let result = jdbc_query(
         application,

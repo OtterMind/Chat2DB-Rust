@@ -12,7 +12,8 @@
 use chat2db_java_bridge::{JdbcRow, JdbcValue, MetadataResult};
 
 use crate::native_driver_types::{
-    ColumnList, ColumnMetadata, SchemaList, SchemaMetadata, TableList, TableMetadata,
+    ColumnList, ColumnMetadata, DatabaseList, DatabaseMetadata, SchemaList, SchemaMetadata,
+    TableList, TableMetadata,
 };
 
 /// Column labels defined by the JDBC specification for each metadata call.
@@ -129,6 +130,27 @@ pub(crate) fn schemas(result: &MetadataResult, database_name: &str) -> SchemaLis
 }
 
 /// Maps \`getTables\` rows into table metadata.
+/** Maps getCatalogs rows into database metadata. */
+pub(crate) fn databases(result: &MetadataResult) -> DatabaseList {
+    let rows = MetadataRows::new(result);
+    let items = result
+        .rows
+        .iter()
+        .filter_map(|row| {
+            let name = rows.text(row, labels::CATALOG)?;
+            if name.trim().is_empty() {
+                return None;
+            }
+            Some(DatabaseMetadata {
+                system: is_system_schema(&name),
+                name,
+                ..DatabaseMetadata::default()
+            })
+        })
+        .collect();
+    DatabaseList { items }
+}
+
 pub(crate) fn tables(
     result: &MetadataResult,
     database_name: &str,
