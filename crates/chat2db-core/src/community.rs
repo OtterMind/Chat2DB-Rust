@@ -1,6 +1,8 @@
 #![allow(
+    unknown_lints,
     dead_code,
     clippy::unused_async,
+    clippy::unused_async_trait_impl,
     clippy::missing_errors_doc,
     clippy::items_after_test_module
 )]
