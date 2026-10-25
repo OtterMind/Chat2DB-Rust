@@ -601,6 +601,24 @@ async fn run(options: Options) -> Result<u8, Box<dyn std::error::Error>> {
                 )
                 .await?;
             }
+            Some(
+                wire::client_envelope::Payload::MetadataCatalogs(_)
+                | wire::client_envelope::Payload::MetadataSchemas(_)
+                | wire::client_envelope::Payload::MetadataTables(_)
+                | wire::client_envelope::Payload::MetadataColumns(_)
+                | wire::client_envelope::Payload::MetadataPrimaryKeys(_)
+                | wire::client_envelope::Payload::MetadataIndexes(_)
+                | wire::client_envelope::Payload::MetadataForeignKeys(_)
+                | wire::client_envelope::Payload::MetadataTableTypes(_),
+            ) => {
+                write_error(
+                    &mut output,
+                    &meta,
+                    "protocol.unsupported_capability",
+                    "the fixture does not serve JDBC metadata",
+                )
+                .await?;
+            }
             None => {
                 write_error(
                     &mut output,
