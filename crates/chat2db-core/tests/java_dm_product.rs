@@ -475,7 +475,8 @@ async fn verify_table_preview(
             ResultPageRequest {
                 offset: "0".to_owned(),
                 max_rows: "1".to_owned(),
-                max_bytes: (1024_u64 * 1024).to_string(),
+                // The page limit must stay inside the 8-16 MiB contract.
+                max_bytes: (8_u64 * 1024 * 1024).to_string(),
             },
         )
         .await
