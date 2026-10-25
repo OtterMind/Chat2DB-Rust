@@ -9,6 +9,7 @@ mod datasource_edit;
 mod datasource_session;
 mod driver_pack;
 mod engine_manager;
+mod jdbc_metadata;
 mod error;
 mod large_value;
 mod legacy_community_import;

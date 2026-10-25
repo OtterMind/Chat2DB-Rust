@@ -476,3 +476,34 @@ SQL, forced-read-only query execution, and retained-result paging through Core.
 This complete product vertical passed against MySQL 8.4 on 2026-07-27. It does
 not expand the protocol with a product write surface or claim Agent, CLI, or MCP
 MySQL conformance.
+
+## Raw JDBC metadata calls
+
+Protocol 1.1 adds eight session-bound commands that forward one
+java.sql.DatabaseMetaData call each. The engine returns the driver's own
+columns and rows; it never interprets catalogs, schemas, or table types.
+
+| Request field | DatabaseMetaData call |
+| --- | --- |
+| metadata_catalogs (140) | getCatalogs() |
+| metadata_schemas (141) | getSchemas() |
+| metadata_tables (142) | getTables(catalog, schema, table, types) |
+| metadata_columns (143) | getColumns(catalog, schema, table, pattern) |
+| metadata_primary_keys (144) | getPrimaryKeys(catalog, schema, table) |
+| metadata_indexes (145) | getIndexInfo(catalog, schema, table, false, false) |
+| metadata_foreign_keys (146) | getImportedKeys(catalog, schema, table) |
+| metadata_table_types (147) | getTableTypes() |
+
+Every request carries JdbcMetadataRequest (catalog, schema, table, table_types,
+pattern, max_rows); an unset selector means every entry and max_rows = 0 selects
+the engine default of 10 000 rows. The engine answers with metadata_result (140):
+JdbcMetadataResult { columns, rows, truncated }.
+
+Rows use the JDBC-standard column labels (TABLE_NAME, TABLE_SCHEM, COLUMN_NAME,
+DATA_TYPE, NULLABLE, ...). chat2db-core's jdbc_metadata module maps them into
+product metadata, which is where dialect decisions such as system schemas and
+case folding live.
+
+The engine advertises metadata.jdbc.v1 in ServerHello.capabilities; a host MUST
+verify the capability before sending these requests.
+
