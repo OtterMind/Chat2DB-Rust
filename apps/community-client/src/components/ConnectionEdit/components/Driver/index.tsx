@@ -167,7 +167,8 @@ export default memo<IProps>((props) => {
         </Form.Item>
       </Form>
       <div className={styles.downloadDriveFooter}>
-        <div onClick={downloadDrive} className={styles.downloadDrive}>
+        {false && (
+<div onClick={downloadDrive} className={styles.downloadDrive}>
           {downloadStatus === DownloadStatus.Default && (
             <div className={classnames(styles.downloadText, styles.downloadTextDownload)}>
               {i18n('connection.text.downloadDriver')}
@@ -190,7 +191,8 @@ export default memo<IProps>((props) => {
             </div>
           )}
         </div>
-        {(isDesktop || isCommunityEnv) && (
+        )}
+{(isDesktop || isCommunityEnv) && (
           <div
             className={styles.uploadCustomDrive}
             onClick={() => {
