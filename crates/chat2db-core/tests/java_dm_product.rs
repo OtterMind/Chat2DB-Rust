@@ -2,9 +2,8 @@ use std::{panic::AssertUnwindSafe, path::PathBuf, time::Duration};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chat2db_contract::{
-    ComponentState, CreateDatasourceRequest, Datasource, DatasourceConnection,
-    DatasourceConnectionProperty, JdbcDriver, JdbcValue, NativeDriverAction, OperationEvent,
-    ResultPageRequest,
+    CreateDatasourceRequest, Datasource, DatasourceConnection, DatasourceConnectionProperty,
+    JdbcDriver, JdbcValue, NativeDriverAction, OperationEvent, ResultPageRequest,
 };
 use chat2db_core::{
     Application, ListColumnsRequest, ListDatabasesRequest, ListSchemasRequest, ListTablesRequest,

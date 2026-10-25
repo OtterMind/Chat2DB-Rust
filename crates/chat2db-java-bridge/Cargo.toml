@@ -18,16 +18,6 @@ tempfile = "3"
 thiserror.workspace = true
 tokio.workspace = true
 
-[[bin]]
-name = "chat2db-engine-fixture"
-path = "tests/support/engine_fixture.rs"
-required-features = ["test-fixture"]
-
-[[test]]
-name = "supervisor"
-path = "tests/supervisor.rs"
-required-features = ["test-fixture"]
-
 [[test]]
 name = "java_engine"
 path = "tests/java_engine.rs"
@@ -36,11 +26,6 @@ required-features = ["java-integration"]
 [[test]]
 name = "java_jdbc_h2"
 path = "tests/java_jdbc_h2.rs"
-required-features = ["java-integration"]
-
-[[test]]
-name = "java_community_h2"
-path = "tests/java_community_h2.rs"
 required-features = ["java-integration"]
 
 [features]

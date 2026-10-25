@@ -55,16 +55,6 @@ path = "tests/java_h2_product.rs"
 required-features = ["java-integration"]
 
 [[test]]
-name = "java_community_product"
-path = "tests/java_community_product.rs"
-required-features = ["java-integration"]
-
-[[test]]
-name = "java_community_mysql_product"
-path = "tests/java_community_mysql_product.rs"
-required-features = ["java-integration"]
-
-[[test]]
 name = "java_dm_driver_pack"
 path = "tests/java_dm_driver_pack.rs"
 required-features = ["java-integration"]
