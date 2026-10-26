@@ -349,42 +349,88 @@ impl Application {
 
     pub async fn get_community_function(
         &self,
-        _request: GetCommunityFunctionRequest,
+        request: GetCommunityFunctionRequest,
     ) -> Result<CommunityFunction, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
+            return metadata
+                .get_function(self, request.into())
+                .await
+                .map(crate::native_api_adapter::function_response);
+        }
+        Err(native_capability_not_supported(
+            "this datasource",
+            "the requested metadata",
         ))
     }
 
     pub async fn get_community_procedure(
         &self,
-        _request: GetCommunityProcedureRequest,
+        request: GetCommunityProcedureRequest,
     ) -> Result<CommunityProcedure, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
+            return metadata
+                .get_procedure(self, request.into())
+                .await
+                .map(crate::native_api_adapter::procedure_response);
+        }
+        Err(native_capability_not_supported(
+            "this datasource",
+            "the requested metadata",
         ))
     }
 
     pub async fn get_community_trigger(
         &self,
-        _request: GetCommunityTriggerRequest,
+        request: GetCommunityTriggerRequest,
     ) -> Result<CommunityTrigger, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
+            return metadata
+                .get_trigger(self, request.into())
+                .await
+                .map(crate::native_api_adapter::trigger_response);
+        }
+        Err(native_capability_not_supported(
+            "this datasource",
+            "the requested metadata",
         ))
     }
 
     pub async fn get_community_view(
         &self,
-        _request: ListCommunityViewsRequest,
+        request: ListCommunityViewsRequest,
     ) -> Result<CommunityTable, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
-        ))
+        let view_name = request.view_name_pattern.clone();
+        let driver = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+            .ok_or_else(|| native_capability_not_supported(&request.database_type, "metadata"))?;
+        let metadata = driver
+            .metadata()
+            .ok_or_else(|| native_capability_not_supported(&request.database_type, "metadata"))?;
+        let view = metadata
+            .get_view(self, request.into())
+            .await
+            .map(crate::native_api_adapter::table_response)?;
+        let _ = view_name;
+        Ok(view)
     }
 
     pub async fn list_community_exported_keys(
@@ -411,21 +457,45 @@ impl Application {
 
     pub async fn list_community_function_parameters(
         &self,
-        _request: GetCommunityFunctionRequest,
+        request: GetCommunityFunctionRequest,
     ) -> Result<CommunityFunctionParameterList, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
+            return metadata
+                .list_function_parameters(self, request.into())
+                .await
+                .map(crate::native_api_adapter::function_parameter_list_response);
+        }
+        Err(native_capability_not_supported(
+            "this datasource",
+            "the requested metadata",
         ))
     }
 
     pub async fn list_community_functions(
         &self,
-        _request: ListCommunityFunctionsRequest,
+        request: ListCommunityFunctionsRequest,
     ) -> Result<CommunityFunctionList, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
+            return metadata
+                .list_functions(self, request.into())
+                .await
+                .map(crate::native_api_adapter::function_list_response);
+        }
+        Err(native_capability_not_supported(
+            "this datasource",
+            "the requested metadata",
         ))
     }
 
@@ -504,31 +574,67 @@ impl Application {
 
     pub async fn list_community_procedure_parameters(
         &self,
-        _request: GetCommunityProcedureRequest,
+        request: GetCommunityProcedureRequest,
     ) -> Result<CommunityProcedureParameterList, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
+            return metadata
+                .list_procedure_parameters(self, request.into())
+                .await
+                .map(crate::native_api_adapter::procedure_parameter_list_response);
+        }
+        Err(native_capability_not_supported(
+            "this datasource",
+            "the requested metadata",
         ))
     }
 
     pub async fn list_community_procedures(
         &self,
-        _request: ListCommunityProceduresRequest,
+        request: ListCommunityProceduresRequest,
     ) -> Result<CommunityProcedureList, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
+            return metadata
+                .list_procedures(self, request.into())
+                .await
+                .map(crate::native_api_adapter::procedure_list_response);
+        }
+        Err(native_capability_not_supported(
+            "this datasource",
+            "the requested metadata",
         ))
     }
 
     pub async fn list_community_triggers(
         &self,
-        _request: ListCommunityTriggersRequest,
+        request: ListCommunityTriggersRequest,
     ) -> Result<CommunityTriggerList, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
+            return metadata
+                .list_triggers(self, request.into())
+                .await
+                .map(crate::native_api_adapter::trigger_list_response);
+        }
+        Err(native_capability_not_supported(
+            "this datasource",
+            "the requested metadata",
         ))
     }
 
