@@ -34,6 +34,24 @@ use crate::{
     storage_call,
 };
 
+const TABLE_PREVIEW_MAX_RESULT_BYTES: u64 = 8 * 1024 * 1024;
+const TABLE_PREVIEW_BATCH_BYTES: u32 = 1024 * 1024;
+const TABLE_PREVIEW_RESULT_TTL_SECONDS: u32 = 60 * 60;
+
+const DEFAULT_TABLE_PREVIEW_ROWS: u32 = 200;
+const MAX_TABLE_PREVIEW_ROWS: u32 = 1_000;
+
+fn table_preview_row_limit(requested: Option<u32>) -> Result<u32, AppError> {
+    let row_limit = requested.unwrap_or(DEFAULT_TABLE_PREVIEW_ROWS);
+    if row_limit == 0 || row_limit > MAX_TABLE_PREVIEW_ROWS {
+        return Err(AppError::invalid(
+            "invalid_community_table_preview_request",
+            format!("rowLimit must be between 1 and {MAX_TABLE_PREVIEW_ROWS}"),
+        ));
+    }
+    Ok(row_limit)
+}
+
 impl Application {
     async fn native_driver_for_community_datasource(
         &self,
@@ -321,20 +339,40 @@ impl Application {
         &self,
         _request: CompleteCommunitySqlRequest,
     ) -> Result<CommunitySqlCompletion, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
-        ))
+        Ok(CommunitySqlCompletion {
+            status: "unavailable".to_owned(),
+            replace_start_utf16: 0,
+            replace_end_utf16: 0,
+            candidates: Vec::new(),
+            editor_hints: Vec::new(),
+            reason_code: Some("sql_completion_removed".to_owned()),
+        })
     }
 
     pub async fn execute_community_routine_migration(
         &self,
-        _request: CommunityRoutineMigrationRequest,
+        request: CommunityRoutineMigrationRequest,
     ) -> Result<CommunityRoutineMigrationExecution, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
-        ))
+        let driver = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+            .ok_or_else(|| {
+                AppError::invalid(
+                    "invalid_community_routine_migration_request",
+                    "routine migration requires a native Rust driver",
+                )
+            })?;
+        let routines = driver.routines().ok_or_else(|| {
+            AppError::invalid(
+                "native_routine_capability_not_available",
+                "The native Rust driver does not implement routine operations",
+            )
+        })?;
+        routines
+            .execute_migration(self, request.into())
+            .await
+            .map(crate::native_api_adapter::routine_migration_execution_response)
+            .map_err(crate::native_api_adapter::compatibility_api_error)
     }
 
     pub async fn format_community_sql(
@@ -672,21 +710,63 @@ impl Application {
 
     pub async fn preview_community_routine_invocation(
         &self,
-        _request: PreviewCommunityRoutineInvocationRequest,
+        request: PreviewCommunityRoutineInvocationRequest,
     ) -> Result<CommunityRoutineInvocationPreview, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
-        ))
+        self.native_driver_for_database_type(&request.database_type)
+            .ok_or_else(|| {
+                AppError::invalid(
+                    "invalid_community_routine_invocation_request",
+                    "routine invocation preview requires a native Rust driver",
+                )
+            })?;
+        let driver = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+            .ok_or_else(|| {
+                AppError::invalid(
+                    "invalid_community_routine_invocation_request",
+                    "routine invocation preview requires a native Rust driver",
+                )
+            })?;
+        let routines = driver.routines().ok_or_else(|| {
+            AppError::invalid(
+                "native_routine_capability_not_available",
+                "The native Rust driver does not implement routine operations",
+            )
+        })?;
+        routines
+            .preview_invocation(self, request.into())
+            .await
+            .map(crate::native_api_adapter::routine_invocation_response)
+            .map_err(crate::native_api_adapter::compatibility_api_error)
     }
 
     pub async fn start_community_table_preview(
         &self,
-        _request: StartCommunityTablePreviewRequest,
+        request: StartCommunityTablePreviewRequest,
     ) -> Result<CommunityTablePreviewAccepted, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
+        let row_limit = table_preview_row_limit(request.row_limit)?;
+        if request.datasource_id.trim().is_empty() {
+            return Err(AppError::invalid(
+                "invalid_community_table_preview_request",
+                "datasourceId cannot be empty",
+            ));
+        }
+        if self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+            .is_some()
+        {
+            let database_type = request.database_type.clone();
+            return self
+                .start_native_table_preview(&database_type, request.into(), row_limit)
+                .await
+                .map(crate::native_api_adapter::table_preview_response)
+                .map_err(crate::native_api_adapter::compatibility_api_error);
+        }
+        Err(native_capability_not_supported(
+            "this datasource",
+            "table previews",
         ))
     }
 
@@ -709,11 +789,25 @@ impl Application {
     /// Always returns a removed-feature error.
     pub fn preview_community_routine_migration(
         &self,
-        _request: &CommunityRoutineMigrationRequest,
+        request: &CommunityRoutineMigrationRequest,
     ) -> Result<CommunityRoutineInvocationPreview, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
-        ))
+        let driver = self
+            .native_driver_for_database_type(&request.database_type)
+            .ok_or_else(|| {
+                AppError::invalid(
+                    "invalid_community_routine_migration_request",
+                    "routine migration requires a native Rust driver",
+                )
+            })?;
+        let routines = driver.routines().ok_or_else(|| {
+            AppError::invalid(
+                "native_routine_capability_not_available",
+                "The native Rust driver does not implement routine operations",
+            )
+        })?;
+        routines
+            .preview_migration(request.clone().into())
+            .map(crate::native_api_adapter::routine_invocation_response)
+            .map_err(crate::native_api_adapter::compatibility_api_error)
     }
 }
