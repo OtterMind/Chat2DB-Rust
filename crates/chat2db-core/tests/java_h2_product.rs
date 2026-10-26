@@ -130,74 +130,19 @@ impl H2ProductHarness {
 }
 
 async fn assert_community_disabled(application: &Application) {
-    let community = application
-        .health()
-        .components
-        .into_iter()
-        .find(|component| component.id == "community-compatibility")
-        .expect("Community compatibility health must be explicit");
-    assert_eq!(community.state, ComponentState::Disabled);
-    let community_error = application
+    assert!(
+        application
+            .health()
+            .components
+            .into_iter()
+            .all(|component| component.id != "community-compatibility"),
+        "the Community compatibility layer must be gone"
+    );
+    let removed = application
         .list_community_plugins()
         .await
-        .expect_err("unconfigured Community services must stay disabled");
-    assert_eq!(
-        community_error.api_error().code,
-        "community_compatibility_disabled"
-    );
-    let disabled_database_error = application
-        .list_community_databases(ListCommunityDatabasesRequest {
-            datasource_id: "disabled".to_owned(),
-            database_type: "H2".to_owned(),
-        })
-        .await
-        .expect_err("unknown datasource must fail before Community engine acquisition");
-    assert_eq!(
-        disabled_database_error.api_error().code,
-        "datasource_not_found"
-    );
-    let disabled_table_error = application
-        .list_community_tables(ListCommunityTablesRequest {
-            datasource_id: "disabled".to_owned(),
-            database_type: "H2".to_owned(),
-            database_name: String::new(),
-            schema_name: String::new(),
-            table_name_pattern: "%".to_owned(),
-        })
-        .await
-        .expect_err("unknown datasource must fail before Community engine acquisition");
-    assert_eq!(
-        disabled_table_error.api_error().code,
-        "datasource_not_found"
-    );
-    let disabled_column_error = application
-        .list_community_columns(ListCommunityColumnsRequest {
-            datasource_id: "disabled".to_owned(),
-            database_type: "H2".to_owned(),
-            database_name: String::new(),
-            schema_name: String::new(),
-            table_name: "items".to_owned(),
-        })
-        .await
-        .expect_err("unknown datasource must fail before Community engine acquisition");
-    assert_eq!(
-        disabled_column_error.api_error().code,
-        "datasource_not_found"
-    );
-    let disabled_index_error = application
-        .list_community_indexes(ListCommunityIndexesRequest {
-            datasource_id: "disabled".to_owned(),
-            database_type: "H2".to_owned(),
-            database_name: String::new(),
-            schema_name: String::new(),
-            table_name: "items".to_owned(),
-        })
-        .await
-        .expect_err("unknown datasource must fail before Community engine acquisition");
-    assert_eq!(
-        disabled_index_error.api_error().code,
-        "datasource_not_found"
-    );
+        .expect_err("Community-backed features must be removed");
+    assert_eq!(removed.api_error().code, "feature_removed");
 }
 
 #[tokio::test]

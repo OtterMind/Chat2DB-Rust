@@ -389,11 +389,23 @@ impl Application {
 
     pub async fn list_community_exported_keys(
         &self,
-        _request: ListCommunityTableKeysRequest,
+        request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityForeignKeyList, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
+            return metadata
+                .list_exported_keys(self, request.into())
+                .await
+                .map(crate::native_api_adapter::foreign_key_list_response);
+        }
+        Err(native_capability_not_supported(
+            "this datasource",
+            "the requested metadata",
         ))
     }
 
@@ -419,11 +431,23 @@ impl Application {
 
     pub async fn list_community_imported_keys(
         &self,
-        _request: ListCommunityTableKeysRequest,
+        request: ListCommunityTableKeysRequest,
     ) -> Result<CommunityForeignKeyList, AppError> {
-        Err(AppError::invalid(
-            "feature_removed",
-            "this Community-backed feature was removed from the product",
+        if let Some(driver) = self
+            .native_driver_for_community_datasource(&request.datasource_id, &request.database_type)
+            .await?
+        {
+            let metadata = driver.metadata().ok_or_else(|| {
+                native_capability_not_supported(&request.database_type, "metadata")
+            })?;
+            return metadata
+                .list_imported_keys(self, request.into())
+                .await
+                .map(crate::native_api_adapter::foreign_key_list_response);
+        }
+        Err(native_capability_not_supported(
+            "this datasource",
+            "the requested metadata",
         ))
     }
 
