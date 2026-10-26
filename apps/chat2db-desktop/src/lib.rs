@@ -2596,12 +2596,8 @@ mod tests {
     };
 
     use chat2db_contract::{
-        AgentEvent, AgentEventEnvelope, AgentStreamMessage, BuildCommunityDmlRequest,
-        BuildCommunityNamespaceSqlRequest, CommunityDmlColumn, CommunityDmlRow,
-        CommunityDmlStatement, CommunityDmlTarget, CommunityDmlValue,
-        CommunityNamespaceSqlOperation, CompleteCommunitySqlRequest, FormatCommunitySqlRequest,
-        OperationEvent, OperationEventEnvelope, OperationStreamMessage,
-        StartCommunityTablePreviewRequest, ValidateCommunitySqlRequest,
+        AgentEvent, AgentEventEnvelope, AgentStreamMessage, OperationEvent, OperationEventEnvelope,
+        OperationStreamMessage,
     };
     use chat2db_core::{AppError, Application, NativeConsoleCancellation};
     use tokio::sync::{Mutex, oneshot};
@@ -2609,12 +2605,10 @@ mod tests {
     use super::{
         DesktopStartup, DesktopState, FilePath, LegacySqlCancellationRegistry,
         LegacySqlDirectoryRegistry, SubscriptionRegistry, agent_stream_message,
-        build_community_dml_for, build_community_namespace_sql_for, client_command_response,
-        complete_community_sql_for, decode_client_message, format_community_sql_for,
-        legacy_ai_push_message, legacy_file_extensions, legacy_request_for, legacy_selected_file,
-        legacy_sql_push_message, legacy_sql_rowless_payload, operation_stream_message,
-        parse_after_sequence, spawn_engine_prewarm, start_community_table_preview_for,
-        validate_community_sql_for,
+        client_command_response, decode_client_message, legacy_ai_push_message,
+        legacy_file_extensions, legacy_request_for, legacy_selected_file, legacy_sql_push_message,
+        legacy_sql_rowless_payload, operation_stream_message, parse_after_sequence,
+        spawn_engine_prewarm,
     };
 
     fn test_desktop_state() -> Arc<DesktopState> {

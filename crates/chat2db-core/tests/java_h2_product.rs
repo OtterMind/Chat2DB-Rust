@@ -10,9 +10,7 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chat2db_contract::{
     CancelDisposition, ComponentState, CreateDatasourceRequest, DatasourceConnection, JdbcDriver,
-    JdbcValue, ListCommunityColumnsRequest, ListCommunityDatabasesRequest,
-    ListCommunityIndexesRequest, ListCommunityTablesRequest, OperationEvent, OperationStatus,
-    QueryLimits, ResultPageRequest, StartQueryRequest,
+    JdbcValue, OperationEvent, OperationStatus, QueryLimits, ResultPageRequest, StartQueryRequest,
 };
 use chat2db_core::{Application, RuntimeConfig, RuntimeHost};
 use chat2db_java_bridge::{
