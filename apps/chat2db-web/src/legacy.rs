@@ -7169,6 +7169,16 @@ async fn resolve_mysql_database_type(
 }
 
 fn database_type_for_driver(driver: &JdbcDriver) -> String {
+    match driver.driver_id.to_ascii_lowercase().as_str() {
+        "mysql" => return "MYSQL".to_owned(),
+        "postgresql" | "postgres" => return "POSTGRESQL".to_owned(),
+        "sqlserver" => return "SQLSERVER".to_owned(),
+        "oracle" => return "ORACLE".to_owned(),
+        "dm" => return "DM".to_owned(),
+        "sqlite" => return "SQLITE".to_owned(),
+        "h2" => return "H2".to_owned(),
+        _ => {}
+    }
     let identity =
         format!("{} {} {}", driver.pack_id, driver.name, driver.driver_class).to_ascii_lowercase();
     if identity.contains("mysql") {
@@ -7179,6 +7189,15 @@ fn database_type_for_driver(driver: &JdbcDriver) -> String {
         "SQLITE".to_owned()
     } else if identity.contains("h2") {
         "H2".to_owned()
+    } else if identity.contains("oracle") {
+        "ORACLE".to_owned()
+    } else if identity.contains("sql server")
+        || identity.contains("sqlserver")
+        || identity.contains("tiberius")
+    {
+        "SQLSERVER".to_owned()
+    } else if identity.contains("dm-jdbc") || identity.contains("dameng") {
+        "DM".to_owned()
     } else {
         normalize_database_type(&driver.pack_id)
     }
