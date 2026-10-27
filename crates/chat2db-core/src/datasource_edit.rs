@@ -292,6 +292,9 @@ fn merge_preserved_ssh(
 }
 
 fn move_url_userinfo_to_properties(connection: &mut DatasourceConnection) -> Result<(), AppError> {
+    if is_oracle_thin_connect_string(&connection.jdbc_url) {
+        return Ok(());
+    }
     let (prefix, mut parsed) = parse_jdbc_url(&connection.jdbc_url, "invalid_datasource_url")?;
     let (_, suffix) = split_jdbc_suffix(connection.jdbc_url.trim());
     let suffix = suffix.to_owned();
@@ -332,6 +335,9 @@ fn move_url_userinfo_to_properties(connection: &mut DatasourceConnection) -> Res
 }
 
 fn merge_sensitive_query(old_url: &str, incoming_url: &str) -> Result<String, AppError> {
+    if is_oracle_thin_connect_string(old_url) || is_oracle_thin_connect_string(incoming_url) {
+        return Ok(incoming_url.trim().to_owned());
+    }
     let (_, old) = parse_jdbc_url(old_url, "invalid_datasource_url")?;
     let (prefix, mut incoming) = parse_jdbc_url(incoming_url, "invalid_datasource_url")?;
     let mut incoming_pairs = incoming
@@ -358,6 +364,9 @@ fn merge_sensitive_query(old_url: &str, incoming_url: &str) -> Result<String, Ap
 }
 
 pub(crate) fn sanitize_jdbc_url(jdbc_url: &str) -> Result<String, AppError> {
+    if is_oracle_thin_connect_string(jdbc_url) {
+        return Ok(jdbc_url.trim().to_owned());
+    }
     let (prefix, mut parsed) = parse_jdbc_url(jdbc_url, "unsafe_datasource_projection")?;
     // Oracle and similar connect strings carry no authority, so credentials
     // can only be stripped when the URL actually has a host.
@@ -391,8 +400,17 @@ pub(crate) fn sanitize_jdbc_url(jdbc_url: &str) -> Result<String, AppError> {
 }
 
 fn jdbc_url_username(jdbc_url: &str) -> Result<Option<String>, AppError> {
+    if is_oracle_thin_connect_string(jdbc_url) {
+        return Ok(None);
+    }
     let (_, parsed) = parse_jdbc_url(jdbc_url, "unsafe_datasource_projection")?;
     Ok((!parsed.username().is_empty()).then(|| parsed.username().to_owned()))
+}
+
+/// Oracle thin connect strings are not URLs; they never carry URL userinfo.
+fn is_oracle_thin_connect_string(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    lower.starts_with("jdbc:oracle:thin:@") || lower.starts_with("oracle:thin:@")
 }
 
 /// SQL Server connect strings append `;key=value` pairs after the authority,
@@ -734,5 +752,45 @@ mod tests {
             SshAuthentication::PrivateKey { passphrase: Some(value), .. }
                 if value == "stored-passphrase"
         ));
+    }
+
+    #[test]
+    fn projection_accepts_every_supported_url_shape() {
+        let cases = [
+            "mysql://localhost:3306/app",
+            "jdbc:mysql://user:pw@localhost:3306/app?useSSL=false",
+            "postgresql://localhost:5432/app",
+            "sqlserver://localhost:14333;database=master",
+            "jdbc:sqlserver://sa:pw@localhost:14333;database=master",
+            "oracle://localhost:1521/FREEPDB1",
+            "jdbc:oracle:thin:@//localhost:1521/FREEPDB1",
+            "jdbc:oracle:thin:@localhost:1521:XE",
+            "dm://localhost:5236",
+        ];
+        for url in cases {
+            let sanitized = super::sanitize_jdbc_url(url)
+                .unwrap_or_else(|error| panic!("projection failed for {url}: {error:?}"));
+            assert!(
+                !sanitized.to_ascii_lowercase().contains("user:pw"),
+                "credentials leaked for {url}: {sanitized}"
+            );
+        }
+    }
+
+    #[test]
+    fn projection_keeps_sqlserver_and_oracle_shapes() {
+        let sqlserver = super::sanitize_jdbc_url("sqlserver://localhost:14333;database=master")
+            .expect("sqlserver");
+        assert!(
+            sqlserver.ends_with(";database=master"),
+            "suffix lost: {sqlserver}"
+        );
+        let sid = "jdbc:oracle:thin:@localhost:1521:XE";
+        assert_eq!(super::sanitize_jdbc_url(sid).expect("oracle sid"), sid);
+        let service = "jdbc:oracle:thin:@//localhost:1521/FREEPDB1";
+        assert_eq!(
+            super::sanitize_jdbc_url(service).expect("oracle service"),
+            service
+        );
     }
 }
