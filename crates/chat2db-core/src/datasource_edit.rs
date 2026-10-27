@@ -293,13 +293,17 @@ fn merge_preserved_ssh(
 
 fn move_url_userinfo_to_properties(connection: &mut DatasourceConnection) -> Result<(), AppError> {
     let (prefix, mut parsed) = parse_jdbc_url(&connection.jdbc_url, "invalid_datasource_url")?;
+    let (_, suffix) = split_jdbc_suffix(connection.jdbc_url.trim());
+    let suffix = suffix.to_owned();
     let username = parsed.username().to_owned();
     let password = parsed.password().map(str::to_owned);
-    parsed.set_username("").map_err(|()| AppError::internal())?;
-    parsed
-        .set_password(None)
-        .map_err(|()| AppError::internal())?;
-    connection.jdbc_url = format!("{prefix}{parsed}");
+    if parsed.host().is_some() {
+        parsed.set_username("").map_err(|()| AppError::internal())?;
+        parsed
+            .set_password(None)
+            .map_err(|()| AppError::internal())?;
+    }
+    connection.jdbc_url = format!("{prefix}{parsed}{suffix}");
     if !username.is_empty()
         && !connection
             .properties
@@ -349,7 +353,8 @@ fn merge_sensitive_query(old_url: &str, incoming_url: &str) -> Result<String, Ap
         query.clear();
         query.extend_pairs(incoming_pairs);
     }
-    Ok(format!("{prefix}{incoming}"))
+    let (_, suffix) = split_jdbc_suffix(incoming_url.trim());
+    Ok(format!("{prefix}{incoming}{suffix}"))
 }
 
 pub(crate) fn sanitize_jdbc_url(jdbc_url: &str) -> Result<String, AppError> {
@@ -381,7 +386,8 @@ pub(crate) fn sanitize_jdbc_url(jdbc_url: &str) -> Result<String, AppError> {
         query.clear();
         query.extend_pairs(retained_query);
     }
-    Ok(format!("{prefix}{parsed}"))
+    let (_, suffix) = split_jdbc_suffix(jdbc_url.trim());
+    Ok(format!("{prefix}{parsed}{suffix}"))
 }
 
 fn jdbc_url_username(jdbc_url: &str) -> Result<Option<String>, AppError> {
@@ -389,12 +395,22 @@ fn jdbc_url_username(jdbc_url: &str) -> Result<Option<String>, AppError> {
     Ok((!parsed.username().is_empty()).then(|| parsed.username().to_owned()))
 }
 
+/// SQL Server connect strings append `;key=value` pairs after the authority,
+/// which the URL parser cannot read, so the suffix is handled separately.
+fn split_jdbc_suffix(url: &str) -> (&str, &str) {
+    match url.find(';') {
+        Some(index) => (&url[..index], &url[index..]),
+        None => (url, ""),
+    }
+}
+
 fn parse_jdbc_url(jdbc_url: &str, code: &'static str) -> Result<(&'static str, Url), AppError> {
     let jdbc_url = jdbc_url.trim();
     let (prefix, raw_url) = jdbc_url
         .strip_prefix("jdbc:")
         .map_or(("", jdbc_url), |url| ("jdbc:", url));
-    let parsed = Url::parse(raw_url).map_err(|_| {
+    let (base, _) = split_jdbc_suffix(raw_url);
+    let parsed = Url::parse(base).map_err(|_| {
         AppError::invalid(code, "the datasource JDBC URL cannot be processed safely")
     })?;
     Ok((prefix, parsed))

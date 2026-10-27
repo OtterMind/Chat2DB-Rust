@@ -502,6 +502,53 @@ mod tests {
         let body: serde_json::Value = response_json(response).await;
         assert_eq!(status, StatusCode::OK, "list failed: {body}");
     }
+    #[tokio::test]
+    async fn legacy_sqlserver_datasource_keeps_the_tree_listable() {
+        let directory = TempDir::new().expect("temp directory");
+        let storage = Storage::open(directory.path(), Arc::new(TestVault::default()))
+            .expect("test storage must open");
+        let application = router(Application::with_storage(storage));
+
+        let created = application
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/connection/datasource/create",
+                &serde_json::json!({
+                    "alias": "@localhost",
+                    "url": "sqlserver://localhost:14333;database=master",
+                    "user": "sa",
+                    "password": "Chat2DB_Passw0rd!",
+                    "type": "SQLSERVER",
+                    "host": "localhost",
+                    "port": "14333",
+                    "driverConfig": { "jdbcDriver": "sqlserver", "jdbcDriverClass": "rust:tiberius" },
+                    "extendInfo": []
+                }),
+            ))
+            .await
+            .expect("router must respond");
+        let status = created.status();
+        let body: serde_json::Value = response_json(created).await;
+        assert_eq!(status, StatusCode::OK, "create failed: {body}");
+
+        let tree = application
+            .clone()
+            .oneshot(json_request(
+                Method::GET,
+                "/api/namespaces/tree_list",
+                &serde_json::json!({}),
+            ))
+            .await
+            .expect("router must respond");
+        let status = tree.status();
+        let body: serde_json::Value = response_json(tree).await;
+        assert_eq!(status, StatusCode::OK, "tree failed: {body}");
+        assert!(
+            body.to_string().contains("SQLSERVER"),
+            "tree omitted the datasource: {body}"
+        );
+    }
 
     #[tokio::test]
     #[allow(clippy::too_many_lines)]

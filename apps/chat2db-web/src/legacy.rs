@@ -3361,9 +3361,25 @@ pub(crate) async fn namespace_tree(
     let listed = application.list_datasources().await?;
     let mut datasources = HashMap::with_capacity(listed.items.len());
     for datasource in listed.items {
-        let projection = application
+        // One datasource with an unusual URL must not hide every other one.
+        let projection = match application
             .get_datasource_edit_projection(&datasource.id)
-            .await?;
+            .await
+        {
+            Ok(projection) => projection,
+            Err(_) => chat2db_contract::DatasourceEditProjection {
+                id: datasource.id.clone(),
+                name: datasource.name.clone(),
+                driver_id: datasource.driver_id.clone(),
+                jdbc_url: String::new(),
+                username: None,
+                properties: Vec::new(),
+                read_only: false,
+                ssh: None,
+                has_secret: datasource.has_secret,
+                revision: datasource.revision.clone(),
+            },
+        };
         datasources.insert(datasource.id, projection);
     }
     let tree = application.workspace_tree().await?;
