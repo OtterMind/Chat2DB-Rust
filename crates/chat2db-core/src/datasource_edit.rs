@@ -354,10 +354,22 @@ fn merge_sensitive_query(old_url: &str, incoming_url: &str) -> Result<String, Ap
 
 pub(crate) fn sanitize_jdbc_url(jdbc_url: &str) -> Result<String, AppError> {
     let (prefix, mut parsed) = parse_jdbc_url(jdbc_url, "unsafe_datasource_projection")?;
-    parsed.set_username("").map_err(|()| AppError::internal())?;
-    parsed
-        .set_password(None)
-        .map_err(|()| AppError::internal())?;
+    // Oracle and similar connect strings carry no authority, so credentials
+    // can only be stripped when the URL actually has a host.
+    if parsed.host().is_some() {
+        parsed.set_username("").map_err(|()| {
+            AppError::invalid(
+                "unsafe_datasource_projection",
+                "the datasource URL cannot be sanitized",
+            )
+        })?;
+        parsed.set_password(None).map_err(|()| {
+            AppError::invalid(
+                "unsafe_datasource_projection",
+                "the datasource URL cannot be sanitized",
+            )
+        })?;
+    }
     parsed.set_fragment(None);
     let retained_query = parsed
         .query_pairs()

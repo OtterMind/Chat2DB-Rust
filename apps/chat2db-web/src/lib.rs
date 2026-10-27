@@ -458,6 +458,50 @@ mod tests {
         let body: serde_json::Value = response_json(response).await;
         assert_eq!(status, StatusCode::OK, "create failed: {body}");
     }
+    #[tokio::test]
+    async fn legacy_datasource_list_after_oracle_create() {
+        let directory = TempDir::new().expect("temp directory");
+        let storage = Storage::open(directory.path(), Arc::new(TestVault::default()))
+            .expect("test storage must open");
+        let application = router(Application::with_storage(storage));
+
+        application
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/connection/datasource/create",
+                &serde_json::json!({
+                    "alias": "@localhost",
+                    "url": "jdbc:oracle:thin:@//localhost:1521/FREEPDB1",
+                    "user": "system",
+                    "password": "oracle",
+                    "type": "ORACLE",
+                    "host": "localhost",
+                    "port": "1521",
+                    "driverConfig": { "jdbcDriver": "oracle", "jdbcDriverClass": "rust:oracle-rs" },
+                    "driver": "thin",
+                    "serviceType": "service",
+                    "serviceName": "FREEPDB1",
+                    "authenticationType": "1",
+                    "extendInfo": []
+                }),
+            ))
+            .await
+            .expect("router must respond");
+
+        let response = application
+            .clone()
+            .oneshot(json_request(
+                Method::GET,
+                "/api/connection/datasource/list",
+                &serde_json::json!({}),
+            ))
+            .await
+            .expect("router must respond");
+        let status = response.status();
+        let body: serde_json::Value = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "list failed: {body}");
+    }
 
     #[tokio::test]
     #[allow(clippy::too_many_lines)]
