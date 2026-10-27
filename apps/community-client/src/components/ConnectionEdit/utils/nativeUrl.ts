@@ -1,7 +1,8 @@
 /**
- * Community renders and submits JDBC URLs, while the Rust native drivers take a
- * plain scheme (mysql://host:3306/db). The stored value stays JDBC so the
- * compatibility path keeps working; only the field content is swapped.
+ * Community renders JDBC URLs, while the Rust native drivers take a plain
+ * scheme (mysql://host:3306/db). Native drivers accept both forms, so the field
+ * and the stored value use the native form; only legacy rows stay JDBC and are
+ * converted for display.
  */
 const NATIVE_PREFIXES: ReadonlyArray<readonly [string, string]> = [
   ['jdbc:mysql://', 'mysql://'],
@@ -72,23 +73,7 @@ export function toDisplayUrl(url: string): string {
   return url;
 }
 
-/** Native shorthand back to the JDBC form the backend stores. */
+/** Normalises whatever the user typed to the native form the drivers store. */
 export function toStoredUrl(url: string): string {
-  if (!url) {
-    return url;
-  }
-  const lower = url.toLowerCase();
-  const oracle = oracleToStored(url);
-  if (oracle !== url) {
-    return oracle;
-  }
-  for (const [jdbcPrefix, nativePrefix] of NATIVE_PREFIXES) {
-    if (lower.startsWith(nativePrefix)) {
-      return jdbcPrefix + url.slice(nativePrefix.length);
-    }
-    if (lower.startsWith(jdbcPrefix)) {
-      return url;
-    }
-  }
-  return url;
+  return toDisplayUrl(url);
 }
