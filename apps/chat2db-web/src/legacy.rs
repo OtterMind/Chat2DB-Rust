@@ -2097,10 +2097,19 @@ pub(crate) async fn create_datasource(
             connection: Some(connection),
         })
         .await?;
-    let projection = application
+    // The row and its secret are already durable at this point, so a projection
+    // failure must not turn a successful create into an error response.
+    let response = match application
         .get_datasource_edit_projection(&datasource.id)
-        .await?;
-    let mut response = datasource_response(application, projection);
+        .await
+    {
+        Ok(projection) => datasource_response(application, projection),
+        Err(error) => {
+            eprintln!("datasource projection failed after create: {error:?}");
+            created_datasource_response(application, &datasource)
+        }
+    };
+    let mut response = response;
     // Create responses never echo request connection material. The edit/list APIs provide the
     // separately sanitized projection after the caller refreshes its datasource state.
     response.url.clear();
@@ -6363,6 +6372,55 @@ fn storage_failure(error: StorageError) -> LegacyFailure {
             message: message.to_owned(),
         },
         other => LegacyFailure::from(AppError::from(other)),
+    }
+}
+
+/// Builds the create response from the stored datasource alone.
+fn created_datasource_response(
+    application: &Application,
+    datasource: &chat2db_contract::Datasource,
+) -> LegacyDatasourceResponse {
+    let driver = application
+        .list_drivers()
+        .items
+        .into_iter()
+        .find(|driver| driver.driver_id == datasource.driver_id);
+    let database_type = driver.as_ref().map_or_else(
+        || normalize_database_type(&datasource.driver_id),
+        database_type_for_driver,
+    );
+    let driver_config = driver.map_or_else(
+        || LegacyDriverConfig {
+            jdbc_driver: datasource.driver_id.clone(),
+            jdbc_driver_class: String::new(),
+            custom: false,
+        },
+        |driver| LegacyDriverConfig {
+            jdbc_driver: driver.driver_id,
+            jdbc_driver_class: driver.driver_class,
+            custom: false,
+        },
+    );
+    let support_schema = !matches!(database_type.as_str(), "MYSQL" | "SQLITE");
+    LegacyDatasourceResponse {
+        id: datasource.id.clone(),
+        alias: datasource.name.clone(),
+        database_type,
+        url: String::new(),
+        user: String::new(),
+        password: String::new(),
+        read_only: false,
+        ssh: None,
+        environment: default_environment(),
+        environment_id: 1,
+        extend_info: Vec::new(),
+        driver_config,
+        storage_type: "LOCAL".to_owned(),
+        space_id: 0,
+        support_database: true,
+        support_schema,
+        has_secret: datasource.has_secret,
+        revision: datasource.revision.clone(),
     }
 }
 

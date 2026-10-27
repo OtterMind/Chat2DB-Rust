@@ -423,6 +423,41 @@ mod tests {
         assert_eq!(missing["success"], false);
         assert_eq!(missing["errorCode"], "datasource_not_found");
     }
+    #[tokio::test]
+    async fn legacy_oracle_datasource_creation_accepts_the_native_driver() {
+        let directory = TempDir::new().expect("temp directory");
+        let storage = Storage::open(directory.path(), Arc::new(TestVault::default()))
+            .expect("test storage must open");
+        let application = router(Application::with_storage(storage));
+
+        let response = application
+            .clone()
+            .oneshot(json_request(
+                Method::POST,
+                "/api/connection/datasource/create",
+                &serde_json::json!({
+                    "alias": "@localhost",
+                    "url": "jdbc:oracle:thin:@//localhost:1521/FREEPDB1",
+                    "user": "system",
+                    "password": "oracle",
+                    "type": "ORACLE",
+                    "host": "localhost",
+                    "port": "1521",
+                    "driverConfig": { "jdbcDriver": "oracle", "jdbcDriverClass": "rust:oracle-rs" },
+                    "driver": "thin",
+                    "serviceType": "service",
+                    "serviceName": "FREEPDB1",
+                    "authenticationType": "1",
+                    "extendInfo": []
+                }),
+            ))
+            .await
+            .expect("router must respond");
+
+        let status = response.status();
+        let body: serde_json::Value = response_json(response).await;
+        assert_eq!(status, StatusCode::OK, "create failed: {body}");
+    }
 
     #[tokio::test]
     #[allow(clippy::too_many_lines)]
