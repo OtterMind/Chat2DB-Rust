@@ -20,11 +20,47 @@ export function isNativeDriverConfig(config?: IDriverConfigLike | null): boolean
 }
 
 /** JDBC URL to the native driver's shorthand for the URL field. */
+
+/** Oracle keeps distinct SID and service forms, so it needs its own mapping. */
+const ORACLE_JDBC_PREFIX = 'jdbc:oracle:thin:@';
+const ORACLE_NATIVE_PREFIX = 'oracle://';
+
+function oracleToDisplay(url: string): string {
+  const lower = url.toLowerCase();
+  if (lower.startsWith(ORACLE_NATIVE_PREFIX)) {
+    return url;
+  }
+  if (lower.startsWith(ORACLE_JDBC_PREFIX)) {
+    const rest = url.slice(ORACLE_JDBC_PREFIX.length);
+    // Service form uses a double slash: jdbc:oracle:thin:@//host:port/service
+    return ORACLE_NATIVE_PREFIX + (rest.startsWith('//') ? rest.slice(2) : rest);
+  }
+  return url;
+}
+
+function oracleToStored(url: string): string {
+  const lower = url.toLowerCase();
+  if (lower.startsWith(ORACLE_JDBC_PREFIX)) {
+    return url;
+  }
+  if (lower.startsWith(ORACLE_NATIVE_PREFIX)) {
+    const rest = url.slice(ORACLE_NATIVE_PREFIX.length);
+    // A slash after host:port means the service form; otherwise it is a SID.
+    const isService = rest.includes('/');
+    return ORACLE_JDBC_PREFIX + (isService ? '//' : '') + rest;
+  }
+  return url;
+}
+
 export function toDisplayUrl(url: string): string {
   if (!url) {
     return url;
   }
   const lower = url.toLowerCase();
+  const oracle = oracleToDisplay(url);
+  if (oracle !== url) {
+    return oracle;
+  }
   for (const [jdbcPrefix, nativePrefix] of NATIVE_PREFIXES) {
     if (lower.startsWith(jdbcPrefix)) {
       return nativePrefix + url.slice(jdbcPrefix.length);
@@ -42,6 +78,10 @@ export function toStoredUrl(url: string): string {
     return url;
   }
   const lower = url.toLowerCase();
+  const oracle = oracleToStored(url);
+  if (oracle !== url) {
+    return oracle;
+  }
   for (const [jdbcPrefix, nativePrefix] of NATIVE_PREFIXES) {
     if (lower.startsWith(nativePrefix)) {
       return jdbcPrefix + url.slice(nativePrefix.length);
