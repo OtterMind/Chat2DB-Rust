@@ -50,4 +50,9 @@ export default {
   'connection.export.cancelled': 'Export cancelled',
   'connection.export.failed': 'Failed to export connections. Please try again',
   'workspace.menu.exportConnections': 'Export connections',
+  'connection.javaRuntime.title': 'Database driver runtime required',
+  'connection.javaRuntime.description':
+    'This database is reached through a JDBC driver, which needs the driver runtime (about 50 MB with the JRE and driver packs). It is installed only once.',
+  'connection.javaRuntime.install': 'Install now',
+  'connection.javaRuntime.failed': 'Installation failed, please retry',
 };

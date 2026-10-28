@@ -50,4 +50,9 @@ export default {
   'connection.export.cancelled': '已取消导出',
   'connection.export.failed': '连接导出失败，请重试',
   'workspace.menu.exportConnections': '导出连接',
+  'connection.javaRuntime.title': '需要安装数据库驱动运行时',
+  'connection.javaRuntime.description':
+    '该数据库通过 JDBC 驱动访问，需要先安装驱动运行时（约 50 MB，包含 JRE 与驱动包）。只需安装一次。',
+  'connection.javaRuntime.install': '立即安装',
+  'connection.javaRuntime.failed': '安装失败，请重试',
 };

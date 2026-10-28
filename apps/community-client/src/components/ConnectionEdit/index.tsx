@@ -22,6 +22,8 @@ import { SubmissionGuard } from './submissionGuard';
 import { formatJdbcHostForUrl, normalizeJdbcHostFromUrl, shouldSyncJdbcUrlForField } from './utils/jdbcUrl';
 import type { IDriverConfigLike } from './utils/nativeUrl';
 import { isNativeDriverConfig, toDisplayUrl, toStoredUrl } from './utils/nativeUrl';
+import JavaRuntimeModal from './components/JavaRuntimeModal';
+import { desktopRuntimeAvailable, javaRuntimeStatus } from './utils/javaRuntime';
 
 // ----- store -----
 import { clientRuntime } from '@client-runtime';
@@ -402,6 +404,8 @@ const ConnectionEdit = forwardRef((props: IProps, ref: ForwardedRef<ICreateConne
     sshTestLoading: false,
   });
   const submissionGuardRef = useRef(new SubmissionGuard());
+  const [javaRuntimePrompt, setJavaRuntimePrompt] = useState(false);
+  const javaRuntimeRetryRef = useRef<null | (() => void)>(null);
   const { curOrg } = useOrgStore((s) => ({ curOrg: s.curOrg }));
 
   const dataSourceFormConfigPropsMemo = useMemo<IConnectionConfig>(() => {
@@ -516,8 +520,33 @@ const ConnectionEdit = forwardRef((props: IProps, ref: ForwardedRef<ICreateConne
   }
 
   // Test, save, or update the connection.
+  function needsJavaRuntime(payload: any) {
+    if (!desktopRuntimeAvailable()) {
+      return false;
+    }
+    const driverClass = payload?.driverConfig?.jdbcDriverClass ?? driveData?.jdbcDriverClass;
+    return typeof driverClass === 'string' && driverClass.length > 0 && !driverClass.startsWith('rust:');
+  }
+
+  function ensureJavaRuntime(retry: () => void) {
+    javaRuntimeStatus()
+      .then((status) => {
+        if (!status || status.installed) {
+          retry();
+          return;
+        }
+        javaRuntimeRetryRef.current = retry;
+        setJavaRuntimePrompt(true);
+      })
+      .catch(() => retry());
+  }
+
   function saveConnection(type: submitType) {
     const p = getData();
+    if (needsJavaRuntime(p)) {
+      ensureJavaRuntime(() => saveConnection(type));
+      return;
+    }
 
     if (type !== submitType.SAVE) {
       p.id = backfillData.id;
@@ -693,6 +722,20 @@ const ConnectionEdit = forwardRef((props: IProps, ref: ForwardedRef<ICreateConne
           )}
         </div>
       </div>
+      <JavaRuntimeModal
+        open={javaRuntimePrompt}
+        onCancel={() => {
+          javaRuntimeRetryRef.current = null;
+          setJavaRuntimePrompt(false);
+        }}
+        onReady={() => {
+          setJavaRuntimePrompt(false);
+          const retry = javaRuntimeRetryRef.current;
+          javaRuntimeRetryRef.current = null;
+          setLoading((state) => ({ ...state, confirmButton: false, testButton: false }));
+          retry?.();
+        }}
+      />
     </div>
   );
 });
