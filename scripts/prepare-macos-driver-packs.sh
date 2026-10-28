@@ -28,11 +28,8 @@ fi
 mkdir -p "${target_root}"
 
 staging_directory="$(mktemp -d "${target_root}/.macos-driver-packs.staging.XXXXXX")"
-"${repository_root}/scripts/prepare-mysql-driver-pack.sh" "${staging_directory}"
-"${repository_root}/scripts/prepare-h2-driver-pack.sh" "${staging_directory}"
+"${repository_root}/scripts/prepare-dm-driver-pack.sh" "${staging_directory}"
 
-mysql_found=false
-h2_found=false
 entry_count=0
 while IFS= read -r -d '' entry; do
   entry_count=$((entry_count + 1))
@@ -42,8 +39,7 @@ while IFS= read -r -d '' entry; do
     exit 1
   fi
   case "${entry_name}" in
-    01-mysql) mysql_found=true ;;
-    02-h2-migration) h2_found=true ;;
+    03-dm) ;;
     *)
       echo "macOS driver-pack staging contains an unauthorized entry: ${entry_name}" >&2
       exit 1
@@ -51,8 +47,8 @@ while IFS= read -r -d '' entry; do
   esac
 done < <(find "${staging_directory}" -mindepth 1 -maxdepth 1 -print0)
 
-if [[ "${entry_count}" -ne 2 || "${mysql_found}" != true || "${h2_found}" != true ]]; then
-  echo "macOS driver packs must contain exactly 01-mysql and 02-h2-migration" >&2
+if [[ "${entry_count}" -ne 1 ]]; then
+  echo "macOS driver packs must contain exactly 03-dm" >&2
   exit 1
 fi
 

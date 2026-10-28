@@ -27,8 +27,7 @@ if [[ -e "${target_root}" && ( ! -d "${target_root}" || -L "${target_root}" ) ]]
 fi
 mkdir -p "${target_root}"
 staging_directory="$(mktemp -d "${target_root}/.linux-driver-packs.staging.XXXXXX")"
-"${repository_root}/scripts/prepare-mysql-driver-pack.sh" "${staging_directory}"
-"${repository_root}/scripts/prepare-h2-driver-pack.sh" "${staging_directory}"
+"${repository_root}/scripts/prepare-dm-driver-pack.sh" "${staging_directory}"
 
 entry_count=0
 while IFS= read -r -d '' entry; do
@@ -39,12 +38,12 @@ while IFS= read -r -d '' entry; do
     exit 1
   fi
   case "${entry_name}" in
-    01-mysql|02-h2-migration) ;;
+    03-dm) ;;
     *) echo "unauthorized Linux driver-pack entry: ${entry_name}" >&2; exit 1 ;;
   esac
 done < <(find "${staging_directory}" -mindepth 1 -maxdepth 1 -print0)
-if [[ "${entry_count}" -ne 2 ]]; then
-  echo "Linux driver packs must contain exactly 01-mysql and 02-h2-migration" >&2
+if [[ "${entry_count}" -ne 1 ]]; then
+  echo "Linux driver packs must contain exactly 03-dm" >&2
   exit 1
 fi
 

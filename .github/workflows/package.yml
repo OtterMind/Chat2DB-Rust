@@ -202,8 +202,7 @@ jobs:
         shell: bash
         run: |
           rm -rf target/windows-driver-packs
-          ./scripts/prepare-mysql-driver-pack.sh target/windows-driver-packs
-          ./scripts/prepare-h2-driver-pack.sh target/windows-driver-packs
+          ./scripts/prepare-dm-driver-pack.sh target/windows-driver-packs
       - name: Detect Windows signing configuration
         id: windows-signing
         shell: bash

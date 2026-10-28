@@ -355,8 +355,8 @@ jobs:
         run: ./mvnw -B -DskipTests package
       - name: Build fixed Community compatibility classpath
         run: ./scripts/build-community-h2-classpath.sh
-      - name: Prepare verified Connector/J pack
-        run: ./scripts/prepare-mysql-driver-pack.sh
+      - name: Prepare verified DM JDBC driver pack for packaging
+        run: ./scripts/prepare-dm-driver-pack.sh
       - name: Install
         working-directory: apps/frontend
         run: npm ci
