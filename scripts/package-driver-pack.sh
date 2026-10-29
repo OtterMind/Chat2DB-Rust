@@ -26,6 +26,8 @@ if [[ ! -d "${output_directory}" || -L "${output_directory}" ]]; then
   echo "driver pack output directory is missing or unsafe: ${output_directory}" >&2
   exit 1
 fi
+# Absolute paths keep the archive writable after changing into the staging directory.
+output_directory="$(cd "${output_directory}" && pwd -P)"
 case "${pack_id}" in
   dm) ;;
   *)
