@@ -81,7 +81,7 @@ url = "2"
 uuid = { version = "1.18", features = ["v4"] }
 xls = { version = "0.1.0", default-features = false }
 zeroize = "1.8"
-zip = { version = "4", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
