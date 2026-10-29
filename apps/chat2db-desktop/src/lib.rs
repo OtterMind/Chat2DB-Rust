@@ -534,6 +534,7 @@ pub fn run() -> Result<i32, DesktopError> {
             java_runtime_install::java_runtime_status,
             java_runtime_install::java_runtime_install,
             java_runtime_install::java_runtime_uninstall,
+            java_runtime_install::jdbc_driver_pack_install,
         ])
         .build(tauri::generate_context!());
     let application = match application {

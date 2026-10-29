@@ -381,6 +381,10 @@ jobs:
           path: target/release-artifacts
       - name: Verify and collect all platform packages
         run: node scripts/prepare-release.mjs target/release-artifacts target/release
+      - name: Prepare JDBC driver pack
+        run: ./scripts/prepare-dm-driver-pack.sh target/release-driver-packs
+      - name: Package JDBC driver pack
+        run: ./scripts/package-driver-pack.sh target/release-driver-packs/03-dm dm target/release
       - name: Create or update draft release
         env:
           GH_TOKEN: ${{ github.token }}

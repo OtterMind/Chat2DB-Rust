@@ -347,6 +347,52 @@ pub async fn java_runtime_uninstall<R: tauri::Runtime>(
     status_from_disk(&app)
 }
 
+/// Database types whose JDBC driver pack ships as its own release asset.
+fn driver_pack_id(database_type: &str) -> Option<&'static str> {
+    match database_type.trim().to_ascii_uppercase().as_str() {
+        "DM" | "DAMENG" => Some("dm"),
+        _ => None,
+    }
+}
+
+/// Downloads and installs one JDBC driver pack into the runtime directory.
+///
+/// # Errors
+///
+/// Returns an error when the runtime is missing, the database type has no
+/// published pack, or the download, checksum, or extraction fails.
+#[tauri::command]
+pub async fn jdbc_driver_pack_install<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    database_type: String,
+) -> Result<JavaRuntimeStatus, String> {
+    let pack_id = driver_pack_id(&database_type)
+        .ok_or_else(|| format!("no JDBC driver pack is published for {database_type}"))?;
+    let runtime = installed_runtime_dir(&app)?;
+    if !runtime.is_dir() {
+        return Err("install the driver runtime before its driver packs".to_owned());
+    }
+    let archive_name = format!("chat2db-driver-pack-{pack_id}.zip");
+    let base = format!("{}/v{}", release_base(), PRODUCT_VERSION);
+    let archive_url = format!("{base}/{archive_name}");
+    let checksum_url = format!("{archive_url}.sha256");
+    let archive_path = runtime.join(format!(".driver-pack-{pack_id}.zip"));
+    emit_progress(&app, "downloading", 0, None);
+    download_archive(&app, &archive_url, &archive_path).await?;
+    emit_progress(&app, "verifying", 0, None);
+    let expected = download_checksum(&checksum_url).await?;
+    if file_sha256(&archive_path)? != expected {
+        let _ = fs::remove_file(&archive_path);
+        return Err("driver pack checksum mismatch".to_owned());
+    }
+    emit_progress(&app, "installing", 0, None);
+    let extracted = extract_runtime(&archive_path, &runtime);
+    let _ = fs::remove_file(&archive_path);
+    extracted?;
+    emit_progress(&app, "installed", 0, None);
+    status_from_disk(&app)
+}
+
 #[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;

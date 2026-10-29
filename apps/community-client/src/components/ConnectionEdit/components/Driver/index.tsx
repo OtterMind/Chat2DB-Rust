@@ -2,7 +2,7 @@ import React, { memo, useState, useEffect } from 'react';
 import styles from './index.less';
 import classnames from 'classnames';
 import { i18n } from '@/i18n';
-import { Form, Modal, Input, Select } from 'antd';
+import { Button, Form, Modal, Input, Progress, Select } from 'antd';
 import { DeleteOutlined } from '@ant-design/icons';
 import connectionService, { IDriverResponse } from '@/service/connection';
 import UploadDriver from '@/components/UploadDriver';
@@ -10,6 +10,12 @@ import LoadingGracile from '@/components/Loading/LoadingGracile';
 import { isCommunityEnv, isDesktop } from '@/utils/env';
 import feedback from '@/utils/feedback';
 import { canSaveDriverDraft, resolveDriverSavePayload, type IDriverSaveDraft } from './driverUpload';
+import {
+  desktopRuntimeAvailable,
+  installJavaRuntime,
+  installJdbcDriverPack,
+  javaRuntimeStatus,
+} from '../../utils/javaRuntime';
 const { Option } = Select;
 
 interface IProps {
@@ -34,6 +40,13 @@ export default memo<IProps>((props) => {
   const [uploadDriverModal, setUploadDriverModal] = useState(false);
   const [driverSaved, setDriverSaved] = useState<IDriverSaveDraft>({ dbType: backfillData?.type });
   const [desktopLoading, setDesktopLoading] = useState(false);
+  const [runtimeReady, setRuntimeReady] = useState<boolean | null>(null);
+  const [preparing, setPreparing] = useState(false);
+  const [prepareProgress, setPrepareProgress] = useState<{ downloaded: number; total: number | null }>({
+    downloaded: 0,
+    total: null,
+  });
+  const [prepareError, setPrepareError] = useState<string | null>(null);
 
   useEffect(() => {
     if (backfillData) {
@@ -51,6 +64,38 @@ export default memo<IProps>((props) => {
       onChange(data);
     }
   }, [backfillData?.driverConfig, backfillData?.id]);
+
+  const driverList = driverObj?.driverConfigList ?? [];
+  const nativeTypes = ['MYSQL', 'POSTGRESQL', 'SQLSERVER', 'ORACLE'];
+  const needsJavaDrivers =
+    !nativeTypes.includes(String(backfillData?.type ?? '').toUpperCase()) && desktopRuntimeAvailable();
+  const needsSetup = needsJavaDrivers && driverList.length === 0;
+
+  useEffect(() => {
+    if (!needsSetup || runtimeReady !== null) {
+      return;
+    }
+    javaRuntimeStatus().then((status) => setRuntimeReady(Boolean(status?.installed)));
+  }, [needsSetup, runtimeReady]);
+
+  async function prepareDrivers() {
+    setPreparing(true);
+    setPrepareError(null);
+    const onProgress = (progress: { downloadedBytes: number; totalBytes: number | null }) =>
+      setPrepareProgress({ downloaded: progress.downloadedBytes, total: progress.totalBytes });
+    try {
+      if (!runtimeReady) {
+        await installJavaRuntime(onProgress);
+        setRuntimeReady(true);
+      }
+      await installJdbcDriverPack(backfillData.type, onProgress);
+      getDriverList();
+    } catch (error) {
+      setPrepareError(String(error));
+    } finally {
+      setPreparing(false);
+    }
+  }
 
   function getDriverList() {
     connectionService.getDriverList({ dbType: backfillData.type }).then((res) => {
@@ -143,6 +188,32 @@ export default memo<IProps>((props) => {
 
   return (
     <div className={classnames(styles.box, className)}>
+      {needsSetup ? (
+        <div className={styles.driverSetup}>
+          <div className={styles.driverSetupText}>
+            {runtimeReady === false
+              ? i18n('connection.driverSetup.runtimeDesc')
+              : i18n('connection.driverSetup.packDesc')}
+          </div>
+          {preparing && (
+            <Progress
+              size="small"
+              status="active"
+              percent={
+                prepareProgress.total
+                  ? Math.min(100, Math.round((prepareProgress.downloaded / prepareProgress.total) * 100))
+                  : undefined
+              }
+            />
+          )}
+          {prepareError && <div className={styles.driverSetupError}>{prepareError}</div>}
+          <Button type="primary" size="small" loading={preparing} onClick={prepareDrivers}>
+            {runtimeReady === false
+              ? i18n('connection.driverSetup.installRuntime')
+              : i18n('connection.driverSetup.installPack')}
+          </Button>
+        </div>
+      ) : (
       <Form disabled={props.disabled} form={driverForm} onValuesChange={onValuesChange} colon={false}>
         <Form.Item labelAlign="left" name="jdbcDriver" label={i18n('connection.title.driver')}>
           <Select optionLabelProp="label">
@@ -166,6 +237,7 @@ export default memo<IProps>((props) => {
           <Input disabled />
         </Form.Item>
       </Form>
+      )}
       <div className={styles.downloadDriveFooter}>
         {false && (
 <div onClick={downloadDrive} className={styles.downloadDrive}>

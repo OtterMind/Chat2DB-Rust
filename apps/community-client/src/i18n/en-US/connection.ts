@@ -55,4 +55,10 @@ export default {
     'This database is reached through a JDBC driver, which needs the driver runtime (about 50 MB with the JRE and driver packs). It is installed only once.',
   'connection.javaRuntime.install': 'Install now',
   'connection.javaRuntime.failed': 'Installation failed, please retry',
+  'connection.driverSetup.runtimeDesc':
+    'This database is reached through a JDBC driver. Install the driver runtime (about 50 MB) to continue.',
+  'connection.driverSetup.packDesc':
+    'The driver runtime is ready; download this database driver pack (about 1 MB) to continue.',
+  'connection.driverSetup.installRuntime': 'Install driver runtime',
+  'connection.driverSetup.installPack': 'Download driver',
 };

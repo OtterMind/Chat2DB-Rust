@@ -71,3 +71,33 @@ export async function installJavaRuntime(
     unlisten?.();
   }
 }
+
+/** Downloads one database's JDBC driver pack into the installed runtime. */
+export async function installJdbcDriverPack(
+  databaseType: string,
+  onProgress?: (progress: { downloadedBytes: number; totalBytes: number | null }) => void,
+): Promise<void> {
+  const api = tauri();
+  const invoke = api?.core?.invoke;
+  if (!invoke) {
+    throw new Error('desktop runtime is unavailable');
+  }
+  let unlisten: (() => void) | undefined;
+  if (onProgress && typeof api?.event?.listen === 'function') {
+    unlisten = await api.event.listen('chat2db://java-runtime-install-progress', (event) => {
+      const payload = (event.payload ?? {}) as {
+        downloadedBytes?: number;
+        totalBytes?: number | null;
+      };
+      onProgress({
+        downloadedBytes: payload.downloadedBytes ?? 0,
+        totalBytes: payload.totalBytes ?? null,
+      });
+    });
+  }
+  try {
+    await invoke('jdbc_driver_pack_install', { databaseType });
+  } finally {
+    unlisten?.();
+  }
+}

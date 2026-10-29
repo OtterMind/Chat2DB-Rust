@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Packages the on-demand Java runtime archive: jlink runtime, compatibility
-# engine, and driver packs under one root layout.
+# Packages the on-demand Java runtime archive: the jlink runtime plus the
+# compatibility engine. Driver packs ship as separate release assets.
 
-if [[ "$#" -ne 5 ]]; then
-  echo "usage: $0 <platform-id> <runtime-dir> <engine-jar> <driver-packs-dir> <output-dir>" >&2
+if [[ "$#" -ne 4 ]]; then
+  echo "usage: $0 <platform-id> <runtime-dir> <engine-jar> <output-dir>" >&2
   exit 1
 fi
 
 platform_id="$1"
 runtime_directory="$2"
 engine_jar="$3"
-driver_packs_directory="$4"
-output_directory="$5"
+output_directory="$4"
 
 case "${platform_id}" in
   macos-arm64 | macos-x64 | windows-x86_64 | linux-x86_64 | linux-arm64) ;;
@@ -23,7 +22,7 @@ case "${platform_id}" in
     ;;
 esac
 
-for directory in "${runtime_directory}" "${driver_packs_directory}"; do
+for directory in "${runtime_directory}"; do
   if [[ ! -d "${directory}" || -L "${directory}" ]]; then
     echo "Java runtime input directory is missing or unsafe: ${directory}" >&2
     exit 1
@@ -49,7 +48,7 @@ trap cleanup EXIT
 cp -R "${runtime_directory}" "${staging_directory}/java"
 mkdir -p "${staging_directory}/engine"
 cp "${engine_jar}" "${staging_directory}/engine/chat2db-compat-runtime.jar"
-cp -R "${driver_packs_directory}" "${staging_directory}/driver-packs"
+mkdir -p "${staging_directory}/driver-packs"
 
 if [[ "${platform_id}" == windows-* ]]; then
   java_binary="${staging_directory}/java/bin/java.exe"

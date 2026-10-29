@@ -79,7 +79,6 @@ esac
 for path in \
   "${repository_root}/target/macos-runtime/bin/java" \
   "${repository_root}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar" \
-  "${repository_root}/target/macos-driver-packs" \
   "${repository_root}/apps/frontend/dist"; do
   if [[ ! -e "${path}" ]]; then
     echo "package prerequisite is missing: ${path}" >&2
@@ -355,7 +354,6 @@ cli_zip_name="chat2db-cli-${cli_platform}.zip"
   "${cli_platform}" \
   "${repository_root}/target/macos-runtime" \
   "${repository_root}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar" \
-  "${repository_root}/target/macos-driver-packs" \
   "${package_directory}"
 git_commit="$(git -C "${repository_root}" rev-parse HEAD)"
 community_commit="$(git -C "${repository_root}/third_party/chat2db-community" rev-parse HEAD)"

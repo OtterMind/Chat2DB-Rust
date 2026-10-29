@@ -37,7 +37,6 @@ cp -- "${repository_root}/third_party/chat2db-community/LICENSE" \
 for path in \
   "${repository_root}/target/linux-runtime/bin/java" \
   "${repository_root}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar" \
-  "${repository_root}/target/linux-driver-packs" \
   "${license_resource_directory}/Chat2DB-Rust-LICENSE.txt" \
   "${license_resource_directory}/Chat2DB-Community-LICENSE.txt" \
   "${repository_root}/apps/frontend/dist"; do
@@ -148,7 +147,6 @@ cli_zip_name="chat2db-cli-${cli_platform}.zip"
   "${cli_platform}" \
   "${repository_root}/target/linux-runtime" \
   "${repository_root}/java/compat-runtime/target/chat2db-compat-runtime-0.1.0-SNAPSHOT.jar" \
-  "${repository_root}/target/linux-driver-packs" \
   "${package_directory}"
 
 echo "Built Linux packages at ${package_directory}"
