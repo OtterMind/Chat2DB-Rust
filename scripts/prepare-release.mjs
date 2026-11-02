@@ -72,6 +72,13 @@ export async function prepareRelease({ artifactsDir, outputDir, version, commit,
         if (await sha256(assetSource) !== declared) throw new Error(`${platform} ${label} checksum mismatch`);
         if (files.has(assetName)) throw new Error(`duplicate release asset ${assetName}`);
         files.set(assetName, { source: assetSource, digest: declared });
+        // The desktop installer verifies these downloads, so publish the
+        // checksum next to each archive.
+        const sumName = `${assetName}.sha256`;
+        if (!files.has(sumName)) {
+          const sumSource = `${assetSource}.sha256`;
+          files.set(sumName, { source: sumSource, digest: await sha256(sumSource) });
+        }
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
       }
