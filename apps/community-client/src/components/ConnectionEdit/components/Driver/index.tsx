@@ -62,6 +62,18 @@ export default memo<IProps>((props) => {
     }
   }, [backfillData?.driverConfig, backfillData?.id]);
 
+  // Installed JDBC packs are stored by content hash; show a readable name.
+  function driverLabel(driver: { jdbcDriver?: string; jdbcDriverClass?: string }) {
+    const identifier = String(driver?.jdbcDriver ?? '');
+    if (!identifier.startsWith('sha256:')) {
+      return identifier;
+    }
+    const known: Record<string, string> = {
+      'dm.jdbc.driver.DmDriver': i18n('connection.driverSetup.dmDriver'),
+    };
+    return known[String(driver?.jdbcDriverClass ?? '')] ?? i18n('connection.driverSetup.jdbcDriver');
+  }
+
   const driverList = driverObj?.driverConfigList ?? [];
   const nativeTypes = ['MYSQL', 'POSTGRESQL', 'SQLSERVER', 'ORACLE'];
   const needsJavaDrivers =
@@ -188,9 +200,9 @@ export default memo<IProps>((props) => {
         <Form.Item labelAlign="left" name="jdbcDriver" label={i18n('connection.title.driver')}>
           <Select optionLabelProp="label">
             {driverObj?.driverConfigList?.map((t) => (
-              <Option key={t.jdbcDriver} value={t.jdbcDriver} label={t.jdbcDriver}>
+              <Option key={t.jdbcDriver} value={t.jdbcDriver} label={driverLabel(t)}>
                 <div className={styles.driverOption}>
-                  <span className={styles.driverOptionName}>{t.jdbcDriver}</span>
+                  <span className={styles.driverOptionName}>{driverLabel(t)}</span>
                   {t.custom && (
                     <DeleteOutlined
                       className={styles.driverOptionDelete}

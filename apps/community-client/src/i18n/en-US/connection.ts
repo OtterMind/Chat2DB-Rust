@@ -63,4 +63,6 @@ export default {
   'connection.driverSetup.installPack': 'Download driver (about 1 MB)',
   'connection.driverSetup.downloading': 'Downloading…',
   'connection.driverSetup.restarting': 'Driver installed, restarting…',
+  'connection.driverSetup.dmDriver': 'DM driver (JDBC)',
+  'connection.driverSetup.jdbcDriver': 'JDBC driver',
 };

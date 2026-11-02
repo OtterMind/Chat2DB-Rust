@@ -63,4 +63,6 @@ export default {
   'connection.driverSetup.installPack': '下载驱动（约 1 MB）',
   'connection.driverSetup.downloading': '下载中…',
   'connection.driverSetup.restarting': '驱动已安装，正在重启应用…',
+  'connection.driverSetup.dmDriver': '达梦驱动（DM JDBC）',
+  'connection.driverSetup.jdbcDriver': 'JDBC 驱动',
 };
