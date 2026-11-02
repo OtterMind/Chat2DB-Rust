@@ -394,6 +394,9 @@ pub async fn jdbc_driver_pack_install<R: tauri::Runtime>(
 }
 
 /// Restarts the desktop app so newly installed driver packs are discovered.
+///
+/// The handle is taken by value because Tauri injects managed state that way.
+#[allow(clippy::needless_pass_by_value)]
 #[tauri::command]
 pub fn restart_app<R: tauri::Runtime>(app: AppHandle<R>) {
     app.restart();
