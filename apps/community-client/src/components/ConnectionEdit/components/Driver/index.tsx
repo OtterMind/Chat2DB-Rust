@@ -2,7 +2,7 @@ import React, { memo, useState, useEffect } from 'react';
 import styles from './index.less';
 import classnames from 'classnames';
 import { i18n } from '@/i18n';
-import { Button, Form, Modal, Input, Progress, Select } from 'antd';
+import { Form, Modal, Input, Select } from 'antd';
 import { DeleteOutlined } from '@ant-design/icons';
 import connectionService, { IDriverResponse } from '@/service/connection';
 import UploadDriver from '@/components/UploadDriver';
@@ -15,6 +15,7 @@ import {
   installJavaRuntime,
   installJdbcDriverPack,
   javaRuntimeStatus,
+  restartDesktopApp,
 } from '../../utils/javaRuntime';
 const { Option } = Select;
 
@@ -42,11 +43,7 @@ export default memo<IProps>((props) => {
   const [desktopLoading, setDesktopLoading] = useState(false);
   const [runtimeReady, setRuntimeReady] = useState<boolean | null>(null);
   const [preparing, setPreparing] = useState(false);
-  const [prepareProgress, setPrepareProgress] = useState<{ downloaded: number; total: number | null }>({
-    downloaded: 0,
-    total: null,
-  });
-  const [prepareError, setPrepareError] = useState<string | null>(null);
+
 
   useEffect(() => {
     if (backfillData) {
@@ -80,18 +77,17 @@ export default memo<IProps>((props) => {
 
   async function prepareDrivers() {
     setPreparing(true);
-    setPrepareError(null);
-    const onProgress = (progress: { downloadedBytes: number; totalBytes: number | null }) =>
-      setPrepareProgress({ downloaded: progress.downloadedBytes, total: progress.totalBytes });
     try {
       if (!runtimeReady) {
-        await installJavaRuntime(onProgress);
+        await installJavaRuntime();
         setRuntimeReady(true);
       }
-      await installJdbcDriverPack(backfillData.type, onProgress);
-      getDriverList();
+      await installJdbcDriverPack(backfillData.type);
+      feedback.success(i18n('connection.driverSetup.restarting'));
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      await restartDesktopApp();
     } catch (error) {
-      setPrepareError(String(error));
+      feedback.error(String(error));
     } finally {
       setPreparing(false);
     }
@@ -188,32 +184,6 @@ export default memo<IProps>((props) => {
 
   return (
     <div className={classnames(styles.box, className)}>
-      {needsSetup ? (
-        <div className={styles.driverSetup}>
-          <div className={styles.driverSetupText}>
-            {runtimeReady === false
-              ? i18n('connection.driverSetup.runtimeDesc')
-              : i18n('connection.driverSetup.packDesc')}
-          </div>
-          {preparing && (
-            <Progress
-              size="small"
-              status="active"
-              percent={
-                prepareProgress.total
-                  ? Math.min(100, Math.round((prepareProgress.downloaded / prepareProgress.total) * 100))
-                  : undefined
-              }
-            />
-          )}
-          {prepareError && <div className={styles.driverSetupError}>{prepareError}</div>}
-          <Button type="primary" size="small" loading={preparing} onClick={prepareDrivers}>
-            {runtimeReady === false
-              ? i18n('connection.driverSetup.installRuntime')
-              : i18n('connection.driverSetup.installPack')}
-          </Button>
-        </div>
-      ) : (
       <Form disabled={props.disabled} form={driverForm} onValuesChange={onValuesChange} colon={false}>
         <Form.Item labelAlign="left" name="jdbcDriver" label={i18n('connection.title.driver')}>
           <Select optionLabelProp="label">
@@ -237,8 +207,19 @@ export default memo<IProps>((props) => {
           <Input disabled />
         </Form.Item>
       </Form>
-      )}
       <div className={styles.downloadDriveFooter}>
+        {needsSetup && (
+          <div
+            className={styles.uploadCustomDrive}
+            onClick={preparing ? undefined : prepareDrivers}
+          >
+            {preparing
+              ? i18n('connection.driverSetup.downloading')
+              : runtimeReady === false
+                ? i18n('connection.driverSetup.installRuntime')
+                : i18n('connection.driverSetup.installPack')}
+          </div>
+        )}
         {false && (
 <div onClick={downloadDrive} className={styles.downloadDrive}>
           {downloadStatus === DownloadStatus.Default && (

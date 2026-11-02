@@ -101,3 +101,12 @@ export async function installJdbcDriverPack(
     unlisten?.();
   }
 }
+
+/** Restarts the desktop app so newly installed driver packs are discovered. */
+export async function restartDesktopApp(): Promise<void> {
+  const invoke = tauri()?.core?.invoke;
+  if (!invoke) {
+    return;
+  }
+  await invoke('restart_app');
+}

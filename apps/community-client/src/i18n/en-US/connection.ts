@@ -59,6 +59,8 @@ export default {
     'This database is reached through a JDBC driver. Install the driver runtime (about 50 MB) to continue.',
   'connection.driverSetup.packDesc':
     'The driver runtime is ready; download this database driver pack (about 1 MB) to continue.',
-  'connection.driverSetup.installRuntime': 'Install driver runtime',
-  'connection.driverSetup.installPack': 'Download driver',
+  'connection.driverSetup.installRuntime': 'Install driver runtime (about 50 MB)',
+  'connection.driverSetup.installPack': 'Download driver (about 1 MB)',
+  'connection.driverSetup.downloading': 'Downloading…',
+  'connection.driverSetup.restarting': 'Driver installed, restarting…',
 };

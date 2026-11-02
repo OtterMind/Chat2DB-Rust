@@ -393,6 +393,12 @@ pub async fn jdbc_driver_pack_install<R: tauri::Runtime>(
     status_from_disk(&app)
 }
 
+/// Restarts the desktop app so newly installed driver packs are discovered.
+#[tauri::command]
+pub fn restart_app<R: tauri::Runtime>(app: AppHandle<R>) {
+    app.restart();
+}
+
 #[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;

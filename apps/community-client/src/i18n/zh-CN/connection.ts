@@ -59,6 +59,8 @@ export default {
     '该数据库通过 JDBC 驱动访问，需要先安装驱动运行时（约 50 MB），安装后即可继续。',
   'connection.driverSetup.packDesc':
     '驱动运行时已就绪，还需要下载该数据库的驱动包（约 1 MB）。',
-  'connection.driverSetup.installRuntime': '安装驱动运行时',
-  'connection.driverSetup.installPack': '下载驱动',
+  'connection.driverSetup.installRuntime': '安装驱动运行时（约 50 MB）',
+  'connection.driverSetup.installPack': '下载驱动（约 1 MB）',
+  'connection.driverSetup.downloading': '下载中…',
+  'connection.driverSetup.restarting': '驱动已安装，正在重启应用…',
 };
