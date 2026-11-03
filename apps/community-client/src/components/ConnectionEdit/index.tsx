@@ -541,10 +541,10 @@ const ConnectionEdit = forwardRef((props: IProps, ref: ForwardedRef<ICreateConne
       .catch(() => retry());
   }
 
-  function saveConnection(type: submitType) {
+  function saveConnection(type: submitType, runtimeChecked = false) {
     const p = getData();
-    if (needsJavaRuntime(p)) {
-      ensureJavaRuntime(() => saveConnection(type));
+    if (!runtimeChecked && needsJavaRuntime(p)) {
+      ensureJavaRuntime(() => saveConnection(type, true));
       return;
     }
 
