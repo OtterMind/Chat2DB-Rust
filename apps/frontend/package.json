@@ -1,6 +1,6 @@
 {
   "name": "@chat2db/frontend",
-  "version": "0.0.15",
+  "version": "0.0.16",
   "private": true,
   "type": "module",
   "packageManager": "npm@10.9.7",
